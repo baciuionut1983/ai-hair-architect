@@ -134,6 +134,7 @@ export function Milestone2AnalysisPanel() {
   useEffect(() => {
     const lastAnalysisId = typeof window === "undefined" ? null : window.localStorage.getItem(LAST_ANALYSIS_ID_KEY);
     if (!lastAnalysisId) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       void loadClients();
       return;
     }

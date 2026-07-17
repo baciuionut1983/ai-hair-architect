@@ -9,7 +9,7 @@ describe('Role-Based Access Control', () => {
   });
 
   it('returns 401 for user without role', () => {
-    const result = checkRole({ id: 'user-1' }, ['professional']);
+    const result = checkRole({ id: 'user-1', role: '' }, ['professional']);
     expect(result.allowed).toBe(false);
     expect(result.status).toBe(401);
   });

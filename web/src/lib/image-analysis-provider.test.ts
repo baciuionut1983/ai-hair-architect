@@ -44,12 +44,7 @@ describe('Image Analysis Providers', () => {
   describe('ManualOnlyProvider', () => {
     it('returns all unknown values', async () => {
       const provider = new ManualOnlyProvider();
-      const result = await provider.analyze({
-        imageBuffer: Buffer.from('test'),
-        mimeType: 'image/jpeg',
-        userId: 'user',
-        clientId: 'client',
-      });
+      const result = await provider.analyze();
 
       expect(result.result.hairType).toBe('unknown');
       expect(result.result.density).toBe('unknown');
@@ -58,12 +53,7 @@ describe('Image Analysis Providers', () => {
 
     it('indicates manual review required', async () => {
       const provider = new ManualOnlyProvider();
-      const result = await provider.analyze({
-        imageBuffer: Buffer.from('test'),
-        mimeType: 'image/jpeg',
-        userId: 'user',
-        clientId: 'client',
-      });
+      const result = await provider.analyze();
 
       expect(result.warnings).toContain('Manual review required for all fields');
     });
