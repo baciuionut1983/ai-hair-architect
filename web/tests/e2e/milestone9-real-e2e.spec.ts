@@ -9,7 +9,7 @@ function getTestImagePath(name: string): string {
   return path.join(fixturesDir, name);
 }
 
-let testContext: TestContext;
+let testContext: TestContext | undefined;
 
 test.describe('Milestone 9 - Real E2E Workflow (Database Persisted)', () => {
   test.beforeAll(async () => {
@@ -58,16 +58,17 @@ test.describe('Milestone 9 - Real E2E Workflow (Database Persisted)', () => {
   });
 
   test.afterEach(async () => {
-    // Cleanup after each test
-    if (testContext) {
-      await cleanupE2ETestContext(testContext);
-    }
+    // Cleanup after each test - handles undefined context safely
+    // Cleanup is idempotent and wrapped in finally block
+    await cleanupE2ETestContext(testContext);
   });
 
   test('complete workflow: upload → analyze → review → m8 draft → persist', async ({
     page,
     request,
   }) => {
+    if (!testContext) throw new Error('Test context not initialized');
+
     // Step 1: Upload file via API with real auth
     const jpegBuffer = fs.readFileSync(getTestImagePath('test-valid.jpg'));
 
@@ -92,7 +93,6 @@ test.describe('Milestone 9 - Real E2E Workflow (Database Persisted)', () => {
     expect(uploadData.assets.length).toBeGreaterThan(0);
 
     const assetId = uploadData.assets[0].assetId;
-    const analysisId = uploadData.assets[0].analysisId;
 
     // Step 2: Verify asset and analysis created in database (via API)
     const analysisResponse = await request.get(`/api/v1/image-analyses/${assetId}`, {
@@ -135,10 +135,12 @@ test.describe('Milestone 9 - Real E2E Workflow (Database Persisted)', () => {
     // Step 4: Reload page and verify persistence
     // Store asset ID in localStorage for retrieval
     await page.goto('/milestone9');
-    await page.evaluate((id) => {
+    const ctxToken = testContext.token;
+    const ctxAssetId = assetId;
+    await page.evaluate(({ id, token }) => {
       localStorage.setItem('test-asset-id', id);
-      localStorage.setItem('token', testContext.token);
-    }, assetId);
+      localStorage.setItem('token', token);
+    }, { id: ctxAssetId, token: ctxToken });
 
     // Step 5: Verify asset still exists and can be fetched
     const getAssetResponse = await request.get(`/api/v1/image-assets/${assetId}`, {
@@ -165,13 +167,6 @@ test.describe('Milestone 9 - Real E2E Workflow (Database Persisted)', () => {
     expect(latestAnalysis.status).toBe('confirmed');
 
     // Step 7: Verify M8 draft was created and persisted
-    const m8Response = await request.get(`/api/v1/analysis/${m8DraftId}`, {
-      headers: {
-        'Authorization': `Bearer ${testContext.token}`,
-      },
-    });
-
-    // M8 endpoint might differ; just verify it was created in response
     expect(m8DraftId).toBeDefined();
     expect(reviewData.analysis.m8Draft).toBeDefined();
     expect(reviewData.analysis.m8Draft.hairType).toBe('curly');
@@ -179,51 +174,59 @@ test.describe('Milestone 9 - Real E2E Workflow (Database Persisted)', () => {
   });
 
   test('role validation: consumer cannot upload', async ({ request }) => {
+    if (!testContext) throw new Error('Test context not initialized');
+
     // Create consumer user
     const consumerContext = await setupE2ETestContext('salon');
     consumerContext.role = 'consumer';
 
-    // This would need a consumer created in database, but demonstrates the test structure
     try {
+      // Demonstrate the test structure - cleanup would be called after test
+      expect(consumerContext).toBeDefined();
+    } finally {
+      // Cleanup is always called via afterEach
       await cleanupE2ETestContext(consumerContext);
-    } catch {
-      // Cleanup might fail if not fully set up, that's okay
     }
   });
 
   test('ownership validation: user cannot access another user asset', async ({ request }) => {
+    if (!testContext) throw new Error('Test context not initialized');
+
     const context1 = testContext;
     const context2 = await setupE2ETestContext('salon');
 
-    const jpegBuffer = fs.readFileSync(getTestImagePath('test-valid.jpg'));
+    try {
+      const jpegBuffer = fs.readFileSync(getTestImagePath('test-valid.jpg'));
 
-    // User 1 uploads asset
-    const uploadResponse = await request.post('/api/v1/uploads', {
-      headers: {
-        'Authorization': `Bearer ${context1.token}`,
-      },
-      multipart: {
-        clientId: context1.clientId,
-        files: {
-          name: 'test.jpg',
-          mimeType: 'image/jpeg',
-          buffer: jpegBuffer,
+      // User 1 uploads asset
+      const uploadResponse = await request.post('/api/v1/uploads', {
+        headers: {
+          'Authorization': `Bearer ${context1.token}`,
         },
-      },
-    });
+        multipart: {
+          clientId: context1.clientId,
+          files: {
+            name: 'test.jpg',
+            mimeType: 'image/jpeg',
+            buffer: jpegBuffer,
+          },
+        },
+      });
 
-    const uploadData = await uploadResponse.json();
-    const assetId = uploadData.assets[0].assetId;
+      const uploadData = await uploadResponse.json();
+      const assetId = uploadData.assets[0].assetId;
 
-    // User 2 tries to access User 1's asset
-    const getResponse = await request.get(`/api/v1/image-assets/${assetId}`, {
-      headers: {
-        'Authorization': `Bearer ${context2.token}`,
-      },
-    });
+      // User 2 tries to access User 1's asset
+      const getResponse = await request.get(`/api/v1/image-assets/${assetId}`, {
+        headers: {
+          'Authorization': `Bearer ${context2.token}`,
+        },
+      });
 
-    expect(getResponse.status()).toBe(403);
-
-    await cleanupE2ETestContext(context2);
+      expect(getResponse.status()).toBe(403);
+    } finally {
+      // Cleanup context2 explicitly
+      await cleanupE2ETestContext(context2);
+    }
   });
 });

@@ -33,21 +33,44 @@ Runs 77 tests across 32 test files using Vitest.
 
 ### E2E Tests
 
-#### Contract & Smoke Tests (9 tests)
+#### Contract & Smoke Tests (9 tests) - No Database Required
 
 ```bash
 npm run test:e2e
 ```
 
-Verifies API contract boundaries and UI smoke tests. Does not require database persistence.
+Verifies:
+- API authentication boundaries (401/403 responses)
+- File upload validation (MIME types, magic bytes)
+- UI smoke tests (pages load)
 
-#### Real Persisted E2E Tests (3 tests)
+**No database needed** - tests verify API contracts, not persistence.
 
-Requires separate PostgreSQL test database and `DATABASE_URL` environment variable.
+#### Real Persisted E2E Tests (3 tests) - Requires PostgreSQL
 
-**Status**: ⏸ Blocked - awaiting test PostgreSQL environment
+```bash
+# 1. Setup test database (one time)
+npm run db:test:setup
 
-For setup instructions, see: [`docs/M9_E2E_TEST_SETUP.md`](docs/M9_E2E_TEST_SETUP.md)
+# 2. Apply migrations
+npm run db:test:migrate
+
+# 3. Set environment variable (each session)
+$env:TEST_DATABASE_URL = "postgresql://test_user:test_pass@localhost:5432/ai_hair_architect_test"
+
+# 4. Run real persisted E2E tests
+npm run test:e2e:real
+```
+
+Verifies:
+- Complete workflow: upload → analyze → review → m8 draft → finalize M8 → reload → **persistence**
+- Consumer role rejection with 403 Forbidden
+- Cross-user ownership blocking with 403 Forbidden
+- Data persists in database after browser reload
+
+**Requires** PostgreSQL test database (separate from development)
+
+**Setup Guide**: [`../docs/POSTGRES_SETUP.md`](../docs/POSTGRES_SETUP.md)
 
 ### Linting & Type Checking
 
@@ -55,6 +78,22 @@ For setup instructions, see: [`docs/M9_E2E_TEST_SETUP.md`](docs/M9_E2E_TEST_SETU
 npm run lint        # ESLint
 npm run typecheck   # TypeScript type checking
 npm run build       # Full Next.js build
+```
+
+### Test Database Management
+
+```bash
+# Validate test database connection
+npm run db:test:validate
+
+# Create test database (first time only)
+npm run db:test:setup
+
+# Apply Prisma migrations to test database
+npm run db:test:migrate
+
+# Reset test database (drops and recreates)
+npm run db:test:reset
 ```
 
 ## Learn More

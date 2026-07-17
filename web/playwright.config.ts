@@ -12,7 +12,12 @@ export default defineConfig({
     command: "npm.cmd run dev",
     url: "http://127.0.0.1:3000",
     reuseExistingServer: true,
-    timeout: 120000
+    timeout: 120000,
+    env: {
+      // Pass TEST_DATABASE_URL to web server if set (for persistent E2E tests)
+      // Do NOT fall back to DATABASE_URL - test database must be explicitly set
+      DATABASE_URL: process.env.TEST_DATABASE_URL || ""
+    }
   },
   projects: [
     {

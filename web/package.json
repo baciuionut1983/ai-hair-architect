@@ -12,10 +12,15 @@
     "test:watch": "vitest",
     "test:e2e": "playwright test",
     "test:e2e:install": "playwright install --with-deps chromium",
+    "test:e2e:real": "node scripts/validate-test-db.js && playwright test milestone9-real-e2e",
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
-    "prisma:validate": "prisma validate"
+    "prisma:validate": "prisma validate",
+    "db:test:setup": "powershell -ExecutionPolicy Bypass -File scripts\\setup-test-db.ps1",
+    "db:test:validate": "node scripts/validate-test-db.js --verbose",
+    "db:test:migrate": "node scripts/validate-test-db.js && npm run prisma:migrate:deploy",
+    "db:test:reset": "powershell -ExecutionPolicy Bypass -File scripts\\setup-test-db.ps1 -Reset"
   },
   "dependencies": {
     "@prisma/client": "^6.12.0",

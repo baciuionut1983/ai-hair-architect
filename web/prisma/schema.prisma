@@ -28,6 +28,16 @@ model Session {
   @@index([expiresAt])
 }
 
+model Client {
+  id          String   @id @default(uuid())
+  name        String
+  ownerUserId String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([ownerUserId])
+}
+
 model Analysis {
   id                   String   @id
   clientId             String
