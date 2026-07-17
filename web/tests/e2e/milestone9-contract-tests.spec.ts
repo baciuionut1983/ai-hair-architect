@@ -2,6 +2,15 @@ import { test, expect } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
 
+/**
+ * Contract & Smoke Tests for Milestone 9 API and UI
+ *
+ * These tests verify API contracts and UI smoke tests WITHOUT database persistence.
+ * They make real API calls but do not verify that data persists after reload.
+ *
+ * For real persisted E2E tests with database, see milestone9-real-e2e.spec.ts
+ */
+
 const fixturesDir = path.join(__dirname, '../fixtures');
 
 function getTestImagePath(name: string): string {
@@ -94,8 +103,8 @@ test.beforeAll(() => {
   fs.writeFileSync(getTestImagePath('test-mime-spoofed.jpg'), 'text content, not an image');
 });
 
-test.describe('Milestone 9 - Image Analysis E2E', () => {
-  test('professional role uploads successfully', async ({ page }) => {
+test.describe('Milestone 9 - API Contract & UI Smoke Tests', () => {
+  test('professional role UI loads (smoke test)', async ({ page }) => {
     await page.goto('/milestone9');
     await page.evaluate((token) => {
       localStorage.setItem('token', token);
@@ -105,7 +114,7 @@ test.describe('Milestone 9 - Image Analysis E2E', () => {
     await expect(fileInput).toBeVisible();
   });
 
-  test('salon role uploads successfully', async ({ page }) => {
+  test('salon role UI loads (smoke test)', async ({ page }) => {
     await page.goto('/milestone9');
     await page.evaluate((token) => {
       localStorage.setItem('token', token);

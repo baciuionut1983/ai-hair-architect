@@ -20,6 +20,43 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Testing
+
+### Unit Tests
+
+```bash
+npm run test              # Run all unit tests once
+npm run test:watch       # Watch mode
+```
+
+Runs 77 tests across 32 test files using Vitest.
+
+### E2E Tests
+
+#### Contract & Smoke Tests (9 tests)
+
+```bash
+npm run test:e2e
+```
+
+Verifies API contract boundaries and UI smoke tests. Does not require database persistence.
+
+#### Real Persisted E2E Tests (3 tests)
+
+Requires separate PostgreSQL test database and `DATABASE_URL` environment variable.
+
+**Status**: ⏸ Blocked - awaiting test PostgreSQL environment
+
+For setup instructions, see: [`docs/M9_E2E_TEST_SETUP.md`](docs/M9_E2E_TEST_SETUP.md)
+
+### Linting & Type Checking
+
+```bash
+npm run lint        # ESLint
+npm run typecheck   # TypeScript type checking
+npm run build       # Full Next.js build
+```
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
