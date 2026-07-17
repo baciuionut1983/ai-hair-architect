@@ -52,10 +52,82 @@ model Analysis {
   targetShape          String?
   technicalCutPlan     Json?
   clarificationAnswers Json
+  imageAssetId         String?
+  imageAnalysisId      String?
+  m8DraftCreatedAt     DateTime?
+  m8FinalizedAt        DateTime?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+  imageAsset           ImageAsset?         @relation(fields: [imageAssetId], references: [id], onDelete: SetNull)
+  imageAnalysis        ImageAnalysis?      @relation(fields: [imageAnalysisId], references: [id], onDelete: SetNull)
 
   @@index([ownerUserId])
   @@index([clientId])
   @@index([ownerUserId, clientId])
+  @@index([imageAssetId])
+  @@index([imageAnalysisId])
+}
+
+model ImageAsset {
+  id                  String   @id @default(uuid())
+  fileName            String
+  mimeType            String
+  sizeBytes           Int
+  ownerUserId         String
+  clientId            String
+  storagePath         String
+  exifStripped        Boolean  @default(false)
+  normalizedOrientation Int    @default(0)
+  uploadedAt          DateTime @default(now())
+  deletedAt           DateTime?
+  retentionDeletesAt  DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  analyses            ImageAnalysis[]
+  analysisResults     Analysis[]
+
+  @@index([ownerUserId])
+  @@index([clientId])
+  @@index([ownerUserId, clientId])
+  @@index([deletedAt])
+}
+
+model ImageAnalysis {
+  id                  String   @id @default(uuid())
+  assetId             String
+  status              String   @default("draft")
+  providerName        String   @default("manual-only")
+  modelVersion        String   @default("mock-1.0")
+  analysisPayload     Json     @default("{}")
+  confidences         Json     @default("{}")
+  unknownFields       Json     @default("[]")
+  warnings            Json     @default("[]")
+  limitations         Json     @default("[]")
+  consentTimestamp    DateTime @default(now())
+  deletedAt           DateTime?
+  retentionDeletesAt  DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  asset               ImageAsset         @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  reviews             ImageAnalysisReview[]
+  analysisResults     Analysis[]
+
+  @@index([assetId])
+  @@index([status])
+  @@index([deletedAt])
+}
+
+model ImageAnalysisReview {
+  id                  String   @id @default(uuid())
+  analysisId          String
+  reviewedByUserId    String
+  manualCorrections   Json     @default("{}")
+  confirmationTimestamp DateTime?
+  notes               String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  analysis            ImageAnalysis      @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+
+  @@index([analysisId])
+  @@index([reviewedByUserId])
 }
