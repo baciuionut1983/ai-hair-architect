@@ -1,0 +1,69 @@
+import { NextResponse } from "next/server";
+
+import type { AuthRegisterRequest, AuthSessionResponse, UserRole } from "@/lib/contracts";
+import { upsertPersistenceUser, createPersistenceSession } from "@/lib/auth-persistence";
+import { hashPassword } from "@/lib/auth-security";
+import { checkRateLimit, getRequestClientIp } from "@/lib/hardening";
+import { createSession, createUser, findUserByEmail, sanitize } from "@/lib/milestone1-store";
+import { resolveLocale } from "@/lib/i18n";
+
+const allowedRoles = new Set<UserRole>(["professional", "salon", "consumer"]);
+
+export async function POST(request: Request) {
+  const body = (await request.json()) as Partial<AuthRegisterRequest>;
+
+  const email = sanitize(body.email).toLowerCase();
+  const password = sanitize(body.password);
+  const role = body.role;
+  const locale = resolveLocale(body.locale);
+
+  if (!email || !email.includes("@") || password.length < 8 || !role || !allowedRoles.has(role)) {
+    return NextResponse.json({ error: "Invalid register payload." }, { status: 400 });
+  }
+
+  const ip = getRequestClientIp(request);
+  const limiter = checkRateLimit(`auth-register:${ip}:${email}`, 8, 60_000);
+  if (!limiter.allowed) {
+    return NextResponse.json({ error: "Rate limit exceeded." }, { status: 429 });
+  }
+
+  if (findUserByEmail(email)) {
+    return NextResponse.json({ error: "Email already registered." }, { status: 409 });
+  }
+
+  const passwordHash = await hashPassword(password);
+  const user = createUser({ email, password: passwordHash, role, locale });
+  await upsertPersistenceUser({
+    id: user.id,
+    email: user.email,
+    passwordHash: user.passwordHash,
+    role: user.role,
+    locale: user.locale,
+    createdAt: user.createdAt
+  });
+
+  const token = createSession(user.id);
+  await createPersistenceSession(token, user.id);
+
+  const responsePayload: AuthSessionResponse = {
+    token,
+    user: {
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      locale: user.locale,
+      createdAt: user.createdAt
+    }
+  };
+
+  const response = NextResponse.json(responsePayload, { status: 201 });
+  response.cookies.set("aha_session", token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 7 * 24 * 60 * 60
+  });
+
+  return response;
+}

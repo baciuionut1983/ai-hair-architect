@@ -1,0 +1,61 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  role         String
+  locale       String
+  createdAt    DateTime  @default(now())
+  sessions     Session[]
+}
+
+model Session {
+  token     String   @id
+  userId    String
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Analysis {
+  id                   String   @id
+  clientId             String
+  ownerUserId          String
+  goal                 String
+  hairType             String
+  density              String
+  porosity             String
+  phase                String
+  clarificationRound   Int
+  confidenceScore      Float
+  uncertaintyReasons   Json
+  followUpQuestions    Json
+  recommendations      Json
+  safetyNotes          Json
+  faceShape            String?
+  headShape            String?
+  hairLength           String?
+  hairTexture          String?
+  hairCondition        String?
+  growthPattern        String?
+  targetShape          String?
+  technicalCutPlan     Json?
+  clarificationAnswers Json
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([ownerUserId])
+  @@index([clientId])
+  @@index([ownerUserId, clientId])
+}

@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self' http://127.0.0.1:3000 http://localhost:3000 http://127.0.0.1:8000 http://localhost:8000; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; upgrade-insecure-requests" />
+    <meta http-equiv="X-Content-Type-Options" content="nosniff" />
+    <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
+    <title>AI Hair Architect</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" data-i18n="appSubtitle">AI-powered hair co-pilot for professionals</p>
+          <h1 data-i18n="appTitle">AI Hair Architect</h1>
+          <span class="preview-pill" id="previewModeBadge">Preview mode</span>
+        </div>
+        <div class="topbar-actions">
+          <div class="nav-tabs" role="navigation" aria-label="application sections">
+            <button class="nav-btn active" data-nav="home" data-i18n="navHome">Home</button>
+            <button class="nav-btn" data-nav="analysis" data-i18n="navAnalysis">Analysis</button>
+            <button class="nav-btn" data-nav="tutorials" data-i18n="navTutorials">Tutorials</button>
+            <button class="nav-btn" data-nav="plans" data-i18n="navPlans">Plans</button>
+            <button class="nav-btn" data-nav="clients" data-i18n="navClients">Clients</button>
+            <button class="nav-btn" data-nav="academy" data-i18n="navAcademy">Academy</button>
+          </div>
+          <div class="lang-switch" role="group" aria-label="language selector">
+            <button class="lang-btn" data-lang="en">EN</button>
+            <button class="lang-btn" data-lang="ro">RO</button>
+          </div>
+        </div>
+      </header>
+
+      <section class="card auth-card">
+        <div class="card-title-row">
+          <h3 data-i18n="authTitle">Account</h3>
+          <span class="pill" id="authBadge" data-i18n="authBadgeGuest">Guest</span>
+        </div>
+        <div id="secureSessionBanner" class="secure-session-banner">Secure session inactive</div>
+        <div id="accessGateNotice" class="access-gate-notice">
+          <strong id="accessGateTitle">Free preview</strong>
+          <span id="accessGateText">Explore the app and see what it offers. Sign in to unlock analysis, client cards, secure extension and billing.</span>
+          <button class="secondary preview-cta" id="createAccountBtn" type="button">Create account</button>
+        </div>
+        <div id="subscriptionBadge" class="subscription-badge">Plan status: active</div>
+        <div id="subscriptionReminder" class="subscription-reminder">No active reminder</div>
+        <div id="subscriptionCountdown" class="subscription-countdown">Countdown unavailable</div>
+        <div id="directDebitStatus" class="direct-debit-status">Direct debit: not configured</div>
+        <div id="directDebitPanel" class="direct-debit-panel">
+          <div class="card-title-row">
+            <h4>Direct debit</h4>
+            <span id="directDebitPanelBadge" class="pill accent">Pending</span>
+          </div>
+          <div id="directDebitSummary" class="profile-summary">Choose a plan and configure the payment mandate.</div>
+          <div id="billingSummary" class="billing-summary hidden">
+            <div class="billing-summary-item"><strong>Plan:</strong> <span id="billingPlanValue">—</span></div>
+            <div class="billing-summary-item"><strong>Next charge:</strong> <span id="billingChargeValue">—</span></div>
+            <div class="billing-summary-item"><strong>Status:</strong> <span id="billingStatusValue">Pending</span></div>
+          </div>
+          <div id="paymentSuccessBanner" class="payment-success-banner hidden">Payment successful</div>
+          <div id="checkoutStatusBanner" class="payment-success-banner hidden">Preparing checkout…</div>
+          <form id="directDebitForm" class="client-form hidden">
+            <input id="directDebitHolder" type="text" placeholder="Account holder" />
+            <input id="directDebitIban" type="text" placeholder="IBAN" />
+            <label class="checkbox-inline">
+              <input id="directDebitConsent" type="checkbox" />
+              <span>I authorize monthly debit.</span>
+            </label>
+            <button class="primary" type="submit">Save mandate</button>
+          </form>
+          <button id="toggleDirectDebitBtn" class="secondary" type="button">Manage direct debit</button>
+        </div>
+        <button id="renewPlanBtn" class="secondary hidden" type="button">Renew now</button>
+        <div class="auth-grid">
+          <div class="auth-form">
+            <input id="authEmail" type="email" placeholder="Email" data-i18n-placeholder="authEmailPlaceholder" />
+            <input id="authPassword" type="password" placeholder="Password" data-i18n-placeholder="authPasswordPlaceholder" />
+            <select id="authRole">
+              <option value="professional" data-i18n="authRoleProfessional">Professional stylist</option>
+              <option value="salon" data-i18n="authRoleSalon">Salon owner</option>
+              <option value="consumer" data-i18n="authRoleConsumer">Home user</option>
+            </select>
+            <div class="auth-actions">
+              <button class="primary" id="loginBtn" data-i18n="loginButton">Sign in</button>
+              <button class="secondary" id="guestDemoBtn" type="button">Try as guest</button>
+              <button class="secondary" id="logoutBtn" data-i18n="logoutButton">Log out</button>
+            </div>
+          </div>
+          <div id="authMessage" class="profile-summary" data-i18n="authMessageDefault">Sign in to save your profile, plan and client cards.</div>
+        </div>
+      </section>
+
+      <section class="hero" id="home">
+        <div class="hero-copy">
+          <h2 data-i18n="heroTitle">Your trusted hair architect in your pocket</h2>
+          <p data-i18n="heroText">Analyze photos, build color plans, compare techniques, access product links and keep client records in one place.</p>
+          <div class="cta-row">
+            <button class="primary" id="analyzeBtn" data-i18n="analyzeButton">Analyze client</button>
+            <button class="secondary" id="photoBtn" data-i18n="photoButton">Capture photo</button>
+            <input id="photoInput" type="file" accept="image/*" capture="environment" hidden />
+          </div>
+        </div>
+        <div class="hero-card">
+          <p class="card-label" data-i18n="photoLabel">Photo & facial analysis</p>
+          <div id="photoPreview" class="photo-preview">
+            <span data-i18n="photoPlaceholder">Upload or capture a client photo to begin</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <div class="card-title-row">
+            <h3 data-i18n="profileTitle">User profile</h3>
+            <span class="pill" data-i18n="profilePill">Adaptive mode</span>
+          </div>
+          <div class="segmented" id="modeSelectors">
+            <button class="mode-btn active" data-mode="professional" data-i18n="modeProfessional">Professional stylist</button>
+            <button class="mode-btn" data-mode="salon" data-i18n="modeSalon">Salon owner</button>
+            <button class="mode-btn" data-mode="consumer" data-i18n="modeConsumer">Home user</button>
+          </div>
+          <div id="profileSummary" class="profile-summary" data-i18n="profileSummaryDefault">Choose your mode to see the most useful workflow.</div>
+        </article>
+        <article class="card">
+          <div class="card-title-row">
+            <h3 data-i18n="starterTitle">Quick start guide</h3>
+            <span class="pill accent" data-i18n="starterPill">Smart workflow</span>
+          </div>
+          <div class="checklist">
+            <div class="check-item">1. <span data-i18n="start1">Upload or capture the client photo.</span></div>
+            <div class="check-item">2. <span data-i18n="start2">Choose the hair type, density and goal.</span></div>
+            <div class="check-item">3. <span data-i18n="start3">Review the recommended color and cut plan.</span></div>
+            <div class="check-item">4. <span data-i18n="start4">Save the client card and share products or treatments.</span></div>
+          </div>
+        </article>
+        <article class="card guest-demo-card">
+          <div class="card-title-row">
+            <h3>Guest demo</h3>
+            <span class="pill">Preview only</span>
+          </div>
+          <p class="guest-demo-text">Browse the concept, review the workflow and see the premium experience. Create an account to unlock analysis, client records and billing.</p>
+        </article>
+      </section>
+
+      <section class="grid" id="analysis">
+        <article class="card">
+          <div class="card-title-row">
+            <h3 data-i18n="analysisTitle">Hair analysis</h3>
+            <span class="pill" data-i18n="analysisPill">Professional mode</span>
+          </div>
+          <label>
+            <span data-i18n="hairTypeLabel">Hair type</span>
+            <select id="hairType">
+              <option value="coarse" data-i18n="optionCoarse">Thick hair</option>
+              <option value="medium" data-i18n="optionMedium">Normal hair</option>
+              <option value="fine" data-i18n="optionFine">Thin hair</option>
+            </select>
+          </label>
+          <label>
+            <span data-i18n="densityLabel">Density</span>
+            <select id="density">
+              <option value="low" data-i18n="optionLow">Sparse hair</option>
+              <option value="medium" data-i18n="optionDensityMedium">Normal hair</option>
+              <option value="high" data-i18n="optionHigh">Dense hair</option>
+            </select>
+          </label>
+          <label>
+            <span data-i18n="porosityLabel">Porosity</span>
+            <select id="porosity">
+              <option value="high" data-i18n="optionPorosityHigh">Rough / porous hair</option>
+              <option value="low" data-i18n="optionPorosityLow">Fine hair</option>
+              <option value="medium" data-i18n="optionPorosityMedium">Normal hair</option>
+            </select>
+          </label>
+          <label>
+            <span data-i18n="baseColorLabel">Existing color</span>
+            <select id="baseColor">
+              <option value="light" data-i18n="optionLight">Light blonde</option>
+              <option value="medium" data-i18n="optionMediumBase">Medium brown</option>
+              <option value="dark" data-i18n="optionDark">Dark brown / black</option>
+            </select>
+          </label>
+          <label>
+            <span data-i18n="goalLabel">Desired result</span>
+            <select id="goal">
+              <option value="gloss" data-i18n="optionGloss">Gloss / refresh</option>
+              <option value="lighten" data-i18n="optionLighten">Lighten</option>
+              <option value="cover" data-i18n="optionCover">Cover gray</option>
+            </select>
+          </label>
+        </article>
+
+        <article class="card">
+          <div class="card-title-row">
+            <h3 data-i18n="recommendationTitle">Recommendation</h3>
+            <span class="pill accent" data-i18n="recommendationPill">Best fit</span>
+          </div>
+          <div id="recommendationOutput" class="recommendation-output" data-i18n="recommendationDefault">
+            Select the hair parameters and press analyze to receive the most feasible color and cut plan.
+          </div>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <div class="card-title-row">
+            <h3 data-i18n="techniqueTitle">Techniques</h3>
+            <span class="pill" data-i18n="techniquePill">Guided actions</span>
+          </div>
+          <ul class="list">
+            <li data-i18n="tech1">Coloring techniques: gloss, demi-permanent, permanent, balayage, foil, root shadow.</li>
+            <li data-i18n="tech2">Cutting techniques: texturizing, layering, precision bob, deconstructed shapes.</li>
+            <li data-i18n="tech3">Lightening advice: when to bleach, when to avoid it, and at which level to place the lift.</li>
+          </ul>
+        </article>
+        <article class="card">
+          <div class="card-title-row">
+            <h3 data-i18n="productsTitle">Products & brands</h3>
+            <span class="pill accent" data-i18n="productsPill">Marketplace</span>
+          </div>
+          <div class="chip-row">
+            <span class="chip">Wella</span>
+            <span class="chip">L'Oréal Professionnel</span>
+            <span class="chip">Matrix</span>
+            <span class="chip">Redken</span>
+          </div>
+          <p data-i18n="productsText">Retailers can publish products, treatments and local stock links with a free basic profile and premium visibility.</p>
+        </article>
+      </section>
+
+      <section class="grid" id="clients">
+        <article class="card">
+          <div class="card-title-row">
+            <h3 data-i18n="productsGuideTitle">Recommended products</h3>
+            <span class="pill accent" data-i18n="productsGuidePill">Shortlist</span>
+          </div>
+          <div class="product-grid">
+            <div class="product-card" data-product="Wella Color Fresh">
+              <strong data-i18n="product1Title">Wella Color Fresh</strong>
+              <p data-i18n="product1Desc">Gloss refresh with vivid shine for soft tone updates.</p>
+              <button class="product-btn" data-i18n="saveProduct">Save</button>
+            </div>
+            <div class="product-card" data-product="L'Oréal Smartbond">
+              <strong data-i18n="product2Title">L'Oréal Smartbond</strong>
+              <p data-i18n="product2Desc">Bond repair for color-treated hair and gentle lifting services.</p>
+              <button class="product-btn" data-i18n="saveProduct">Save</button>
+            </div>
+            <div class="product-card" data-product="Redken Acidic Bonding">
+              <strong data-i18n="product3Title">Redken Acidic Bonding</strong>
+              <p data-i18n="product3Desc">Treatment focused on strength and healthy finish after lightening.</p>
+              <button class="product-btn" data-i18n="saveProduct">Save</button>
+            </div>
+          </div>
+          <div id="shortlistSummary" class="profile-summary" data-i18n="shortlistDefault">Tap Save to build a local shortlist of products.</div>
+        </article>
+        <article class="card">
+          <div class="card-title-row">
+            <h3 data-i18n="clientTitle">Client records</h3>
+            <span class="pill" data-i18n="clientPill">Professional CRM</span>
+          </div>
+          <form id="clientForm" class="client-form">
+            <input type="text" id="clientName" name="name" placeholder="Client name" data-i18n-placeholder="clientNamePlaceholder" />
+            <input type="text" id="clientGoal" name="goal" placeholder="Goal" data-i18n-placeholder="clientGoalPlaceholder" />
+            <input type="text" id="clientColor" name="color" placeholder="Current color" data-i18n-placeholder="clientColorPlaceholder" />
+            <textarea id="clientNotes" name="notes" rows="3" placeholder="Notes" data-i18n-placeholder="clientNotesPlaceholder"></textarea>
+            <button class="primary" type="submit" data-i18n="saveClientButton">Save client card</button>
+          </form>
+          <div id="clientList" class="client-list"></div>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <div class="card-title-row">
+            <h3 data-i18n="calendarTitle">Calendar & appointments</h3>
+            <span class="pill accent" data-i18n="calendarPill">Booking</span>
+          </div>
+          <div class="calendar-preview">
+            <div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div>
+            <div class="busy">09:00</div><div>11:00</div><div class="busy">14:00</div><div>16:00</div>
+          </div>
+        </article>
+        <article class="card">
+          <div class="card-title-row">
+            <h3 data-i18n="educationTitle">Learning support</h3>
+            <span class="pill" data-i18n="educationPill">Guided tips</span>
+          </div>
+          <ul class="list">
+            <li data-i18n="education1">Use the app as a daily decision support tool for consultations, color changes and styling choices.</li>
+            <li data-i18n="education2">Track what worked, what did not, and keep a clear treatment history for every client.</li>
+          </ul>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="card wide">
+          <div class="card-title-row">
+            <h3 data-i18n="communityTitle">Community chat</h3>
+            <span class="pill" data-i18n="communityPill">Editorial & support</span>
+          </div>
+          <div class="chat-preview">
+            <div class="bubble">✨ <span data-i18n="chatBubble1">Share editorial inspiration, before/after photos and color recipes.</span></div>
+            <div class="bubble alt">💬 <span data-i18n="chatBubble2">Discuss drying techniques, tool selection and treatment routines together.</span></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="card wide">
+          <div class="card-title-row">
+            <h3 data-i18n="extensionTitle">In-app extension</h3>
+            <span class="pill accent" data-i18n="extensionPill">Embedded module</span>
+          </div>
+          <div class="extension-toolbar">
+            <button class="secondary" id="openExtensionBtn" type="button">Open secure extension</button>
+            <button class="secondary" id="hideExtensionBtn" type="button">Hide extension</button>
+            <button class="secondary" id="clearSessionBtn" type="button">Clear session data</button>
+          </div>
+          <div class="extension-yield">
+            <p class="extension-hint">Open the companion workspace only after confirmation to access the protected studio tools.</p>
+            <div id="securityNotice" class="security-notice" role="status">Authentication required before opening the secure extension.</div>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid" id="tutorials">
+        <article class="card wide">
+          <div class="card-title-row">
+            <h3 data-i18n="tutorialsTitle">Technique tutorials</h3>
+            <span class="pill" data-i18n="tutorialsPill">Video + step-by-step</span>
+          </div>
+          <div class="tutorial-grid">
+            <div class="tutorial-card">
+              <div class="tutorial-media">
+                <iframe src="https://www.youtube.com/embed/f2JYh1J3dw8" title="Balayage tutorial" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+              </div>
+              <p class="video-fallback">Dacă video nu pornește, deschide tutorialul direct: <a href="https://www.youtube.com/results?search_query=balayage+tutorial+hair+color" target="_blank" rel="noopener noreferrer">Balayage pe YouTube</a></p>
+              <h4 data-i18n="balayageTitle">Balayage / painted color</h4>
+              <p class="tutorial-desc" data-i18n="balayageDesc">Create soft dimension by hand-painting lightener onto the lengths and ends, preserving the root area for a natural grow-out.</p>
+              <ol class="steps">
+                <li data-i18n="balayageStep1">Section the hair and identify the natural movement zones.</li>
+                <li data-i18n="balayageStep2">Apply the product with a freehand motion, keeping the saturation lighter at the mid-lengths and ends.</li>
+                <li data-i18n="balayageStep3">Process, rinse and tone to refine the final color result.</li>
+              </ol>
+            </div>
+
+            <div class="tutorial-card">
+              <div class="tutorial-media">
+                <iframe src="https://www.youtube.com/embed/5r4zNCYmdz8" title="Root shadow tutorial" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+              </div>
+              <p class="video-fallback">Dacă video nu pornește, deschide tutorialul direct: <a href="https://www.youtube.com/results?search_query=root+shadow+hair+tutorial" target="_blank" rel="noopener noreferrer">Root shadow pe YouTube</a></p>
+              <h4 data-i18n="shadowTitle">Root shadow / root blend</h4>
+              <p class="tutorial-desc" data-i18n="shadowDesc">Blend the regrowth area softly while keeping a clean transition from root to lengths.</p>
+              <ol class="steps">
+                <li data-i18n="shadowStep1">Pre-lighten or prepare the regrowth area only if the client needs a lift.</li>
+                <li data-i18n="shadowStep2">Apply a darker tone close to the root and fade it gradually toward the lengths.</li>
+                <li data-i18n="shadowStep3">Process, rinse and finish with a shine treatment for a seamless result.</li>
+              </ol>
+            </div>
+
+            <div class="tutorial-card">
+              <div class="tutorial-media">
+                <iframe src="https://www.youtube.com/embed/0qQkN3B4lSI" title="Precision bob tutorial" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+              </div>
+              <p class="video-fallback">Dacă video nu pornește, deschide tutorialul direct: <a href="https://www.youtube.com/results?search_query=precision+bob+haircut+tutorial" target="_blank" rel="noopener noreferrer">Precision bob pe YouTube</a></p>
+              <h4 data-i18n="bobTitle">Precision bob</h4>
+              <p class="tutorial-desc" data-i18n="bobDesc">Create a clean outline with controlled shape, strong lines and a balanced silhouette for a polished finish.</p>
+              <ol class="steps">
+                <li data-i18n="bobStep1">Create a precise center or side parting and establish the guideline.</li>
+                <li data-i18n="bobStep2">Work section by section, keeping the tension consistent and the line sharp.</li>
+                <li data-i18n="bobStep3">Finish with a detailed dry cut and refine the movement around the perimeter.</li>
+              </ol>
+            </div>
+
+            <div class="tutorial-card">
+              <div class="tutorial-media">
+                <iframe src="https://www.youtube.com/embed/G6N2xuJv0nM" title="Layering tutorial" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+              </div>
+              <p class="video-fallback">Dacă video nu pornește, deschide tutorialul direct: <a href="https://www.youtube.com/results?search_query=layered+haircut+tutorial" target="_blank" rel="noopener noreferrer">Layered cut pe YouTube</a></p>
+              <h4 data-i18n="layerTitle">Layered cut / internal movement</h4>
+              <p class="tutorial-desc" data-i18n="layerDesc">Build shape through graduation and internal layering so the cut moves naturally and gives volume where needed.</p>
+              <ol class="steps">
+                <li data-i18n="layerStep1">Establish the base line and the desired length distribution.</li>
+                <li data-i18n="layerStep2">Create vertical sections and distribute weight from the crown to the ends.</li>
+                <li data-i18n="layerStep3">Refine the internal shape with point cutting and check the silhouette from every angle.</li>
+              </ol>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid" id="plans">
+        <article class="card">
+          <div class="card-title-row">
+            <h3 data-i18n="monetizationTitle">Monetization for professionals</h3>
+            <span class="pill accent" data-i18n="monetizationPill">Revenue model</span>
+          </div>
+          <ul class="list">
+            <li data-i18n="monetization1">Monthly subscription for stylists: full access to techniques, client CRM, color menus and premium content.</li>
+            <li data-i18n="monetization2">Retail partner plan: shops can list products, local stock and advertise to nearby professionals.</li>
+            <li data-i18n="monetization3">Featured tutorials and promotional placements for salons and product brands.</li>
+          </ul>
+        </article>
+        <article class="card">
+          <div class="card-title-row">
+            <h3 data-i18n="casualTitle">For non-professionals</h3>
+            <span class="pill" data-i18n="casualPill">Limited access</span>
+          </div>
+          <ul class="list">
+            <li data-i18n="casual1">Pay-per-use access for color and cut ideas without full professional demonstration tools.</li>
+            <li data-i18n="casual2">Educational content, inspiration and guided styling advice for everyday users.</li>
+            <li data-i18n="casual3">Optional premium upgrade for more detailed plans and deeper analysis.</li>
+          </ul>
+        </article>
+      </section>
+
+      <section class="grid" id="academy">
+        <article class="card wide academy-card">
+          <div class="card-title-row">
+            <h3>Biblioteca Profesionala - Organizare pe Rubrici</h3>
+            <span class="pill accent">Structura salon</span>
+          </div>
+
+          <div class="academy-block">
+            <h4>1) Rubrica tunsori dama</h4>
+            <p>Organizare de la simplu la avansat, pentru consultare rapida in lucru.</p>
+            <ul class="list">
+              <li>Tunsori scurte dama: pixie clasic, pixie texturat, bixie (bob + pixie), crop feminin.</li>
+              <li>Tunsori medii: bob clasic, bob drept, bob asimetric, long bob, french bob.</li>
+              <li>Tunsori moderne: wolf cut, butterfly cut, shag modern, mixuri stratificate.</li>
+              <li>Tunsori par lung: straturi lungi, U shape, V shape, framing fata, texturare varfuri.</li>
+              <li>Tunsori undercut dama: undercut discret, lateral, undercut creativ cu design.</li>
+            </ul>
+          </div>
+
+          <div class="academy-block">
+            <h4>2) Rubrica tunsori barbatesti</h4>
+            <ul class="list">
+              <li>Toate tipurile de fade: low fade, mid fade, high fade, skin fade, drop fade, burst fade, taper fade.</li>
+              <li>Modele clasice: crew cut, buzz cut, side part, pompadour, quiff, slick back.</li>
+              <li>Modele moderne: crop texturat, french crop, mullet modern, faux hawk, fringe.</li>
+              <li>Combinatii: fade + barba, taper + textura, blend pe forme diferite ale capului.</li>
+            </ul>
+          </div>
+
+          <div class="academy-block">
+            <h4>3) Rubrica colorare (vopsit)</h4>
+            <ul class="list">
+              <li>Tehnici de baza: vopsit total, vopsit radacina, refresh lungimi, neutralizare reflexe.</li>
+              <li>Analiza culorii: baza naturala, nivel, reflex, istoric chimic, tinta finala.</li>
+              <li>Tehnici avansate: balayage, folii/suvite, airtouch, babylights, root shadow, color melt.</li>
+              <li>Par blond: vopsit blond, tonare blond, corectare galben/portocaliu, mentenanta acasa.</li>
+              <li>Catalog coduri culori: structurare pe brand, serie naturala, cenusiu, auriu, cupru, roscat, violet, corectori.</li>
+            </ul>
+            <p class="academy-note">Branduri de urmarit in catalog: game italiene clasice, game profesionale consacrate si Revlon. Se poate extinde cu stoc local si puncte de achizitie pe oras.</p>
+
+            <div class="academy-matrix-wrap">
+              <table class="academy-matrix" aria-label="Matrice coduri culori pe branduri">
+                <thead>
+                  <tr>
+                    <th>Brand</th>
+                    <th>Naturale</th>
+                    <th>Cenusii</th>
+                    <th>Aurii</th>
+                    <th>Cupru/Rosu</th>
+                    <th>Special blond/Corectori</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>Wella Koleston</td>
+                    <td>0/00</td>
+                    <td>1</td>
+                    <td>3</td>
+                    <td>4/5/6</td>
+                    <td>12, mixtoane</td>
+                  </tr>
+                  <tr>
+                    <td>L'Oréal Majirel</td>
+                    <td>.0</td>
+                    <td>.1</td>
+                    <td>.3</td>
+                    <td>.4/.6</td>
+                    <td>High Lift, Mix</td>
+                  </tr>
+                  <tr>
+                    <td>Revlonissimo</td>
+                    <td>.0</td>
+                    <td>.1</td>
+                    <td>.3</td>
+                    <td>.4/.6</td>
+                    <td>Super Blondes, Mix</td>
+                  </tr>
+                  <tr>
+                    <td>Alfaparf Evolution</td>
+                    <td>.0</td>
+                    <td>.1</td>
+                    <td>.3</td>
+                    <td>.4/.6</td>
+                    <td>11/12, corectori</td>
+                  </tr>
+                  <tr>
+                    <td>Fanola / Echos / Kaaral</td>
+                    <td>.0</td>
+                    <td>.1</td>
+                    <td>.3</td>
+                    <td>.4/.6</td>
+                    <td>Special blonde, corectori</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="academy-note">Nota: seriile exacte difera in functie de gama fiecarui brand. Verifica intotdeauna catalogul tehnic oficial inainte de formula finala.</p>
+
+            <div class="academy-suppliers">
+              <h5>Adrese locale pentru achizitie vopsea/oxidant (adaugare rapida)</h5>
+              <form id="supplierForm" class="supplier-form">
+                <input id="supplierCity" type="text" placeholder="Oras" required />
+                <input id="supplierName" type="text" placeholder="Nume magazin / distribuitor" required />
+                <input id="supplierAddress" type="text" placeholder="Adresa" required />
+                <input id="supplierPhone" type="text" placeholder="Telefon" />
+                <input id="supplierUrl" type="url" placeholder="Website (optional)" />
+                <button class="primary" type="submit">Salveaza furnizor local</button>
+              </form>
+              <div id="supplierList" class="supplier-list"></div>
+            </div>
+          </div>
+
+          <div class="academy-block">
+            <h4>4) Rubrica decolorarea parului</h4>
+            <ul class="list">
+              <li>Explicatii: ce inseamna decolorarea, nivele de ridicare si risc structural.</li>
+              <li>Cand facem decolorare: pentru trecere la nuante mult mai deschise sau indepartare pigment puternic.</li>
+              <li>Cand evitam: fir foarte degradat, elasticitate slaba, scalp sensibil, istoric chimic agresiv.</li>
+              <li>Pentru ce culori e necesara: blonduri reci/foarte deschise, pasteluri, corectii de culoare dificile.</li>
+              <li>Pentru ce culori nu e necesara: inchidere de ton, reflexe apropiate de baza, refresh de nuanta.</li>
+              <li>Analiza firului: test suvita, porozitate, grosime, densitate, rezistenta la intindere.</li>
+            </ul>
+          </div>
+
+          <div class="academy-block">
+            <h4>5) Rubrica coafuri</h4>
+            <ul class="list">
+              <li>Coafuri de ocazie/seara: coc elegant, coc texturat, hollywood waves, pony glam, impletituri elegante.</li>
+              <li>Coafuri de zi cu zi: brushing natural, beach waves, pony clean, half-up simplu, volum rapid la radacina.</li>
+              <li>Ghid de selectie: forma fetei, textura parului, rezistenta coafurii, timp de executie.</li>
+            </ul>
+          </div>
+
+          <div class="academy-block">
+            <h4>6) Rubrica extensii de par</h4>
+            <ul class="list">
+              <li>Tipuri de extensii: clip-in, tape-in, keratina, micro-ring, weft/cusut.</li>
+              <li>Criterii de alegere: densitate par client, grosime fir, sensibilitate scalp, stil de viata.</li>
+              <li>Potrivire culoare: matching pe lungime, radacina si varf pentru blend natural.</li>
+              <li>Mentenanta: spalare corecta, periere, protectie termica si interval de intretinere.</li>
+            </ul>
+          </div>
+
+          <div class="academy-block">
+            <h4>7) Rubrica tratamente hidratare</h4>
+            <ul class="list">
+              <li>Cu clatire: masca hidratanta, balsam intensiv, tratament nutritiv saptamanal.</li>
+              <li>Fara clatire: leave-in cream, spray hidratant, serum varfuri, protectie anti-frizz.</li>
+              <li>Cand se aplica: dupa sampon pe par prosopit, in functie de porozitate si grosime.</li>
+              <li>Plan hidratrare: evaluare porozitate, protocol pe 4-8 saptamani, reevaluare periodica.</li>
+            </ul>
+          </div>
+
+          <div class="academy-block">
+            <h4>8) Rubrica tratamente cu keratina</h4>
+            <ul class="list">
+              <li>Tipuri de tratamente: keratina pentru netezire, keratina pentru reducere frizz, tratamente combinate.</li>
+              <li>Cand se recomanda: fir gros, poros, rebel, cu tendinta de electrizare si lipsa de control.</li>
+              <li>Cand evitam: par foarte degradat, scalp sensibil/iritat, incompatibilitate cu istoric chimic recent.</li>
+              <li>Protocol: analiza firului, test de suvita, aplicare controlata, sigilare termica, ingrijire post-tratament.</li>
+              <li>Intretinere: sampon fara sulfati, masca blanda, protectie termica si respectarea intervalului de refacere.</li>
+            </ul>
+          </div>
+
+          <div class="academy-block">
+            <h4>9) Rubrica spalarea parului, tipuri de par si sampoane</h4>
+            <ul class="list">
+              <li>Tipuri de par: normal, uscat, gras, mixt, sensibil, vopsit/decolorat, cret, fin, gros.</li>
+              <li>Sampoane recomandate: pentru hidratare, volum, protectie culoare, scalp sensibil, detox.</li>
+              <li>Frecventa spalare: adaptata la scalp si rutina clientului, evitand supra-spalarea agresiva.</li>
+              <li>Tehnica corecta: dublu sampon bland, masaj scalp, clatire completa si temperatura moderata.</li>
+            </ul>
+          </div>
+
+          <div class="academy-block">
+            <h4>10) Produse de ingrijire dupa spalare</h4>
+            <ul class="list">
+              <li>Produse recomandate: leave-in, protectie termica, crema anti-frizz, serum varfuri, spray volum.</li>
+              <li>Dozaj corect: aplicare pe lungimi/varfuri, fara incarcare la radacina.</li>
+              <li>Ordine aplicare: leave-in, protectie termica, produs de styling, finisaj.</li>
+              <li>Personalizare: selectie produs in functie de textura, porozitate si rezultat dorit.</li>
+            </ul>
+          </div>
+
+          <div class="academy-block">
+            <h4>11) Rubrica uscare si aranjare</h4>
+            <ul class="list">
+              <li>Cum usuci parul: prosopare blanda, pre-uscare la flux mediu, sectiuni clare, directie corecta a aerului.</li>
+              <li>Cum il aranjezi: brush controlat, ondulare cu protectie, netezire pe suvite mici, fixare adaptata.</li>
+              <li>Reguli de protectie: temperatura potrivita, distanta corecta fata de fir, pauze pentru par sensibil.</li>
+            </ul>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="card wide billing-section-card">
+          <div class="card-title-row">
+            <h3>Billing & payments</h3>
+            <span class="pill accent" id="billingSectionBadge">Active</span>
+          </div>
+          <div class="billing-timeline">
+            <div class="billing-step active">
+              <span class="billing-dot"></span>
+              <div>
+                <strong>Mandate created</strong>
+                <p>Direct debit authorization saved for the selected plan.</p>
+              </div>
+            </div>
+            <div class="billing-step active">
+              <span class="billing-dot"></span>
+              <div>
+                <strong>Next invoice</strong>
+                <p>Monthly charge scheduled for the next billing date.</p>
+              </div>
+            </div>
+            <div class="billing-step">
+              <span class="billing-dot"></span>
+              <div>
+                <strong>Payment receipt</strong>
+                <p>Confirmation appears immediately after successful debit.</p>
+              </div>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid plan-grid">
+        <article class="card plan-card">
+          <h3 data-i18n="planFreeTitle">Free</h3>
+          <div class="price">$0</div>
+          <ul class="list">
+            <li data-i18n="planFree1">Core inspiration and basic color ideas.</li>
+            <li data-i18n="planFree2">One saved client profile and a small product shortlist.</li>
+          </ul>
+          <button class="plan-btn" data-plan="free" data-i18n="planFreeButton">Choose Free</button>
+          <button class="secondary plan-inline-btn" data-plan="free-direct" type="button">Direct debit</button>
+        </article>
+        <article class="card plan-card featured-plan">
+          <h3 data-i18n="planProTitle">Pro</h3>
+          <div class="price">$19<span data-i18n="planMonth">/mo</span></div>
+          <ul class="list">
+            <li data-i18n="planPro1">Full access to tutorials, CRM and advanced recommendations.</li>
+            <li data-i18n="planPro2">Unlimited client cards and premium marketplace placement.</li>
+          </ul>
+          <button class="plan-btn" data-plan="pro" data-i18n="planProButton">Choose Pro</button>
+          <button class="secondary plan-inline-btn" data-plan="pro-direct" type="button">Direct debit</button>
+        </article>
+        <article class="card plan-card">
+          <h3 data-i18n="planSalonTitle">Salon</h3>
+          <div class="price">$49<span data-i18n="planMonth">/mo</span></div>
+          <ul class="list">
+            <li data-i18n="planSalon1">Salon-wide booking, staff profiles and local retailer integration.</li>
+            <li data-i18n="planSalon2">Priority support and promotional visibility in the community feed.</li>
+          </ul>
+          <button class="plan-btn" data-plan="salon" data-i18n="planSalonButton">Choose Salon</button>
+          <button class="secondary plan-inline-btn" data-plan="salon-direct" type="button">Direct debit</button>
+        </article>
+      </section>
+
+      <section class="grid">
+        <article class="card wide">
+          <div class="card-title-row">
+            <h3 data-i18n="mensTitle">Men's haircuts & style guides</h3>
+            <span class="pill" data-i18n="mensPill">Video demonstrations</span>
+          </div>
+          <div class="tutorial-grid">
+            <div class="tutorial-card">
+              <div class="tutorial-media">
+                <iframe src="https://www.youtube.com/embed/8V7oH9mSifY" title="Classic taper" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+              </div>
+              <p class="video-fallback">Dacă video nu pornește, deschide tutorialul direct: <a href="https://www.youtube.com/results?search_query=classic+taper+haircut+tutorial" target="_blank" rel="noopener noreferrer">Classic taper pe YouTube</a></p>
+              <h4 data-i18n="taperTitle">Classic taper</h4>
+              <p class="tutorial-desc" data-i18n="taperDesc">A clean and timeless cut that creates a sharp transition from the sides to the top.</p>
+              <ol class="steps">
+                <li data-i18n="taperStep1">Start with a strong sectioning line and a clear guide at the temple.</li>
+                <li data-i18n="taperStep2">Blend gradually from the shortest length at the sides to a longer top.</li>
+                <li data-i18n="taperStep3">Finish with a precise line-up and light texturizing on the crown.</li>
+              </ol>
+            </div>
+            <div class="tutorial-card">
+              <div class="tutorial-media">
+                <iframe src="https://www.youtube.com/embed/YH3mIhA0pQ4" title="Modern crop" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>
+              </div>
+              <p class="video-fallback">Dacă video nu pornește, deschide tutorialul direct: <a href="https://www.youtube.com/results?search_query=modern+crop+haircut+tutorial" target="_blank" rel="noopener noreferrer">Modern crop pe YouTube</a></p>
+              <h4 data-i18n="cropTitle">Modern crop</h4>
+              <p class="tutorial-desc" data-i18n="cropDesc">A strong structured crop with volume on top and softer edges around the sides.</p>
+              <ol class="steps">
+                <li data-i18n="cropStep1">Create a short, balanced outline around the perimeter.</li>
+                <li data-i18n="cropStep2">Leave more weight on top and remove excess bulk with scissor-over-comb work.</li>
+                <li data-i18n="cropStep3">Use a light finish with styling cream to create a clean, modern texture.</li>
+              </ol>
+            </div>
+          </div>
+        </article>
+      </section>
+    </div>
+    <div id="confirmModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="confirmModalTitle">
+      <div class="modal-card">
+        <p class="modal-title" id="confirmModalTitle">Confirm action</p>
+        <p class="modal-body" id="confirmModalBody">Save this client card locally?</p>
+        <div class="modal-actions">
+          <button class="secondary" id="confirmCancelBtn" type="button">Cancel</button>
+          <button class="primary" id="confirmConfirmBtn" type="button">Continue</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="extensionModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="extensionModalTitle">
+      <div class="extension-modal-card">
+        <div class="card-title-row">
+          <h3 id="extensionModalTitle">Secure extension</h3>
+          <button class="icon-btn" id="closeExtensionModalBtn" type="button" aria-label="Close extension">×</button>
+        </div>
+        <div class="extension-frame modal-frame">
+          <iframe id="extensionModalIframe" title="Secure extension" loading="lazy" referrerpolicy="strict-origin-when-cross-origin" sandbox="allow-scripts allow-forms allow-same-origin"></iframe>
+        </div>
+      </div>
+    </div>
+
+    <script src="script.js"></script>
+  </body>
+</html>

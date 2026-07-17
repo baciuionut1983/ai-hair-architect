@@ -1,0 +1,2 @@
+export const ANALYSIS_READY_THRESHOLD = 0.75;
+export const MAX_CLARIFICATION_ROUNDS = 2;
