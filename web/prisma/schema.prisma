@@ -141,3 +141,20 @@ model ImageAnalysisReview {
   @@index([analysisId])
   @@index([reviewedByUserId])
 }
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  actorUserId   String   @db.Uuid
+  action        String
+  resourceType  String
+  resourceId    String?
+  status        String
+  metadata      Json
+  createdAt     DateTime @default(now()) @db.Timestamp(6)
+
+  @@index([actorUserId])
+  @@index([createdAt])
+  @@index([action])
+  @@index([status])
+  @@index([actorUserId, createdAt])
+}

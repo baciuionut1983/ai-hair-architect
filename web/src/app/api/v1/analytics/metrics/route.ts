@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AnalyticsQueryBuilder, AnalyticsQueryLimitExceededError } from '@/lib/analytics-query-builder';
+import { AuditLogger } from '@/lib/audit-logger';
+import { extractAuditContext } from '@/middleware/audit-context';
 import {
   validateAnalyticsAccess,
   authorizeAnalyticsQuery,
@@ -8,6 +10,9 @@ import {
 } from '@/middleware/analytics-auth';
 
 export async function GET(req: NextRequest) {
+  const startTime = Date.now();
+  const auditContext = extractAuditContext(req);
+
   try {
     const user = await validateAnalyticsAccess(req);
 
@@ -50,6 +55,23 @@ export async function GET(req: NextRequest) {
       scope,
     });
 
+    const latencyMs = Date.now() - startTime;
+
+    AuditLogger.log({
+      actorUserId: user.id,
+      action: 'query_metrics',
+      resourceType: 'analytics',
+      resourceId: `${dateFrom.toISOString()}_to_${dateTo.toISOString()}`,
+      status: 'success',
+      metadata: {
+        scope: scope || 'personal',
+        recordsReturned: metrics.summary.totalAnalyses,
+        latencyMs,
+        ipAddress: auditContext.ipAddress,
+        userAgent: auditContext.userAgent,
+      },
+    });
+
     return NextResponse.json({
       status: 'success',
       data: {
@@ -71,6 +93,19 @@ export async function GET(req: NextRequest) {
     }
 
     if (error instanceof AnalyticsQueryLimitExceededError) {
+      const latencyMs = Date.now() - startTime;
+      AuditLogger.log({
+        actorUserId: 'unknown',
+        action: 'volume_limit_exceeded',
+        resourceType: 'analytics',
+        status: 'failure',
+        metadata: {
+          error: error.message,
+          latencyMs,
+          ipAddress: auditContext.ipAddress,
+        },
+      });
+
       return NextResponse.json(
         { error: error.message },
         { status: 413 }

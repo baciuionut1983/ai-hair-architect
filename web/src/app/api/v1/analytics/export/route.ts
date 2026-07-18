@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { AnalyticsQueryBuilder, AnalyticsQueryLimitExceededError } from '@/lib/analytics-query-builder';
 import { ExportService } from '@/lib/export-service';
+import { AuditLogger } from '@/lib/audit-logger';
+import { extractAuditContext } from '@/middleware/audit-context';
 import {
   validateAnalyticsAccess,
   authorizeAnalyticsQuery,
@@ -9,6 +11,9 @@ import {
 } from '@/middleware/analytics-auth';
 
 export async function GET(req: NextRequest) {
+  const startTime = Date.now();
+  const auditContext = extractAuditContext(req);
+
   try {
     const user = await validateAnalyticsAccess(req);
 
@@ -58,6 +63,24 @@ export async function GET(req: NextRequest) {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
     const filename = `analytics-export-${timestamp}.${format}`;
 
+    const latencyMs = Date.now() - startTime;
+    const exportAction = format === 'csv' ? 'export_csv' : 'export_json';
+
+    AuditLogger.log({
+      actorUserId: user.id,
+      action: exportAction,
+      resourceType: 'export',
+      resourceId: format,
+      status: 'success',
+      metadata: {
+        format,
+        recordCount: records.length,
+        latencyMs,
+        ipAddress: auditContext.ipAddress,
+        userAgent: auditContext.userAgent,
+      },
+    });
+
     if (format === 'csv') {
       const csv = ExportService.generateCSV(records);
       return new NextResponse(csv, {
@@ -83,6 +106,19 @@ export async function GET(req: NextRequest) {
     }
 
     if (error instanceof AnalyticsQueryLimitExceededError) {
+      const latencyMs = Date.now() - startTime;
+      AuditLogger.log({
+        actorUserId: 'unknown',
+        action: 'volume_limit_exceeded',
+        resourceType: 'export',
+        status: 'failure',
+        metadata: {
+          error: error.message,
+          latencyMs,
+          ipAddress: auditContext.ipAddress,
+        },
+      });
+
       return NextResponse.json(
         { error: error.message },
         { status: 413 }
