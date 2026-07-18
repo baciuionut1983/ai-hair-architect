@@ -35,3 +35,12 @@ Thumbs.db
 
 *.zip
 *.pem
+# PostgreSQL Test Setup Scripts (temporary, local only)
+web/*.bat
+web/grant-privileges.*
+web/reset-password.*
+web/reset-test-user.*
+web/setup-test-db.*
+
+# E2E Test Storage (temporary test images)
+web/.storage/
