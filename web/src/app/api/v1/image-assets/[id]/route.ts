@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { readImageFile } from '@/lib/image-storage';
 import { prisma } from '@/lib/prisma';
 
 export async function GET(
@@ -29,15 +28,7 @@ export async function GET(
       return NextResponse.json({ error: 'Asset deleted' }, { status: 410 });
     }
 
-    const buffer = await readImageFile(asset.storagePath);
-
-    return new NextResponse(new Uint8Array(buffer), {
-      headers: {
-        'Content-Type': asset.mimeType,
-        'Content-Disposition': `inline; filename="${asset.fileName}"`,
-        'Cache-Control': 'private, max-age=3600',
-      },
-    });
+    return NextResponse.json({ asset });
   } catch (err) {
     const error = err instanceof Error ? err.message : 'Download failed';
     return NextResponse.json(
