@@ -78,6 +78,10 @@ interface Store {
     backupSnapshots: BackupSnapshotRecord[];
 }
 
+// This lock is process-local only. It prevents overlapping retention executions
+// in the current Node.js process, but it is not a distributed lock.
+const activeRetentionExecutionScopes = new Set<string>();
+
 interface VideoLessonRecord {
   id: string;
   ownerUserId: string;
@@ -584,6 +588,9 @@ export function createAuditEvent(input: {
   action: string;
   metadata: Record<string, unknown>;
 }) {
+  // Append-only guarantee at the store API boundary: public audit creation only
+  // appends new records. This prototype store does not try to freeze raw in-memory
+  // objects against direct mutation by internal code or tests.
   store.auditEvents.push({
     id: randomUUID(),
     ownerUserId: input.ownerUserId,
@@ -773,15 +780,29 @@ export function getPushQueueForUser(userId: string): PushQueueRecord[] {
 
 export function getOpsHealthSnapshot(): OpsHealthSnapshot {
   const queueBacklogCount = store.pushQueue.filter((entry) => entry.status === "queued").length;
+  const usersCount = store.users.length;
+  const clientsCount = store.clients.length;
+  const consultationsCount = store.consultations.length;
+  const appointmentsCount = store.appointments.length;
+  const notificationsCount = store.notifications.length;
+  const auditEventsCount = store.auditEvents.length;
+
+  let state: OpsHealthSnapshot["state"] = "healthy";
+  if (queueBacklogCount >= 25) {
+    state = "degraded";
+  } else if (queueBacklogCount >= 10) {
+    state = "warning";
+  }
 
   return {
-    usersCount: store.users.length,
-    clientsCount: store.clients.length,
-    consultationsCount: store.consultations.length,
-    appointmentsCount: store.appointments.length,
-    notificationsCount: store.notifications.length,
+    state,
+    usersCount,
+    clientsCount,
+    consultationsCount,
+    appointmentsCount,
+    notificationsCount,
     queueBacklogCount,
-    auditEventsCount: store.auditEvents.length
+    auditEventsCount
   };
 }
 
@@ -811,7 +832,33 @@ export function createBackupSnapshot(ownerUserId: string, label: string): Backup
 export function getBackupSnapshotsForUser(userId: string): BackupSnapshotRecord[] {
   return store.backupSnapshots
     .filter((entry) => entry.ownerUserId === userId)
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    .sort((left, right) => {
+      // Backups are ordered by createdAt DESC. When timestamps are equal, the
+      // runtime's stable sort preserves insertion order.
+      const createdAtComparison = right.createdAt.localeCompare(left.createdAt);
+      if (createdAtComparison !== 0) {
+        return createdAtComparison;
+      }
+
+      return 0;
+    });
+}
+
+export function beginRetentionExecutionScope(scope: string): boolean {
+  if (activeRetentionExecutionScopes.has(scope)) {
+    return false;
+  }
+
+  activeRetentionExecutionScopes.add(scope);
+  return true;
+}
+
+export function endRetentionExecutionScope(scope: string): void {
+  activeRetentionExecutionScopes.delete(scope);
+}
+
+export function isRetentionExecutionScopeActive(scope: string): boolean {
+  return activeRetentionExecutionScopes.has(scope);
 }
 
 export function runRetentionJobForUser(input: {

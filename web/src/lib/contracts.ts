@@ -474,6 +474,7 @@ export interface PushQueueRecord {
 }
 
 export interface OpsHealthSnapshot {
+  state: "healthy" | "warning" | "degraded";
   usersCount: number;
   clientsCount: number;
   consultationsCount: number;
