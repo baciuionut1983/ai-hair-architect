@@ -292,6 +292,7 @@ model WebhookDelivery {
   nextAttemptAt           DateTime?             @db.Timestamp(6)
   lastAttemptAt           DateTime?             @db.Timestamp(6)
   deliveredAt             DateTime?             @db.Timestamp(6)
+  failedTerminalAt        DateTime?             @db.Timestamp(6)
   leaseToken              String?               @db.VarChar(120)
   leaseExpiresAt          DateTime?             @db.Timestamp(6)
   lastFailureDomain       WebhookFailureDomain?
@@ -313,6 +314,7 @@ model WebhookDelivery {
   @@unique([webhookEndpointId, webhookEventId])
   @@unique([ownerUserId, idempotencyKey])
   @@index([ownerUserId, status, nextAttemptAt])
+  @@index([ownerUserId, failedTerminalAt])
   @@index([ownerUserId, leaseExpiresAt])
   @@index([webhookEndpointId, createdAt])
   @@index([secretVersionId])

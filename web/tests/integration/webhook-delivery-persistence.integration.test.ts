@@ -214,4 +214,71 @@ describe("webhook delivery persistence integration", () => {
     const expired = await expireWebhookDeliveryLease(retryable.id);
     expect(expired.status).toBe("failed_retryable");
   });
+
+  it("preserves failedTerminalAt when terminal finalization is executed again later", async () => {
+    const { endpoint } = await createEndpointFixture();
+    const event = await createWebhookEventRecord({
+      envelope: createWebhookEventEnvelope({
+        eventType: "image.analysis.failed",
+        ownerUserId,
+        resourceType: "analysis",
+        resourceId: "analysis-7",
+      }),
+    });
+
+    const delivery = await createWebhookDeliveryRecord({
+      ownerUserId,
+      webhookEventId: event.id,
+      webhookEndpointId: endpoint.id,
+    });
+
+    const firstAttempt = await startWebhookDeliveryAttempt(
+      delivery.id,
+      "lease-terminal-1",
+      new Date("2026-07-20T12:01:00.000Z"),
+    );
+
+    const firstFinalization = await finalizeWebhookDeliveryAttempt({
+      attemptId: firstAttempt.id,
+      deliveryId: delivery.id,
+      status: "failed_terminal",
+      outcome: "terminal_failure",
+      failureDomain: "destination",
+      failureCode: "http_5xx",
+      completedAt: new Date("2026-07-20T12:00:00.000Z"),
+    });
+
+    expect(firstFinalization.delivery.status).toBe("failed_terminal");
+    expect(firstFinalization.delivery.failedTerminalAt?.toISOString()).toBe("2026-07-20T12:00:00.000Z");
+
+    await prisma.webhookDelivery.update({
+      where: { id: delivery.id },
+      data: {
+        status: "dispatching",
+        leaseToken: "lease-terminal-2",
+        leaseExpiresAt: new Date("2026-07-20T13:01:00.000Z"),
+      },
+    });
+
+    const secondAttempt = await prisma.webhookDeliveryAttempt.create({
+      data: {
+        webhookDeliveryId: delivery.id,
+        attemptNumber: 2,
+        startedAt: new Date("2026-07-20T13:00:00.000Z"),
+      },
+    });
+
+    const secondFinalization = await finalizeWebhookDeliveryAttempt({
+      attemptId: secondAttempt.id,
+      deliveryId: delivery.id,
+      status: "failed_terminal",
+      outcome: "terminal_failure",
+      failureDomain: "destination",
+      failureCode: "http_5xx",
+      completedAt: new Date("2026-07-20T13:00:00.000Z"),
+    });
+
+    expect(secondFinalization.delivery.status).toBe("failed_terminal");
+    expect(secondFinalization.delivery.failedTerminalAt?.toISOString()).toBe("2026-07-20T12:00:00.000Z");
+  });
 });

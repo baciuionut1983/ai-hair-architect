@@ -286,7 +286,7 @@ async function finalizeClaimedDelivery(
     return null;
   }
 
-  return client.webhookDelivery.update({
+  const updatedDelivery = await client.webhookDelivery.update({
     where: { id: claimed.id },
     data: {
       status: finalStatus,
@@ -297,6 +297,22 @@ async function finalizeClaimedDelivery(
       leaseToken: null,
       leaseExpiresAt: null,
     },
+  });
+
+  if (finalStatus === "failed_terminal") {
+    await client.webhookDelivery.updateMany({
+      where: {
+        id: claimed.id,
+        failedTerminalAt: null,
+      },
+      data: {
+        failedTerminalAt: completedAt,
+      },
+    });
+  }
+
+  return client.webhookDelivery.findUniqueOrThrow({
+    where: { id: updatedDelivery.id },
   });
 }
 

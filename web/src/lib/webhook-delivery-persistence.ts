@@ -275,9 +275,25 @@ export async function finalizeWebhookDeliveryAttempt(
       },
     });
 
+    if (input.status === "failed_terminal") {
+      await tx.webhookDelivery.updateMany({
+        where: {
+          id: delivery.id,
+          failedTerminalAt: null,
+        },
+        data: {
+          failedTerminalAt: completedAt,
+        },
+      });
+    }
+
+    const deliveryWithStableTerminalTimestamp = await tx.webhookDelivery.findUniqueOrThrow({
+      where: { id: delivery.id },
+    });
+
     return {
       attempt: updatedAttempt,
-      delivery: updatedDelivery,
+      delivery: deliveryWithStableTerminalTimestamp,
     };
   });
 }

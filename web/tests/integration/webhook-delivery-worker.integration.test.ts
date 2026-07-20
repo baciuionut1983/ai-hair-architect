@@ -173,5 +173,54 @@ describe("webhook delivery worker integration", () => {
     expect(updated.status).toBe("failed_retryable");
     expect(updated.nextAttemptAt).toBeInstanceOf(Date);
     expect(updated.nextAttemptAt?.toISOString()).toBe("2026-07-20T12:04:00.000Z");
+    expect(updated.failedTerminalAt).toBeNull();
   });
+
+  it("sets failedTerminalAt exactly when transitioning to failed_terminal", async () => {
+    const endpoint = await createEndpointFixture();
+    const event = await createWebhookEventRecord({
+      envelope: createWebhookEventEnvelope({
+        eventType: "image.analysis.failed",
+        ownerUserId,
+        resourceType: "analysis",
+        resourceId: "analysis-deliver-terminal",
+      }),
+    });
+
+    const delivery = await createWebhookDeliveryRecord({
+      ownerUserId,
+      webhookEventId: event.id,
+      webhookEndpointId: endpoint.id,
+    });
+
+    await prisma.webhookDelivery.update({
+      where: { id: delivery.id },
+      data: {
+        attemptCount: 5,
+      },
+    });
+
+    const sendRequest = vi.fn().mockResolvedValue({
+      statusCode: 500,
+      responseTimeMs: 20,
+      truncated: false,
+    });
+
+    await processWebhookDeliveryBatch({
+      client: prisma,
+      sendRequest: sendRequest as never,
+      now: new Date("2026-07-20T12:00:00.000Z"),
+      random: () => 0,
+    });
+
+    const updated = await prisma.webhookDelivery.findUniqueOrThrow({
+      where: { id: delivery.id },
+    });
+
+    expect(updated.status).toBe("failed_terminal");
+    expect(updated.failedTerminalAt?.toISOString()).toBe("2026-07-20T12:00:00.000Z");
+    expect(updated.deliveredAt).toBeNull();
+    expect(updated.nextAttemptAt).toBeNull();
+  });
+
 });
