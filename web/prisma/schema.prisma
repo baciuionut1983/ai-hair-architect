@@ -15,6 +15,7 @@ model User {
   locale       String
   createdAt    DateTime  @default(now())
   sessions     Session[]
+  webhooks     WebhookEndpoint[]
 }
 
 model Session {
@@ -157,4 +158,20 @@ model AuditLog {
   @@index([action])
   @@index([status])
   @@index([actorUserId, createdAt])
+}
+
+model WebhookEndpoint {
+  id              String   @id @default(cuid())
+  ownerUserId     String
+  owner           User     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  name            String   @db.VarChar(255)
+  url             String   @db.VarChar(2048)
+  secretEncrypted String   @db.Text
+  enabled         Boolean  @default(true)
+  createdAt       DateTime @default(now()) @db.Timestamp(6)
+  updatedAt       DateTime @updatedAt @db.Timestamp(6)
+
+  @@index([ownerUserId])
+  @@index([ownerUserId, enabled])
+  @@unique([ownerUserId, name])
 }
