@@ -503,3 +503,86 @@ export interface RetentionRunResult {
   pushQueueAffected: number;
   auditEventsAffected: number;
 }
+
+export type WebhookEventType =
+  | "image.analysis.ready_for_m8"
+  | "image.analysis.failed"
+  | "audit.security.detected"
+  | "webhook.test.completed"
+  | "webhook.secret.rotated";
+
+export type WebhookEventSensitivity = "internal_low" | "internal_moderate" | "internal_high";
+
+export type WebhookAllowedSubscriberType = "generic_webhook";
+
+export interface WebhookEventCatalogEntry {
+  eventType: WebhookEventType;
+  schemaVersion: "1.0";
+  dispatchEligible: boolean;
+  auditOnly: boolean;
+  sensitivity: WebhookEventSensitivity;
+  allowedSubscriberTypes: WebhookAllowedSubscriberType[];
+}
+
+export interface WebhookEventEnvelope {
+  schemaVersion: "1.0";
+  eventId: string;
+  eventType: WebhookEventType;
+  occurredAt: string;
+  ownerUserId: string;
+  resource: {
+    type: string;
+    id: string;
+  };
+  data: Record<string, unknown>;
+  meta: {
+    dispatchEligible: boolean;
+    auditOnly: boolean;
+    sensitivity: WebhookEventSensitivity;
+    allowedSubscriberTypes: WebhookAllowedSubscriberType[];
+    producerIdempotencyKey?: string;
+  };
+}
+
+export type WebhookDeliveryStatus =
+  | "pending"
+  | "dispatching"
+  | "delivered"
+  | "failed_retryable"
+  | "failed_terminal"
+  | "canceled";
+
+export type WebhookAttemptOutcome = "success" | "retryable_failure" | "terminal_failure";
+
+export type WebhookFailureDomain = "destination" | "security" | "configuration" | "platform_internal";
+
+export type WebhookFailureCode =
+  | "none"
+  | "timeout"
+  | "connection_refused"
+  | "connection_reset"
+  | "host_unreachable"
+  | "network_unreachable"
+  | "dns_temporary"
+  | "dns_not_found"
+  | "http_3xx_redirect_blocked"
+  | "http_408"
+  | "http_425"
+  | "http_429"
+  | "http_5xx"
+  | "http_4xx_non_retryable"
+  | "ssrf_blocked"
+  | "tls_certificate_error"
+  | "invalid_url"
+  | "endpoint_disabled"
+  | "endpoint_deleted"
+  | "internal_transient"
+  | "internal_persistent";
+
+export interface WebhookRetryClassification {
+  deliveryStatus: Extract<WebhookDeliveryStatus, "delivered" | "failed_retryable" | "failed_terminal">;
+  outcome: WebhookAttemptOutcome;
+  failureDomain: WebhookFailureDomain | null;
+  failureCode: WebhookFailureCode;
+  usesConnectivityCap: boolean;
+}

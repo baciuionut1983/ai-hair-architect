@@ -7,13 +7,59 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum WebhookDeliveryStatus {
+  pending
+  dispatching
+  delivered
+  failed_retryable
+  failed_terminal
+  canceled
+}
+
+enum WebhookAttemptOutcome {
+  success
+  retryable_failure
+  terminal_failure
+}
+
+enum WebhookFailureDomain {
+  destination
+  security
+  configuration
+  platform_internal
+}
+
+enum WebhookFailureCode {
+  none
+  timeout
+  connection_refused
+  connection_reset
+  host_unreachable
+  network_unreachable
+  dns_temporary
+  dns_not_found
+  http_3xx_redirect_blocked
+  http_408
+  http_425
+  http_429
+  http_5xx
+  http_4xx_non_retryable
+  ssrf_blocked
+  tls_certificate_error
+  invalid_url
+  endpoint_disabled
+  endpoint_deleted
+  internal_transient
+  internal_persistent
+}
+
 model User {
-  id           String    @id @default(uuid())
-  email        String    @unique
+  id           String            @id @default(uuid())
+  email        String            @unique
   passwordHash String
   role         String
   locale       String
-  createdAt    DateTime  @default(now())
+  createdAt    DateTime          @default(now())
   sessions     Session[]
   webhooks     WebhookEndpoint[]
 }
@@ -40,7 +86,7 @@ model Client {
 }
 
 model Analysis {
-  id                   String   @id
+  id                   String         @id
   clientId             String
   ownerUserId          String
   goal                 String
@@ -67,10 +113,10 @@ model Analysis {
   imageAnalysisId      String?
   m8DraftCreatedAt     DateTime?
   m8FinalizedAt        DateTime?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-  imageAsset           ImageAsset?         @relation(fields: [imageAssetId], references: [id], onDelete: SetNull)
-  imageAnalysis        ImageAnalysis?      @relation(fields: [imageAnalysisId], references: [id], onDelete: SetNull)
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+  imageAsset           ImageAsset?    @relation(fields: [imageAssetId], references: [id], onDelete: SetNull)
+  imageAnalysis        ImageAnalysis? @relation(fields: [imageAnalysisId], references: [id], onDelete: SetNull)
 
   @@index([ownerUserId])
   @@index([clientId])
@@ -80,22 +126,22 @@ model Analysis {
 }
 
 model ImageAsset {
-  id                  String   @id @default(uuid())
-  fileName            String
-  mimeType            String
-  sizeBytes           Int
-  ownerUserId         String
-  clientId            String
-  storagePath         String
-  exifStripped        Boolean  @default(false)
-  normalizedOrientation Int    @default(0)
-  uploadedAt          DateTime @default(now())
-  deletedAt           DateTime?
-  retentionDeletesAt  DateTime?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-  analyses            ImageAnalysis[]
-  analysisResults     Analysis[]
+  id                    String          @id @default(uuid())
+  fileName              String
+  mimeType              String
+  sizeBytes             Int
+  ownerUserId           String
+  clientId              String
+  storagePath           String
+  exifStripped          Boolean         @default(false)
+  normalizedOrientation Int             @default(0)
+  uploadedAt            DateTime        @default(now())
+  deletedAt             DateTime?
+  retentionDeletesAt    DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  analyses              ImageAnalysis[]
+  analysisResults       Analysis[]
 
   @@index([ownerUserId])
   @@index([clientId])
@@ -104,24 +150,24 @@ model ImageAsset {
 }
 
 model ImageAnalysis {
-  id                  String   @id @default(uuid())
-  assetId             String
-  status              String   @default("draft")
-  providerName        String   @default("manual-only")
-  modelVersion        String   @default("mock-1.0")
-  analysisPayload     Json     @default("{}")
-  confidences         Json     @default("{}")
-  unknownFields       Json     @default("[]")
-  warnings            Json     @default("[]")
-  limitations         Json     @default("[]")
-  consentTimestamp    DateTime @default(now())
-  deletedAt           DateTime?
-  retentionDeletesAt  DateTime?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-  asset               ImageAsset         @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  reviews             ImageAnalysisReview[]
-  analysisResults     Analysis[]
+  id                 String                @id @default(uuid())
+  assetId            String
+  status             String                @default("draft")
+  providerName       String                @default("manual-only")
+  modelVersion       String                @default("mock-1.0")
+  analysisPayload    Json                  @default("{}")
+  confidences        Json                  @default("{}")
+  unknownFields      Json                  @default("[]")
+  warnings           Json                  @default("[]")
+  limitations        Json                  @default("[]")
+  consentTimestamp   DateTime              @default(now())
+  deletedAt          DateTime?
+  retentionDeletesAt DateTime?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+  asset              ImageAsset            @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  reviews            ImageAnalysisReview[]
+  analysisResults    Analysis[]
 
   @@index([assetId])
   @@index([status])
@@ -129,29 +175,29 @@ model ImageAnalysis {
 }
 
 model ImageAnalysisReview {
-  id                  String   @id @default(uuid())
-  analysisId          String
-  reviewedByUserId    String
-  manualCorrections   Json     @default("{}")
+  id                    String        @id @default(uuid())
+  analysisId            String
+  reviewedByUserId      String
+  manualCorrections     Json          @default("{}")
   confirmationTimestamp DateTime?
-  notes               String?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-  analysis            ImageAnalysis      @relation(fields: [analysisId], references: [id], onDelete: Cascade)
+  notes                 String?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+  analysis              ImageAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
 
   @@index([analysisId])
   @@index([reviewedByUserId])
 }
 
 model AuditLog {
-  id            String   @id @default(cuid())
-  actorUserId   String   @db.Uuid
-  action        String
-  resourceType  String
-  resourceId    String?
-  status        String
-  metadata      Json
-  createdAt     DateTime @default(now()) @db.Timestamp(6)
+  id           String   @id @default(cuid())
+  actorUserId  String   @db.Uuid
+  action       String
+  resourceType String
+  resourceId   String?
+  status       String
+  metadata     Json
+  createdAt    DateTime @default(now()) @db.Timestamp(6)
 
   @@index([actorUserId])
   @@index([createdAt])
@@ -161,17 +207,136 @@ model AuditLog {
 }
 
 model WebhookEndpoint {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   ownerUserId     String
-  owner           User     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
-  name            String   @db.VarChar(255)
-  url             String   @db.VarChar(2048)
-  secretEncrypted String   @db.Text
-  enabled         Boolean  @default(true)
-  createdAt       DateTime @default(now()) @db.Timestamp(6)
-  updatedAt       DateTime @updatedAt @db.Timestamp(6)
+  owner           User      @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  name            String    @db.VarChar(255)
+  url             String    @db.VarChar(2048)
+  // Deprecated compatibility field retained only for M9D route compatibility.
+  // M10A introduces WebhookEndpointSecretVersion.secretEncrypted as the forward-compatible
+  // source of truth for secret material. This legacy column is planned for removal only
+  // after all routes have migrated to the versioned secret model in a later milestone.
+  secretEncrypted String    @db.Text
+  enabled         Boolean   @default(true)
+  deletedAt       DateTime? @db.Timestamp(6)
+  createdAt       DateTime  @default(now()) @db.Timestamp(6)
+  updatedAt       DateTime  @updatedAt @db.Timestamp(6)
 
+  secretVersions WebhookEndpointSecretVersion[]
+  deliveries     WebhookDelivery[]
+
+  @@unique([ownerUserId, name])
+  @@unique([id, ownerUserId])
   @@index([ownerUserId])
   @@index([ownerUserId, enabled])
-  @@unique([ownerUserId, name])
+  @@index([ownerUserId, enabled, deletedAt])
+}
+
+model WebhookEndpointSecretVersion {
+  id                String    @id @default(cuid())
+  webhookEndpointId String
+  ownerUserId       String
+  version           Int
+  // This is the new forward-compatible encrypted secret store introduced in M10A.
+  // New delivery records bind to a specific secret version through a composite FK.
+  secretEncrypted   String    @db.Text
+  // The hardcoded default is intentional: M9D already signs with HMAC-SHA256 using the v1 canonical format,
+  // so backfilled and newly created version rows must agree on the same explicit scheme string.
+  signatureScheme   String    @default("hmac_sha256_v1") @db.VarChar(64)
+  isCurrent         Boolean   @default(false)
+  createdAt         DateTime  @default(now()) @db.Timestamp(6)
+  retiredAt         DateTime? @db.Timestamp(6)
+  retainUntil       DateTime? @db.Timestamp(6)
+
+  endpoint   WebhookEndpoint   @relation(fields: [webhookEndpointId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict)
+  deliveries WebhookDelivery[]
+
+  @@unique([id, webhookEndpointId, ownerUserId])
+  @@unique([webhookEndpointId, version])
+  @@index([webhookEndpointId, createdAt])
+  @@index([ownerUserId, retainUntil])
+}
+
+model WebhookEvent {
+  id                     String   @id @default(cuid())
+  ownerUserId            String
+  eventType              String   @db.VarChar(120)
+  schemaVersion          String   @db.VarChar(16)
+  producerIdempotencyKey String?  @db.VarChar(190)
+  resourceType           String   @db.VarChar(80)
+  resourceId             String   @db.VarChar(120)
+  occurredAt             DateTime @db.Timestamp(6)
+  payload                Json
+  dispatchEligible       Boolean
+  auditOnly              Boolean
+  sensitivity            String   @db.VarChar(32)
+  createdAt              DateTime @default(now()) @db.Timestamp(6)
+
+  deliveries WebhookDelivery[]
+
+  @@unique([id, ownerUserId])
+  @@index([ownerUserId, createdAt])
+  @@index([eventType, occurredAt])
+}
+
+model WebhookDelivery {
+  id                      String                @id @default(cuid())
+  ownerUserId             String
+  webhookEventId          String
+  webhookEndpointId       String
+  secretVersionId         String
+  status                  WebhookDeliveryStatus @default(pending)
+  attemptCount            Int                   @default(0)
+  maxAttempts             Int                   @default(6)
+  connectivityMaxAttempts Int                   @default(3)
+  nextAttemptAt           DateTime?             @db.Timestamp(6)
+  lastAttemptAt           DateTime?             @db.Timestamp(6)
+  deliveredAt             DateTime?             @db.Timestamp(6)
+  leaseToken              String?               @db.VarChar(120)
+  leaseExpiresAt          DateTime?             @db.Timestamp(6)
+  lastFailureDomain       WebhookFailureDomain?
+  lastFailureCode         WebhookFailureCode    @default(none)
+  idempotencyKey          String                @db.VarChar(190)
+  targetUrlSnapshot       String                @db.VarChar(2048)
+  signatureSchemeSnapshot String                @db.VarChar(64)
+  secretVersionSnapshot   Int
+  eventTypeSnapshot       String                @db.VarChar(120)
+  approvedHeadersSnapshot Json?
+  createdAt               DateTime              @default(now()) @db.Timestamp(6)
+  updatedAt               DateTime              @updatedAt @db.Timestamp(6)
+
+  event         WebhookEvent                 @relation(fields: [webhookEventId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict)
+  endpoint      WebhookEndpoint              @relation(fields: [webhookEndpointId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict)
+  secretVersion WebhookEndpointSecretVersion @relation(fields: [secretVersionId, webhookEndpointId, ownerUserId], references: [id, webhookEndpointId, ownerUserId], onDelete: Restrict)
+  attempts      WebhookDeliveryAttempt[]
+
+  @@unique([webhookEndpointId, webhookEventId])
+  @@unique([ownerUserId, idempotencyKey])
+  @@index([ownerUserId, status, nextAttemptAt])
+  @@index([ownerUserId, leaseExpiresAt])
+  @@index([webhookEndpointId, createdAt])
+  @@index([secretVersionId])
+}
+
+model WebhookDeliveryAttempt {
+  id                String                 @id @default(cuid())
+  webhookDeliveryId String
+  attemptNumber     Int
+  startedAt         DateTime               @db.Timestamp(6)
+  completedAt       DateTime?              @db.Timestamp(6)
+  durationMs        Int?
+  httpStatus        Int?
+  outcome           WebhookAttemptOutcome?
+  failureDomain     WebhookFailureDomain?
+  failureCode       WebhookFailureCode?
+  errorCode         String?                @db.VarChar(80)
+  errorMessageSafe  String?                @db.VarChar(500)
+  responseTruncated Boolean                @default(false)
+  createdAt         DateTime               @default(now()) @db.Timestamp(6)
+
+  delivery WebhookDelivery @relation(fields: [webhookDeliveryId], references: [id], onDelete: Restrict)
+
+  @@unique([webhookDeliveryId, attemptNumber])
+  @@index([webhookDeliveryId, attemptNumber])
+  @@index([createdAt])
 }

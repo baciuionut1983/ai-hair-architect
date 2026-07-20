@@ -539,8 +539,8 @@ describe('webhook-safe-http-client', () => {
         handler();
       }
 
-      return 1 as ReturnType<typeof setTimeout>;
-    }) as typeof setTimeout);
+      return 1 as unknown as ReturnType<typeof setTimeout>;
+    }) as unknown as typeof setTimeout);
 
     let observedRequest: MockRequest | undefined;
 
