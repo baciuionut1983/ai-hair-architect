@@ -17,6 +17,24 @@ export interface GetWebhookDeliveryDetailsInput {
   deliveryId: string;
 }
 
+export interface ListWebhookDeliveryHistoryCursorInput {
+  ownerUserId: string;
+  webhookEndpointId: string;
+  cursor?: string | null;
+  limit?: number;
+}
+
+export interface WebhookDeliveryHistoryPageInfo {
+  nextCursor: string | null;
+  hasNextPage: boolean;
+  limit: number;
+}
+
+export interface ListWebhookDeliveryHistoryCursorResult {
+  data: Awaited<ReturnType<DbClient["webhookDelivery"]["findMany"]>>;
+  pageInfo: WebhookDeliveryHistoryPageInfo;
+}
+
 function getDb(client?: DbClient): DbClient {
   return client ?? prisma;
 }
@@ -61,6 +79,58 @@ export async function listWebhookDeliveryHistory(
     limit,
     offset,
     deliveries,
+  };
+}
+
+export async function listWebhookDeliveryHistoryCursor(
+  input: ListWebhookDeliveryHistoryCursorInput,
+  client?: DbClient,
+): Promise<ListWebhookDeliveryHistoryCursorResult> {
+  const db = getDb(client);
+  const limit = Math.min(Math.max(Math.floor(input.limit ?? 50), 1), 100);
+
+  const deliveries = await db.webhookDelivery.findMany({
+    where: {
+      ownerUserId: input.ownerUserId,
+      webhookEndpointId: input.webhookEndpointId,
+    },
+    include: {
+      attempts: {
+        orderBy: {
+          attemptNumber: "asc",
+        },
+      },
+    },
+    orderBy: [
+      {
+        createdAt: "desc",
+      },
+      {
+        id: "desc",
+      },
+    ],
+    ...(input.cursor
+      ? {
+          cursor: {
+            id: input.cursor,
+          },
+          skip: 1,
+        }
+      : {}),
+    take: limit + 1,
+  });
+
+  const hasNextPage = deliveries.length > limit;
+  const data = hasNextPage ? deliveries.slice(0, limit) : deliveries;
+  const nextCursor = hasNextPage && data.length > 0 ? data[data.length - 1].id : null;
+
+  return {
+    data,
+    pageInfo: {
+      nextCursor,
+      hasNextPage,
+      limit,
+    },
   };
 }
 

@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createWebhookDeliveryRecord, createWebhookEventRecord } from "@/lib/webhook-delivery-persistence";
-import { listWebhookDeliveryHistory, getWebhookDeliveryDetails } from "@/lib/webhook-delivery-history";
+import { listWebhookDeliveryHistory, getWebhookDeliveryDetails, listWebhookDeliveryHistoryCursor } from "@/lib/webhook-delivery-history";
 import { createWebhookEventEnvelope } from "@/lib/webhook-envelope-validator";
 import { encryptSecret, generateSecret, getMasterKeyFromEnv } from "@/lib/webhook-crypto";
 import { prisma } from "@/lib/prisma";
@@ -142,5 +142,36 @@ describe("webhook delivery history integration", () => {
         deliveryId: "not-a-real-delivery-id",
       }),
     ).rejects.toThrow("not found");
+  });
+
+  it("paginates delivery history with a stable cursor order", async () => {
+    const endpoint = await createEndpoint(ownerUserId, "cursor");
+
+    const first = await seedDelivery(ownerUserId, endpoint.id, 1);
+    const second = await seedDelivery(ownerUserId, endpoint.id, 2);
+    const third = await seedDelivery(ownerUserId, endpoint.id, 3);
+
+    const firstPage = await listWebhookDeliveryHistoryCursor({
+      ownerUserId,
+      webhookEndpointId: endpoint.id,
+      limit: 2,
+    });
+
+    expect(firstPage.data).toHaveLength(2);
+    expect(firstPage.data.map(item => item.id)).toEqual([third.id, second.id]);
+    expect(firstPage.pageInfo.hasNextPage).toBe(true);
+    expect(firstPage.pageInfo.nextCursor).toBe(second.id);
+
+    const secondPage = await listWebhookDeliveryHistoryCursor({
+      ownerUserId,
+      webhookEndpointId: endpoint.id,
+      limit: 2,
+      cursor: firstPage.pageInfo.nextCursor,
+    });
+
+    expect(secondPage.data).toHaveLength(1);
+    expect(secondPage.data[0].id).toBe(first.id);
+    expect(secondPage.pageInfo.hasNextPage).toBe(false);
+    expect(secondPage.pageInfo.nextCursor).toBeNull();
   });
 });
