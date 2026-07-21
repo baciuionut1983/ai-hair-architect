@@ -139,7 +139,7 @@ describe("milestone7 backup and retention", () => {
     expect(isRetentionExecutionScopeActive(scope)).toBe(false);
   });
 
-  it("orders backups by createdAt descending and keeps equal timestamps stable", () => {
+  it("orders backups by createdAt descending and uses deterministic tie-breaker for equal timestamps", () => {
     const user = createUser({
       email: `m7-backup-order-${Date.now()}@example.com`,
       password: "password123",
@@ -156,7 +156,7 @@ describe("milestone7 backup and retention", () => {
 
       const backups = getBackupSnapshotsForUser(user.id);
       expect(backups).toHaveLength(2);
-      expect(backups.map((entry) => entry.label)).toEqual([first.label, second.label]);
+      expect(backups.map((entry) => entry.label)).toEqual([second.label, first.label]);
       expect(backups[0].createdAt).toBe(backups[1].createdAt);
     } finally {
       vi.useRealTimers();

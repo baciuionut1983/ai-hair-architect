@@ -1,17 +1,17 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
-import { getAuditEventsForUser, getSession } from "@/lib/milestone1-store";
+import { listOpsAuditEventsForUser, resolveOpsSessionUser } from "@/lib/ops-persistence";
 
 export async function GET() {
   const cookieStore = await cookies();
   const token = cookieStore.get("aha_session")?.value ?? null;
-  const sessionUser = getSession(token);
+  const sessionUser = await resolveOpsSessionUser(token);
 
   if (!sessionUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const events = getAuditEventsForUser(sessionUser.id);
+  const events = await listOpsAuditEventsForUser(sessionUser.id);
   return NextResponse.json({ events }, { status: 200 });
 }

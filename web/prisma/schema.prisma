@@ -206,6 +206,57 @@ model AuditLog {
   @@index([actorUserId, createdAt])
 }
 
+model OpsBackupSnapshot {
+  id                String   @id @default(cuid())
+  ownerUserId       String   @db.Uuid
+  label             String   @db.VarChar(120)
+  snapshotJson      Json
+  checksum          String   @db.VarChar(64)
+  checksumAlgorithm String   @db.VarChar(32)
+  schemaVersion     String   @db.VarChar(16)
+  createdByUserId   String   @db.Uuid
+  createdAt         DateTime @default(now()) @db.Timestamp(6)
+
+  @@index([ownerUserId, createdAt])
+}
+
+model OpsRetentionRun {
+  id                      String   @id @default(cuid())
+  ownerUserId             String   @db.Uuid
+  mode                    String   @db.VarChar(16)
+  status                  String   @db.VarChar(32)
+  olderThanDays           Int
+  reasonAuditSafe         String?  @db.VarChar(200)
+  executionIdempotencyKey String?  @db.VarChar(190)
+  idempotencyFingerprint  String?  @db.VarChar(64)
+  advisoryLockKey         String   @db.VarChar(32)
+  startedAt               DateTime @db.Timestamp(6)
+  finishedAt              DateTime? @db.Timestamp(6)
+  pushQueueAffected       Int
+  auditEventsAffected     Int
+  errorCode               String?  @db.VarChar(80)
+  errorMessageSafe        String?  @db.VarChar(500)
+  createdAt               DateTime @default(now()) @db.Timestamp(6)
+
+  @@unique([ownerUserId, executionIdempotencyKey])
+  @@index([ownerUserId, createdAt])
+  @@index([ownerUserId, startedAt])
+}
+
+model OpsPushQueueEntry {
+  id          String   @id @default(cuid())
+  ownerUserId String   @db.Uuid
+  channel     String   @db.VarChar(16)
+  title       String   @db.VarChar(160)
+  body        String   @db.Text
+  status      String   @db.VarChar(16)
+  createdAt   DateTime @default(now()) @db.Timestamp(6)
+  processedAt DateTime? @db.Timestamp(6)
+
+  @@index([ownerUserId, createdAt])
+  @@index([ownerUserId, status])
+}
+
 model WebhookEndpoint {
   id              String    @id @default(cuid())
   ownerUserId     String

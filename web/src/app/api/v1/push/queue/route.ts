@@ -1,12 +1,13 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
-import { enqueuePushNotification, getPushQueueForUser, getSession, sanitize } from "@/lib/milestone1-store";
+import { getPushQueueForUser, sanitize } from "@/lib/milestone1-store";
+import { enqueuePersistentPushNotification, resolveOpsSessionUser } from "@/lib/ops-persistence";
 
 export async function GET() {
   const cookieStore = await cookies();
   const token = cookieStore.get("aha_session")?.value ?? null;
-  const sessionUser = getSession(token);
+  const sessionUser = await resolveOpsSessionUser(token);
 
   if (!sessionUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -19,7 +20,7 @@ export async function GET() {
 export async function POST(request: Request) {
   const cookieStore = await cookies();
   const token = cookieStore.get("aha_session")?.value ?? null;
-  const sessionUser = getSession(token);
+  const sessionUser = await resolveOpsSessionUser(token);
 
   if (!sessionUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -39,7 +40,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "title and body are required." }, { status: 400 });
   }
 
-  const item = enqueuePushNotification({
+  const item = await enqueuePersistentPushNotification({
     userId: sessionUser.id,
     channel,
     title,

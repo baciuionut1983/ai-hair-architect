@@ -1,14 +1,14 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
-import { beginRetentionExecutionScope, endRetentionExecutionScope, getSession, isRetentionExecutionScopeActive, runRetentionJobForUser } from "@/lib/milestone1-store";
+import { randomUUID } from "crypto";
 
-const RETENTION_EXECUTION_CONFIRMATION_TOKEN = "CONFIRM_RETENTION_EXECUTION";
+import { resolveOpsSessionUser, runPersistentRetention } from "@/lib/ops-persistence";
 
 export async function POST(request: Request) {
   const cookieStore = await cookies();
   const token = cookieStore.get("aha_session")?.value ?? null;
-  const sessionUser = getSession(token);
+  const sessionUser = await resolveOpsSessionUser(token);
 
   if (!sessionUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -18,54 +18,22 @@ export async function POST(request: Request) {
     olderThanDays?: number;
     dryRun?: boolean;
     confirmationToken?: string;
+    executionIdempotencyKey?: string;
+    reason?: string;
   };
 
-  const olderThanDays = Number.isFinite(body.olderThanDays) ? Math.max(1, Number(body.olderThanDays)) : 30;
+  const olderThanDays = Number.isFinite(body.olderThanDays) ? Number(body.olderThanDays) : 30;
   const dryRun = body.dryRun !== false;
 
-  if (!dryRun && body.confirmationToken !== RETENTION_EXECUTION_CONFIRMATION_TOKEN) {
-    return NextResponse.json(
-      { error: "CONFIRMATION_REQUIRED", message: "Explicit confirmation is required to execute retention." },
-      { status: 400 },
-    );
-  }
-
-  const retentionScope = sessionUser.id;
-
-  if (!dryRun && isRetentionExecutionScopeActive(retentionScope)) {
-    return NextResponse.json(
-      { error: "RETENTION_CONFLICT", message: "A retention execution is already running for this scope." },
-      { status: 409 },
-    );
-  }
-
-  if (!dryRun) {
-    const acquired = beginRetentionExecutionScope(retentionScope);
-    if (!acquired) {
-      return NextResponse.json(
-        { error: "RETENTION_CONFLICT", message: "A retention execution is already running for this scope." },
-        { status: 409 },
-      );
-    }
-
-    try {
-      const result = runRetentionJobForUser({
-        userId: sessionUser.id,
-        olderThanDays,
-        dryRun,
-      });
-
-      return NextResponse.json({ result }, { status: 200 });
-    } finally {
-      endRetentionExecutionScope(retentionScope);
-    }
-  }
-
-  const result = runRetentionJobForUser({
+  const response = await runPersistentRetention({
     userId: sessionUser.id,
     olderThanDays,
     dryRun,
+    confirmationToken: body.confirmationToken,
+    executionIdempotencyKey: body.executionIdempotencyKey,
+    reason: body.reason,
+    correlationRequestId: randomUUID(),
   });
 
-  return NextResponse.json({ result }, { status: 200 });
+  return NextResponse.json(response.body, { status: response.httpStatus });
 }

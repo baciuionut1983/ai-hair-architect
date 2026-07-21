@@ -489,6 +489,10 @@ export interface BackupSnapshotRecord {
   ownerUserId: string;
   label: string;
   createdAt: string;
+  checksum?: string;
+  checksumAlgorithm?: string;
+  schemaVersion?: string;
+  createdByUserId?: string;
   snapshot: {
     clientsCount: number;
     consultationsCount: number;
@@ -499,6 +503,11 @@ export interface BackupSnapshotRecord {
 }
 
 export interface RetentionRunResult {
+  runId?: string;
+  status?: "dry_run_completed" | "execution_completed" | "execution_failed";
+  startedAt?: string;
+  finishedAt?: string;
+  replayed?: boolean;
   dryRun: boolean;
   olderThanDays: number;
   pushQueueAffected: number;

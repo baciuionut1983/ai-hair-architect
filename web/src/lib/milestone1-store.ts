@@ -81,6 +81,8 @@ interface Store {
 // This lock is process-local only. It prevents overlapping retention executions
 // in the current Node.js process, but it is not a distributed lock.
 const activeRetentionExecutionScopes = new Set<string>();
+const backupSnapshotInsertionOrder = new Map<string, number>();
+let backupSnapshotSequence = 0;
 
 interface VideoLessonRecord {
   id: string;
@@ -826,6 +828,8 @@ export function createBackupSnapshot(ownerUserId: string, label: string): Backup
   };
 
   store.backupSnapshots.push(snapshot);
+  backupSnapshotSequence += 1;
+  backupSnapshotInsertionOrder.set(snapshot.id, backupSnapshotSequence);
   return snapshot;
 }
 
@@ -833,14 +837,16 @@ export function getBackupSnapshotsForUser(userId: string): BackupSnapshotRecord[
   return store.backupSnapshots
     .filter((entry) => entry.ownerUserId === userId)
     .sort((left, right) => {
-      // Backups are ordered by createdAt DESC. When timestamps are equal, the
-      // runtime's stable sort preserves insertion order.
+      // Backups are ordered by createdAt DESC. If timestamps are equal, use a
+      // deterministic insertion-order tie-breaker (newer first).
       const createdAtComparison = right.createdAt.localeCompare(left.createdAt);
       if (createdAtComparison !== 0) {
         return createdAtComparison;
       }
 
-      return 0;
+      const leftOrder = backupSnapshotInsertionOrder.get(left.id) ?? 0;
+      const rightOrder = backupSnapshotInsertionOrder.get(right.id) ?? 0;
+      return rightOrder - leftOrder;
     });
 }
 
