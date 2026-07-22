@@ -2,8 +2,34 @@ import { createHash, randomUUID } from "crypto";
 
 import { Prisma } from "@prisma/client";
 
-import type { AuthSessionResponse, BackupSnapshotRecord, PushQueueRecord, RetentionRunResult } from "@/lib/contracts";
+import type {
+  AuthSessionResponse,
+  BackupSnapshotRecord,
+  BackupV13Artifact,
+  BackupVerificationResult,
+  PushQueueRecord,
+  RetentionRunResult,
+} from "@/lib/contracts";
 import { findPersistenceUserBySessionToken } from "@/lib/auth-persistence";
+import {
+  assertSectionByteLimits,
+  assertSectionRowLimits,
+  assertTotalArtifactByteLimit,
+  BACKUP_CHECKSUM_ALGORITHM,
+  BACKUP_LEGACY_M12_SCHEMA_VERSION,
+  BACKUP_V13_CANONICAL_VERSION,
+  BACKUP_V13_SCHEMA_VERSION,
+  BackupArtifactError,
+  buildVerificationResult,
+  computeArtifactChecksumHex,
+  generateBackupId,
+  isBackupV13Artifact,
+  MAX_BACKUP_ARTIFACT_BYTES,
+  MAX_BACKUP_SECTION_BYTES,
+  MAX_ROWS_PER_SECTION,
+  parseSnapshotSchemaVersion,
+  verifyExternalReferences,
+} from "@/lib/backup-v13-artifact";
 import {
   createBackupSnapshot,
   enqueuePushNotification,
@@ -19,8 +45,6 @@ import {
 } from "@/lib/milestone1-store";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 
-const BACKUP_CHECKSUM_ALGORITHM = "sha256";
-const BACKUP_SCHEMA_VERSION = "m12.v1";
 const RETENTION_CONFIRMATION_TOKEN = "CONFIRM_RETENTION_EXECUTION";
 const OPS_AUDIT_MODULE = "security";
 const OPS_RESOURCE_TYPE = "ops";
@@ -242,18 +266,240 @@ export async function createPersistentBackupSnapshot(input: {
     return createBackupSnapshot(input.ownerUserId, input.label);
   }
 
-  const snapshot = buildBackupSnapshot(input.ownerUserId);
-  const checksum = computeBackupChecksum(input.ownerUserId, snapshot);
+  if (!Prisma.TransactionIsolationLevel?.RepeatableRead) {
+    throw new BackupArtifactError(
+      "BACKUP_CONSISTENT_SNAPSHOT_UNSUPPORTED",
+      500,
+      "RepeatableRead transaction isolation is required for M13 backup creation.",
+    );
+  }
+
+  const backupId = generateBackupId();
+  const nowIso = new Date().toISOString();
+
+  const sectionData = await prisma.$transaction(
+    async (tx) => {
+      const [
+        clientsCount,
+        analysesCount,
+        imageAssetsCount,
+        imageAnalysesCount,
+        imageAnalysisReviewsCount,
+      ] = await Promise.all([
+        tx.client.count({ where: { ownerUserId: input.ownerUserId } }),
+        tx.analysis.count({ where: { ownerUserId: input.ownerUserId } }),
+        tx.imageAsset.count({ where: { ownerUserId: input.ownerUserId } }),
+        tx.imageAnalysis.count({ where: { asset: { ownerUserId: input.ownerUserId } } }),
+        tx.imageAnalysisReview.count({ where: { analysis: { asset: { ownerUserId: input.ownerUserId } } } }),
+      ]);
+
+      const counts = {
+        clients: clientsCount,
+        analyses: analysesCount,
+        imageAssets: imageAssetsCount,
+        imageAnalyses: imageAnalysesCount,
+        imageAnalysisReviews: imageAnalysisReviewsCount,
+      };
+      assertSectionRowLimits(counts);
+
+      const [clients, analyses, imageAssets, imageAnalyses, imageAnalysisReviews] = await Promise.all([
+        tx.client.findMany({
+          where: { ownerUserId: input.ownerUserId },
+          select: {
+            id: true,
+            name: true,
+            ownerUserId: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          orderBy: { id: "asc" },
+        }),
+        tx.analysis.findMany({
+          where: { ownerUserId: input.ownerUserId },
+          select: {
+            id: true,
+            clientId: true,
+            ownerUserId: true,
+            goal: true,
+            hairType: true,
+            density: true,
+            porosity: true,
+            phase: true,
+            clarificationRound: true,
+            confidenceScore: true,
+            uncertaintyReasons: true,
+            followUpQuestions: true,
+            recommendations: true,
+            safetyNotes: true,
+            faceShape: true,
+            headShape: true,
+            hairLength: true,
+            hairTexture: true,
+            hairCondition: true,
+            growthPattern: true,
+            targetShape: true,
+            technicalCutPlan: true,
+            clarificationAnswers: true,
+            imageAssetId: true,
+            imageAnalysisId: true,
+            m8DraftCreatedAt: true,
+            m8FinalizedAt: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          orderBy: { id: "asc" },
+        }),
+        tx.imageAsset.findMany({
+          where: { ownerUserId: input.ownerUserId },
+          select: {
+            id: true,
+            fileName: true,
+            mimeType: true,
+            sizeBytes: true,
+            ownerUserId: true,
+            clientId: true,
+            storagePath: true,
+            exifStripped: true,
+            normalizedOrientation: true,
+            uploadedAt: true,
+            deletedAt: true,
+            retentionDeletesAt: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          orderBy: { id: "asc" },
+        }),
+        tx.imageAnalysis.findMany({
+          where: { asset: { ownerUserId: input.ownerUserId } },
+          select: {
+            id: true,
+            assetId: true,
+            status: true,
+            providerName: true,
+            modelVersion: true,
+            analysisPayload: true,
+            confidences: true,
+            unknownFields: true,
+            warnings: true,
+            limitations: true,
+            consentTimestamp: true,
+            deletedAt: true,
+            retentionDeletesAt: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          orderBy: { id: "asc" },
+        }),
+        tx.imageAnalysisReview.findMany({
+          where: {
+            analysis: {
+              asset: {
+                ownerUserId: input.ownerUserId,
+              },
+            },
+          },
+          select: {
+            id: true,
+            analysisId: true,
+            reviewedByUserId: true,
+            manualCorrections: true,
+            confirmationTimestamp: true,
+            notes: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          orderBy: { id: "asc" },
+        }),
+      ]);
+
+      return {
+        counts,
+        sections: {
+          clients: clients.map((row) => ({
+            ...row,
+            createdAt: row.createdAt.toISOString(),
+            updatedAt: row.updatedAt.toISOString(),
+          })),
+          analyses: analyses.map((row) => ({
+            ...row,
+            m8DraftCreatedAt: row.m8DraftCreatedAt?.toISOString() ?? null,
+            m8FinalizedAt: row.m8FinalizedAt?.toISOString() ?? null,
+            createdAt: row.createdAt.toISOString(),
+            updatedAt: row.updatedAt.toISOString(),
+          })),
+          imageAssets: imageAssets.map((row) => ({
+            ...row,
+            uploadedAt: row.uploadedAt.toISOString(),
+            deletedAt: row.deletedAt?.toISOString() ?? null,
+            retentionDeletesAt: row.retentionDeletesAt?.toISOString() ?? null,
+            createdAt: row.createdAt.toISOString(),
+            updatedAt: row.updatedAt.toISOString(),
+          })),
+          imageAnalyses: imageAnalyses.map((row) => ({
+            ...row,
+            consentTimestamp: row.consentTimestamp.toISOString(),
+            deletedAt: row.deletedAt?.toISOString() ?? null,
+            retentionDeletesAt: row.retentionDeletesAt?.toISOString() ?? null,
+            createdAt: row.createdAt.toISOString(),
+            updatedAt: row.updatedAt.toISOString(),
+          })),
+          imageAnalysisReviews: imageAnalysisReviews.map((row) => ({
+            ...row,
+            confirmationTimestamp: row.confirmationTimestamp?.toISOString() ?? null,
+            createdAt: row.createdAt.toISOString(),
+            updatedAt: row.updatedAt.toISOString(),
+          })),
+        },
+      };
+    },
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    },
+  );
+
+  const summarySnapshot = {
+    clientsCount: sectionData.counts.clients,
+    consultationsCount: 0,
+    appointmentsCount: 0,
+    notificationsCount: 0,
+    workspacesCount: 0,
+  };
+
+  const artifact: BackupV13Artifact = {
+    schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+    canonicalSerializationVersion: BACKUP_V13_CANONICAL_VERSION,
+    checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
+    checksum: null,
+    backupId,
+    ownerUserId: input.ownerUserId,
+    createdByUserId: input.createdByUserId,
+    label: input.label,
+    createdAt: nowIso,
+    summarySnapshot,
+    counts: sectionData.counts,
+    limits: {
+      maxArtifactBytes: MAX_BACKUP_ARTIFACT_BYTES,
+      maxSectionBytes: MAX_BACKUP_SECTION_BYTES,
+      maxRowsPerSection: { ...MAX_ROWS_PER_SECTION },
+    },
+    sections: sectionData.sections,
+  };
+
+  assertSectionByteLimits(artifact);
+  const checksum = computeArtifactChecksumHex(artifact);
+  artifact.checksum = checksum;
+  assertTotalArtifactByteLimit(artifact);
 
   const row = await prisma.opsBackupSnapshot.create({
     data: {
+      id: backupId,
       ownerUserId: input.ownerUserId,
       createdByUserId: input.createdByUserId,
       label: input.label,
-      snapshotJson: snapshot as Prisma.InputJsonValue,
+      snapshotJson: artifact as unknown as Prisma.InputJsonValue,
       checksum,
       checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
-      schemaVersion: BACKUP_SCHEMA_VERSION,
+      schemaVersion: BACKUP_V13_SCHEMA_VERSION,
     },
   });
 
@@ -266,7 +512,7 @@ export async function createPersistentBackupSnapshot(input: {
     metadata: {
       checksum,
       checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
-      schemaVersion: BACKUP_SCHEMA_VERSION,
+      schemaVersion: BACKUP_V13_SCHEMA_VERSION,
       label: input.label,
     },
   });
@@ -280,8 +526,75 @@ export async function createPersistentBackupSnapshot(input: {
     checksumAlgorithm: row.checksumAlgorithm,
     schemaVersion: row.schemaVersion,
     createdByUserId: row.createdByUserId,
-    snapshot,
+    snapshot: summarySnapshot,
   };
+}
+
+export async function verifyBackupSnapshotForUser(userId: string, backupId: string): Promise<BackupVerificationResult> {
+  if (!isDatabaseConfigured()) {
+    throw new BackupArtifactError(
+      "BACKUP_VERIFICATION_UNAVAILABLE",
+      400,
+      "Backup verification requires a configured database.",
+    );
+  }
+
+  const row = await prisma.opsBackupSnapshot.findFirst({
+    where: {
+      id: backupId,
+      ownerUserId: userId,
+    },
+  });
+
+  if (!row) {
+    throw new BackupArtifactError("BACKUP_NOT_FOUND", 404, "Backup snapshot not found.");
+  }
+
+  const parsedSchemaVersion = parseSnapshotSchemaVersion(row.schemaVersion, row.snapshotJson);
+  if (parsedSchemaVersion === BACKUP_LEGACY_M12_SCHEMA_VERSION) {
+    return buildVerificationResult({
+      backupId: row.id,
+      schemaVersion: BACKUP_LEGACY_M12_SCHEMA_VERSION,
+      checksumStatus: "not_available",
+      artifactValidity: "legacy_valid",
+      externalReferenceStatus: "not_applicable",
+      recoveryArtifactStatus: "legacy_summary_only",
+      reason: "legacy_summary_only",
+    });
+  }
+
+  if (parsedSchemaVersion !== BACKUP_V13_SCHEMA_VERSION) {
+    throw new BackupArtifactError(
+      "BACKUP_SCHEMA_UNSUPPORTED",
+      422,
+      "Unsupported backup schema version.",
+    );
+  }
+
+  if (!isBackupV13Artifact(row.snapshotJson)) {
+    throw new BackupArtifactError("BACKUP_ARTIFACT_MALFORMED", 422, "Backup artifact is malformed.");
+  }
+
+  const artifact = row.snapshotJson;
+  if (artifact.backupId !== row.id) {
+    throw new BackupArtifactError("BACKUP_ARTIFACT_ID_MISMATCH", 422, "Artifact backupId does not match row id.");
+  }
+
+  const recomputed = computeArtifactChecksumHex(artifact);
+  if (artifact.checksum !== recomputed || row.checksum !== recomputed) {
+    throw new BackupArtifactError("BACKUP_CHECKSUM_MISMATCH", 422, "Backup checksum does not match canonical content.");
+  }
+
+  const external = await verifyExternalReferences(artifact);
+  return buildVerificationResult({
+    backupId: row.id,
+    schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+    checksumStatus: "verified_match",
+    artifactValidity: "valid",
+    externalReferenceStatus: external.status,
+    recoveryArtifactStatus: "verification_ready",
+    reason: external.reason,
+  });
 }
 
 export async function runPersistentRetention(input: RunRetentionExecutionInput): Promise<OpsMutationResult> {
@@ -622,12 +935,14 @@ function buildBackupSnapshot(ownerUserId: string): BackupSnapshotRecord["snapsho
 
 function asBackupSnapshot(value: Prisma.JsonValue): BackupSnapshotRecord["snapshot"] {
   const snapshot = asRecord(value);
+  const maybeSummary = asRecord(snapshot.summarySnapshot as Prisma.JsonValue | null);
+  const source = Object.keys(maybeSummary).length > 0 ? maybeSummary : snapshot;
   return {
-    clientsCount: asNumber(snapshot.clientsCount),
-    consultationsCount: asNumber(snapshot.consultationsCount),
-    appointmentsCount: asNumber(snapshot.appointmentsCount),
-    notificationsCount: asNumber(snapshot.notificationsCount),
-    workspacesCount: asNumber(snapshot.workspacesCount),
+    clientsCount: asNumber(source.clientsCount),
+    consultationsCount: asNumber(source.consultationsCount),
+    appointmentsCount: asNumber(source.appointmentsCount),
+    notificationsCount: asNumber(source.notificationsCount),
+    workspacesCount: asNumber(source.workspacesCount),
   };
 }
 
@@ -691,7 +1006,7 @@ function computeRetentionFingerprint(input: { ownerUserId: string; olderThanDays
 
 function computeBackupChecksum(ownerUserId: string, snapshot: BackupSnapshotRecord["snapshot"]): string {
   const canonicalPayload = canonicalize({
-    schemaVersion: BACKUP_SCHEMA_VERSION,
+    schemaVersion: BACKUP_V13_SCHEMA_VERSION,
     ownerScope: ownerUserId,
     snapshotJson: snapshot,
   });

@@ -39,7 +39,7 @@ describe("ops backups route", () => {
         createdAt: "2026-07-21T10:00:00.000Z",
         checksum: "a".repeat(64),
         checksumAlgorithm: "sha256",
-        schemaVersion: "m12.v1",
+        schemaVersion: "m13.v1",
         createdByUserId: "user-1",
         snapshot: {
           clientsCount: 1,
@@ -72,7 +72,7 @@ describe("ops backups route", () => {
       createdAt: "2026-07-21T10:00:00.000Z",
       checksum: "b".repeat(64),
       checksumAlgorithm: "sha256",
-      schemaVersion: "m12.v1",
+      schemaVersion: "m13.v1",
       createdByUserId: "user-1",
       snapshot: {
         clientsCount: 2,
@@ -100,5 +100,26 @@ describe("ops backups route", () => {
 
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toMatchObject({ error: "Unauthorized" });
+  });
+
+  it("rejects unexpected request fields", async () => {
+    const response = await POST({ json: async () => ({ label: "ok", force: true }) } as never);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: "BACKUP_REQUEST_INVALID_FIELD" });
+  });
+
+  it("rejects non-string label", async () => {
+    const response = await POST({ json: async () => ({ label: 42 }) } as never);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: "BACKUP_LABEL_INVALID_TYPE" });
+  });
+
+  it("rejects too-long label", async () => {
+    const response = await POST({ json: async () => ({ label: "a".repeat(121) }) } as never);
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: "BACKUP_LABEL_TOO_LONG" });
   });
 });

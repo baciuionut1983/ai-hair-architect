@@ -502,6 +502,170 @@ export interface BackupSnapshotRecord {
   };
 }
 
+export type BackupVerifyChecksumStatus =
+  | "verified_match"
+  | "verified_mismatch"
+  | "not_available"
+  | "not_applicable";
+
+export type BackupVerifyArtifactValidity =
+  | "valid"
+  | "legacy_valid"
+  | "malformed"
+  | "unsupported_schema";
+
+export type BackupVerifyExternalReferenceStatus =
+  | "all_exist_integrity_unverified"
+  | "missing_objects"
+  | "not_applicable";
+
+export type BackupRecoveryArtifactStatus = "verification_ready" | "legacy_summary_only" | "invalid";
+
+export type BackupVerifyReason =
+  | "legacy_summary_only"
+  | "checksum_mismatch"
+  | "unsupported_schema_version"
+  | "artifact_malformed"
+  | "missing_external_object"
+  | "external_binary_integrity_unavailable"
+  | "artifact_id_mismatch"
+  | "external_reference_unsafe";
+
+export interface BackupV13ClientSectionRow {
+  id: string;
+  name: string;
+  ownerUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackupV13AnalysisSectionRow {
+  id: string;
+  clientId: string;
+  ownerUserId: string;
+  goal: string;
+  hairType: string;
+  density: string;
+  porosity: string;
+  phase: string;
+  clarificationRound: number;
+  confidenceScore: number;
+  uncertaintyReasons: unknown;
+  followUpQuestions: unknown;
+  recommendations: unknown;
+  safetyNotes: unknown;
+  faceShape: string | null;
+  headShape: string | null;
+  hairLength: string | null;
+  hairTexture: string | null;
+  hairCondition: string | null;
+  growthPattern: string | null;
+  targetShape: string | null;
+  technicalCutPlan: unknown;
+  clarificationAnswers: unknown;
+  imageAssetId: string | null;
+  imageAnalysisId: string | null;
+  m8DraftCreatedAt: string | null;
+  m8FinalizedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackupV13ImageAssetSectionRow {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  ownerUserId: string;
+  clientId: string;
+  storagePath: string;
+  exifStripped: boolean;
+  normalizedOrientation: number;
+  uploadedAt: string;
+  deletedAt: string | null;
+  retentionDeletesAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackupV13ImageAnalysisSectionRow {
+  id: string;
+  assetId: string;
+  status: string;
+  providerName: string;
+  modelVersion: string;
+  analysisPayload: unknown;
+  confidences: unknown;
+  unknownFields: unknown;
+  warnings: unknown;
+  limitations: unknown;
+  consentTimestamp: string;
+  deletedAt: string | null;
+  retentionDeletesAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackupV13ImageAnalysisReviewSectionRow {
+  id: string;
+  analysisId: string;
+  reviewedByUserId: string;
+  manualCorrections: unknown;
+  confirmationTimestamp: string | null;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackupV13Artifact {
+  schemaVersion: "m13.v1";
+  canonicalSerializationVersion: "sorted-json-v1";
+  checksumAlgorithm: "sha256";
+  checksum: string | null;
+  backupId: string;
+  ownerUserId: string;
+  createdByUserId: string;
+  label: string;
+  createdAt: string;
+  summarySnapshot: BackupSnapshotRecord["snapshot"];
+  counts: {
+    clients: number;
+    analyses: number;
+    imageAssets: number;
+    imageAnalyses: number;
+    imageAnalysisReviews: number;
+  };
+  limits: {
+    maxArtifactBytes: number;
+    maxSectionBytes: number;
+    maxRowsPerSection: {
+      clients: number;
+      analyses: number;
+      imageAssets: number;
+      imageAnalyses: number;
+      imageAnalysisReviews: number;
+    };
+  };
+  sections: {
+    clients: BackupV13ClientSectionRow[];
+    analyses: BackupV13AnalysisSectionRow[];
+    imageAssets: BackupV13ImageAssetSectionRow[];
+    imageAnalyses: BackupV13ImageAnalysisSectionRow[];
+    imageAnalysisReviews: BackupV13ImageAnalysisReviewSectionRow[];
+  };
+}
+
+export interface BackupVerificationResult {
+  backupId: string;
+  schemaVersion: string | null;
+  checksumStatus: BackupVerifyChecksumStatus;
+  artifactValidity: BackupVerifyArtifactValidity;
+  externalReferenceStatus: BackupVerifyExternalReferenceStatus;
+  recoveryArtifactStatus: BackupRecoveryArtifactStatus;
+  reason: BackupVerifyReason | null;
+  verifiedAt: string;
+}
+
 export interface RetentionRunResult {
   runId?: string;
   status?: "dry_run_completed" | "execution_completed" | "execution_failed";
