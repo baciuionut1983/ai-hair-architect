@@ -198,6 +198,30 @@ export async function resolveOpsSessionUser(token: string | null): Promise<AuthS
   return user;
 }
 
+export async function resolveOpsSessionUserReadOnly(token: string | null): Promise<AuthSessionResponse["user"] | null> {
+  const inMemoryUser = getSession(token);
+  if (inMemoryUser) {
+    return inMemoryUser;
+  }
+
+  if (!token) {
+    return null;
+  }
+
+  const persisted = await findPersistenceUserBySessionToken(token);
+  if (!persisted) {
+    return null;
+  }
+
+  return {
+    id: persisted.id,
+    email: persisted.email,
+    role: persisted.role,
+    locale: persisted.locale,
+    createdAt: persisted.createdAt,
+  };
+}
+
 export async function listOpsAuditEventsForUser(userId: string): Promise<OpsAuditEventView[]> {
   if (!isDatabaseConfigured()) {
     return getAuditEventsForUser(userId).map((event) => ({

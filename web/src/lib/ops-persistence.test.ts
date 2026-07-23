@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { __testUtils } from "@/lib/ops-persistence";
+import { __testUtils, resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
+import { createSession, store, upsertUser } from "@/lib/milestone1-store";
 
 describe("M12 ops persistence utilities", () => {
   it("produces stable backup checksum for the same logical snapshot", () => {
@@ -64,5 +65,27 @@ describe("M12 ops persistence utilities", () => {
   it("derives a stable advisory lock key per owner scope", () => {
     expect(__testUtils.deriveAdvisoryLockKey("user-1")).toBe(__testUtils.deriveAdvisoryLockKey("user-1"));
     expect(__testUtils.deriveAdvisoryLockKey("user-1")).not.toBe(__testUtils.deriveAdvisoryLockKey("user-2"));
+  });
+
+  it("resolves a session without mutating persistent state", async () => {
+    const user = upsertUser({
+      id: "user-readonly",
+      email: "readonly@example.com",
+      passwordHash: "hash",
+      role: "professional",
+      locale: "en",
+      createdAt: new Date().toISOString(),
+    });
+    const token = createSession(user.id);
+
+    try {
+      await expect(resolveOpsSessionUserReadOnly(token)).resolves.toMatchObject({
+        id: user.id,
+        email: user.email,
+      });
+    } finally {
+      store.sessions.delete(token);
+      store.users = store.users.filter((entry) => entry.id !== user.id);
+    }
   });
 });

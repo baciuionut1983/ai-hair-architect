@@ -531,6 +531,79 @@ export type BackupVerifyReason =
   | "artifact_id_mismatch"
   | "external_reference_unsafe";
 
+export type BackupRestorePreviewChecksumStatus = "valid" | "mismatch" | "unavailable";
+
+export type BackupRestorePreviewArtifactValidity = "valid" | "invalid" | "unsupported_schema";
+
+export type BackupRestorePreviewExternalReferenceStatus =
+  | "none"
+  | "all_exist_integrity_unverified"
+  | "missing"
+  | "unsafe";
+
+export type BackupRestorePreviewSection =
+  | "clients"
+  | "analyses"
+  | "imageAssets"
+  | "imageAnalyses"
+  | "imageAnalysisReviews";
+
+export type BackupRestorePreviewIssueCode =
+  | "OWNER_SCOPE_MISMATCH"
+  | "REFERENCE_MISSING"
+  | "REFERENCE_OWNER_MISMATCH"
+  | "REFERENCE_GRAPH_INVALID"
+  | "SCHEMA_DRIFT"
+  | "EXTERNAL_FILE_MISSING"
+  | "EXTERNAL_PATH_UNSAFE"
+  | "BACKUP_OLDER_THAN_CURRENT_STATE"
+  | "CURRENT_STATE_HAS_EXTRA_ROWS"
+  | "CHECKSUM_MISMATCH"
+  | "UNSUPPORTED_SCHEMA"
+  | "ARTIFACT_INVALID";
+
+export interface BackupRestorePreviewIssue {
+  code: BackupRestorePreviewIssueCode;
+  section: BackupRestorePreviewSection | null;
+  recordId: string | null;
+  referenceId: string | null;
+  messageSafe: string;
+}
+
+export interface BackupRestorePreviewImpactSection {
+  backupCount: number;
+  currentCount: number;
+  wouldCreate: number;
+  wouldReplace: number;
+  wouldDelete: number;
+  unchanged: number;
+  conflictCount: number;
+}
+
+export interface BackupRestorePreviewResponse {
+  backupId: string;
+  schemaVersion: string;
+  eligibleForRestorePlanning: boolean;
+  checksumStatus: BackupRestorePreviewChecksumStatus;
+  artifactValidity: BackupRestorePreviewArtifactValidity;
+  externalReferenceStatus: BackupRestorePreviewExternalReferenceStatus;
+  backupStateFingerprint: string;
+  currentStateFingerprint: string;
+  previewFingerprint: string;
+  latestBackupUpdatedAt: string | null;
+  latestCurrentUpdatedAt: string | null;
+  impact: {
+    clients: BackupRestorePreviewImpactSection;
+    analyses: BackupRestorePreviewImpactSection;
+    imageAssets: BackupRestorePreviewImpactSection;
+    imageAnalyses: BackupRestorePreviewImpactSection;
+    imageAnalysisReviews: BackupRestorePreviewImpactSection;
+  };
+  conflicts: BackupRestorePreviewIssue[];
+  warnings: BackupRestorePreviewIssue[];
+  blockingReasons: BackupRestorePreviewIssue[];
+}
+
 export interface BackupV13ClientSectionRow {
   id: string;
   name: string;
