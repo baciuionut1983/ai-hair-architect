@@ -740,6 +740,65 @@ export type BackupRestoreRunMaintenanceResponse =
   | BackupRestoreRunMaintenanceDryRunResponse
   | BackupRestoreRunMaintenanceExecutionResponse;
 
+export interface BackupRestoreRunRetentionSummary {
+  restoreRunCandidatesCount: number;
+  maintenanceRunCandidatesCount: number;
+  totalCandidatesCount: number;
+  eligibleBeyondBatchRestoreRunCount: number;
+  eligibleBeyondBatchMaintenanceRunCount: number;
+  restoreRunIdsSample: string[];
+  maintenanceRunIdsSample: string[];
+}
+
+export interface BackupRestoreRunRetentionDryRunRequest {
+  mode: "dry_run";
+  policyVersion: "m13f-v1";
+  batchLimit: number;
+}
+
+export interface BackupRestoreRunRetentionExecutionRequest {
+  mode: "execution";
+  policyVersion: "m13f-v1";
+  batchLimit: number;
+  evaluationTime: string;
+  retentionFingerprint: string;
+  executionIdempotencyKey: string;
+  acknowledgeDeletion: true;
+}
+
+export type BackupRestoreRunRetentionRequest =
+  | BackupRestoreRunRetentionDryRunRequest
+  | BackupRestoreRunRetentionExecutionRequest;
+
+export interface BackupRestoreRunRetentionDryRunResponse {
+  mode: "dry_run";
+  policyVersion: "m13f-v1";
+  batchLimit: number;
+  evaluationTime: string;
+  retentionFingerprint: string;
+  summary: BackupRestoreRunRetentionSummary;
+}
+
+export interface BackupRestoreRunRetentionExecutionResponse {
+  mode: "execution";
+  runId: string;
+  status: "completed";
+  replayed: boolean;
+  policyVersion: "m13f-v1";
+  batchLimit: number;
+  evaluationTime: string;
+  retentionFingerprint: string;
+  summary: BackupRestoreRunRetentionSummary;
+  deletedCounts: {
+    restoreRunsDeleted: number;
+    maintenanceRunsDeleted: number;
+  };
+}
+
+export type BackupRestoreRunRetentionResponse =
+  | BackupRestoreRunRetentionDryRunResponse
+  | BackupRestoreRunRetentionExecutionResponse;
+
 export interface BackupV13ClientSectionRow {
   id: string;
   name: string;

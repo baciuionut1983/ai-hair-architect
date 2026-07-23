@@ -66,6 +66,12 @@ enum OpsBackupRestoreMaintenanceRunStatus {
   failed
 }
 
+enum OpsBackupRestoreRetentionRunStatus {
+  running
+  completed
+  failed
+}
+
 model User {
   id           String            @id @default(uuid())
   email        String            @unique
@@ -234,82 +240,112 @@ model OpsBackupSnapshot {
 }
 
 model OpsBackupRestoreRun {
-  id                             String                   @id @default(cuid())
-  ownerUserId                    String                   @db.Uuid
-  backupId                       String                   @db.VarChar(120)
-  actorUserId                    String                   @db.Uuid
-  correlationRequestId           String                   @db.VarChar(120)
-  strategy                       String                   @db.VarChar(32)
-  previewFingerprint             String                   @db.VarChar(64)
-  currentStateFingerprint        String                   @db.VarChar(64)
-  status                         OpsBackupRestoreRunStatus
-  attemptCount                   Int                      @default(0)
-  maxAttempts                    Int                      @default(3)
-  startedAt                      DateTime                 @db.Timestamp(6)
-  finishedAt                     DateTime?                @db.Timestamp(6)
-  finalErrorCode                 String?                  @db.VarChar(80)
-  deletedClientCount             Int?
-  deletedAnalysisCount           Int?
-  deletedImageAssetCount         Int?
-  deletedImageAnalysisCount      Int?
-  deletedImageAnalysisReviewCount Int?
-  restoredClientCount            Int?
-  restoredAnalysisCount          Int?
-  restoredImageAssetCount        Int?
-  restoredImageAnalysisCount     Int?
+  id                               String                    @id @default(cuid())
+  ownerUserId                      String                    @db.Uuid
+  backupId                         String                    @db.VarChar(120)
+  actorUserId                      String                    @db.Uuid
+  correlationRequestId             String                    @db.VarChar(120)
+  strategy                         String                    @db.VarChar(32)
+  previewFingerprint               String                    @db.VarChar(64)
+  currentStateFingerprint          String                    @db.VarChar(64)
+  status                           OpsBackupRestoreRunStatus
+  attemptCount                     Int                       @default(0)
+  maxAttempts                      Int                       @default(3)
+  startedAt                        DateTime                  @db.Timestamp(6)
+  finishedAt                       DateTime?                 @db.Timestamp(6)
+  finalErrorCode                   String?                   @db.VarChar(80)
+  deletedClientCount               Int?
+  deletedAnalysisCount             Int?
+  deletedImageAssetCount           Int?
+  deletedImageAnalysisCount        Int?
+  deletedImageAnalysisReviewCount  Int?
+  restoredClientCount              Int?
+  restoredAnalysisCount            Int?
+  restoredImageAssetCount          Int?
+  restoredImageAnalysisCount       Int?
   restoredImageAnalysisReviewCount Int?
-  warningCodes                   Json?
-  createdAt                      DateTime                 @default(now()) @db.Timestamp(6)
-  updatedAt                      DateTime                 @updatedAt @db.Timestamp(6)
+  warningCodes                     Json?
+  createdAt                        DateTime                  @default(now()) @db.Timestamp(6)
+  updatedAt                        DateTime                  @updatedAt @db.Timestamp(6)
 
   @@index([ownerUserId, startedAt, id])
   @@index([ownerUserId, status, startedAt, id])
+  @@index([ownerUserId, status, finishedAt, id])
   @@index([ownerUserId, backupId, startedAt, id])
   @@index([ownerUserId, correlationRequestId, startedAt, id])
 }
 
 model OpsBackupRestoreMaintenanceRun {
-  id                               String                              @id @default(cuid())
-  ownerUserId                      String                              @db.Uuid
-  actorUserId                      String                              @db.Uuid
-  status                           OpsBackupRestoreMaintenanceRunStatus
-  staleThresholdMinutes            Int
-  evaluationTime                   DateTime                            @db.Timestamp(6)
-  maintenanceFingerprint           String                              @db.VarChar(64)
-  executionIdempotencyKey          String                              @db.VarChar(190)
-  idempotencyFingerprint           String                              @db.VarChar(64)
-  advisoryLockKey                  String                              @db.VarChar(32)
-  candidatesScanned                Int                                 @default(0)
-  candidatesReconciledIndeterminate Int                                @default(0)
-  finalErrorCode                   String?                             @db.VarChar(80)
-  startedAt                        DateTime                            @db.Timestamp(6)
-  finishedAt                       DateTime?                           @db.Timestamp(6)
-  createdAt                        DateTime                            @default(now()) @db.Timestamp(6)
-  updatedAt                        DateTime                            @updatedAt @db.Timestamp(6)
+  id                                String                               @id @default(cuid())
+  ownerUserId                       String                               @db.Uuid
+  actorUserId                       String                               @db.Uuid
+  status                            OpsBackupRestoreMaintenanceRunStatus
+  staleThresholdMinutes             Int
+  evaluationTime                    DateTime                             @db.Timestamp(6)
+  maintenanceFingerprint            String                               @db.VarChar(64)
+  executionIdempotencyKey           String                               @db.VarChar(190)
+  idempotencyFingerprint            String                               @db.VarChar(64)
+  advisoryLockKey                   String                               @db.VarChar(32)
+  candidatesScanned                 Int                                  @default(0)
+  candidatesReconciledIndeterminate Int                                  @default(0)
+  finalErrorCode                    String?                              @db.VarChar(80)
+  startedAt                         DateTime                             @db.Timestamp(6)
+  finishedAt                        DateTime?                            @db.Timestamp(6)
+  createdAt                         DateTime                             @default(now()) @db.Timestamp(6)
+  updatedAt                         DateTime                             @updatedAt @db.Timestamp(6)
 
   @@unique([ownerUserId, executionIdempotencyKey])
   @@index([ownerUserId, status, startedAt])
+  @@index([ownerUserId, status, finishedAt, id])
   @@index([ownerUserId, createdAt])
   @@index([ownerUserId, evaluationTime])
 }
 
+model OpsBackupRestoreRetentionRun {
+  id                           String                             @id @default(cuid())
+  ownerUserId                  String                             @db.Uuid
+  actorUserId                  String                             @db.Uuid
+  status                       OpsBackupRestoreRetentionRunStatus
+  policyVersion                String                             @db.VarChar(32)
+  batchLimit                   Int
+  evaluationTime               DateTime                           @db.Timestamp(6)
+  retentionFingerprint         String                             @db.VarChar(64)
+  executionIdempotencyKey      String                             @db.VarChar(190)
+  idempotencyFingerprint       String                             @db.VarChar(64)
+  advisoryLockKey              String                             @db.VarChar(32)
+  candidateRestoreRunCount     Int                                @default(0)
+  candidateMaintenanceRunCount Int                                @default(0)
+  deletedRestoreRunCount       Int                                @default(0)
+  deletedMaintenanceRunCount   Int                                @default(0)
+  finalErrorCode               String?                            @db.VarChar(80)
+  startedAt                    DateTime                           @db.Timestamp(6)
+  finishedAt                   DateTime?                          @db.Timestamp(6)
+  createdAt                    DateTime                           @default(now()) @db.Timestamp(6)
+  updatedAt                    DateTime                           @updatedAt @db.Timestamp(6)
+
+  @@unique([ownerUserId, executionIdempotencyKey])
+  @@index([ownerUserId, status, startedAt])
+  @@index([ownerUserId, evaluationTime])
+  @@index([ownerUserId, createdAt])
+}
+
 model OpsRetentionRun {
-  id                      String   @id @default(cuid())
-  ownerUserId             String   @db.Uuid
-  mode                    String   @db.VarChar(16)
-  status                  String   @db.VarChar(32)
+  id                      String    @id @default(cuid())
+  ownerUserId             String    @db.Uuid
+  mode                    String    @db.VarChar(16)
+  status                  String    @db.VarChar(32)
   olderThanDays           Int
-  reasonAuditSafe         String?  @db.VarChar(200)
-  executionIdempotencyKey String?  @db.VarChar(190)
-  idempotencyFingerprint  String?  @db.VarChar(64)
-  advisoryLockKey         String   @db.VarChar(32)
-  startedAt               DateTime @db.Timestamp(6)
+  reasonAuditSafe         String?   @db.VarChar(200)
+  executionIdempotencyKey String?   @db.VarChar(190)
+  idempotencyFingerprint  String?   @db.VarChar(64)
+  advisoryLockKey         String    @db.VarChar(32)
+  startedAt               DateTime  @db.Timestamp(6)
   finishedAt              DateTime? @db.Timestamp(6)
   pushQueueAffected       Int
   auditEventsAffected     Int
-  errorCode               String?  @db.VarChar(80)
-  errorMessageSafe        String?  @db.VarChar(500)
-  createdAt               DateTime @default(now()) @db.Timestamp(6)
+  errorCode               String?   @db.VarChar(80)
+  errorMessageSafe        String?   @db.VarChar(500)
+  createdAt               DateTime  @default(now()) @db.Timestamp(6)
 
   @@unique([ownerUserId, executionIdempotencyKey])
   @@index([ownerUserId, createdAt])
@@ -317,13 +353,13 @@ model OpsRetentionRun {
 }
 
 model OpsPushQueueEntry {
-  id          String   @id @default(cuid())
-  ownerUserId String   @db.Uuid
-  channel     String   @db.VarChar(16)
-  title       String   @db.VarChar(160)
-  body        String   @db.Text
-  status      String   @db.VarChar(16)
-  createdAt   DateTime @default(now()) @db.Timestamp(6)
+  id          String    @id @default(cuid())
+  ownerUserId String    @db.Uuid
+  channel     String    @db.VarChar(16)
+  title       String    @db.VarChar(160)
+  body        String    @db.Text
+  status      String    @db.VarChar(16)
+  createdAt   DateTime  @default(now()) @db.Timestamp(6)
   processedAt DateTime? @db.Timestamp(6)
 
   @@index([ownerUserId, createdAt])

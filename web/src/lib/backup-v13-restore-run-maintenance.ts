@@ -22,6 +22,7 @@ const MAX_DRY_RUN_AGE_MS = 30 * 60 * 1000;
 const MIN_STALE_THRESHOLD_MINUTES = 1;
 const MAX_STALE_THRESHOLD_MINUTES = 24 * 60;
 const MAINTENANCE_FINGERPRINT_VERSION = "m13e-v1" as const;
+const GOVERNANCE_LOCK_NAMESPACE = "ops-backup-restore-governance";
 
 const FINAL_ERROR_CODE_STALE_INDETERMINATE = "BACKUP_RESTORE_RUN_STALE_INDETERMINATE";
 const FINAL_ERROR_CODE_LOCK_CONFLICT = "BACKUP_RESTORE_MAINTENANCE_LOCK_CONFLICT";
@@ -605,8 +606,14 @@ function computeIdempotencyFingerprint(input: {
 }
 
 function deriveAdvisoryLockKey(ownerUserId: string): string {
-  const digest = createHash("sha256").update(`ops-backup-restore-maintenance:${ownerUserId}`, "utf8").digest();
+  const digest = createHash("sha256")
+    .update(`${GOVERNANCE_LOCK_NAMESPACE}:${ownerUserId}`, "utf8")
+    .digest();
   return digest.readBigInt64BE(0).toString();
+}
+
+export function deriveBackupRestoreGovernanceAdvisoryLockKey(ownerUserId: string): string {
+  return deriveAdvisoryLockKey(ownerUserId);
 }
 
 async function tryAcquireAdvisoryXactLock(tx: Prisma.TransactionClient, advisoryLockKey: string): Promise<boolean> {
@@ -659,5 +666,5 @@ class ReplayResultError extends Error {
 export const __testUtils = {
   computeMaintenanceFingerprint,
   computeIdempotencyFingerprint,
-  deriveAdvisoryLockKey,
+  deriveAdvisoryLockKey: deriveBackupRestoreGovernanceAdvisoryLockKey,
 };

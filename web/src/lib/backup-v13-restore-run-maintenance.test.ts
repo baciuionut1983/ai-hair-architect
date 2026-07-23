@@ -1,3 +1,5 @@
+import { createHash } from "crypto";
+
 import { Prisma } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -706,5 +708,11 @@ describe("backup-v13-restore-run-maintenance", () => {
     expect(a).toBe(b);
     expect(c).not.toBe(a);
     expect(typeof BigInt(a)).toBe("bigint");
+  });
+
+  it("derives lock from shared governance namespace", () => {
+    const namespace = "ops-backup-restore-governance:owner-1";
+    const expected = createHash("sha256").update(namespace, "utf8").digest().readBigInt64BE(0).toString();
+    expect(__testUtils.deriveAdvisoryLockKey("owner-1")).toBe(expected);
   });
 });
