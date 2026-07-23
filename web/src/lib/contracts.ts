@@ -604,6 +604,47 @@ export interface BackupRestorePreviewResponse {
   blockingReasons: BackupRestorePreviewIssue[];
 }
 
+export type BackupRestoreStrategy = "replace_all";
+
+export interface BackupRestoreRequest {
+  previewFingerprint: string;
+  currentStateFingerprint: string;
+  strategy: BackupRestoreStrategy;
+  acknowledgeDataLoss: true;
+}
+
+export type BackupRestoreWarningCode =
+  | "BACKUP_OLDER_THAN_CURRENT_STATE"
+  | "CURRENT_STATE_HAS_EXTRA_ROWS";
+
+export interface BackupRestoreWarning {
+  code: BackupRestoreWarningCode;
+  messageSafe: string;
+}
+
+export interface BackupRestoreCounts {
+  clients: number;
+  analyses: number;
+  imageAssets: number;
+  imageAnalyses: number;
+  imageAnalysisReviews: number;
+}
+
+export interface BackupRestoreResponse {
+  backupId: string;
+  status: "completed";
+  strategy: "replace_all";
+  appliedPreviewFingerprint: string;
+  previousCurrentStateFingerprint: string;
+  backupStateFingerprint: string;
+  restoredStateFingerprint: string;
+  deletedCounts: BackupRestoreCounts;
+  restoredCounts: BackupRestoreCounts;
+  startedAt: string;
+  finishedAt: string;
+  warnings: BackupRestoreWarning[];
+}
+
 export interface BackupV13ClientSectionRow {
   id: string;
   name: string;

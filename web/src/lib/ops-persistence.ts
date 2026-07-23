@@ -80,6 +80,8 @@ export interface OpsMutationResult {
   body: { backup?: BackupSnapshotRecord; backups?: BackupSnapshotRecord[]; result?: RetentionRunResult; error?: string; message?: string; requestId?: string };
 }
 
+type AuditLogWriterClient = Pick<Prisma.TransactionClient, "auditLog">;
+
 export async function enqueuePersistentPushNotification(input: {
   userId: string;
   channel: "in_app" | "email" | "push";
@@ -1288,15 +1290,30 @@ async function logOpsAuditEvent(input: {
   resourceId?: string;
   metadata: Record<string, unknown>;
 }): Promise<void> {
+  await writeOpsAuditEvent(input);
+}
+
+export async function writeOpsAuditEvent(input: {
+  actorUserId: string;
+  action: string;
+  status: "success" | "failure";
+  correlationRequestId: string;
+  resourceId?: string;
+  metadata: Record<string, unknown>;
+}, client?: AuditLogWriterClient, options?: { strict?: boolean }): Promise<void> {
   if (!isDatabaseConfigured()) {
     return;
   }
 
   try {
-    await prisma.auditLog.create({
+    await (client ?? prisma).auditLog.create({
       data: buildAuditLogCreateInput(input),
     });
   } catch (error) {
+    if (options?.strict) {
+      throw error;
+    }
+
     console.error("[OPS_AUDIT_ERROR]", error instanceof Error ? error.message : String(error));
   }
 }

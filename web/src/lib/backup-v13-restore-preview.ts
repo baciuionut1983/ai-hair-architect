@@ -42,7 +42,7 @@ type ComparableState = {
   imageAnalysisReviews: NormalizedImageAnalysisReviewRow[];
 };
 
-interface RestorePreviewDataSource {
+export interface RestorePreviewDataSource {
   ownerUserId: string;
   backupId: string;
   backupRow: BackupSnapshotRow;
@@ -50,7 +50,7 @@ interface RestorePreviewDataSource {
   currentState: CurrentStateRows;
 }
 
-interface BackupSnapshotRow {
+export interface BackupSnapshotRow {
   id: string;
   ownerUserId: string;
   checksum: string;
@@ -59,7 +59,7 @@ interface BackupSnapshotRow {
   snapshotJson: unknown;
 }
 
-interface CurrentStateRows {
+export interface CurrentStateRows {
   clients: CurrentClientRow[];
   analyses: CurrentAnalysisRow[];
   imageAssets: CurrentImageAssetRow[];
@@ -266,6 +266,19 @@ export async function getBackupRestorePreviewForUser(ownerUserId: string, backup
   return buildBackupRestorePreview(source);
 }
 
+export async function getBackupRestorePreviewForUserWithTransaction(
+  tx: Prisma.TransactionClient,
+  ownerUserId: string,
+  backupId: string,
+): Promise<BackupRestorePreviewResponse> {
+  const source = await loadRestorePreviewSourceWithTransaction(tx, ownerUserId, backupId);
+  if (!source) {
+    throw new BackupArtifactError("BACKUP_NOT_FOUND", 404, "Backup snapshot not found.");
+  }
+
+  return buildBackupRestorePreview(source);
+}
+
 export async function loadRestorePreviewSource(ownerUserId: string, backupId: string): Promise<RestorePreviewDataSource | null> {
   if (!isDatabaseConfigured()) {
     throw new BackupArtifactError(
@@ -279,29 +292,50 @@ export async function loadRestorePreviewSource(ownerUserId: string, backupId: st
     ? { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead }
     : undefined;
 
-  return prisma.$transaction(async (tx) => {
-    const backupRow = await tx.opsBackupSnapshot.findFirst({
-      where: {
-        id: backupId,
-        ownerUserId,
-      },
-    });
+  return prisma.$transaction((tx) => loadRestorePreviewSourceWithTransaction(tx, ownerUserId, backupId), transactionOptions);
+}
 
-    if (!backupRow) {
-      return null;
-    }
-
-    const snapshot = normalizeBackupSnapshotRow(backupRow);
-    const currentState = await readCurrentStateForOwner(tx, ownerUserId);
-
-    return {
+export async function loadRestorePreviewSourceWithTransaction(
+  tx: Prisma.TransactionClient,
+  ownerUserId: string,
+  backupId: string,
+): Promise<RestorePreviewDataSource | null> {
+  const backupRow = await tx.opsBackupSnapshot.findFirst({
+    where: {
+      id: backupId,
       ownerUserId,
-      backupId,
-      backupRow: snapshot.backupRow,
-      backupArtifact: snapshot.backupArtifact,
-      currentState,
-    };
-  }, transactionOptions);
+    },
+  });
+
+  if (!backupRow) {
+    return null;
+  }
+
+  const snapshot = normalizeBackupSnapshotRow(backupRow);
+  const currentState = await readCurrentStateForOwner(tx, ownerUserId);
+
+  return {
+    ownerUserId,
+    backupId,
+    backupRow: snapshot.backupRow,
+    backupArtifact: snapshot.backupArtifact,
+    currentState,
+  };
+}
+
+export async function getCurrentComparableStateFingerprintForOwner(
+  tx: Prisma.TransactionClient,
+  ownerUserId: string,
+): Promise<string> {
+  const currentState = await readCurrentStateForOwner(tx, ownerUserId);
+  return computeStateFingerprint(normalizeCurrentState(currentState, ownerUserId).state);
+}
+
+export function getBackupComparableStateFingerprintForArtifact(
+  artifact: BackupV13Artifact,
+  ownerUserId: string,
+): string {
+  return computeStateFingerprint(normalizeBackupArtifact(artifact, ownerUserId).state);
 }
 
 export async function buildBackupRestorePreview(source: RestorePreviewDataSource): Promise<BackupRestorePreviewResponse> {
