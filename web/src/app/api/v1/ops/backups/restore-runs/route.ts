@@ -7,6 +7,7 @@ import type { BackupRestoreRunStatus } from "@/lib/contracts";
 import { resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
 
 export const dynamic = "force-dynamic";
+const NO_STORE_HEADERS = { "Cache-Control": "no-store" } as const;
 
 export async function GET(request: Request) {
   const cookieStore = await cookies();
@@ -16,7 +17,7 @@ export async function GET(request: Request) {
   if (!sessionUser) {
     return NextResponse.json(
       { error: "UNAUTHORIZED" },
-      { status: 401, headers: { "Cache-Control": "no-store" } },
+      { status: 401, headers: NO_STORE_HEADERS },
     );
   }
 
@@ -40,19 +41,19 @@ export async function GET(request: Request) {
 
     return NextResponse.json(response, {
       status: 200,
-      headers: { "Cache-Control": "no-store" },
+      headers: NO_STORE_HEADERS,
     });
   } catch (error) {
     if (error instanceof BackupArtifactError) {
       return NextResponse.json(
         { error: error.code, message: error.message, details: error.details },
-        { status: error.httpStatus, headers: { "Cache-Control": "no-store" } },
+        { status: error.httpStatus, headers: NO_STORE_HEADERS },
       );
     }
 
     return NextResponse.json(
       { error: "INTERNAL_ERROR", message: "Failed to list restore history." },
-      { status: 500, headers: { "Cache-Control": "no-store" } },
+      { status: 500, headers: NO_STORE_HEADERS },
     );
   }
 }

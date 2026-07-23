@@ -645,7 +645,7 @@ export interface BackupRestoreResponse {
   warnings: BackupRestoreWarning[];
 }
 
-export type BackupRestoreRunStatus = "started" | "completed" | "failed";
+export type BackupRestoreRunStatus = "started" | "completed" | "failed" | "indeterminate";
 
 export interface BackupRestoreRunCounts {
   deletedClientCount: number | null;
@@ -695,6 +695,50 @@ export interface BackupRestoreRunHistoryListInput {
   to?: string;
   correlationRequestId?: string;
 }
+
+export interface BackupRestoreRunMaintenanceSummary {
+  candidateCount: number;
+  reconciledCount: number;
+}
+
+export interface BackupRestoreRunMaintenanceDryRunRequest {
+  mode: "dry_run";
+  staleThresholdMinutes: number;
+}
+
+export interface BackupRestoreRunMaintenanceExecutionRequest {
+  mode: "execution";
+  staleThresholdMinutes: number;
+  evaluationTime: string;
+  maintenanceFingerprint: string;
+  acknowledgeMutation: true;
+  executionIdempotencyKey: string;
+}
+
+export type BackupRestoreRunMaintenanceRequest =
+  | BackupRestoreRunMaintenanceDryRunRequest
+  | BackupRestoreRunMaintenanceExecutionRequest;
+
+export interface BackupRestoreRunMaintenanceDryRunResponse {
+  mode: "dry_run";
+  evaluationTime: string;
+  maintenanceFingerprint: string;
+  summary: BackupRestoreRunMaintenanceSummary;
+}
+
+export interface BackupRestoreRunMaintenanceExecutionResponse {
+  mode: "execution";
+  runId: string;
+  status: "completed";
+  replayed: boolean;
+  evaluationTime: string;
+  maintenanceFingerprint: string;
+  summary: BackupRestoreRunMaintenanceSummary;
+}
+
+export type BackupRestoreRunMaintenanceResponse =
+  | BackupRestoreRunMaintenanceDryRunResponse
+  | BackupRestoreRunMaintenanceExecutionResponse;
 
 export interface BackupV13ClientSectionRow {
   id: string;

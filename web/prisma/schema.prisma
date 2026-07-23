@@ -57,6 +57,13 @@ enum OpsBackupRestoreRunStatus {
   started
   completed
   failed
+  indeterminate
+}
+
+enum OpsBackupRestoreMaintenanceRunStatus {
+  running
+  completed
+  failed
 }
 
 model User {
@@ -259,6 +266,31 @@ model OpsBackupRestoreRun {
   @@index([ownerUserId, status, startedAt, id])
   @@index([ownerUserId, backupId, startedAt, id])
   @@index([ownerUserId, correlationRequestId, startedAt, id])
+}
+
+model OpsBackupRestoreMaintenanceRun {
+  id                               String                              @id @default(cuid())
+  ownerUserId                      String                              @db.Uuid
+  actorUserId                      String                              @db.Uuid
+  status                           OpsBackupRestoreMaintenanceRunStatus
+  staleThresholdMinutes            Int
+  evaluationTime                   DateTime                            @db.Timestamp(6)
+  maintenanceFingerprint           String                              @db.VarChar(64)
+  executionIdempotencyKey          String                              @db.VarChar(190)
+  idempotencyFingerprint           String                              @db.VarChar(64)
+  advisoryLockKey                  String                              @db.VarChar(32)
+  candidatesScanned                Int                                 @default(0)
+  candidatesReconciledIndeterminate Int                                @default(0)
+  finalErrorCode                   String?                             @db.VarChar(80)
+  startedAt                        DateTime                            @db.Timestamp(6)
+  finishedAt                       DateTime?                           @db.Timestamp(6)
+  createdAt                        DateTime                            @default(now()) @db.Timestamp(6)
+  updatedAt                        DateTime                            @updatedAt @db.Timestamp(6)
+
+  @@unique([ownerUserId, executionIdempotencyKey])
+  @@index([ownerUserId, status, startedAt])
+  @@index([ownerUserId, createdAt])
+  @@index([ownerUserId, evaluationTime])
 }
 
 model OpsRetentionRun {

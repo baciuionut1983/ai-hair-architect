@@ -373,11 +373,11 @@ function parseStatus(status: BackupRestoreRunStatus | undefined): BackupRestoreR
     return undefined;
   }
 
-  if (status === "started" || status === "completed" || status === "failed") {
+  if (status === "started" || status === "completed" || status === "failed" || status === "indeterminate") {
     return status;
   }
 
-  throw new BackupArtifactError("RESTORE_HISTORY_STATUS_INVALID", 400, "status must be one of started, completed, failed.");
+  throw new BackupArtifactError("RESTORE_HISTORY_STATUS_INVALID", 400, "status must be one of started, completed, failed, indeterminate.");
 }
 
 function parseIsoDate(value: string | undefined, code: string): Date | null {
@@ -498,7 +498,7 @@ function asNullableDate(value: unknown): string | null {
 }
 
 function asStatus(value: unknown): BackupRestoreRunStatus {
-  if (value === "completed" || value === "failed") {
+  if (value === "completed" || value === "failed" || value === "indeterminate") {
     return value;
   }
 
