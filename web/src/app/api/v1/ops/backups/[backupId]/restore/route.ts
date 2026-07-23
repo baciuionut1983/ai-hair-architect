@@ -1,13 +1,16 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
+import { randomUUID } from "crypto";
 
 import { BackupArtifactError } from "@/lib/backup-v13-artifact";
-import { executeBackupRestoreForUser } from "@/lib/backup-v13-restore-execution";
+import { executeBackupRestoreWithHistory } from "@/lib/backup-v13-restore-run-history";
+import { ensureRequestId } from "@/lib/hardening";
 import { resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
 
 export const dynamic = "force-dynamic";
 
 const FINGERPRINT_REGEX = /^[0-9a-f]{64}$/;
+const REQUEST_ID_REGEX = /^[A-Za-z0-9._:-]{1,120}$/;
 
 export async function POST(request: Request, context: { params: Promise<{ backupId: string }> }) {
   const { backupId } = await context.params;
@@ -78,11 +81,21 @@ export async function POST(request: Request, context: { params: Promise<{ backup
   }
 
   try {
-    const response = await executeBackupRestoreForUser(sessionUser.id, backupId, {
+    const headerRequestId = request.headers?.get?.("x-request-id") ?? null;
+    const normalizedRequestId = ensureRequestId(headerRequestId);
+    const correlationRequestId = REQUEST_ID_REGEX.test(normalizedRequestId) ? normalizedRequestId : randomUUID();
+
+    const response = await executeBackupRestoreWithHistory({
+      ownerUserId: sessionUser.id,
+      actorUserId: sessionUser.id,
+      backupId,
+      correlationRequestId,
+      request: {
       previewFingerprint: body.previewFingerprint,
       currentStateFingerprint: body.currentStateFingerprint,
       strategy: "replace_all",
       acknowledgeDataLoss: true,
+      },
     });
 
     return NextResponse.json(response, {

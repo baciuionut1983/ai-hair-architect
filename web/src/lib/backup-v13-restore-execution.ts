@@ -26,6 +26,15 @@ const MAX_RESTORE_RETRIES = 3;
 
 type RestoreTransactionalClient = Prisma.TransactionClient;
 
+export interface BackupRestoreExecutionInternalResult {
+  response: BackupRestoreResponse;
+  attemptsUsed: 1 | 2 | 3;
+}
+
+export interface BackupRestoreExecutionOptions {
+  correlationRequestId?: string;
+}
+
 type RestoreExecutionSnapshot = {
   clients: Array<{ id: string; ownerUserId: string; name: string; createdAt: Date; updatedAt: Date }>;
   analyses: Array<{
@@ -147,6 +156,16 @@ export async function executeBackupRestoreForUser(
   backupId: string,
   request: BackupRestoreRequest,
 ): Promise<BackupRestoreResponse> {
+  const result = await executeBackupRestoreInternalForUser(ownerUserId, backupId, request);
+  return result.response;
+}
+
+export async function executeBackupRestoreInternalForUser(
+  ownerUserId: string,
+  backupId: string,
+  request: BackupRestoreRequest,
+  options?: BackupRestoreExecutionOptions,
+): Promise<BackupRestoreExecutionInternalResult> {
   if (!isDatabaseConfigured()) {
     throw new BackupArtifactError("BACKUP_RESTORE_UNAVAILABLE", 500, "Backup restore requires a configured database.");
   }
@@ -154,10 +173,14 @@ export async function executeBackupRestoreForUser(
   let lastRetryableError: unknown = null;
   for (let attempt = 1; attempt <= MAX_RESTORE_RETRIES; attempt += 1) {
     try {
-      return await prisma.$transaction(
-        async (tx) => runRestoreAttempt(tx, ownerUserId, backupId, request),
+      const response = await prisma.$transaction(
+        async (tx) => runRestoreAttempt(tx, ownerUserId, backupId, request, options?.correlationRequestId ?? backupId),
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
       );
+      return {
+        response,
+        attemptsUsed: attempt as 1 | 2 | 3,
+      };
     } catch (error) {
       if (isRetryableRestoreConcurrencyError(error) && attempt < MAX_RESTORE_RETRIES) {
         lastRetryableError = error;
@@ -165,40 +188,52 @@ export async function executeBackupRestoreForUser(
       }
 
       if (isRetryableRestoreConcurrencyError(error)) {
-        throw new BackupArtifactError(
+        throw attachAttemptsUsed(
+          new BackupArtifactError(
           "BACKUP_RESTORE_CONCURRENCY_CONFLICT",
           409,
           "Backup restore could not complete due to concurrent changes.",
+          ),
+          attempt,
         );
       }
 
       if (error instanceof Prisma.PrismaClientKnownRequestError) {
         if (error.code === "P2002") {
-          throw new BackupArtifactError(
+          throw attachAttemptsUsed(
+            new BackupArtifactError(
             "BACKUP_RESTORE_UNIQUE_CONFLICT",
             409,
             "Backup restore encountered a unique constraint conflict.",
+            ),
+            attempt,
           );
         }
 
         if (error.code === "P2003") {
-          throw new BackupArtifactError(
+          throw attachAttemptsUsed(
+            new BackupArtifactError(
             "BACKUP_RESTORE_REFERENCE_COLLISION",
             409,
             "Backup restore encountered a foreign-key or reference collision.",
+            ),
+            attempt,
           );
         }
       }
 
-      throw error;
+      throw attachAttemptsUsed(error, attempt);
     }
   }
 
-  throw new BackupArtifactError(
-    "BACKUP_RESTORE_CONCURRENCY_CONFLICT",
-    409,
-    "Backup restore could not complete due to concurrent changes.",
-    { cause: lastRetryableError instanceof Error ? lastRetryableError.message : undefined },
+  throw attachAttemptsUsed(
+    new BackupArtifactError(
+      "BACKUP_RESTORE_CONCURRENCY_CONFLICT",
+      409,
+      "Backup restore could not complete due to concurrent changes.",
+      { cause: lastRetryableError instanceof Error ? lastRetryableError.message : undefined },
+    ),
+    MAX_RESTORE_RETRIES,
   );
 }
 
@@ -207,6 +242,7 @@ async function runRestoreAttempt(
   ownerUserId: string,
   backupId: string,
   request: BackupRestoreRequest,
+  correlationRequestId: string,
 ): Promise<BackupRestoreResponse> {
   const startedAt = new Date();
 
@@ -284,7 +320,7 @@ async function runRestoreAttempt(
       actorUserId: ownerUserId,
       action: "ops.backup.restore.completed",
       status: "success",
-      correlationRequestId: backupId,
+      correlationRequestId,
       resourceId: backupId,
       metadata: {
         backupId,
@@ -641,6 +677,17 @@ function isRetryableRestoreConcurrencyError(error: unknown): boolean {
   }
 
   return false;
+}
+
+function attachAttemptsUsed(error: unknown, attempt: number): unknown {
+  if (!error || typeof error !== "object") {
+    return error;
+  }
+
+  const normalizedAttempt = Math.min(Math.max(attempt, 1), MAX_RESTORE_RETRIES) as 1 | 2 | 3;
+  const value = error as { attemptsUsed?: 1 | 2 | 3 };
+  value.attemptsUsed = normalizedAttempt;
+  return value;
 }
 
 export const __testUtils = {

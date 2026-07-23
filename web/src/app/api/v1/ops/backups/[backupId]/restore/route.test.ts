@@ -16,8 +16,12 @@ vi.mock("@/lib/backup-v13-restore-execution", () => ({
   executeBackupRestoreForUser: vi.fn(),
 }));
 
+vi.mock("@/lib/backup-v13-restore-run-history", () => ({
+  executeBackupRestoreWithHistory: vi.fn(),
+}));
+
 import { POST } from "./route";
-import { executeBackupRestoreForUser } from "@/lib/backup-v13-restore-execution";
+import { executeBackupRestoreWithHistory } from "@/lib/backup-v13-restore-run-history";
 import { resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
 
 const VALID_PREVIEW_FINGERPRINT = "a".repeat(64);
@@ -90,7 +94,7 @@ describe("restore route", () => {
   });
 
   it("returns successful restore payload", async () => {
-    vi.mocked(executeBackupRestoreForUser).mockResolvedValue({
+    vi.mocked(executeBackupRestoreWithHistory).mockResolvedValue({
       backupId: "backup-1",
       status: "completed",
       strategy: "replace_all",
@@ -124,7 +128,7 @@ describe("restore route", () => {
   });
 
   it("maps restore domain errors", async () => {
-    vi.mocked(executeBackupRestoreForUser).mockRejectedValue(
+    vi.mocked(executeBackupRestoreWithHistory).mockRejectedValue(
       new BackupArtifactError("BACKUP_RESTORE_PREVIEW_FINGERPRINT_STALE", 409, "Preview fingerprint no longer matches current restore conditions."),
     );
 
@@ -143,7 +147,7 @@ describe("restore route", () => {
   });
 
   it("returns 500 for unexpected failures", async () => {
-    vi.mocked(executeBackupRestoreForUser).mockRejectedValue(new Error("boom"));
+    vi.mocked(executeBackupRestoreWithHistory).mockRejectedValue(new Error("boom"));
 
     const response = await POST({
       json: async () => ({
@@ -323,7 +327,7 @@ describe("restore route", () => {
   });
 
   it("accepts valid lowercase 64-char hex fingerprints", async () => {
-    vi.mocked(executeBackupRestoreForUser).mockResolvedValue({
+    vi.mocked(executeBackupRestoreWithHistory).mockResolvedValue({
       backupId: "backup-1",
       status: "completed",
       strategy: "replace_all",
@@ -349,11 +353,84 @@ describe("restore route", () => {
 
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
-    expect(executeBackupRestoreForUser).toHaveBeenCalledWith("user-1", "backup-1", {
-      previewFingerprint: VALID_PREVIEW_FINGERPRINT,
-      currentStateFingerprint: VALID_CURRENT_STATE_FINGERPRINT,
-      strategy: "replace_all",
-      acknowledgeDataLoss: true,
+    expect(vi.mocked(executeBackupRestoreWithHistory).mock.calls[0]?.[0]).toMatchObject({
+      ownerUserId: "user-1",
+      actorUserId: "user-1",
+      backupId: "backup-1",
+      request: {
+        previewFingerprint: VALID_PREVIEW_FINGERPRINT,
+        currentStateFingerprint: VALID_CURRENT_STATE_FINGERPRINT,
+        strategy: "replace_all",
+        acknowledgeDataLoss: true,
+      },
     });
+  });
+
+  it("falls back to UUID when x-request-id contains invalid characters", async () => {
+    vi.mocked(executeBackupRestoreWithHistory).mockResolvedValue({
+      backupId: "backup-1",
+      status: "completed",
+      strategy: "replace_all",
+      appliedPreviewFingerprint: VALID_PREVIEW_FINGERPRINT,
+      previousCurrentStateFingerprint: VALID_CURRENT_STATE_FINGERPRINT,
+      backupStateFingerprint: VALID_PREVIEW_FINGERPRINT,
+      restoredStateFingerprint: VALID_PREVIEW_FINGERPRINT,
+      deletedCounts: { clients: 1, analyses: 1, imageAssets: 1, imageAnalyses: 1, imageAnalysisReviews: 1 },
+      restoredCounts: { clients: 1, analyses: 1, imageAssets: 1, imageAnalyses: 1, imageAnalysisReviews: 1 },
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      warnings: [],
+    });
+
+    const response = await POST(
+      {
+        headers: new Headers({ "x-request-id": "bad request id with spaces" }),
+        json: async () => ({
+          previewFingerprint: VALID_PREVIEW_FINGERPRINT,
+          currentStateFingerprint: VALID_CURRENT_STATE_FINGERPRINT,
+          strategy: "replace_all",
+          acknowledgeDataLoss: true,
+        }),
+      } as never,
+      { params: Promise.resolve({ backupId: "backup-1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    const call = vi.mocked(executeBackupRestoreWithHistory).mock.calls.at(-1)?.[0];
+    expect(call?.correlationRequestId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("uses sanitized x-request-id when valid", async () => {
+    vi.mocked(executeBackupRestoreWithHistory).mockResolvedValue({
+      backupId: "backup-1",
+      status: "completed",
+      strategy: "replace_all",
+      appliedPreviewFingerprint: VALID_PREVIEW_FINGERPRINT,
+      previousCurrentStateFingerprint: VALID_CURRENT_STATE_FINGERPRINT,
+      backupStateFingerprint: VALID_PREVIEW_FINGERPRINT,
+      restoredStateFingerprint: VALID_PREVIEW_FINGERPRINT,
+      deletedCounts: { clients: 1, analyses: 1, imageAssets: 1, imageAnalyses: 1, imageAnalysisReviews: 1 },
+      restoredCounts: { clients: 1, analyses: 1, imageAssets: 1, imageAnalyses: 1, imageAnalysisReviews: 1 },
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      warnings: [],
+    });
+
+    const response = await POST(
+      {
+        headers: new Headers({ "x-request-id": "  req-12345  " }),
+        json: async () => ({
+          previewFingerprint: VALID_PREVIEW_FINGERPRINT,
+          currentStateFingerprint: VALID_CURRENT_STATE_FINGERPRINT,
+          strategy: "replace_all",
+          acknowledgeDataLoss: true,
+        }),
+      } as never,
+      { params: Promise.resolve({ backupId: "backup-1" }) },
+    );
+
+    expect(response.status).toBe(200);
+    const call = vi.mocked(executeBackupRestoreWithHistory).mock.calls.at(-1)?.[0];
+    expect(call?.correlationRequestId).toBe("req-12345");
   });
 });

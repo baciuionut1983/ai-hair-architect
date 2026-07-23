@@ -645,6 +645,57 @@ export interface BackupRestoreResponse {
   warnings: BackupRestoreWarning[];
 }
 
+export type BackupRestoreRunStatus = "started" | "completed" | "failed";
+
+export interface BackupRestoreRunCounts {
+  deletedClientCount: number | null;
+  deletedAnalysisCount: number | null;
+  deletedImageAssetCount: number | null;
+  deletedImageAnalysisCount: number | null;
+  deletedImageAnalysisReviewCount: number | null;
+  restoredClientCount: number | null;
+  restoredAnalysisCount: number | null;
+  restoredImageAssetCount: number | null;
+  restoredImageAnalysisCount: number | null;
+  restoredImageAnalysisReviewCount: number | null;
+}
+
+export interface BackupRestoreRunHistoryRecord extends BackupRestoreRunCounts {
+  id: string;
+  backupId: string;
+  status: BackupRestoreRunStatus;
+  attemptCount: number;
+  maxAttempts: number;
+  strategy: BackupRestoreStrategy;
+  previewFingerprintPrefix: string;
+  currentStateFingerprintPrefix: string;
+  startedAt: string;
+  finishedAt: string | null;
+  finalErrorCode: string | null;
+  warningCodes: BackupRestoreWarningCode[];
+  isStale: boolean;
+}
+
+export interface BackupRestoreRunHistoryPage {
+  data: BackupRestoreRunHistoryRecord[];
+  pageInfo: {
+    nextCursor: string | null;
+    hasNextPage: boolean;
+    limit: number;
+  };
+}
+
+export interface BackupRestoreRunHistoryListInput {
+  ownerUserId: string;
+  limit?: number;
+  cursor?: string | null;
+  backupId?: string;
+  status?: BackupRestoreRunStatus;
+  from?: string;
+  to?: string;
+  correlationRequestId?: string;
+}
+
 export interface BackupV13ClientSectionRow {
   id: string;
   name: string;

@@ -53,6 +53,12 @@ enum WebhookFailureCode {
   internal_persistent
 }
 
+enum OpsBackupRestoreRunStatus {
+  started
+  completed
+  failed
+}
+
 model User {
   id           String            @id @default(uuid())
   email        String            @unique
@@ -218,6 +224,41 @@ model OpsBackupSnapshot {
   createdAt         DateTime @default(now()) @db.Timestamp(6)
 
   @@index([ownerUserId, createdAt])
+}
+
+model OpsBackupRestoreRun {
+  id                             String                   @id @default(cuid())
+  ownerUserId                    String                   @db.Uuid
+  backupId                       String                   @db.VarChar(120)
+  actorUserId                    String                   @db.Uuid
+  correlationRequestId           String                   @db.VarChar(120)
+  strategy                       String                   @db.VarChar(32)
+  previewFingerprint             String                   @db.VarChar(64)
+  currentStateFingerprint        String                   @db.VarChar(64)
+  status                         OpsBackupRestoreRunStatus
+  attemptCount                   Int                      @default(0)
+  maxAttempts                    Int                      @default(3)
+  startedAt                      DateTime                 @db.Timestamp(6)
+  finishedAt                     DateTime?                @db.Timestamp(6)
+  finalErrorCode                 String?                  @db.VarChar(80)
+  deletedClientCount             Int?
+  deletedAnalysisCount           Int?
+  deletedImageAssetCount         Int?
+  deletedImageAnalysisCount      Int?
+  deletedImageAnalysisReviewCount Int?
+  restoredClientCount            Int?
+  restoredAnalysisCount          Int?
+  restoredImageAssetCount        Int?
+  restoredImageAnalysisCount     Int?
+  restoredImageAnalysisReviewCount Int?
+  warningCodes                   Json?
+  createdAt                      DateTime                 @default(now()) @db.Timestamp(6)
+  updatedAt                      DateTime                 @updatedAt @db.Timestamp(6)
+
+  @@index([ownerUserId, startedAt, id])
+  @@index([ownerUserId, status, startedAt, id])
+  @@index([ownerUserId, backupId, startedAt, id])
+  @@index([ownerUserId, correlationRequestId, startedAt, id])
 }
 
 model OpsRetentionRun {
