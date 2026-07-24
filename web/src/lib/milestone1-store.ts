@@ -903,6 +903,14 @@ export function createSession(userId: string): string {
   return token;
 }
 
+export function revokeSessionToken(token: string | null): boolean {
+  if (!token) {
+    return false;
+  }
+
+  return store.sessions.delete(token);
+}
+
 export function getSession(token: string | null): AuthSessionResponse["user"] | null {
   if (!token) {
     return null;
@@ -1074,6 +1082,23 @@ export function getConsultationsForClientByUser(
   return store.consultations
     .filter((entry) => entry.clientId === clientId)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+export function getConsultationByIdForUser(
+  consultationId: string,
+  userId: string
+): ConsultationRecord | null {
+  const consultation = store.consultations.find((entry) => entry.id === consultationId) ?? null;
+  if (!consultation) {
+    return null;
+  }
+
+  const ownedClient = getClientOwnedByUser(consultation.clientId, userId);
+  if (!ownedClient) {
+    return null;
+  }
+
+  return consultation;
 }
 
 export function createClientPhoto(input: {

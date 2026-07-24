@@ -110,6 +110,18 @@ export async function createPersistenceSession(token: string, userId: string): P
   }
 }
 
+export async function revokePersistenceSessionToken(token: string): Promise<void> {
+  if (!isDatabaseConfigured()) {
+    return;
+  }
+
+  try {
+    await prisma.session.deleteMany({ where: { token } });
+  } catch {
+    // Non-fatal in hybrid mode.
+  }
+}
+
 export async function findPersistenceUserBySessionToken(token: string): Promise<PersistenceUser | null> {
   if (!isDatabaseConfigured()) {
     return null;
