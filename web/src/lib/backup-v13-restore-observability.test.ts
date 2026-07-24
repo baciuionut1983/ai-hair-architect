@@ -11,9 +11,12 @@ vi.mock("@/lib/prisma", () => ({
 import {
   OBSERVABILITY_RECENT_LIMIT_INVALID,
   OBSERVABILITY_WINDOW_UNSUPPORTED,
+  RESTORE_GOVERNANCE_ALERTS_WINDOW_UNSUPPORTED,
+  buildRestoreGovernanceAlerts,
   buildRestoreGovernanceHealth,
   buildRestoreGovernanceObservability,
   parseObservabilityQuery,
+  parseRestoreGovernanceAlertsQuery,
 } from "@/lib/backup-v13-restore-observability";
 
 function getSqlText(input: unknown): string {
@@ -34,6 +37,7 @@ type FakeTx = {
 
 function createTx(overrides?: {
   restoreCount?: number;
+  terminalCounts?: Array<{ status: string; count: number }>;
   staleRestore?: number;
   staleMaintenance?: number;
   staleRetention?: number;
@@ -63,7 +67,7 @@ function createTx(overrides?: {
     const text = getSqlText(query);
 
     if (text.includes("GROUP BY status")) {
-      return [
+      return overrides?.terminalCounts ?? [
         { status: "completed", count: 2 },
         { status: "failed", count: 1 },
       ];
@@ -175,6 +179,13 @@ describe("backup-v13-restore-observability", () => {
     expect(() => parseObservabilityQuery(new URLSearchParams("recentLimit=0"))).toThrow(OBSERVABILITY_RECENT_LIMIT_INVALID);
     expect(() => parseObservabilityQuery(new URLSearchParams("recentLimit=26"))).toThrow(OBSERVABILITY_RECENT_LIMIT_INVALID);
     expect(parseObservabilityQuery(new URLSearchParams("recentLimit=01"))).toMatchObject({ recentLimit: 1 });
+  });
+
+  it("parses alert window query and rejects repeated values", () => {
+    expect(parseRestoreGovernanceAlertsQuery(new URLSearchParams("window=7d"))).toEqual({ window: "7d" });
+    expect(() => parseRestoreGovernanceAlertsQuery(new URLSearchParams("window=24h&window=24h"))).toThrow(
+      RESTORE_GOVERNANCE_ALERTS_WINDOW_UNSUPPORTED,
+    );
   });
 
   it("builds zero-filled 24h timeline with ascending UTC buckets", async () => {
@@ -303,5 +314,77 @@ describe("backup-v13-restore-observability", () => {
 
     expect(response.state).toBe("healthy");
     expect(response.reasons).toEqual([]);
+  });
+
+  it("builds healthy alerts response with empty active-alert list", async () => {
+    const tx = createTx({
+      restoreCount: 3,
+      terminalCounts: [
+        { status: "completed", count: 3 },
+      ],
+      staleRestore: 0,
+      staleMaintenance: 0,
+      staleRetention: 0,
+      recentFailure24h: 0,
+    });
+
+    prismaMock.$transaction.mockImplementation(async (callback: (client: unknown) => unknown) => callback(tx));
+
+    const response = await buildRestoreGovernanceAlerts({
+      ownerUserId: "owner-1",
+      requestId: "req-1",
+      window: "24h",
+    });
+
+    expect(response.state).toBe("healthy");
+    expect(response.alerts).toEqual([]);
+  });
+
+  it("builds active alerts only with thresholds, sample sizes, and stale governance evidence", async () => {
+    const tx = createTx({
+      restoreCount: 8,
+      terminalCounts: [
+        { status: "completed", count: 5 },
+        { status: "failed", count: 3 },
+      ],
+      staleRestore: 3,
+      staleMaintenance: 1,
+      staleRetention: 1,
+      recentFailure24h: 5,
+    });
+
+    prismaMock.$transaction.mockImplementation(async (callback: (client: unknown) => unknown) => callback(tx));
+
+    const response = await buildRestoreGovernanceAlerts({
+      ownerUserId: "owner-1",
+      requestId: "req-1",
+      window: "24h",
+    });
+
+    expect(response.state).toBe("degraded");
+    expect(response.alerts.length).toBeGreaterThan(0);
+    expect(response.alerts.some((item) => "triggered" in (item as unknown as Record<string, unknown>))).toBe(false);
+
+    const staleGovernanceAlert = response.alerts.find((item) => item.code === "STALE_GOVERNANCE_RUNS");
+    expect(staleGovernanceAlert).toBeDefined();
+    expect(staleGovernanceAlert?.warningThreshold).toBe(1);
+    expect(staleGovernanceAlert?.degradedThreshold).toBe(2);
+    expect(staleGovernanceAlert?.actualValue).toBe(2);
+    expect(staleGovernanceAlert?.comparator).toBe(">=");
+    expect(staleGovernanceAlert?.sampleSize).toBe(2);
+    expect(staleGovernanceAlert?.minimumSampleSize).toBeNull();
+
+    if (staleGovernanceAlert && staleGovernanceAlert.code === "STALE_GOVERNANCE_RUNS") {
+      expect(staleGovernanceAlert.evidence).toEqual({
+        staleMaintenanceRuns: 1,
+        staleRetentionRuns: 1,
+        totalStaleGovernanceRuns: 2,
+      });
+    }
+
+    const lowSuccessAlert = response.alerts.find((item) => item.code === "LOW_RESTORE_SUCCESS_RATE");
+    expect(lowSuccessAlert).toBeDefined();
+    expect(lowSuccessAlert?.sampleSize).toBe(8);
+    expect(lowSuccessAlert?.minimumSampleSize).toBe(5);
   });
 });

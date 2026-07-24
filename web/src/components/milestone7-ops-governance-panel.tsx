@@ -5,6 +5,7 @@ import { useState } from "react";
 import type {
   BackupSnapshotRecord,
   OpsHealthSnapshot,
+  RestoreGovernanceAlertsResponse,
   RestoreGovernanceHealthResponse,
   RestoreGovernanceObservabilityResponse,
   RestoreGovernanceWindow,
@@ -35,8 +36,27 @@ export function Milestone7OpsGovernancePanel() {
   const [restoreObservability, setRestoreObservability] = useState<RestoreGovernanceObservabilityResponse | null>(null);
   const [restoreHealthLoading, setRestoreHealthLoading] = useState(false);
   const [restoreObservabilityLoading, setRestoreObservabilityLoading] = useState(false);
+  const [restoreAlertsLoading, setRestoreAlertsLoading] = useState(false);
   const [restoreHealthError, setRestoreHealthError] = useState<string | null>(null);
   const [restoreObservabilityError, setRestoreObservabilityError] = useState<string | null>(null);
+  const [restoreAlertsError, setRestoreAlertsError] = useState<string | null>(null);
+  const [restoreAlerts, setRestoreAlerts] = useState<RestoreGovernanceAlertsResponse | null>(null);
+
+  function resolveApiError(payload: unknown, fallback: string): string {
+    if (!payload || typeof payload !== "object") {
+      return fallback;
+    }
+
+    const data = payload as { error?: unknown; requestId?: unknown };
+    const errorText = typeof data.error === "string" && data.error.length > 0
+      ? data.error
+      : fallback;
+    const requestIdText = typeof data.requestId === "string" && data.requestId.length > 0
+      ? data.requestId
+      : null;
+
+    return requestIdText ? `${errorText} (requestId: ${requestIdText})` : errorText;
+  }
 
   async function loadHealth() {
     setBusy(true);
@@ -136,13 +156,13 @@ export function Milestone7OpsGovernancePanel() {
     setRestoreHealthError(null);
     try {
       const response = await fetch("/api/v1/ops/backups/restore-runs/health", { method: "GET" });
-      const payload = (await response.json()) as RestoreGovernanceHealthResponse & { error?: string };
-      if (!response.ok || !payload || payload.error) {
-        setRestoreHealthError(payload.error || "Failed to load restore governance health.");
+      const payload = (await response.json()) as RestoreGovernanceHealthResponse | { error?: string; requestId?: string };
+      if (!response.ok || !payload || (payload as { error?: string }).error) {
+        setRestoreHealthError(resolveApiError(payload, "Failed to load restore governance health."));
         return;
       }
 
-      setRestoreHealth(payload);
+      setRestoreHealth(payload as RestoreGovernanceHealthResponse);
     } finally {
       setRestoreHealthLoading(false);
     }
@@ -153,15 +173,32 @@ export function Milestone7OpsGovernancePanel() {
     setRestoreObservabilityError(null);
     try {
       const response = await fetch(`/api/v1/ops/backups/restore-runs/observability?window=${window}`, { method: "GET" });
-      const payload = (await response.json()) as RestoreGovernanceObservabilityResponse & { error?: string };
-      if (!response.ok || !payload || payload.error) {
-        setRestoreObservabilityError(payload.error || "Failed to load restore governance observability.");
+      const payload = (await response.json()) as RestoreGovernanceObservabilityResponse | { error?: string; requestId?: string };
+      if (!response.ok || !payload || (payload as { error?: string }).error) {
+        setRestoreObservabilityError(resolveApiError(payload, "Failed to load restore governance observability."));
         return;
       }
 
-      setRestoreObservability(payload);
+      setRestoreObservability(payload as RestoreGovernanceObservabilityResponse);
     } finally {
       setRestoreObservabilityLoading(false);
+    }
+  }
+
+  async function loadRestoreGovernanceAlerts(window: RestoreGovernanceWindow = restoreWindow) {
+    setRestoreAlertsLoading(true);
+    setRestoreAlertsError(null);
+    try {
+      const response = await fetch(`/api/v1/ops/backups/restore-runs/alerts?window=${window}`, { method: "GET" });
+      const payload = (await response.json()) as RestoreGovernanceAlertsResponse | { error?: string; requestId?: string };
+      if (!response.ok || !payload || (payload as { error?: string }).error) {
+        setRestoreAlertsError(resolveApiError(payload, "Failed to load restore governance alerts."));
+        return;
+      }
+
+      setRestoreAlerts(payload as RestoreGovernanceAlertsResponse);
+    } finally {
+      setRestoreAlertsLoading(false);
     }
   }
 
@@ -169,6 +206,7 @@ export function Milestone7OpsGovernancePanel() {
     await Promise.all([
       loadRestoreGovernanceHealth(),
       loadRestoreGovernanceObservability(restoreWindow),
+      loadRestoreGovernanceAlerts(restoreWindow),
     ]);
   }
 
@@ -293,7 +331,8 @@ export function Milestone7OpsGovernancePanel() {
           <div className="inline-actions">
             <button type="button" onClick={loadRestoreGovernanceHealth} disabled={restoreHealthLoading}>Load restore health</button>
             <button type="button" onClick={() => loadRestoreGovernanceObservability(restoreWindow)} disabled={restoreObservabilityLoading}>Load observability</button>
-            <button type="button" onClick={refreshRestoreGovernance} disabled={restoreHealthLoading || restoreObservabilityLoading}>Refresh both</button>
+            <button type="button" onClick={() => loadRestoreGovernanceAlerts(restoreWindow)} disabled={restoreAlertsLoading}>Load alerts</button>
+            <button type="button" onClick={refreshRestoreGovernance} disabled={restoreHealthLoading || restoreObservabilityLoading || restoreAlertsLoading}>Refresh governance</button>
           </div>
 
           {restoreHealthLoading ? <p className="helper-text">Loading restore health...</p> : null}
@@ -345,6 +384,28 @@ export function Milestone7OpsGovernancePanel() {
                       <strong>{item.runType}</strong>
                       <small>{item.status}</small>
                       <small>{item.finalErrorCode ?? "NO_CODE"}</small>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {restoreAlertsLoading ? <p className="helper-text">Loading restore governance alerts...</p> : null}
+          {restoreAlertsError ? <p className="status-line status-error">{restoreAlertsError}</p> : null}
+          {restoreAlerts ? (
+            <div className="analysis-result-box">
+              <p><strong>Alert state:</strong> {restoreAlerts.state}</p>
+              <p><strong>Active alerts:</strong> {restoreAlerts.alerts.length}</p>
+              {restoreAlerts.alerts.length === 0 ? (
+                <p className="helper-text">No active restore governance alerts in selected window.</p>
+              ) : (
+                <div className="timeline-list">
+                  {restoreAlerts.alerts.map((alert) => (
+                    <div key={alert.code} className="timeline-row">
+                      <strong>{alert.code}</strong>
+                      <small>{alert.severity}</small>
+                      <small>{alert.actualValue} {alert.comparator} warning:{alert.warningThreshold} degraded:{alert.degradedThreshold}</small>
                     </div>
                   ))}
                 </div>

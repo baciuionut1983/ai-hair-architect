@@ -2,10 +2,13 @@ import { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import type {
+  RestoreGovernanceAlertsResponse,
+  RestoreGovernanceAlertCode,
   RestoreGovernanceCurrentStateSnapshot,
   RestoreGovernanceHealthReasonCode,
   RestoreGovernanceHealthResponse,
   RestoreGovernanceObservabilityResponse,
+  RestoreGovernanceOperationalAlert,
   RestoreGovernanceRecentFailure,
   RestoreGovernanceTimelineBucket,
   RestoreGovernanceWindow,
@@ -35,8 +38,23 @@ const FAILURE_CODE_LIMIT = 10;
 const DEFAULT_RECENT_LIMIT = 10;
 const MAX_RECENT_LIMIT = 25;
 
+const M13H_ALERT_THRESHOLDS = {
+  staleRestoreRunsWarningMin: 1,
+  staleRestoreRunsDegradedMin: 3,
+  staleGovernanceRunsWarningMin: 1,
+  staleGovernanceRunsDegradedMin: 2,
+  restoreSuccessRateWarningMaxExclusive: 0.95,
+  restoreSuccessRateDegradedMaxExclusive: 0.85,
+  indeterminateRatioWarningMinExclusive: 0.1,
+  indeterminateRatioDegradedMinExclusive: 0.2,
+  recentFailureAttentionWarningMin: 1,
+  recentFailureAttentionDegradedMin: 5,
+  minimumRestoreSampleSize: 5,
+} as const;
+
 export const OBSERVABILITY_WINDOW_UNSUPPORTED = "BACKUP_RESTORE_OBSERVABILITY_WINDOW_UNSUPPORTED";
 export const OBSERVABILITY_RECENT_LIMIT_INVALID = "BACKUP_RESTORE_OBSERVABILITY_RECENT_LIMIT_INVALID";
+export const RESTORE_GOVERNANCE_ALERTS_WINDOW_UNSUPPORTED = "BACKUP_RESTORE_ALERTS_WINDOW_UNSUPPORTED";
 
 const HEALTH_REASON_ORDER: RestoreGovernanceHealthReasonCode[] = [
   "STALE_MAINTENANCE_RUNS",
@@ -101,6 +119,13 @@ type TimelineRetentionRow = {
 type DurationPercentileRow = {
   p50: number | null;
   p95: number | null;
+};
+
+type RestoreGovernanceDerivedState = "healthy" | "warning" | "degraded";
+
+type RestoreGovernanceM13GSnapshot = {
+  observability: Omit<RestoreGovernanceObservabilityResponse, "requestId" | "generatedAt">;
+  health: Omit<RestoreGovernanceHealthResponse, "requestId" | "generatedAt">;
 };
 
 function asDate(input: Date): Date {
@@ -1047,6 +1072,181 @@ async function aggregateHealth(
   };
 }
 
+export async function buildRestoreGovernanceM13GSnapshotInTransaction(
+  tx: DbClient,
+  input: {
+    ownerUserId: string;
+    window: RestoreGovernanceWindow;
+    generatedAt: Date;
+    recentLimit: number;
+  },
+): Promise<RestoreGovernanceM13GSnapshot> {
+  const [observability, health] = await Promise.all([
+    aggregateObservability(tx, input.ownerUserId, input.window, input.generatedAt, input.recentLimit),
+    aggregateHealth(tx, input.ownerUserId, input.generatedAt),
+  ]);
+
+  return { observability, health };
+}
+
+function rankSeverity(severity: "warning" | "degraded"): number {
+  return severity === "degraded" ? 2 : 1;
+}
+
+function roundRatio(value: number): number {
+  return Math.round(value * 10000) / 10000;
+}
+
+function resolveAlertState(alerts: RestoreGovernanceOperationalAlert[]): RestoreGovernanceDerivedState {
+  if (alerts.some((item) => item.severity === "degraded")) {
+    return "degraded";
+  }
+
+  if (alerts.length > 0) {
+    return "warning";
+  }
+
+  return "healthy";
+}
+
+function sortAlerts(alerts: RestoreGovernanceOperationalAlert[]): RestoreGovernanceOperationalAlert[] {
+  const order: RestoreGovernanceAlertCode[] = [
+    "STALE_GOVERNANCE_RUNS",
+    "STALE_RESTORE_RUNS",
+    "LOW_RESTORE_SUCCESS_RATE",
+    "HIGH_INDETERMINATE_RATIO",
+    "RECENT_FAILURE_ATTENTION",
+  ];
+
+  return [...alerts].sort((left, right) => {
+    const severityDelta = rankSeverity(right.severity) - rankSeverity(left.severity);
+    if (severityDelta !== 0) {
+      return severityDelta;
+    }
+
+    return order.indexOf(left.code) - order.indexOf(right.code);
+  });
+}
+
+function evaluateRestoreGovernanceAlerts(input: {
+  generatedAt: Date;
+  window: RestoreGovernanceWindow;
+  observability: Omit<RestoreGovernanceObservabilityResponse, "requestId" | "generatedAt">;
+  health: Omit<RestoreGovernanceHealthResponse, "requestId" | "generatedAt">;
+}): { state: RestoreGovernanceDerivedState; alerts: RestoreGovernanceOperationalAlert[] } {
+  const evaluatedAt = input.generatedAt.toISOString();
+  const alerts: RestoreGovernanceOperationalAlert[] = [];
+
+  const staleRestoreRuns = input.health.currentState.staleRestoreRuns;
+  if (staleRestoreRuns >= M13H_ALERT_THRESHOLDS.staleRestoreRunsWarningMin) {
+    alerts.push({
+      code: "STALE_RESTORE_RUNS",
+      severity: staleRestoreRuns >= M13H_ALERT_THRESHOLDS.staleRestoreRunsDegradedMin ? "degraded" : "warning",
+      message: "Stale restore runs detected in active governance operations.",
+      window: input.window,
+      comparator: ">=",
+      warningThreshold: M13H_ALERT_THRESHOLDS.staleRestoreRunsWarningMin,
+      degradedThreshold: M13H_ALERT_THRESHOLDS.staleRestoreRunsDegradedMin,
+      actualValue: staleRestoreRuns,
+      sampleSize: staleRestoreRuns,
+      minimumSampleSize: null,
+      evaluatedAt,
+    });
+  }
+
+  const staleMaintenanceRuns = input.health.currentState.staleMaintenanceRuns;
+  const staleRetentionRuns = input.health.currentState.staleRetentionRuns;
+  const totalStaleGovernanceRuns = staleMaintenanceRuns + staleRetentionRuns;
+  if (totalStaleGovernanceRuns >= M13H_ALERT_THRESHOLDS.staleGovernanceRunsWarningMin) {
+    alerts.push({
+      code: "STALE_GOVERNANCE_RUNS",
+      severity: totalStaleGovernanceRuns >= M13H_ALERT_THRESHOLDS.staleGovernanceRunsDegradedMin ? "degraded" : "warning",
+      message: "Stale maintenance or retention governance runs detected.",
+      window: input.window,
+      comparator: ">=",
+      warningThreshold: M13H_ALERT_THRESHOLDS.staleGovernanceRunsWarningMin,
+      degradedThreshold: M13H_ALERT_THRESHOLDS.staleGovernanceRunsDegradedMin,
+      actualValue: totalStaleGovernanceRuns,
+      sampleSize: totalStaleGovernanceRuns,
+      minimumSampleSize: null,
+      evaluatedAt,
+      evidence: {
+        staleMaintenanceRuns,
+        staleRetentionRuns,
+        totalStaleGovernanceRuns,
+      },
+    });
+  }
+
+  const restoreStarted = input.observability.windowMetrics.restore.restoreRunsStarted;
+  const minimumSampleSize = M13H_ALERT_THRESHOLDS.minimumRestoreSampleSize;
+  const restoreSuccessRate = input.observability.windowMetrics.restore.restoreSuccessRate;
+  if (
+    restoreSuccessRate !== null
+    && restoreStarted >= minimumSampleSize
+    && restoreSuccessRate < M13H_ALERT_THRESHOLDS.restoreSuccessRateWarningMaxExclusive
+  ) {
+    alerts.push({
+      code: "LOW_RESTORE_SUCCESS_RATE",
+      severity: restoreSuccessRate < M13H_ALERT_THRESHOLDS.restoreSuccessRateDegradedMaxExclusive ? "degraded" : "warning",
+      message: "Restore success rate is below the expected operational target.",
+      window: input.window,
+      comparator: "<",
+      warningThreshold: M13H_ALERT_THRESHOLDS.restoreSuccessRateWarningMaxExclusive,
+      degradedThreshold: M13H_ALERT_THRESHOLDS.restoreSuccessRateDegradedMaxExclusive,
+      actualValue: roundRatio(restoreSuccessRate),
+      sampleSize: restoreStarted,
+      minimumSampleSize,
+      evaluatedAt,
+    });
+  }
+
+  const restoreIndeterminate = input.observability.windowMetrics.restore.restoreRunsIndeterminate;
+  const indeterminateRatio = restoreStarted === 0 ? null : restoreIndeterminate / restoreStarted;
+  if (
+    indeterminateRatio !== null
+    && restoreStarted >= minimumSampleSize
+    && indeterminateRatio > M13H_ALERT_THRESHOLDS.indeterminateRatioWarningMinExclusive
+  ) {
+    alerts.push({
+      code: "HIGH_INDETERMINATE_RATIO",
+      severity: indeterminateRatio > M13H_ALERT_THRESHOLDS.indeterminateRatioDegradedMinExclusive ? "degraded" : "warning",
+      message: "Indeterminate restore ratio exceeds safe operational bounds.",
+      window: input.window,
+      comparator: ">",
+      warningThreshold: M13H_ALERT_THRESHOLDS.indeterminateRatioWarningMinExclusive,
+      degradedThreshold: M13H_ALERT_THRESHOLDS.indeterminateRatioDegradedMinExclusive,
+      actualValue: roundRatio(indeterminateRatio),
+      sampleSize: restoreStarted,
+      minimumSampleSize,
+      evaluatedAt,
+    });
+  }
+
+  const recentFailureAttentionCount24h = input.health.recentFailureAttentionCount24h;
+  if (recentFailureAttentionCount24h >= M13H_ALERT_THRESHOLDS.recentFailureAttentionWarningMin) {
+    alerts.push({
+      code: "RECENT_FAILURE_ATTENTION",
+      severity: recentFailureAttentionCount24h >= M13H_ALERT_THRESHOLDS.recentFailureAttentionDegradedMin ? "degraded" : "warning",
+      message: "Recent restore-governance failures require operator attention.",
+      window: input.window,
+      comparator: ">=",
+      warningThreshold: M13H_ALERT_THRESHOLDS.recentFailureAttentionWarningMin,
+      degradedThreshold: M13H_ALERT_THRESHOLDS.recentFailureAttentionDegradedMin,
+      actualValue: recentFailureAttentionCount24h,
+      sampleSize: recentFailureAttentionCount24h,
+      minimumSampleSize: null,
+      evaluatedAt,
+    });
+  }
+
+  const sortedAlerts = sortAlerts(alerts);
+  return {
+    state: resolveAlertState(sortedAlerts),
+    alerts: sortedAlerts,
+  };
+}
+
 export function parseObservabilityQuery(searchParams: URLSearchParams): { window: RestoreGovernanceWindow; recentLimit: number } {
   const windowParams = searchParams.getAll("window");
   if (windowParams.length > 1) {
@@ -1062,6 +1262,19 @@ export function parseObservabilityQuery(searchParams: URLSearchParams): { window
   const recentLimit = parseRecentLimit(recentLimitParams[0] ?? null);
 
   return { window, recentLimit };
+}
+
+export function parseRestoreGovernanceAlertsQuery(searchParams: URLSearchParams): { window: RestoreGovernanceWindow } {
+  const windowParams = searchParams.getAll("window");
+  if (windowParams.length > 1) {
+    throw new Error(RESTORE_GOVERNANCE_ALERTS_WINDOW_UNSUPPORTED);
+  }
+
+  try {
+    return { window: parseWindow(windowParams[0] ?? null) };
+  } catch {
+    throw new Error(RESTORE_GOVERNANCE_ALERTS_WINDOW_UNSUPPORTED);
+  }
 }
 
 export async function buildRestoreGovernanceObservability(input: {
@@ -1099,6 +1312,38 @@ export async function buildRestoreGovernanceHealth(input: {
     requestId: input.requestId,
     generatedAt: generatedAt.toISOString(),
     ...data,
+  };
+}
+
+export async function buildRestoreGovernanceAlerts(input: {
+  ownerUserId: string;
+  requestId: string;
+  window: RestoreGovernanceWindow;
+}): Promise<RestoreGovernanceAlertsResponse> {
+  const generatedAt = new Date();
+
+  const data = await prisma.$transaction(async (tx) => {
+    const m13gSnapshot = await buildRestoreGovernanceM13GSnapshotInTransaction(tx, {
+      ownerUserId: input.ownerUserId,
+      window: input.window,
+      generatedAt,
+      recentLimit: DEFAULT_RECENT_LIMIT,
+    });
+
+    return evaluateRestoreGovernanceAlerts({
+      generatedAt,
+      window: input.window,
+      observability: m13gSnapshot.observability,
+      health: m13gSnapshot.health,
+    });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+
+  return {
+    requestId: input.requestId,
+    generatedAt: generatedAt.toISOString(),
+    window: input.window,
+    state: data.state,
+    alerts: data.alerts,
   };
 }
 

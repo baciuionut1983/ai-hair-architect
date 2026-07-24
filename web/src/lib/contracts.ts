@@ -607,6 +607,74 @@ export interface RestoreGovernanceHealthResponse {
   };
 }
 
+export type RestoreGovernanceAlertCode =
+  | "STALE_RESTORE_RUNS"
+  | "STALE_GOVERNANCE_RUNS"
+  | "LOW_RESTORE_SUCCESS_RATE"
+  | "HIGH_INDETERMINATE_RATIO"
+  | "RECENT_FAILURE_ATTENTION";
+
+export type RestoreGovernanceAlertComparator = ">=" | ">" | "<";
+
+export interface RestoreGovernanceAlertBase {
+  code: RestoreGovernanceAlertCode;
+  severity: "warning" | "degraded";
+  message: string;
+  window: RestoreGovernanceWindow;
+  comparator: RestoreGovernanceAlertComparator;
+  warningThreshold: number;
+  degradedThreshold: number;
+  actualValue: number;
+  sampleSize: number;
+  minimumSampleSize: number | null;
+  evaluatedAt: string;
+}
+
+export interface RestoreGovernanceStaleRestoreRunsAlert extends RestoreGovernanceAlertBase {
+  code: "STALE_RESTORE_RUNS";
+  comparator: ">=";
+}
+
+export interface RestoreGovernanceStaleGovernanceRunsAlert extends RestoreGovernanceAlertBase {
+  code: "STALE_GOVERNANCE_RUNS";
+  comparator: ">=";
+  evidence: {
+    staleMaintenanceRuns: number;
+    staleRetentionRuns: number;
+    totalStaleGovernanceRuns: number;
+  };
+}
+
+export interface RestoreGovernanceLowSuccessRateAlert extends RestoreGovernanceAlertBase {
+  code: "LOW_RESTORE_SUCCESS_RATE";
+  comparator: "<";
+}
+
+export interface RestoreGovernanceHighIndeterminateRatioAlert extends RestoreGovernanceAlertBase {
+  code: "HIGH_INDETERMINATE_RATIO";
+  comparator: ">";
+}
+
+export interface RestoreGovernanceRecentFailureAttentionAlert extends RestoreGovernanceAlertBase {
+  code: "RECENT_FAILURE_ATTENTION";
+  comparator: ">=";
+}
+
+export type RestoreGovernanceOperationalAlert =
+  | RestoreGovernanceStaleRestoreRunsAlert
+  | RestoreGovernanceStaleGovernanceRunsAlert
+  | RestoreGovernanceLowSuccessRateAlert
+  | RestoreGovernanceHighIndeterminateRatioAlert
+  | RestoreGovernanceRecentFailureAttentionAlert;
+
+export interface RestoreGovernanceAlertsResponse {
+  requestId: string;
+  generatedAt: string;
+  window: RestoreGovernanceWindow;
+  state: "healthy" | "warning" | "degraded";
+  alerts: RestoreGovernanceOperationalAlert[];
+}
+
 export interface BackupSnapshotRecord {
   id: string;
   ownerUserId: string;
