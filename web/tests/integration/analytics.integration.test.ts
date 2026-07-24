@@ -10,6 +10,8 @@ describe('Analytics Integration Tests', () => {
   let token1: string;
   let adminToken: string;
   const baseUrl = 'http://localhost:3000';
+  const fixtureDateFrom = '2099-01-01';
+  const fixtureDateTo = '2099-01-31';
 
   beforeAll(async () => {
     // Create test users
@@ -75,7 +77,7 @@ describe('Analytics Integration Tests', () => {
     });
 
     // Create analyses
-    const baseDate = new Date('2026-07-01T00:00:00Z');
+    const baseDate = new Date('2099-01-01T00:00:00Z');
     const analyses = [
       {
         id: `int-analysis-1-${Date.now()}`,
@@ -166,7 +168,7 @@ describe('Analytics Integration Tests', () => {
   describe('GET /api/v1/analytics/metrics', () => {
     it('should return user personal analytics', async () => {
       const response = await fetch(
-        `${baseUrl}/api/v1/analytics/metrics?dateFrom=2026-07-01&dateTo=2026-07-31&scope=personal`,
+        `${baseUrl}/api/v1/analytics/metrics?dateFrom=${fixtureDateFrom}&dateTo=${fixtureDateTo}&scope=personal`,
         { headers: { Authorization: `Bearer ${token1}` } }
       );
       expect(response.status).toBe(200);
@@ -183,7 +185,7 @@ describe('Analytics Integration Tests', () => {
 
     it('should exclude data from other users', async () => {
       const response = await fetch(
-        `${baseUrl}/api/v1/analytics/metrics?dateFrom=2026-07-01&dateTo=2026-07-31&scope=personal`,
+        `${baseUrl}/api/v1/analytics/metrics?dateFrom=${fixtureDateFrom}&dateTo=${fixtureDateTo}&scope=personal`,
         { headers: { Authorization: `Bearer ${token1}` } }
       );
       expect(response.status).toBe(200);
@@ -197,7 +199,7 @@ describe('Analytics Integration Tests', () => {
 
     it('should allow admin to query all users', async () => {
       const response = await fetch(
-        `${baseUrl}/api/v1/analytics/metrics?dateFrom=2026-07-01&dateTo=2026-07-31&scope=all`,
+        `${baseUrl}/api/v1/analytics/metrics?dateFrom=${fixtureDateFrom}&dateTo=${fixtureDateTo}&scope=all`,
         { headers: { Authorization: `Bearer ${adminToken}` } }
       );
       expect(response.status).toBe(200);
@@ -209,7 +211,7 @@ describe('Analytics Integration Tests', () => {
 
     it('should block non-admin from scope=all', async () => {
       const response = await fetch(
-        `${baseUrl}/api/v1/analytics/metrics?dateFrom=2026-07-01&dateTo=2026-07-31&scope=all`,
+        `${baseUrl}/api/v1/analytics/metrics?dateFrom=${fixtureDateFrom}&dateTo=${fixtureDateTo}&scope=all`,
         { headers: { Authorization: `Bearer ${token1}` } }
       );
       expect(response.status).toBe(403);
@@ -217,7 +219,7 @@ describe('Analytics Integration Tests', () => {
 
     it('should return correct confidence statistics', async () => {
       const response = await fetch(
-        `${baseUrl}/api/v1/analytics/metrics?dateFrom=2026-07-01&dateTo=2026-07-31`,
+        `${baseUrl}/api/v1/analytics/metrics?dateFrom=${fixtureDateFrom}&dateTo=${fixtureDateTo}`,
         { headers: { Authorization: `Bearer ${token1}` } }
       );
       expect(response.status).toBe(200);
@@ -232,9 +234,12 @@ describe('Analytics Integration Tests', () => {
 
   describe('GET /api/v1/analytics/export', () => {
     it('should export user data as CSV', async () => {
-      const response = await fetch(`${baseUrl}/api/v1/analytics/export?format=csv`, {
+      const response = await fetch(
+        `${baseUrl}/api/v1/analytics/export?format=csv&dateFrom=${fixtureDateFrom}&dateTo=${fixtureDateTo}`,
+        {
         headers: { Authorization: `Bearer ${token1}` },
-      });
+        }
+      );
       expect(response.status).toBe(200);
       expect(response.headers.get('content-type')).toContain('text/csv');
       const csv = await response.text();
@@ -244,9 +249,12 @@ describe('Analytics Integration Tests', () => {
     });
 
     it('should export user data as JSON', async () => {
-      const response = await fetch(`${baseUrl}/api/v1/analytics/export?format=json`, {
+      const response = await fetch(
+        `${baseUrl}/api/v1/analytics/export?format=json&dateFrom=${fixtureDateFrom}&dateTo=${fixtureDateTo}`,
+        {
         headers: { Authorization: `Bearer ${token1}` },
-      });
+        }
+      );
       expect(response.status).toBe(200);
       expect(response.headers.get('content-type')).toContain('application/json');
       const data = await response.json();
@@ -258,7 +266,7 @@ describe('Analytics Integration Tests', () => {
 
     it('should prevent user from exporting other user data', async () => {
       const response = await fetch(
-        `${baseUrl}/api/v1/analytics/export?format=csv&userId=${userId2}`,
+        `${baseUrl}/api/v1/analytics/export?format=csv&dateFrom=${fixtureDateFrom}&dateTo=${fixtureDateTo}&userId=${userId2}`,
         { headers: { Authorization: `Bearer ${token1}` } }
       );
       expect(response.status).toBe(403);
@@ -266,7 +274,7 @@ describe('Analytics Integration Tests', () => {
 
     it('should allow admin to export any user data', async () => {
       const response = await fetch(
-        `${baseUrl}/api/v1/analytics/export?format=csv&userId=${userId1}`,
+        `${baseUrl}/api/v1/analytics/export?format=csv&dateFrom=${fixtureDateFrom}&dateTo=${fixtureDateTo}&userId=${userId1}`,
         { headers: { Authorization: `Bearer ${adminToken}` } }
       );
       expect(response.status).toBe(200);

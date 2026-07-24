@@ -17,6 +17,13 @@ beforeAll(() => {
 beforeEach(async () => {
   masterKey = getMasterKeyFromEnv();
 
+  await prisma.webhookEndpointSecretVersion.deleteMany({
+    where: { ownerUserId: { in: [userId1, userId2] } },
+  });
+  await prisma.webhookEndpoint.deleteMany({
+    where: { ownerUserId: { in: [userId1, userId2] } },
+  });
+
   // Create test users
   await prisma.user.upsert({
     where: { id: userId1 },
@@ -42,11 +49,15 @@ beforeEach(async () => {
     },
   });
 
-  await prisma.webhookEndpoint.deleteMany({});
 });
 
 afterEach(async () => {
-  await prisma.webhookEndpoint.deleteMany({});
+  await prisma.webhookEndpointSecretVersion.deleteMany({
+    where: { ownerUserId: { in: [userId1, userId2] } },
+  });
+  await prisma.webhookEndpoint.deleteMany({
+    where: { ownerUserId: { in: [userId1, userId2] } },
+  });
   await prisma.user.deleteMany({ where: { id: { in: [userId1, userId2] } } });
 });
 

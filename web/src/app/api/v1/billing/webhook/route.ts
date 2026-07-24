@@ -3,8 +3,20 @@ import { NextResponse } from "next/server";
 import type { BillingWebhookEvent } from "@/lib/contracts";
 import { checkRateLimit, ensureRequestId } from "@/lib/hardening";
 import { createAuditEvent, createPaymentRecord, updateSubscriptionForUser } from "@/lib/milestone1-store";
+import { getBillingWebhookProductionError } from "@/lib/production-guards";
 
 export async function POST(request: Request) {
+  const productionGuardError = getBillingWebhookProductionError();
+  if (productionGuardError) {
+    return NextResponse.json(
+      {
+        error: productionGuardError.code,
+        message: productionGuardError.message
+      },
+      { status: productionGuardError.httpStatus }
+    );
+  }
+
   const requestId = ensureRequestId(request.headers.get("x-request-id"));
   const limiter = checkRateLimit(`billing-webhook`, 60, 60_000);
   if (!limiter.allowed) {

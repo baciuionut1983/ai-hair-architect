@@ -3,15 +3,45 @@ import { prisma } from '@/lib/prisma';
 import { PrismaClient } from '@prisma/client';
 
 let testDb: PrismaClient;
+const AUDIT_TEST_USER_IDS = [
+  'aaaaaaaa-0000-0000-0000-000000000001',
+  'aaaaaaaa-0000-0000-0000-000000000002',
+  'aaaaaaaa-0000-0000-0000-000000000003',
+  'aaaaaaaa-0000-0000-0000-000000000004',
+  'aaaaaaaa-0000-0000-0000-000000000005',
+  'aaaaaaaa-0000-0000-0000-000000000010',
+  'aaaaaaaa-0000-0000-0000-000000000011',
+  'aaaaaaaa-0000-0000-0000-000000000020',
+  'aaaaaaaa-0000-0000-0000-000000000021',
+  'aaaaaaaa-0000-0000-0000-000000000022',
+  'aaaaaaaa-0000-0000-0000-000000000023',
+  'aaaaaaaa-0000-0000-0000-000000000024',
+  'aaaaaaaa-0000-0000-0000-000000000025',
+  'aaaaaaaa-0000-0000-0000-000000000026',
+  'aaaaaaaa-0000-0000-0000-000000000027',
+  'aaaaaaaa-0000-0000-0000-000000000028',
+];
 
 describe('M9C Audit Logging Integration Tests', () => {
   beforeEach(async () => {
     testDb = prisma;
-    await testDb.auditLog.deleteMany({});
+    await testDb.auditLog.deleteMany({
+      where: {
+        actorUserId: {
+          in: AUDIT_TEST_USER_IDS,
+        },
+      },
+    });
   });
 
   afterEach(async () => {
-    await testDb.auditLog.deleteMany({});
+    await testDb.auditLog.deleteMany({
+      where: {
+        actorUserId: {
+          in: AUDIT_TEST_USER_IDS,
+        },
+      },
+    });
   });
 
   it('should create audit log entry when query_metrics succeeds', async () => {

@@ -3,8 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "prebuild": "node scripts/run-core-gate-build-env.js",
     "dev": "next dev",
     "build": "next build",
+    "prestart": "node scripts/run-core-gate-runtime-env.js",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
