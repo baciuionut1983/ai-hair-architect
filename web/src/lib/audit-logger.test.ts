@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AuditLogger, AuditEvent } from '@/lib/audit-logger';
 import { prisma } from '@/lib/prisma';
-import type { Prisma } from '@prisma/client';
+
+type AuditLogCreateResult = Awaited<ReturnType<typeof prisma.auditLog.create>>;
 
 vi.mock('@/lib/prisma', () => ({
   prisma: {
@@ -30,7 +31,7 @@ describe('AuditLogger', () => {
       metadata: { recordsReturned: 42, latencyMs: 150 },
     };
 
-    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as Prisma.AuditLogCreateResponse);
+    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as AuditLogCreateResult);
     await AuditLogger.log(event);
 
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
@@ -54,7 +55,7 @@ describe('AuditLogger', () => {
       metadata: { filename: 'data.csv', rows: 1000 },
     };
 
-    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as Prisma.AuditLogCreateResponse);
+    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as AuditLogCreateResult);
     await AuditLogger.log(event);
 
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
@@ -74,7 +75,7 @@ describe('AuditLogger', () => {
       metadata: { size: 5000 },
     };
 
-    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as Prisma.AuditLogCreateResponse);
+    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as AuditLogCreateResult);
     await AuditLogger.log(event);
 
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
@@ -93,7 +94,7 @@ describe('AuditLogger', () => {
       metadata: { requestedSize: 10000, limit: 5000 },
     };
 
-    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as Prisma.AuditLogCreateResponse);
+    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as AuditLogCreateResult);
     await AuditLogger.log(event);
 
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
@@ -113,7 +114,7 @@ describe('AuditLogger', () => {
       metadata: { reason: 'insufficient_permissions' },
     };
 
-    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as Prisma.AuditLogCreateResponse);
+    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as AuditLogCreateResult);
     await AuditLogger.log(event);
 
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
@@ -134,7 +135,7 @@ describe('AuditLogger', () => {
       metadata: {},
     };
 
-    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as Prisma.AuditLogCreateResponse);
+    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as AuditLogCreateResult);
     await AuditLogger.log(event);
 
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
@@ -153,7 +154,7 @@ describe('AuditLogger', () => {
       metadata: {},
     };
 
-    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as Prisma.AuditLogCreateResponse);
+    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as AuditLogCreateResult);
     await AuditLogger.log(event);
 
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
@@ -211,7 +212,7 @@ describe('AuditLogger', () => {
       },
     };
 
-    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as Prisma.AuditLogCreateResponse);
+    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as AuditLogCreateResult);
     await AuditLogger.log(event);
 
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
@@ -234,7 +235,7 @@ describe('AuditLogger', () => {
       metadata: { format: 'csv', rows: 500 },
     };
 
-    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as Prisma.AuditLogCreateResponse);
+    vi.mocked(prisma.auditLog.create).mockResolvedValueOnce({} as AuditLogCreateResult);
     await AuditLogger.log(event);
 
     const callArgs = vi.mocked(prisma.auditLog.create).mock.calls[0][0];

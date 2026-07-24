@@ -29,7 +29,7 @@ const FORBIDDEN_IPV6_RANGES = [
 
 function ipToInt(ip: string): bigint {
   const parts = ip.split('.').map(p => BigInt(parseInt(p, 10)));
-  return (parts[0] << 24n) | (parts[1] << 16n) | (parts[2] << 8n) | parts[3];
+  return (parts[0] << BigInt(24)) | (parts[1] << BigInt(16)) | (parts[2] << BigInt(8)) | parts[3];
 }
 
 function isIpInRange(ip: string, rangeStart: string, rangeEnd: string): boolean {
@@ -41,17 +41,17 @@ function isIpInRange(ip: string, rangeStart: string, rangeEnd: string): boolean 
 
 function ipv4ToCidr(ip: string, prefix: number): { start: string; end: string } {
   const ipNum = ipToInt(ip);
-  const mask = ~((1n << BigInt(32 - prefix)) - 1n) & 0xffffffffn;
-  const invMask = ~mask & 0xffffffffn;
+  const mask = ~((BigInt(1) << BigInt(32 - prefix)) - BigInt(1)) & BigInt(0xffffffff);
+  const invMask = ~mask & BigInt(0xffffffff);
 
   const start = ipNum & mask;
   const end = ipNum | invMask;
 
   const toIpString = (num: bigint) => {
-    const a = (num >> 24n) & 0xffn;
-    const b = (num >> 16n) & 0xffn;
-    const c = (num >> 8n) & 0xffn;
-    const d = num & 0xffn;
+    const a = (num >> BigInt(24)) & BigInt(0xff);
+    const b = (num >> BigInt(16)) & BigInt(0xff);
+    const c = (num >> BigInt(8)) & BigInt(0xff);
+    const d = num & BigInt(0xff);
     return `${a}.${b}.${c}.${d}`;
   };
 
