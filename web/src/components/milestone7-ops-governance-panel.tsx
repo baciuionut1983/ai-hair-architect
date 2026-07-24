@@ -2,7 +2,14 @@
 
 import { useState } from "react";
 
-import type { BackupSnapshotRecord, OpsHealthSnapshot, RetentionRunResult } from "@/lib/contracts";
+import type {
+  BackupSnapshotRecord,
+  OpsHealthSnapshot,
+  RestoreGovernanceHealthResponse,
+  RestoreGovernanceObservabilityResponse,
+  RestoreGovernanceWindow,
+  RetentionRunResult,
+} from "@/lib/contracts";
 
 type StatusTone = "ok" | "error" | "info";
 
@@ -23,6 +30,13 @@ export function Milestone7OpsGovernancePanel() {
   const [retentionResult, setRetentionResult] = useState<RetentionRunResult | null>(null);
   const [status, setStatus] = useState<{ tone: StatusTone; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [restoreWindow, setRestoreWindow] = useState<RestoreGovernanceWindow>("24h");
+  const [restoreHealth, setRestoreHealth] = useState<RestoreGovernanceHealthResponse | null>(null);
+  const [restoreObservability, setRestoreObservability] = useState<RestoreGovernanceObservabilityResponse | null>(null);
+  const [restoreHealthLoading, setRestoreHealthLoading] = useState(false);
+  const [restoreObservabilityLoading, setRestoreObservabilityLoading] = useState(false);
+  const [restoreHealthError, setRestoreHealthError] = useState<string | null>(null);
+  const [restoreObservabilityError, setRestoreObservabilityError] = useState<string | null>(null);
 
   async function loadHealth() {
     setBusy(true);
@@ -117,6 +131,62 @@ export function Milestone7OpsGovernancePanel() {
     }
   }
 
+  async function loadRestoreGovernanceHealth() {
+    setRestoreHealthLoading(true);
+    setRestoreHealthError(null);
+    try {
+      const response = await fetch("/api/v1/ops/backups/restore-runs/health", { method: "GET" });
+      const payload = (await response.json()) as RestoreGovernanceHealthResponse & { error?: string };
+      if (!response.ok || !payload || payload.error) {
+        setRestoreHealthError(payload.error || "Failed to load restore governance health.");
+        return;
+      }
+
+      setRestoreHealth(payload);
+    } finally {
+      setRestoreHealthLoading(false);
+    }
+  }
+
+  async function loadRestoreGovernanceObservability(window: RestoreGovernanceWindow = restoreWindow) {
+    setRestoreObservabilityLoading(true);
+    setRestoreObservabilityError(null);
+    try {
+      const response = await fetch(`/api/v1/ops/backups/restore-runs/observability?window=${window}`, { method: "GET" });
+      const payload = (await response.json()) as RestoreGovernanceObservabilityResponse & { error?: string };
+      if (!response.ok || !payload || payload.error) {
+        setRestoreObservabilityError(payload.error || "Failed to load restore governance observability.");
+        return;
+      }
+
+      setRestoreObservability(payload);
+    } finally {
+      setRestoreObservabilityLoading(false);
+    }
+  }
+
+  async function refreshRestoreGovernance() {
+    await Promise.all([
+      loadRestoreGovernanceHealth(),
+      loadRestoreGovernanceObservability(restoreWindow),
+    ]);
+  }
+
+  function healthReasonLabel(code: string): string {
+    switch (code) {
+      case "STALE_MAINTENANCE_RUNS":
+        return "Stale maintenance runs detected";
+      case "STALE_RETENTION_RUNS":
+        return "Stale retention runs detected";
+      case "STALE_RESTORE_RUNS":
+        return "Stale restore runs detected";
+      case "RECENT_FAILURE_ATTENTION":
+        return "Recent failure attention threshold reached";
+      default:
+        return code;
+    }
+  }
+
   return (
     <section className="section-next" id="milestone7">
       <div className="section-header-next">
@@ -200,6 +270,85 @@ export function Milestone7OpsGovernancePanel() {
               <p><strong>Dry-run:</strong> {String(retentionResult.dryRun)}</p>
               <p><strong>Push affected:</strong> {retentionResult.pushQueueAffected}</p>
               <p><strong>Audit affected:</strong> {retentionResult.auditEventsAffected}</p>
+            </div>
+          ) : null}
+        </article>
+
+        <article className="milestone-card">
+          <h4>5) Restore Governance Observability</h4>
+          <div className="field-grid">
+            <label>
+              Window
+              <select
+                value={restoreWindow}
+                onChange={(event) => setRestoreWindow(event.target.value as RestoreGovernanceWindow)}
+                disabled={restoreObservabilityLoading}
+              >
+                <option value="24h">24h</option>
+                <option value="7d">7d</option>
+                <option value="30d">30d</option>
+              </select>
+            </label>
+          </div>
+          <div className="inline-actions">
+            <button type="button" onClick={loadRestoreGovernanceHealth} disabled={restoreHealthLoading}>Load restore health</button>
+            <button type="button" onClick={() => loadRestoreGovernanceObservability(restoreWindow)} disabled={restoreObservabilityLoading}>Load observability</button>
+            <button type="button" onClick={refreshRestoreGovernance} disabled={restoreHealthLoading || restoreObservabilityLoading}>Refresh both</button>
+          </div>
+
+          {restoreHealthLoading ? <p className="helper-text">Loading restore health...</p> : null}
+          {restoreHealthError ? <p className="status-line status-error">{restoreHealthError}</p> : null}
+          {restoreHealth ? (
+            <div className="analysis-result-box">
+              <p><strong>Health state:</strong> {restoreHealth.state}</p>
+              <p><strong>Stale restore runs:</strong> {restoreHealth.currentState.staleRestoreRuns}</p>
+              <p><strong>Stale maintenance runs:</strong> {restoreHealth.currentState.staleMaintenanceRuns}</p>
+              <p><strong>Stale retention runs:</strong> {restoreHealth.currentState.staleRetentionRuns}</p>
+              <p><strong>Active governance operations:</strong> {restoreHealth.currentState.activeGovernanceOperations}</p>
+              <p><strong>Recent failure attention (24h):</strong> {restoreHealth.recentFailureAttentionCount24h}</p>
+              {restoreHealth.reasons.length === 0 ? (
+                <p className="helper-text">No active health alerts.</p>
+              ) : (
+                <ul>
+                  {restoreHealth.reasons.map((reason) => (
+                    <li key={reason}>{healthReasonLabel(reason)}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : null}
+
+          {restoreObservabilityLoading ? <p className="helper-text">Loading restore observability...</p> : null}
+          {restoreObservabilityError ? <p className="status-line status-error">{restoreObservabilityError}</p> : null}
+          {restoreObservability ? (
+            <div className="analysis-result-box">
+              <p><strong>Window:</strong> {restoreObservability.window}</p>
+              <p><strong>Restore started:</strong> {restoreObservability.windowMetrics.restore.restoreRunsStarted}</p>
+              <p><strong>Restore completed:</strong> {restoreObservability.windowMetrics.restore.restoreRunsCompleted}</p>
+              <p><strong>Restore failed:</strong> {restoreObservability.windowMetrics.restore.restoreRunsFailed}</p>
+              <p><strong>Restore indeterminate:</strong> {restoreObservability.windowMetrics.restore.restoreRunsIndeterminate}</p>
+              <p><strong>Success rate:</strong> {restoreObservability.windowMetrics.restore.restoreSuccessRate ?? "n/a"}</p>
+              <p><strong>P50 duration (ms):</strong> {restoreObservability.windowMetrics.restore.restoreP50DurationMs ?? "n/a"}</p>
+              <p><strong>P95 duration (ms):</strong> {restoreObservability.windowMetrics.restore.restoreP95DurationMs ?? "n/a"}</p>
+              <p><strong>Average attempts:</strong> {restoreObservability.windowMetrics.restore.averageAttemptsUsed ?? "n/a"}</p>
+              <p><strong>Maintenance completed/failed:</strong> {restoreObservability.windowMetrics.maintenance.completedRuns}/{restoreObservability.windowMetrics.maintenance.failedRuns}</p>
+              <p><strong>Retention completed/failed:</strong> {restoreObservability.windowMetrics.retention.completedRuns}/{restoreObservability.windowMetrics.retention.failedRuns}</p>
+              <p><strong>Top failure codes:</strong> {restoreObservability.failuresByCode.length}</p>
+              <p><strong>Recent failures:</strong> {restoreObservability.recentFailures.length}</p>
+              <p><strong>Timeline buckets:</strong> {restoreObservability.timeline.length}</p>
+              {restoreObservability.recentFailures.length === 0 ? (
+                <p className="helper-text">No recent restore governance failures in selected window.</p>
+              ) : (
+                <div className="timeline-list">
+                  {restoreObservability.recentFailures.slice(0, 8).map((item) => (
+                    <div key={`${item.runType}:${item.runId}`} className="timeline-row">
+                      <strong>{item.runType}</strong>
+                      <small>{item.status}</small>
+                      <small>{item.finalErrorCode ?? "NO_CODE"}</small>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           ) : null}
         </article>

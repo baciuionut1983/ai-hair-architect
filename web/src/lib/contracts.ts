@@ -484,6 +484,129 @@ export interface OpsHealthSnapshot {
   auditEventsCount: number;
 }
 
+export type RestoreGovernanceWindow = "24h" | "7d" | "30d";
+
+export type RestoreGovernanceHealthReasonCode =
+  | "STALE_MAINTENANCE_RUNS"
+  | "STALE_RETENTION_RUNS"
+  | "STALE_RESTORE_RUNS"
+  | "RECENT_FAILURE_ATTENTION";
+
+export interface RestoreGovernanceCurrentStateSnapshot {
+  staleRestoreRuns: number;
+  staleMaintenanceRuns: number;
+  staleRetentionRuns: number;
+  activeGovernanceOperations: number;
+}
+
+export interface RestoreGovernanceWindowMetrics {
+  restore: {
+    restoreRunsStarted: number;
+    restoreRunsCompleted: number;
+    restoreRunsFailed: number;
+    restoreRunsIndeterminate: number;
+    restoreSuccessRate: number | null;
+    restoreP50DurationMs: number | null;
+    restoreP95DurationMs: number | null;
+    averageAttemptsUsed: number | null;
+  };
+  maintenance: {
+    totalRuns: number;
+    completedRuns: number;
+    failedRuns: number;
+    candidatesScanned: number;
+    candidatesReconciledIndeterminate: number;
+  };
+  retention: {
+    totalRuns: number;
+    completedRuns: number;
+    failedRuns: number;
+    restoreRunsDeleted: number;
+    maintenanceRunsDeleted: number;
+  };
+}
+
+export interface RestoreGovernanceTimelineBucket {
+  bucketStart: string;
+  restoreStarted: number;
+  restoreCompleted: number;
+  restoreFailed: number;
+  restoreIndeterminate: number;
+  maintenanceCompleted: number;
+  maintenanceFailed: number;
+  retentionCompleted: number;
+  retentionFailed: number;
+}
+
+export interface RestoreGovernanceFailureCodeCount {
+  code: string;
+  count: number;
+}
+
+export interface RestoreRecentFailureBase {
+  runType: "restore" | "maintenance" | "retention";
+  runId: string;
+  backupId: string | null;
+  finalErrorCode: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface RestoreRecentFailure extends RestoreRecentFailureBase {
+  runType: "restore";
+  status: "failed" | "indeterminate";
+  backupId: string;
+  attemptCount: number;
+}
+
+export interface MaintenanceRecentFailure extends RestoreRecentFailureBase {
+  runType: "maintenance";
+  status: "failed";
+  backupId: null;
+  attemptCount: null;
+}
+
+export interface RetentionRecentFailure extends RestoreRecentFailureBase {
+  runType: "retention";
+  status: "failed";
+  backupId: null;
+  attemptCount: null;
+}
+
+export type RestoreGovernanceRecentFailure =
+  | RestoreRecentFailure
+  | MaintenanceRecentFailure
+  | RetentionRecentFailure;
+
+export interface RestoreGovernanceObservabilityResponse {
+  requestId: string;
+  generatedAt: string;
+  window: RestoreGovernanceWindow;
+  bucketSize: "1h" | "1d";
+  currentState: RestoreGovernanceCurrentStateSnapshot;
+  windowMetrics: RestoreGovernanceWindowMetrics;
+  failuresByCode: RestoreGovernanceFailureCodeCount[];
+  timeline: RestoreGovernanceTimelineBucket[];
+  recentFailures: RestoreGovernanceRecentFailure[];
+}
+
+export interface RestoreGovernanceHealthResponse {
+  requestId: string;
+  generatedAt: string;
+  state: "healthy" | "warning" | "degraded";
+  reasons: RestoreGovernanceHealthReasonCode[];
+  currentState: RestoreGovernanceCurrentStateSnapshot;
+  recentFailureAttentionCount24h: number;
+  thresholds: {
+    restoreStartedStaleMinutes: 15;
+    maintenanceRunningStaleMinutes: 30;
+    retentionRunningStaleMinutes: 30;
+    warningFailureAttentionCount24hMin: 1;
+    warningFailureAttentionCount24hMax: 2;
+    degradedFailureAttentionCount24hMin: 3;
+  };
+}
+
 export interface BackupSnapshotRecord {
   id: string;
   ownerUserId: string;
