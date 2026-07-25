@@ -28,6 +28,15 @@ describe("ops readiness route", () => {
             message: "not ready",
           },
         ],
+        businessPersistenceDomains: [
+          {
+            domain: "clients",
+            persistenceState: "memory_only",
+            guardEnforcement: "active",
+            availability: "blocked",
+            productionReady: false,
+          },
+        ],
         requestId: "req-123",
         timestamp: "2026-07-24T00:00:00.000Z",
       },
@@ -45,6 +54,15 @@ describe("ops readiness route", () => {
           status: "FAIL",
           critical: true,
           message: "not ready",
+        },
+      ],
+      businessPersistenceDomains: [
+        {
+          domain: "clients",
+          persistenceState: "memory_only",
+          guardEnforcement: "active",
+          availability: "blocked",
+          productionReady: false,
         },
       ],
       requestId: "req-123",

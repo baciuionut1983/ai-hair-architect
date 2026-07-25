@@ -43,5 +43,53 @@ describe("production guards", () => {
     expect(result.payload.requestId).toBe("req-1");
     expect(result.payload.checks).toHaveLength(4);
     expect(result.payload.checks.filter((check) => check.status === "FAIL").length).toBeGreaterThan(0);
+    expect(result.payload.businessPersistenceDomains).toEqual([
+      {
+        domain: "clients",
+        persistenceState: "memory_only",
+        guardEnforcement: "active",
+        availability: "blocked",
+        productionReady: false,
+      },
+      {
+        domain: "consultations",
+        persistenceState: "memory_only",
+        guardEnforcement: "active",
+        availability: "blocked",
+        productionReady: false,
+      },
+      {
+        domain: "appointments",
+        persistenceState: "memory_only",
+        guardEnforcement: "active",
+        availability: "blocked",
+        productionReady: false,
+      },
+    ]);
+    expect(
+      result.payload.checks.find((check) => check.code === "BUSINESS_PERSISTENCE_PRODUCTION_READY"),
+    ).toMatchObject({ status: "FAIL" });
   });
+
+  it.each(["development", "test"] as const)(
+    "reports bypassed but not production-ready domains in %s",
+    (runtime) => {
+      const result = evaluateReadiness({
+        requestId: `req-${runtime}`,
+        env: { NODE_ENV: runtime },
+      });
+
+      expect(result.httpStatus).toBe(503);
+      expect(result.payload.status).toBe("NOT_READY");
+      expect(result.payload.businessPersistenceDomains).toHaveLength(3);
+      for (const domain of result.payload.businessPersistenceDomains) {
+        expect(domain).toMatchObject({
+          persistenceState: "memory_only",
+          guardEnforcement: "bypassed",
+          availability: "available",
+          productionReady: false,
+        });
+      }
+    },
+  );
 });

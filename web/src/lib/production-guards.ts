@@ -2,6 +2,11 @@ import {
   validateRuntimeProductionEnvironment,
   type EnvValidationIssue,
 } from "@/lib/env-core-gate";
+import {
+  getBusinessPersistenceReadinessDomains,
+  type BusinessPersistenceReadinessDomain,
+  type BusinessPersistenceRuntime,
+} from "@/lib/business-persistence-guards";
 
 export type ReadinessStatus = "READY" | "NOT_READY";
 export type ReadinessCheckStatus = "PASS" | "FAIL";
@@ -22,6 +27,7 @@ export interface ReadinessCheck {
 export interface ReadinessPayload {
   status: ReadinessStatus;
   checks: ReadinessCheck[];
+  businessPersistenceDomains: BusinessPersistenceReadinessDomain[];
   requestId: string;
   timestamp: string;
 }
@@ -70,6 +76,7 @@ export function evaluateReadiness(input: {
   const env = input.env ?? process.env;
   const now = input.now ?? new Date();
   const envValidation = validateRuntimeProductionEnvironment(env);
+  const businessPersistenceDomains = getBusinessPersistenceReadinessDomains(resolveReadinessRuntime(env));
 
   const checks: ReadinessCheck[] = [
     buildEnvCheck(envValidation.issues),
@@ -103,10 +110,23 @@ export function evaluateReadiness(input: {
     payload: {
       status: hasFailure ? "NOT_READY" : "READY",
       checks,
+      businessPersistenceDomains,
       requestId: input.requestId,
       timestamp: now.toISOString()
     }
   };
+}
+
+function resolveReadinessRuntime(env: NodeJS.ProcessEnv): BusinessPersistenceRuntime {
+  if (env.NODE_ENV === "production") {
+    return "production";
+  }
+
+  if (env.NODE_ENV === "test") {
+    return "test";
+  }
+
+  return "development";
 }
 
 function buildEnvCheck(issues: EnvValidationIssue[]): ReadinessCheck {

@@ -20,6 +20,7 @@ const AUDIT_TEST_USER_IDS = [
   'aaaaaaaa-0000-0000-0000-000000000026',
   'aaaaaaaa-0000-0000-0000-000000000027',
   'aaaaaaaa-0000-0000-0000-000000000028',
+  'aaaaaaaa-0000-0000-0000-000000000029',
 ];
 
 describe('M9C Audit Logging Integration Tests', () => {
@@ -484,27 +485,34 @@ describe('M9C Audit Logging Integration Tests', () => {
   it('should store createdAt timestamps in UTC', async () => {
     const userId = 'aaaaaaaa-0000-0000-0000-000000000029';
     const beforeCreate = new Date();
+    const operationTimestamp = new Date();
 
-    await testDb.auditLog.create({
+    const createdLog = await testDb.auditLog.create({
       data: {
         actorUserId: userId,
         action: 'query_metrics',
         resourceType: 'analytics',
         status: 'success',
         metadata: {},
+        createdAt: operationTimestamp,
       },
     });
 
     const afterCreate = new Date();
-    const logs = await testDb.auditLog.findMany({
-      where: { actorUserId: userId },
+    const persistedLog = await testDb.auditLog.findUnique({
+      where: { id: createdLog.id },
     });
 
-    expect(logs[0].createdAt.getTime()).toBeGreaterThanOrEqual(
+    expect(persistedLog).not.toBeNull();
+    expect(persistedLog?.actorUserId).toBe(userId);
+    expect(persistedLog?.createdAt.getTime()).toBeGreaterThanOrEqual(
       beforeCreate.getTime()
     );
-    expect(logs[0].createdAt.getTime()).toBeLessThanOrEqual(
+    expect(persistedLog?.createdAt.getTime()).toBeLessThanOrEqual(
       afterCreate.getTime()
+    );
+    expect(persistedLog?.createdAt.toISOString()).toBe(
+      operationTimestamp.toISOString()
     );
   });
 });

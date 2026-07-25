@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
+import { guardBusinessPersistence } from "@/lib/business-persistence-guards";
 import type { ClientCreateRequest } from "@/lib/contracts";
 import { createClient, getSession, sanitize, store } from "@/lib/milestone1-store";
 
@@ -10,7 +11,12 @@ async function requireSession() {
   return getSession(token);
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const blockedResponse = guardBusinessPersistence("clients", request);
+  if (blockedResponse) {
+    return blockedResponse;
+  }
+
   const user = await requireSession();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -24,6 +30,11 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const blockedResponse = guardBusinessPersistence("clients", request);
+  if (blockedResponse) {
+    return blockedResponse;
+  }
+
   const user = await requireSession();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

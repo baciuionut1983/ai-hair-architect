@@ -1,11 +1,17 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
+import { guardBusinessPersistence } from "@/lib/business-persistence-guards";
 import type { ConsultationCreateRequest } from "@/lib/contracts";
 import { findPersistedAnalysisById } from "@/lib/analysis-persistence";
 import { getAnalysisOwnedByUser, getClientOwnedByUser, getSession, store } from "@/lib/milestone1-store";
 
 export async function POST(request: Request) {
+  const blockedResponse = guardBusinessPersistence("consultations", request);
+  if (blockedResponse) {
+    return blockedResponse;
+  }
+
   const cookieStore = await cookies();
   const token = cookieStore.get("aha_session")?.value ?? null;
   const sessionUser = getSession(token);

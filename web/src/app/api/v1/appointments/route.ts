@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
+import { guardBusinessPersistence } from "@/lib/business-persistence-guards";
 import type { AppointmentCreateRequest } from "@/lib/contracts";
 import { createAppointment, getAppointmentsForUser, getClientOwnedByUser, getSession, sanitize } from "@/lib/milestone1-store";
 
@@ -13,6 +14,11 @@ function normalizeReminderMinutes(value: unknown): number {
 }
 
 export async function GET(request: Request) {
+  const blockedResponse = guardBusinessPersistence("appointments", request);
+  if (blockedResponse) {
+    return blockedResponse;
+  }
+
   const cookieStore = await cookies();
   const token = cookieStore.get("aha_session")?.value ?? null;
   const sessionUser = getSession(token);
@@ -28,6 +34,11 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const blockedResponse = guardBusinessPersistence("appointments", request);
+  if (blockedResponse) {
+    return blockedResponse;
+  }
+
   const cookieStore = await cookies();
   const token = cookieStore.get("aha_session")?.value ?? null;
   const sessionUser = getSession(token);
