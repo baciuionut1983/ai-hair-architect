@@ -2,8 +2,9 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { guardBusinessPersistence } from "@/lib/business-persistence-guards";
+import { resolveOwnedClient } from "@/lib/client-repository";
 import type { AppointmentCreateRequest } from "@/lib/contracts";
-import { createAppointment, getAppointmentsForUser, getClientOwnedByUser, getSession, sanitize } from "@/lib/milestone1-store";
+import { createAppointment, getAppointmentsForUser, getSession, sanitize } from "@/lib/milestone1-store";
 
 function normalizeReminderMinutes(value: unknown): number {
   const parsed = Number(value);
@@ -57,7 +58,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "clientId, title and startsAt are required." }, { status: 400 });
   }
 
-  const client = getClientOwnedByUser(clientId, sessionUser.id);
+  const client = await resolveOwnedClient(sessionUser.id, clientId);
+  if (client instanceof Response) return client;
   if (!client) {
     return NextResponse.json({ error: "Client not found." }, { status: 404 });
   }

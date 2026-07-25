@@ -10,7 +10,6 @@ import type {
   BackupSnapshotRecord,
   AuthSessionResponse,
   ClientPhotoRecord,
-  ClientRecord,
   ConsultationRecord,
   FaceShape,
   FormulaRecord,
@@ -54,7 +53,6 @@ interface UserRecord {
 interface Store {
   users: UserRecord[];
   sessions: Map<string, string>;
-  clients: ClientRecord[];
   analyses: AnalysisRecord[];
   consultations: ConsultationRecord[];
   photos: ClientPhotoRecord[];
@@ -143,7 +141,6 @@ function createStore(): Store {
   return {
     users: [],
     sessions: new Map<string, string>(),
-    clients: [],
     analyses: [],
     consultations: [],
     photos: [],
@@ -676,10 +673,8 @@ export function addWorkspaceMember(input: {
   return membership;
 }
 
-export function getAnalyticsSnapshotForUser(userId: string): AnalyticsSnapshot {
-  const ownedClientIds = new Set(
-    store.clients.filter((entry) => entry.ownerUserId === userId).map((entry) => entry.id)
-  );
+export function getAnalyticsSnapshotForUser(userId: string, clientIds: string[]): AnalyticsSnapshot {
+  const ownedClientIds = new Set(clientIds);
 
   const consultationsCount = store.consultations.filter((entry) => ownedClientIds.has(entry.clientId)).length;
   const appointmentsCount = store.appointments.filter((entry) => entry.ownerUserId === userId).length;
@@ -780,10 +775,9 @@ export function getPushQueueForUser(userId: string): PushQueueRecord[] {
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
-export function getOpsHealthSnapshot(): OpsHealthSnapshot {
+export function getOpsHealthSnapshot(clientsCount: number): OpsHealthSnapshot {
   const queueBacklogCount = store.pushQueue.filter((entry) => entry.status === "queued").length;
   const usersCount = store.users.length;
-  const clientsCount = store.clients.length;
   const consultationsCount = store.consultations.length;
   const appointmentsCount = store.appointments.length;
   const notificationsCount = store.notifications.length;
@@ -808,10 +802,8 @@ export function getOpsHealthSnapshot(): OpsHealthSnapshot {
   };
 }
 
-export function createBackupSnapshot(ownerUserId: string, label: string): BackupSnapshotRecord {
-  const ownedClientIds = new Set(
-    store.clients.filter((entry) => entry.ownerUserId === ownerUserId).map((entry) => entry.id)
-  );
+export function createBackupSnapshot(ownerUserId: string, label: string, clientIds: string[] = []): BackupSnapshotRecord {
+  const ownedClientIds = new Set(clientIds);
 
   const snapshot: BackupSnapshotRecord = {
     id: randomUUID(),
@@ -1007,33 +999,6 @@ export function createUser(input: {
   return user;
 }
 
-export function createClient(input: {
-  ownerUserId: string;
-  fullName: string;
-  email?: string;
-  phone?: string;
-  notes?: string;
-}): ClientRecord {
-  const now = new Date().toISOString();
-  const client: ClientRecord = {
-    id: randomUUID(),
-    ownerUserId: input.ownerUserId,
-    fullName: input.fullName,
-    email: input.email ?? "",
-    phone: input.phone ?? "",
-    notes: input.notes ?? "",
-    createdAt: now,
-    updatedAt: now
-  };
-
-  store.clients.push(client);
-  return client;
-}
-
-export function getClientOwnedByUser(clientId: string, userId: string): ClientRecord | null {
-  return store.clients.find((entry) => entry.id === clientId && entry.ownerUserId === userId) ?? null;
-}
-
 export function createAnalysis(input: Omit<AnalysisRecord, "id" | "createdAt" | "updatedAt">): AnalysisRecord {
   const now = new Date().toISOString();
   const analysis: AnalysisRecord = {
@@ -1072,13 +1037,8 @@ export function getAnalysisOwnedByUser(analysisId: string, userId: string): Anal
 
 export function getConsultationsForClientByUser(
   clientId: string,
-  userId: string
+  _userId: string
 ): ConsultationRecord[] {
-  const ownedClient = getClientOwnedByUser(clientId, userId);
-  if (!ownedClient) {
-    return [];
-  }
-
   return store.consultations
     .filter((entry) => entry.clientId === clientId)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
@@ -1086,19 +1046,9 @@ export function getConsultationsForClientByUser(
 
 export function getConsultationByIdForUser(
   consultationId: string,
-  userId: string
+  _userId: string
 ): ConsultationRecord | null {
-  const consultation = store.consultations.find((entry) => entry.id === consultationId) ?? null;
-  if (!consultation) {
-    return null;
-  }
-
-  const ownedClient = getClientOwnedByUser(consultation.clientId, userId);
-  if (!ownedClient) {
-    return null;
-  }
-
-  return consultation;
+  return store.consultations.find((entry) => entry.id === consultationId) ?? null;
 }
 
 export function createClientPhoto(input: {
@@ -1118,12 +1068,7 @@ export function createClientPhoto(input: {
   return record;
 }
 
-export function getPhotosForClientByUser(clientId: string, userId: string): ClientPhotoRecord[] {
-  const ownedClient = getClientOwnedByUser(clientId, userId);
-  if (!ownedClient) {
-    return [];
-  }
-
+export function getPhotosForClientByUser(clientId: string, _userId: string): ClientPhotoRecord[] {
   return store.photos
     .filter((entry) => entry.clientId === clientId)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
@@ -1146,12 +1091,7 @@ export function createFormulaRecord(input: {
   return record;
 }
 
-export function getFormulasForClientByUser(clientId: string, userId: string): FormulaRecord[] {
-  const ownedClient = getClientOwnedByUser(clientId, userId);
-  if (!ownedClient) {
-    return [];
-  }
-
+export function getFormulasForClientByUser(clientId: string, _userId: string): FormulaRecord[] {
   return store.formulas
     .filter((entry) => entry.clientId === clientId)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
@@ -1174,12 +1114,7 @@ export function createTreatmentRecord(input: {
   return record;
 }
 
-export function getTreatmentsForClientByUser(clientId: string, userId: string): TreatmentRecord[] {
-  const ownedClient = getClientOwnedByUser(clientId, userId);
-  if (!ownedClient) {
-    return [];
-  }
-
+export function getTreatmentsForClientByUser(clientId: string, _userId: string): TreatmentRecord[] {
   return store.treatments
     .filter((entry) => entry.clientId === clientId)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
@@ -1298,11 +1233,6 @@ export function executeReminderJobsForUser(userId: string, nowIso = new Date().t
 }
 
 export function getClientTimelineByUser(clientId: string, userId: string): TimelineEntry[] {
-  const ownedClient = getClientOwnedByUser(clientId, userId);
-  if (!ownedClient) {
-    return [];
-  }
-
   const photos = getPhotosForClientByUser(clientId, userId).map<TimelineEntry>((item) => ({
     id: item.id,
     kind: "photo",

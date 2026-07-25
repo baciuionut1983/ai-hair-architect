@@ -61,6 +61,8 @@ describe("restore-preview route", () => {
       externalReferenceStatus: "none",
       backupStateFingerprint: "a".repeat(64),
       currentStateFingerprint: "b".repeat(64),
+      currentClientStateFingerprint: "d".repeat(64),
+      previewGeneratedAt: "2026-07-25T20:00:00.000Z",
       previewFingerprint: "c".repeat(64),
       latestBackupUpdatedAt: null,
       latestCurrentUpdatedAt: null,

@@ -1,6 +1,11 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
+import {
+  clientPersistenceUnavailableResponse,
+  isClientPersistenceError,
+  listActiveClientIdsForOwner,
+} from "@/lib/client-repository";
 import { getAnalyticsSnapshotForUser, getSession } from "@/lib/milestone1-store";
 
 export async function GET() {
@@ -12,6 +17,12 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const snapshot = getAnalyticsSnapshotForUser(sessionUser.id);
-  return NextResponse.json({ snapshot }, { status: 200 });
+  try {
+    const ownedClientIds = await listActiveClientIdsForOwner(sessionUser.id);
+    const snapshot = getAnalyticsSnapshotForUser(sessionUser.id, ownedClientIds);
+    return NextResponse.json({ snapshot }, { status: 200 });
+  } catch (error) {
+    if (isClientPersistenceError(error)) return clientPersistenceUnavailableResponse();
+    throw error;
+  }
 }

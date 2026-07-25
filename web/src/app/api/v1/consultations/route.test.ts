@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
 const storeMock = vi.hoisted(() => ({
   getAnalysisOwnedByUser: vi.fn(),
-  getClientOwnedByUser: vi.fn(),
   getSession: vi.fn(),
   store: { consultations: [] },
 }));

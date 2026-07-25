@@ -14,23 +14,23 @@ describe("business persistence guards", () => {
     mutableEnv.NODE_ENV = originalNodeEnv;
   });
 
-  it("registers exactly the three memory-only pilot domains", () => {
+  it("registers durable Clients and leaves dependent pilot domains memory-only", () => {
     expect(Object.keys(BUSINESS_PERSISTENCE_DOMAIN_REGISTRY)).toEqual([
       "clients",
       "consultations",
       "appointments",
     ]);
 
-    for (const metadata of Object.values(BUSINESS_PERSISTENCE_DOMAIN_REGISTRY)) {
-      expect(metadata).toEqual({
-        persistenceState: "memory_only",
-        essential: true,
-        productionReady: false,
-      });
-    }
+    expect(BUSINESS_PERSISTENCE_DOMAIN_REGISTRY.clients).toEqual({
+      persistenceState: "durable",
+      essential: true,
+      productionReady: true,
+    });
+    expect(BUSINESS_PERSISTENCE_DOMAIN_REGISTRY.consultations.persistenceState).toBe("memory_only");
+    expect(BUSINESS_PERSISTENCE_DOMAIN_REGISTRY.appointments.persistenceState).toBe("memory_only");
   });
 
-  it.each(["clients", "consultations", "appointments"])(
+  it.each(["consultations", "appointments"])(
     "blocks %s in production",
     (domain) => {
       expect(evaluateBusinessPersistence(domain, "production")).toMatchObject({
@@ -44,13 +44,24 @@ describe("business persistence guards", () => {
     },
   );
 
+  it("allows durable Clients in production", () => {
+    expect(evaluateBusinessPersistence("clients", "production")).toMatchObject({
+      knownDomain: true,
+      persistenceState: "durable",
+      blocked: false,
+      guardEnforcement: "active",
+      availability: "available",
+      productionReady: true,
+    });
+  });
+
   it.each(["development", "test"] as const)("bypasses in %s", (runtime) => {
     expect(evaluateBusinessPersistence("clients", runtime)).toMatchObject({
       knownDomain: true,
       blocked: false,
       guardEnforcement: "bypassed",
       availability: "available",
-      productionReady: false,
+      productionReady: true,
     });
   });
 
@@ -69,8 +80,8 @@ describe("business persistence guards", () => {
     mutableEnv.NODE_ENV = "production";
 
     const response = guardBusinessPersistence(
-      "clients",
-      new Request("http://localhost/api/v1/clients", {
+      "consultations",
+      new Request("http://localhost/api/v1/consultations", {
         headers: { "x-request-id": "req-phase-2a" },
       }),
     );
@@ -83,7 +94,7 @@ describe("business persistence guards", () => {
     await expect(response?.json()).resolves.toEqual({
       error: "PRODUCTION_POLICY_BUSINESS_PERSISTENCE_NOT_READY",
       message: "Business persistence is unavailable in production for this domain.",
-      domain: "clients",
+      domain: "consultations",
       requestId: "req-phase-2a",
     });
   });
@@ -92,8 +103,8 @@ describe("business persistence guards", () => {
     mutableEnv.NODE_ENV = "production";
 
     const response = guardBusinessPersistence(
-      "clients",
-      new Request("http://localhost/api/v1/clients"),
+      "consultations",
+      new Request("http://localhost/api/v1/consultations"),
     );
     const payload = await response?.json();
 
@@ -106,5 +117,10 @@ describe("business persistence guards", () => {
     expect(
       guardBusinessPersistence("clients", new Request("http://localhost/api/v1/clients")),
     ).toBeNull();
+  });
+
+  it("returns null for durable Clients in production", () => {
+    mutableEnv.NODE_ENV = "production";
+    expect(guardBusinessPersistence("clients", new Request("http://localhost/api/v1/clients"))).toBeNull();
   });
 });

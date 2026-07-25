@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createAuditEvent,
   createBackupSnapshot,
-  createClient,
   createWorkspace,
   createUser,
   enqueuePushNotification,
@@ -32,9 +31,9 @@ describe("milestone7 backup and retention", () => {
     });
 
     createWorkspace(user.id, "User workspace");
-    createClient({ ownerUserId: user.id, fullName: "Owned Client" });
+    const ownedClientId = `client-${Date.now()}`;
     createWorkspace(otherUser.id, "Other workspace");
-    createClient({ ownerUserId: otherUser.id, fullName: "Other Client" });
+    const otherClientId = `other-client-${Date.now()}`;
 
     enqueuePushNotification({
       userId: user.id,
@@ -83,7 +82,7 @@ describe("milestone7 backup and retention", () => {
 
     const auditBeforeBackup = store.auditEvents.map((entry) => ({ ...entry }));
 
-    const backup = createBackupSnapshot(user.id, "before-retention");
+    const backup = createBackupSnapshot(user.id, "before-retention", [ownedClientId]);
     expect(backup.ownerUserId).toBe(user.id);
     expect(backup.snapshot).toEqual({
       clientsCount: 1,
@@ -93,12 +92,12 @@ describe("milestone7 backup and retention", () => {
       workspacesCount: 1
     });
 
-    const backup2 = createBackupSnapshot(user.id, "before-retention-2");
+    const backup2 = createBackupSnapshot(user.id, "before-retention-2", [ownedClientId]);
     expect(backup2.snapshot).toEqual(backup.snapshot);
     expect(backup2.label).toBe("before-retention-2");
     expect(backup2.snapshot).toEqual(backup.snapshot);
 
-    const otherUserBackup = createBackupSnapshot(otherUser.id, "other-user-backup");
+    const otherUserBackup = createBackupSnapshot(otherUser.id, "other-user-backup", [otherClientId]);
     expect(otherUserBackup.ownerUserId).toBe(otherUser.id);
     expect(otherUserBackup.snapshot).toEqual({
       clientsCount: 1,

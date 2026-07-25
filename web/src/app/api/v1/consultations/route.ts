@@ -2,9 +2,10 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { guardBusinessPersistence } from "@/lib/business-persistence-guards";
+import { resolveOwnedClient } from "@/lib/client-repository";
 import type { ConsultationCreateRequest } from "@/lib/contracts";
 import { findPersistedAnalysisById } from "@/lib/analysis-persistence";
-import { getAnalysisOwnedByUser, getClientOwnedByUser, getSession, store } from "@/lib/milestone1-store";
+import { getAnalysisOwnedByUser, getSession, store } from "@/lib/milestone1-store";
 
 export async function POST(request: Request) {
   const blockedResponse = guardBusinessPersistence("consultations", request);
@@ -26,7 +27,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid consultation payload." }, { status: 400 });
   }
 
-  const ownedClient = getClientOwnedByUser(body.clientId, sessionUser.id);
+  const ownedClient = await resolveOwnedClient(sessionUser.id, body.clientId);
+  if (ownedClient instanceof Response) return ownedClient;
   if (!ownedClient) {
     return NextResponse.json({ error: "Client not found." }, { status: 404 });
   }

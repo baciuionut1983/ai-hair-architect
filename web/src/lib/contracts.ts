@@ -749,6 +749,7 @@ export type BackupRestorePreviewIssueCode =
   | "EXTERNAL_PATH_UNSAFE"
   | "BACKUP_OLDER_THAN_CURRENT_STATE"
   | "CURRENT_STATE_HAS_EXTRA_ROWS"
+  | "LEGACY_CLIENT_FIELDS_OMITTED"
   | "CHECKSUM_MISMATCH"
   | "UNSUPPORTED_SCHEMA"
   | "ARTIFACT_INVALID";
@@ -780,6 +781,8 @@ export interface BackupRestorePreviewResponse {
   externalReferenceStatus: BackupRestorePreviewExternalReferenceStatus;
   backupStateFingerprint: string;
   currentStateFingerprint: string;
+  currentClientStateFingerprint: string;
+  previewGeneratedAt: string;
   previewFingerprint: string;
   latestBackupUpdatedAt: string | null;
   latestCurrentUpdatedAt: string | null;
@@ -802,11 +805,15 @@ export interface BackupRestoreRequest {
   currentStateFingerprint: string;
   strategy: BackupRestoreStrategy;
   acknowledgeDataLoss: true;
+  previewGeneratedAt?: string;
+  acknowledgeLegacyClientDataLoss?: true;
+  safetyBackupId?: string;
 }
 
 export type BackupRestoreWarningCode =
   | "BACKUP_OLDER_THAN_CURRENT_STATE"
-  | "CURRENT_STATE_HAS_EXTRA_ROWS";
+  | "CURRENT_STATE_HAS_EXTRA_ROWS"
+  | "LEGACY_CLIENT_FIELDS_OMITTED";
 
 export interface BackupRestoreWarning {
   code: BackupRestoreWarningCode;
@@ -998,6 +1005,18 @@ export interface BackupV13ClientSectionRow {
   updatedAt: string;
 }
 
+export interface BackupV13V2ClientSectionRow {
+  id: string;
+  fullName: string;
+  email: string | null;
+  phone: string | null;
+  notes: string | null;
+  deletedAt: string | null;
+  ownerUserId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface BackupV13AnalysisSectionRow {
   id: string;
   clientId: string;
@@ -1076,7 +1095,7 @@ export interface BackupV13ImageAnalysisReviewSectionRow {
   updatedAt: string;
 }
 
-export interface BackupV13Artifact {
+export interface BackupV13V1Artifact {
   schemaVersion: "m13.v1";
   canonicalSerializationVersion: "sorted-json-v1";
   checksumAlgorithm: "sha256";
@@ -1113,6 +1132,19 @@ export interface BackupV13Artifact {
     imageAnalysisReviews: BackupV13ImageAnalysisReviewSectionRow[];
   };
 }
+
+export interface BackupV13V2Artifact extends Omit<BackupV13V1Artifact, "schemaVersion" | "sections"> {
+  schemaVersion: "m13.v2";
+  sections: {
+    clients: BackupV13V2ClientSectionRow[];
+    analyses: BackupV13AnalysisSectionRow[];
+    imageAssets: BackupV13ImageAssetSectionRow[];
+    imageAnalyses: BackupV13ImageAnalysisSectionRow[];
+    imageAnalysisReviews: BackupV13ImageAnalysisReviewSectionRow[];
+  };
+}
+
+export type BackupV13Artifact = BackupV13V1Artifact | BackupV13V2Artifact;
 
 export interface BackupVerificationResult {
   backupId: string;

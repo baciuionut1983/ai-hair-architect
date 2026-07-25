@@ -71,7 +71,7 @@ describe('Analytics Integration Tests', () => {
     const client = await prisma.client.create({
       data: {
         id: `int-test-client-${Date.now()}`,
-        name: 'Integration Test Client',
+        fullName: 'Integration Test Client',
         ownerUserId: userId1,
       },
     });

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   createAppointment,
-  createClient,
   createClientPhoto,
   createFormulaRecord,
   createTreatmentRecord,
@@ -20,25 +19,22 @@ describe("milestone3 timeline", () => {
       locale: "en"
     });
 
-    const client = createClient({
-      ownerUserId: user.id,
-      fullName: "Timeline Client"
-    });
+    const clientId = `client-${Date.now()}`;
 
     createClientPhoto({
-      clientId: client.id,
+      clientId,
       imageUrl: "https://example.com/photo-1.jpg",
       caption: "before"
     });
 
     createFormulaRecord({
-      clientId: client.id,
+      clientId,
       formulaName: "Gloss 7N",
       formulaDetails: "7N + 10 vol"
     });
 
     createTreatmentRecord({
-      clientId: client.id,
+      clientId,
       treatmentName: "Hydration mask",
       treatmentDetails: "15 minute protocol"
     });
@@ -46,7 +42,7 @@ describe("milestone3 timeline", () => {
     const consultationCreatedAt = new Date(Date.now() + 2000).toISOString();
     store.consultations.push({
       id: `consult-${Date.now()}`,
-      clientId: client.id,
+      clientId,
       analysisId: "analysis-1",
       summary: "Consultation summary",
       nextSteps: ["Step 1"],
@@ -55,7 +51,7 @@ describe("milestone3 timeline", () => {
 
     createAppointment({
       ownerUserId: user.id,
-      clientId: client.id,
+      clientId,
       title: "Recheck",
       startsAt: new Date(Date.now() + 3600_000).toISOString(),
       reminderMinutesBefore: 60,
@@ -63,7 +59,7 @@ describe("milestone3 timeline", () => {
       notes: "Bring updated photos"
     });
 
-    const timeline = getClientTimelineByUser(client.id, user.id);
+    const timeline = getClientTimelineByUser(clientId, user.id);
     const kinds = new Set(timeline.map((entry) => entry.kind));
 
     expect(kinds.has("photo")).toBe(true);

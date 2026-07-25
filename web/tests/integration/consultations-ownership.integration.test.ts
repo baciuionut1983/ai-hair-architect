@@ -1,33 +1,36 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { randomUUID } from "crypto";
 
-import { createClient, createUser, getConsultationByIdForUser, store } from "@/lib/milestone1-store";
+import { describe, expect, it } from "vitest";
+
+import { createClientForOwner, findClientForOwner } from "@/lib/client-repository";
+import { prisma } from "@/lib/prisma";
 
 describe("consultation ownership integration", () => {
-  beforeEach(() => {
-    store.users = [];
-    store.clients = [];
-    store.consultations = [];
-  });
+  it("returns a durable Client only to its owner scope", async () => {
+    const ownerUserId = randomUUID();
+    const otherUserId = randomUUID();
+    try {
+      await prisma.user.createMany({
+        data: [ownerUserId, otherUserId].map((id) => ({
+          id,
+          email: `${id}@consultation-ownership.test`,
+          passwordHash: "test",
+          role: "professional",
+          locale: "en",
+        })),
+      });
+      const client = await createClientForOwner(ownerUserId, {
+        fullName: "Owner Client",
+        email: null,
+        phone: null,
+        notes: null,
+      });
 
-  it("returns consultation only to the owning user's client scope", () => {
-    const owner = createUser({ email: "owner@example.com", password: "pass123", role: "professional", locale: "en" });
-    const other = createUser({ email: "other@example.com", password: "pass123", role: "professional", locale: "en" });
-    const ownerClient = createClient({ ownerUserId: owner.id, fullName: "Owner Client" });
-
-    const consultation = {
-      id: "consultation-owned",
-      clientId: ownerClient.id,
-      analysisId: "analysis-owned",
-      summary: "Owner summary",
-      nextSteps: ["step"],
-      createdAt: new Date().toISOString(),
-    };
-    store.consultations.push(consultation);
-
-    const ownerResult = getConsultationByIdForUser(consultation.id, owner.id);
-    const otherResult = getConsultationByIdForUser(consultation.id, other.id);
-
-    expect(ownerResult).toMatchObject({ id: "consultation-owned" });
-    expect(otherResult).toBeNull();
+      await expect(findClientForOwner(ownerUserId, client.id)).resolves.toMatchObject({ id: client.id });
+      await expect(findClientForOwner(otherUserId, client.id)).resolves.toBeNull();
+    } finally {
+      await prisma.client.deleteMany({ where: { ownerUserId: { in: [ownerUserId, otherUserId] } } });
+      await prisma.user.deleteMany({ where: { id: { in: [ownerUserId, otherUserId] } } });
+    }
   });
 });

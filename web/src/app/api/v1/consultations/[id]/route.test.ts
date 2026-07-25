@@ -3,8 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const cookiesMock = vi.hoisted(() => ({
   cookies: vi.fn(),
 }));
+const clientRepositoryMock = vi.hoisted(() => ({
+  resolveOwnedClient: vi.fn(),
+}));
 
 vi.mock("next/headers", () => cookiesMock);
+vi.mock("@/lib/client-repository", () => clientRepositoryMock);
 
 vi.mock("@/lib/milestone1-store", () => ({
   getSession: vi.fn(),
@@ -70,10 +74,12 @@ describe("consultation by id route", () => {
       nextSteps: ["Step 1"],
       createdAt: new Date().toISOString(),
     });
+    clientRepositoryMock.resolveOwnedClient.mockResolvedValue({ id: "client-1", ownerUserId: "user-1" });
 
     const response = await GET({} as never, { params: Promise.resolve({ id: "consultation-1" }) });
 
     expect(response.status).toBe(200);
+    expect(clientRepositoryMock.resolveOwnedClient).toHaveBeenCalledWith("user-1", "client-1");
     await expect(response.json()).resolves.toMatchObject({
       consultation: {
         id: "consultation-1",

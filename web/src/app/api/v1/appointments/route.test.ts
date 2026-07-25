@@ -4,7 +4,6 @@ const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
 const storeMock = vi.hoisted(() => ({
   createAppointment: vi.fn(),
   getAppointmentsForUser: vi.fn(),
-  getClientOwnedByUser: vi.fn(),
   getSession: vi.fn(),
   sanitize: vi.fn(),
 }));

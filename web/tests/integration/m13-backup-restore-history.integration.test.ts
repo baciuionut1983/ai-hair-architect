@@ -7,7 +7,7 @@ import type { BackupRestoreRequest, BackupV13Artifact } from "@/lib/contracts";
 import {
   BACKUP_CHECKSUM_ALGORITHM,
   BACKUP_V13_CANONICAL_VERSION,
-  BACKUP_V13_SCHEMA_VERSION,
+  BACKUP_V13_V2_SCHEMA_VERSION,
   computeArtifactChecksumHex,
 } from "@/lib/backup-v13-artifact";
 import { getBackupRestorePreviewForUser } from "@/lib/backup-v13-restore-preview";
@@ -37,6 +37,7 @@ suite("m13 backup restore history integration", () => {
     const artifact = createSingleClientArtifact({ ownerUserId, backupId, clientId, name: "History Success" });
 
     try {
+      await createTestUser(ownerUserId);
       await prisma.opsBackupSnapshot.create({
         data: {
           id: backupId,
@@ -45,7 +46,7 @@ suite("m13 backup restore history integration", () => {
           snapshotJson: artifact,
           checksum: artifact.checksum!,
           checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
-          schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+          schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
           createdByUserId: ownerUserId,
         },
       });
@@ -88,6 +89,7 @@ suite("m13 backup restore history integration", () => {
       await prisma.client.deleteMany({ where: { ownerUserId } });
       await prisma.opsBackupSnapshot.deleteMany({ where: { ownerUserId } });
       await prisma.auditLog.deleteMany({ where: { actorUserId: ownerUserId } });
+      await prisma.user.deleteMany({ where: { id: ownerUserId } });
     }
   });
 
@@ -130,6 +132,7 @@ suite("m13 backup restore history integration", () => {
     const artifact = createSingleClientArtifact({ ownerUserId, backupId, clientId, name: "History Retention" });
 
     try {
+      await createTestUser(ownerUserId);
       await prisma.opsBackupSnapshot.create({
         data: {
           id: backupId,
@@ -138,7 +141,7 @@ suite("m13 backup restore history integration", () => {
           snapshotJson: artifact,
           checksum: artifact.checksum!,
           checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
-          schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+          schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
           createdByUserId: ownerUserId,
         },
       });
@@ -171,6 +174,7 @@ suite("m13 backup restore history integration", () => {
       await prisma.client.deleteMany({ where: { ownerUserId } });
       await prisma.opsBackupSnapshot.deleteMany({ where: { ownerUserId } });
       await prisma.auditLog.deleteMany({ where: { actorUserId: ownerUserId } });
+      await prisma.user.deleteMany({ where: { id: ownerUserId } });
     }
   });
 
@@ -286,7 +290,7 @@ function createSingleClientArtifact(input: {
   name: string;
 }): BackupV13Artifact {
   const artifact: BackupV13Artifact = {
-    schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+    schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
     canonicalSerializationVersion: BACKUP_V13_CANONICAL_VERSION,
     checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
     checksum: null,
@@ -318,7 +322,11 @@ function createSingleClientArtifact(input: {
       clients: [
         {
           id: input.clientId,
-          name: input.name,
+          fullName: input.name,
+          email: null,
+          phone: null,
+          notes: null,
+          deletedAt: null,
           ownerUserId: input.ownerUserId,
           createdAt: "2026-07-22T00:00:00.000Z",
           updatedAt: "2026-07-22T00:00:00.000Z",
@@ -333,4 +341,16 @@ function createSingleClientArtifact(input: {
 
   artifact.checksum = computeArtifactChecksumHex(artifact);
   return artifact;
+}
+
+async function createTestUser(id: string): Promise<void> {
+  await prisma.user.create({
+    data: {
+      id,
+      email: `${id}@restore-history.test`,
+      passwordHash: "test",
+      role: "professional",
+      locale: "en",
+    },
+  });
 }

@@ -1,8 +1,9 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
+import { resolveOwnedClient } from "@/lib/client-repository";
 import type { ClientPhotoCreateRequest } from "@/lib/contracts";
-import { createClientPhoto, getClientOwnedByUser, getSession, sanitize } from "@/lib/milestone1-store";
+import { createClientPhoto, getSession, sanitize } from "@/lib/milestone1-store";
 
 export async function POST(
   request: Request,
@@ -17,7 +18,8 @@ export async function POST(
   }
 
   const { id } = await context.params;
-  const client = getClientOwnedByUser(id, sessionUser.id);
+  const client = await resolveOwnedClient(sessionUser.id, id);
+  if (client instanceof Response) return client;
   if (!client) {
     return NextResponse.json({ error: "Client not found." }, { status: 404 });
   }

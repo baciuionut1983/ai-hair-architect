@@ -1,8 +1,15 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
+import { guardBusinessPersistence } from "@/lib/business-persistence-guards";
+import {
+  clientPersistenceUnavailableResponse,
+  isClientPersistenceError,
+  softDeleteClientForOwner,
+  updateClientForOwner,
+} from "@/lib/client-repository";
 import type { ClientUpdateRequest } from "@/lib/contracts";
-import { getSession, sanitize, store } from "@/lib/milestone1-store";
+import { getSession, sanitize } from "@/lib/milestone1-store";
 
 async function requireSession() {
   const cookieStore = await cookies();
@@ -14,18 +21,15 @@ export async function PATCH(
   request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
+  const blockedResponse = guardBusinessPersistence("clients", request);
+  if (blockedResponse) return blockedResponse;
+
   const user = await requireSession();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const { id } = await context.params;
-  const client = store.clients.find((entry) => entry.id === id && entry.ownerUserId === user.id);
-
-  if (!client) {
-    return NextResponse.json({ error: "Client not found." }, { status: 404 });
-  }
-
   const body = (await request.json()) as Partial<ClientUpdateRequest>;
   const nextName = sanitize(body.fullName);
   const nextEmail = sanitize(body.email);
@@ -36,39 +40,45 @@ export async function PATCH(
     return NextResponse.json({ error: "fullName cannot be empty." }, { status: 400 });
   }
 
-  if (body.fullName !== undefined) {
-    client.fullName = nextName;
+  if (nextName.length > 200 || nextEmail.length > 320 || nextPhone.length > 40 || nextNotes.length > 4000) {
+    return NextResponse.json({ error: "Client data exceeds the allowed length." }, { status: 400 });
   }
-  if (body.email !== undefined) {
-    client.email = nextEmail;
-  }
-  if (body.phone !== undefined) {
-    client.phone = nextPhone;
-  }
-  if (body.notes !== undefined) {
-    client.notes = nextNotes;
-  }
-  client.updatedAt = new Date().toISOString();
 
-  return NextResponse.json({ client }, { status: 200 });
+  try {
+    const client = await updateClientForOwner(user.id, id, {
+      ...(body.fullName !== undefined ? { fullName: nextName } : {}),
+      ...(body.email !== undefined ? { email: nextEmail || null } : {}),
+      ...(body.phone !== undefined ? { phone: nextPhone || null } : {}),
+      ...(body.notes !== undefined ? { notes: nextNotes || null } : {}),
+    });
+    if (!client) return NextResponse.json({ error: "Client not found." }, { status: 404 });
+    return NextResponse.json({ client }, { status: 200 });
+  } catch (error) {
+    if (isClientPersistenceError(error)) return clientPersistenceUnavailableResponse();
+    throw error;
+  }
 }
 
 export async function DELETE(
-  _request: Request,
+  request: Request,
   context: { params: Promise<{ id: string }> }
 ) {
+  const blockedResponse = guardBusinessPersistence("clients", request);
+  if (blockedResponse) return blockedResponse;
+
   const user = await requireSession();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const { id } = await context.params;
-  const index = store.clients.findIndex((entry) => entry.id === id && entry.ownerUserId === user.id);
-
-  if (index === -1) {
-    return NextResponse.json({ error: "Client not found." }, { status: 404 });
+  try {
+    if (!(await softDeleteClientForOwner(user.id, id))) {
+      return NextResponse.json({ error: "Client not found." }, { status: 404 });
+    }
+    return NextResponse.json({ success: true }, { status: 200 });
+  } catch (error) {
+    if (isClientPersistenceError(error)) return clientPersistenceUnavailableResponse();
+    throw error;
   }
-
-  store.clients.splice(index, 1);
-  return NextResponse.json({ success: true }, { status: 200 });
 }

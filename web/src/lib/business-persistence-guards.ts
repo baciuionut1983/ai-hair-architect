@@ -4,9 +4,9 @@ import { ensureRequestId } from "@/lib/hardening";
 
 export const BUSINESS_PERSISTENCE_DOMAIN_REGISTRY = {
   clients: {
-    persistenceState: "memory_only",
+    persistenceState: "durable",
     essential: true,
-    productionReady: false,
+    productionReady: true,
   },
   consultations: {
     persistenceState: "memory_only",
@@ -31,10 +31,10 @@ export interface BusinessPersistenceDecision {
   knownDomain: boolean;
   domain: string;
   runtime: BusinessPersistenceRuntime;
-  persistenceState: "memory_only" | "unknown";
+  persistenceState: "memory_only" | "durable" | "unknown";
   guardEnforcement: "active" | "bypassed";
   availability: "blocked" | "available";
-  productionReady: false;
+  productionReady: boolean;
   blocked: boolean;
   errorCode?: BusinessPersistenceErrorCode;
 }
@@ -48,10 +48,10 @@ export interface BusinessPersistenceUnavailablePayload {
 
 export interface BusinessPersistenceReadinessDomain {
   domain: BusinessPersistenceDomain;
-  persistenceState: "memory_only";
+  persistenceState: "memory_only" | "durable";
   guardEnforcement: "active" | "bypassed";
   availability: "blocked" | "available";
-  productionReady: false;
+  productionReady: boolean;
 }
 
 export function evaluateBusinessPersistence(
@@ -59,16 +59,19 @@ export function evaluateBusinessPersistence(
   runtime: BusinessPersistenceRuntime,
 ): BusinessPersistenceDecision {
   const knownDomain = Object.prototype.hasOwnProperty.call(BUSINESS_PERSISTENCE_DOMAIN_REGISTRY, domain);
-  const blocked = runtime === "production";
+  const metadata = knownDomain
+    ? BUSINESS_PERSISTENCE_DOMAIN_REGISTRY[domain as BusinessPersistenceDomain]
+    : null;
+  const blocked = runtime === "production" && (!metadata || !metadata.productionReady);
 
   return {
     knownDomain,
     domain,
     runtime,
-    persistenceState: knownDomain ? "memory_only" : "unknown",
-    guardEnforcement: blocked ? "active" : "bypassed",
+    persistenceState: metadata?.persistenceState ?? "unknown",
+    guardEnforcement: runtime === "production" ? "active" : "bypassed",
     availability: blocked ? "blocked" : "available",
-    productionReady: false,
+    productionReady: metadata?.productionReady ?? false,
     blocked,
     ...(blocked
       ? {
@@ -113,10 +116,10 @@ export function getBusinessPersistenceReadinessDomains(
     const decision = evaluateBusinessPersistence(domain, runtime);
     return {
       domain,
-      persistenceState: "memory_only",
+      persistenceState: BUSINESS_PERSISTENCE_DOMAIN_REGISTRY[domain].persistenceState,
       guardEnforcement: decision.guardEnforcement,
       availability: decision.availability,
-      productionReady: false,
+      productionReady: BUSINESS_PERSISTENCE_DOMAIN_REGISTRY[domain].productionReady,
     };
   });
 }

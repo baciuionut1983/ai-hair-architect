@@ -41,7 +41,15 @@ export async function POST(request: Request, context: { params: Promise<{ backup
   }
 
   const body = rawBody as Record<string, unknown>;
-  const allowedFields = new Set(["previewFingerprint", "currentStateFingerprint", "strategy", "acknowledgeDataLoss"]);
+  const allowedFields = new Set([
+    "previewFingerprint",
+    "currentStateFingerprint",
+    "strategy",
+    "acknowledgeDataLoss",
+    "previewGeneratedAt",
+    "acknowledgeLegacyClientDataLoss",
+    "safetyBackupId",
+  ]);
   const unknownFields = Object.keys(body).filter((key) => !allowedFields.has(key));
   if (unknownFields.length > 0) {
     return NextResponse.json(
@@ -80,6 +88,19 @@ export async function POST(request: Request, context: { params: Promise<{ backup
     );
   }
 
+  if (
+    (body.previewGeneratedAt !== undefined &&
+      (typeof body.previewGeneratedAt !== "string" || Number.isNaN(Date.parse(body.previewGeneratedAt)))) ||
+    (body.acknowledgeLegacyClientDataLoss !== undefined && body.acknowledgeLegacyClientDataLoss !== true) ||
+    (body.safetyBackupId !== undefined &&
+      (typeof body.safetyBackupId !== "string" || body.safetyBackupId.length === 0 || body.safetyBackupId.length > 120))
+  ) {
+    return NextResponse.json(
+      { error: "BACKUP_RESTORE_REQUEST_INVALID_FIELD", message: "Legacy safety binding fields are invalid." },
+      { status: 400, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
   try {
     const headerRequestId = request.headers?.get?.("x-request-id") ?? null;
     const normalizedRequestId = ensureRequestId(headerRequestId);
@@ -95,6 +116,9 @@ export async function POST(request: Request, context: { params: Promise<{ backup
       currentStateFingerprint: body.currentStateFingerprint,
       strategy: "replace_all",
       acknowledgeDataLoss: true,
+      ...(typeof body.previewGeneratedAt === "string" ? { previewGeneratedAt: body.previewGeneratedAt } : {}),
+      ...(body.acknowledgeLegacyClientDataLoss === true ? { acknowledgeLegacyClientDataLoss: true as const } : {}),
+      ...(typeof body.safetyBackupId === "string" ? { safetyBackupId: body.safetyBackupId } : {}),
       },
     });
 

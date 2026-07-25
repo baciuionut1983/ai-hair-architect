@@ -14,6 +14,7 @@ import type {
   BackupV13AnalysisSectionRow,
   BackupV13Artifact,
   BackupV13ClientSectionRow,
+  BackupV13V2ClientSectionRow,
   BackupV13ImageAnalysisReviewSectionRow,
   BackupV13ImageAnalysisSectionRow,
   BackupV13ImageAssetSectionRow,
@@ -30,7 +31,7 @@ import {
 } from "@/lib/backup-v13-artifact";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 
-const PREVIEW_FINGERPRINT_CONTRACT_VERSION = "m13.restore-preview.v1" as const;
+const PREVIEW_FINGERPRINT_CONTRACT_VERSION = "m13.restore-preview.v2" as const;
 
 type ComparableState = {
   contractVersion: typeof PREVIEW_FINGERPRINT_CONTRACT_VERSION;
@@ -69,7 +70,11 @@ export interface CurrentStateRows {
 
 interface CurrentClientRow {
   id: string;
-  name: string;
+  fullName: string;
+  email: string | null;
+  phone: string | null;
+  notes: string | null;
+  deletedAt: Date | null;
   ownerUserId: string;
   createdAt: Date;
   updatedAt: Date;
@@ -155,7 +160,11 @@ interface CurrentImageAnalysisReviewRow {
 
 interface NormalizedClientRow {
   id: string;
-  name: string;
+  fullName: string;
+  email: string | null;
+  phone: string | null;
+  notes: string | null;
+  deletedAt: string | null;
   ownerUserId: string;
   createdAt: string;
   updatedAt: string;
@@ -257,26 +266,31 @@ const ROW_KEY_SELECTORS: Record<BackupRestorePreviewSection, (row: ComparableRow
 
 type ComparableRow = NormalizedClientRow | NormalizedAnalysisRow | NormalizedImageAssetRow | NormalizedImageAnalysisRow | NormalizedImageAnalysisReviewRow;
 
-export async function getBackupRestorePreviewForUser(ownerUserId: string, backupId: string): Promise<BackupRestorePreviewResponse> {
+export async function getBackupRestorePreviewForUser(
+  ownerUserId: string,
+  backupId: string,
+  previewGeneratedAt = new Date().toISOString(),
+): Promise<BackupRestorePreviewResponse> {
   const source = await loadRestorePreviewSource(ownerUserId, backupId);
   if (!source) {
     throw new BackupArtifactError("BACKUP_NOT_FOUND", 404, "Backup snapshot not found.");
   }
 
-  return buildBackupRestorePreview(source);
+  return buildBackupRestorePreview(source, previewGeneratedAt);
 }
 
 export async function getBackupRestorePreviewForUserWithTransaction(
   tx: Prisma.TransactionClient,
   ownerUserId: string,
   backupId: string,
+  previewGeneratedAt = new Date().toISOString(),
 ): Promise<BackupRestorePreviewResponse> {
   const source = await loadRestorePreviewSourceWithTransaction(tx, ownerUserId, backupId);
   if (!source) {
     throw new BackupArtifactError("BACKUP_NOT_FOUND", 404, "Backup snapshot not found.");
   }
 
-  return buildBackupRestorePreview(source);
+  return buildBackupRestorePreview(source, previewGeneratedAt);
 }
 
 export async function loadRestorePreviewSource(ownerUserId: string, backupId: string): Promise<RestorePreviewDataSource | null> {
@@ -338,15 +352,16 @@ export function getBackupComparableStateFingerprintForArtifact(
   return computeStateFingerprint(normalizeBackupArtifact(artifact, ownerUserId).state);
 }
 
-export async function buildBackupRestorePreview(source: RestorePreviewDataSource): Promise<BackupRestorePreviewResponse> {
-  if (source.backupArtifact.schemaVersion !== BACKUP_V13_SCHEMA_VERSION) {
-    throw new BackupArtifactError(
-      "BACKUP_PREVIEW_UNSUPPORTED_SCHEMA",
-      422,
-      "Backup snapshot schema is unsupported for restore planning.",
-      { schemaVersion: source.backupArtifact.schemaVersion },
-    );
-  }
+export function getClientStateFingerprintForArtifact(artifact: BackupV13Artifact, ownerUserId: string): string {
+  const clients = normalizeBackupArtifact(artifact, ownerUserId).state.clients;
+  return hashCanonicalJson({ ownerUserId, clients });
+}
+
+export async function buildBackupRestorePreview(
+  source: RestorePreviewDataSource,
+  previewGeneratedAt = new Date().toISOString(),
+): Promise<BackupRestorePreviewResponse> {
+  const normalizedPreviewGeneratedAt = normalizeTimestamp(previewGeneratedAt, "previewGeneratedAt");
 
   if (
     source.backupArtifact.canonicalSerializationVersion !== BACKUP_V13_CANONICAL_VERSION ||
@@ -393,6 +408,10 @@ export async function buildBackupRestorePreview(source: RestorePreviewDataSource
   const externalReferenceStatus = externalReferences.status;
   const backupStateFingerprint = computeStateFingerprint(normalizedBackup.state);
   const currentStateFingerprint = computeStateFingerprint(normalizedCurrent.state);
+  const currentClientStateFingerprint = hashCanonicalJson({
+    ownerUserId: source.ownerUserId,
+    clients: normalizedCurrent.state.clients,
+  });
 
   const clients = compareRowSets(normalizedBackup.state.clients, normalizedCurrent.state.clients, "clients");
   const analyses = compareRowSets(normalizedBackup.state.analyses, normalizedCurrent.state.analyses, "analyses");
@@ -414,6 +433,15 @@ export async function buildBackupRestorePreview(source: RestorePreviewDataSource
   const latestCurrentUpdatedAt = computeLatestUpdatedAt(normalizedCurrent.state);
 
   const warnings: BackupRestorePreviewIssue[] = [];
+  if (source.backupArtifact.schemaVersion === BACKUP_V13_SCHEMA_VERSION) {
+    warnings.push(issue(
+      "LEGACY_CLIENT_FIELDS_OMITTED",
+      "clients",
+      null,
+      null,
+      "Legacy backup omits Client contact, notes, and deletion fields; execution requires a matching v2 safety backup.",
+    ));
+  }
   if (compareTimestampOrder(latestBackupUpdatedAt, latestCurrentUpdatedAt) < 0) {
     warnings.push(
       issue("BACKUP_OLDER_THAN_CURRENT_STATE", null, null, null, "Current state is newer than the backup snapshot."),
@@ -427,8 +455,12 @@ export async function buildBackupRestorePreview(source: RestorePreviewDataSource
   const eligibleForRestorePlanning = blockingReasons.length === 0;
   const previewFingerprint = computePreviewFingerprint({
     backupId: source.backupRow.id,
+    previewGeneratedAt: source.backupArtifact.schemaVersion === BACKUP_V13_SCHEMA_VERSION
+      ? normalizedPreviewGeneratedAt
+      : null,
     backupStateFingerprint,
     currentStateFingerprint,
+    currentClientStateFingerprint,
     eligibleForRestorePlanning,
     checksumStatus,
     artifactValidity,
@@ -450,6 +482,8 @@ export async function buildBackupRestorePreview(source: RestorePreviewDataSource
     externalReferenceStatus,
     backupStateFingerprint,
     currentStateFingerprint,
+    currentClientStateFingerprint,
+    previewGeneratedAt: normalizedPreviewGeneratedAt,
     previewFingerprint,
     latestBackupUpdatedAt,
     latestCurrentUpdatedAt,
@@ -499,7 +533,9 @@ function normalizeBackupSnapshotRow(row: {
 }
 
 function normalizeBackupArtifact(artifact: BackupV13Artifact, ownerUserId: string): { state: ComparableState; maps: SectionMaps } {
-  const clients = artifact.sections.clients.map((row) => normalizeBackupClientRow(row, ownerUserId));
+  const clients = artifact.schemaVersion === BACKUP_V13_SCHEMA_VERSION
+    ? artifact.sections.clients.map((row) => normalizeBackupClientRow(row, ownerUserId))
+    : artifact.sections.clients.map((row) => normalizeBackupV2ClientRow(row, ownerUserId));
   const analyses = artifact.sections.analyses.map((row) => normalizeBackupAnalysisRow(row, ownerUserId));
   const imageAssets = artifact.sections.imageAssets.map((row) => normalizeBackupImageAssetRow(row, ownerUserId));
   const imageAnalyses = artifact.sections.imageAnalyses.map((row) => normalizeBackupImageAnalysisRow(row, ownerUserId));
@@ -734,8 +770,10 @@ function computeStateFingerprint(state: ComparableState): string {
 
 function computePreviewFingerprint(input: {
   backupId: string;
+  previewGeneratedAt: string | null;
   backupStateFingerprint: string;
   currentStateFingerprint: string;
+  currentClientStateFingerprint: string;
   eligibleForRestorePlanning: boolean;
   checksumStatus: BackupRestorePreviewChecksumStatus;
   artifactValidity: BackupRestorePreviewArtifactValidity;
@@ -750,8 +788,10 @@ function computePreviewFingerprint(input: {
   return hashCanonicalJson({
     contractVersion: PREVIEW_FINGERPRINT_CONTRACT_VERSION,
     backupId: input.backupId,
+    previewGeneratedAt: input.previewGeneratedAt,
     backupStateFingerprint: input.backupStateFingerprint,
     currentStateFingerprint: input.currentStateFingerprint,
+    currentClientStateFingerprint: input.currentClientStateFingerprint,
     eligibleForRestorePlanning: input.eligibleForRestorePlanning,
     checksumStatus: input.checksumStatus,
     artifactValidity: input.artifactValidity,
@@ -830,16 +870,46 @@ function buildSectionMaps(state: ComparableState): SectionMaps {
 }
 
 function normalizeBackupClientRow(row: BackupV13ClientSectionRow, ownerUserId: string): NormalizedClientRow {
-  return normalizeClientRow(row.id, row.name, row.ownerUserId, row.createdAt, row.updatedAt, ownerUserId);
+  return normalizeClientRow(row.id, row.name, null, null, null, null, row.ownerUserId, row.createdAt, row.updatedAt, ownerUserId);
+}
+
+function normalizeBackupV2ClientRow(row: BackupV13V2ClientSectionRow, ownerUserId: string): NormalizedClientRow {
+  return normalizeClientRow(
+    row.id,
+    row.fullName,
+    row.email,
+    row.phone,
+    row.notes,
+    row.deletedAt,
+    row.ownerUserId,
+    row.createdAt,
+    row.updatedAt,
+    ownerUserId,
+  );
 }
 
 function normalizeCurrentClientRow(row: CurrentClientRow, ownerUserId: string): NormalizedClientRow {
-  return normalizeClientRow(row.id, row.name, row.ownerUserId, row.createdAt.toISOString(), row.updatedAt.toISOString(), ownerUserId);
+  return normalizeClientRow(
+    row.id,
+    row.fullName,
+    row.email,
+    row.phone,
+    row.notes,
+    row.deletedAt?.toISOString() ?? null,
+    row.ownerUserId,
+    row.createdAt.toISOString(),
+    row.updatedAt.toISOString(),
+    ownerUserId,
+  );
 }
 
 function normalizeClientRow(
   id: unknown,
-  name: unknown,
+  fullName: unknown,
+  email: unknown,
+  phone: unknown,
+  notes: unknown,
+  deletedAt: unknown,
   rowOwnerUserId: unknown,
   createdAt: unknown,
   updatedAt: unknown,
@@ -847,7 +917,11 @@ function normalizeClientRow(
 ): NormalizedClientRow {
   return {
     id: normalizeString(id, "clients.id"),
-    name: normalizeString(name, "clients.name"),
+    fullName: normalizeString(fullName, "clients.fullName"),
+    email: normalizeNullableString(email, "clients.email"),
+    phone: normalizeNullableString(phone, "clients.phone"),
+    notes: normalizeNullableString(notes, "clients.notes"),
+    deletedAt: deletedAt === null ? null : normalizeTimestamp(deletedAt, "clients.deletedAt"),
     ownerUserId: normalizeOwner(rowOwnerUserId, ownerUserId, "clients.ownerUserId"),
     createdAt: normalizeTimestamp(createdAt, "clients.createdAt"),
     updatedAt: normalizeTimestamp(updatedAt, "clients.updatedAt"),
@@ -1138,7 +1212,11 @@ async function readCurrentStateForOwner(tx: Prisma.TransactionClient, ownerUserI
       where: { ownerUserId },
       select: {
         id: true,
-        name: true,
+        fullName: true,
+        email: true,
+        phone: true,
+        notes: true,
+        deletedAt: true,
         ownerUserId: true,
         createdAt: true,
         updatedAt: true,

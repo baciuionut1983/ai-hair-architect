@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   createAppointment,
-  createClient,
   createUser,
   executeReminderJobsForUser,
   getAnalyticsSnapshotForUser,
@@ -19,11 +18,11 @@ describe("milestone6 analytics snapshot", () => {
       locale: "en"
     });
 
-    const client = createClient({ ownerUserId: user.id, fullName: "M6 Client" });
+    const clientId = `client-${Date.now()}`;
 
     store.consultations.push({
       id: `c-${Date.now()}`,
-      clientId: client.id,
+      clientId,
       analysisId: "analysis",
       summary: "M6 consultation",
       nextSteps: [],
@@ -32,7 +31,7 @@ describe("milestone6 analytics snapshot", () => {
 
     createAppointment({
       ownerUserId: user.id,
-      clientId: client.id,
+      clientId,
       title: "M6 appointment",
       startsAt: new Date(Date.now() + 3 * 60_000).toISOString(),
       reminderMinutesBefore: 5,
@@ -43,7 +42,7 @@ describe("milestone6 analytics snapshot", () => {
     executeReminderJobsForUser(user.id, new Date().toISOString());
     updateSubscriptionForUser({ userId: user.id, plan: "pro", status: "active" });
 
-    const snapshot = getAnalyticsSnapshotForUser(user.id);
+    const snapshot = getAnalyticsSnapshotForUser(user.id, [clientId]);
     expect(snapshot.consultationsCount).toBeGreaterThanOrEqual(1);
     expect(snapshot.appointmentsCount).toBeGreaterThanOrEqual(1);
     expect(snapshot.remindersSentCount).toBeGreaterThanOrEqual(1);

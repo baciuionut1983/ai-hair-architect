@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   createAppointment,
-  createClient,
   createUser,
   executeReminderJobsForUser,
   getNotificationsForUser
@@ -17,12 +16,12 @@ describe("milestone3 notification reminders", () => {
       locale: "en"
     });
 
-    const client = createClient({ ownerUserId: user.id, fullName: "Reminder Client" });
+    const clientId = `client-${Date.now()}`;
 
     const startsAt = new Date(Date.now() + 5 * 60_000).toISOString();
     createAppointment({
       ownerUserId: user.id,
-      clientId: client.id,
+      clientId,
       title: "Root touch-up",
       startsAt,
       reminderMinutesBefore: 15,

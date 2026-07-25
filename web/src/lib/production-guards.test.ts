@@ -46,10 +46,10 @@ describe("production guards", () => {
     expect(result.payload.businessPersistenceDomains).toEqual([
       {
         domain: "clients",
-        persistenceState: "memory_only",
+        persistenceState: "durable",
         guardEnforcement: "active",
-        availability: "blocked",
-        productionReady: false,
+        availability: "available",
+        productionReady: true,
       },
       {
         domain: "consultations",
@@ -82,7 +82,14 @@ describe("production guards", () => {
       expect(result.httpStatus).toBe(503);
       expect(result.payload.status).toBe("NOT_READY");
       expect(result.payload.businessPersistenceDomains).toHaveLength(3);
-      for (const domain of result.payload.businessPersistenceDomains) {
+      const clients = result.payload.businessPersistenceDomains.find((domain) => domain.domain === "clients");
+      expect(clients).toMatchObject({
+        persistenceState: "durable",
+        guardEnforcement: "bypassed",
+        availability: "available",
+        productionReady: true,
+      });
+      for (const domain of result.payload.businessPersistenceDomains.filter((item) => item.domain !== "clients")) {
         expect(domain).toMatchObject({
           persistenceState: "memory_only",
           guardEnforcement: "bypassed",

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
 import { __testUtils, createPersistentBackupSnapshot, runPersistentRetention } from "@/lib/ops-persistence";
-import { createAuditEvent, createClient, createUser, store } from "@/lib/milestone1-store";
+import { createAuditEvent, createUser, store } from "@/lib/milestone1-store";
 
 const ownerUserId = "11111111-1111-4111-8111-111111111111";
 const secondOwnerUserId = "22222222-2222-4222-8222-222222222222";
@@ -46,11 +46,11 @@ describe("M12 ops persistence integration", () => {
     await prisma.opsBackupSnapshot.deleteMany({ where: { ownerUserId: secondOwnerUserId } });
     await prisma.opsRetentionRun.deleteMany({ where: { ownerUserId } });
     await prisma.opsRetentionRun.deleteMany({ where: { ownerUserId: secondOwnerUserId } });
+    await prisma.client.deleteMany({ where: { ownerUserId: { in: [ownerUserId, secondOwnerUserId] } } });
+    await prisma.user.deleteMany({ where: { id: { in: [ownerUserId, secondOwnerUserId] } } });
 
     store.users = store.users.filter((entry) => entry.id !== ownerUserId);
     store.users = store.users.filter((entry) => entry.id !== secondOwnerUserId);
-    store.clients = store.clients.filter((entry) => entry.ownerUserId !== ownerUserId);
-    store.clients = store.clients.filter((entry) => entry.ownerUserId !== secondOwnerUserId);
     store.consultations = store.consultations.filter((entry) => entry.clientId !== "client-m12-1");
     store.appointments = store.appointments.filter((entry) => entry.ownerUserId !== ownerUserId);
     store.appointments = store.appointments.filter((entry) => entry.ownerUserId !== secondOwnerUserId);
@@ -73,8 +73,21 @@ describe("M12 ops persistence integration", () => {
       locale: "en",
     }).id = secondOwnerUserId;
 
-    createClient({ ownerUserId, fullName: "M12 Client" });
-    createClient({ ownerUserId: secondOwnerUserId, fullName: "M12 Other Client" });
+    await prisma.user.createMany({
+      data: [ownerUserId, secondOwnerUserId].map((id) => ({
+        id,
+        email: `${id}@m12.test`,
+        passwordHash: "test",
+        role: "professional",
+        locale: "en",
+      })),
+    });
+    await prisma.client.createMany({
+      data: [
+        { ownerUserId, fullName: "M12 Client" },
+        { ownerUserId: secondOwnerUserId, fullName: "M12 Other Client" },
+      ],
+    });
   });
 
   afterEach(async () => {
@@ -87,6 +100,8 @@ describe("M12 ops persistence integration", () => {
     await prisma.opsBackupSnapshot.deleteMany({ where: { ownerUserId: secondOwnerUserId } });
     await prisma.opsRetentionRun.deleteMany({ where: { ownerUserId } });
     await prisma.opsRetentionRun.deleteMany({ where: { ownerUserId: secondOwnerUserId } });
+    await prisma.client.deleteMany({ where: { ownerUserId: { in: [ownerUserId, secondOwnerUserId] } } });
+    await prisma.user.deleteMany({ where: { id: { in: [ownerUserId, secondOwnerUserId] } } });
   });
 
   it("persists backup snapshots with deterministic checksum metadata", async () => {

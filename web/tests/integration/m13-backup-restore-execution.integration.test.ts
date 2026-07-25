@@ -4,23 +4,29 @@ import { randomUUID } from "crypto";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { BACKUP_CHECKSUM_ALGORITHM, BACKUP_V13_CANONICAL_VERSION, BACKUP_V13_SCHEMA_VERSION, computeArtifactChecksumHex } from "@/lib/backup-v13-artifact";
+import { BACKUP_CHECKSUM_ALGORITHM, BACKUP_V13_CANONICAL_VERSION, BACKUP_V13_SCHEMA_VERSION as LEGACY_SCHEMA_VERSION, BACKUP_V13_V2_SCHEMA_VERSION, computeArtifactChecksumHex } from "@/lib/backup-v13-artifact";
 import { executeBackupRestoreForUser, __testUtils as restoreTestUtils } from "@/lib/backup-v13-restore-execution";
 import { getBackupRestorePreviewForUser } from "@/lib/backup-v13-restore-preview";
-import type { BackupRestoreRequest, BackupV13Artifact } from "@/lib/contracts";
+import type { BackupRestoreRequest, BackupV13Artifact, BackupV13V1Artifact } from "@/lib/contracts";
+import { createPersistentBackupSnapshot } from "@/lib/ops-persistence";
 import { prisma } from "@/lib/prisma";
 
+const BACKUP_V13_SCHEMA_VERSION = BACKUP_V13_V2_SCHEMA_VERSION;
 const hasDb = Boolean(process.env.DATABASE_URL);
 const suite = hasDb ? describe : describe.skip;
+const testUserIds = new Set<string>();
 
 suite("m13 backup restore execution integration", () => {
-  afterEach(() => {
+  afterEach(async () => {
     restoreTestUtils.resetHooks();
+    await prisma.user.deleteMany({ where: { id: { in: [...testUserIds] } } });
+    testUserIds.clear();
   });
 
   it("restores successfully, writes atomic success audit, and preserves external files", async () => {
     const ownerUserId = randomUUID();
     const otherOwnerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId, otherOwnerUserId);
     const clientId = randomUUID();
     const assetId = randomUUID();
     const imageAnalysisId = randomUUID();
@@ -35,7 +41,7 @@ suite("m13 backup restore execution integration", () => {
 
     try {
       const artifact: BackupV13Artifact = {
-        schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+        schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
         canonicalSerializationVersion: BACKUP_V13_CANONICAL_VERSION,
         checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
         checksum: null,
@@ -73,7 +79,11 @@ suite("m13 backup restore execution integration", () => {
           clients: [
             {
               id: clientId,
-              name: "Restored Client",
+              fullName: "Restored Client",
+              email: "restored@example.com",
+              phone: "+40123456789",
+              notes: "Preserved by v2",
+              deletedAt: null,
               ownerUserId,
               createdAt: "2026-07-22T00:00:00.000Z",
               updatedAt: "2026-07-22T00:00:00.000Z",
@@ -183,7 +193,7 @@ suite("m13 backup restore execution integration", () => {
         data: {
           id: randomUUID(),
           ownerUserId,
-          name: "Current Client",
+          fullName: "Current Client",
           createdAt: new Date("2026-07-23T00:00:00.000Z"),
           updatedAt: new Date("2026-07-23T00:00:00.000Z"),
         },
@@ -193,7 +203,7 @@ suite("m13 backup restore execution integration", () => {
         data: {
           id: randomUUID(),
           ownerUserId: otherOwnerUserId,
-          name: "Other Owner Client",
+          fullName: "Other Owner Client",
           createdAt: new Date("2026-07-23T00:00:00.000Z"),
           updatedAt: new Date("2026-07-23T00:00:00.000Z"),
         },
@@ -226,7 +236,7 @@ suite("m13 backup restore execution integration", () => {
       });
 
       expect(afterSnapshot.clients).toHaveLength(1);
-      expect(afterSnapshot.clients[0]?.name).toBe("Restored Client");
+      expect(afterSnapshot.clients[0]?.fullName).toBe("Restored Client");
       expect(afterSnapshot.analyses).toHaveLength(1);
       expect(afterSnapshot.imageAssets).toHaveLength(1);
       expect(afterSnapshot.imageAnalyses).toHaveLength(1);
@@ -250,11 +260,12 @@ suite("m13 backup restore execution integration", () => {
 
   it("rolls back after delete hook failure and leaves business, backup, and audit snapshots unchanged", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const clientId = randomUUID();
 
     const artifact: BackupV13Artifact = {
-      schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+      schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
       canonicalSerializationVersion: BACKUP_V13_CANONICAL_VERSION,
       checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
       checksum: null,
@@ -271,7 +282,7 @@ suite("m13 backup restore execution integration", () => {
         maxRowsPerSection: { clients: 2000, analyses: 10000, imageAssets: 10000, imageAnalyses: 10000, imageAnalysisReviews: 20000 },
       },
       sections: {
-        clients: [{ id: clientId, name: "Rollback Client", ownerUserId, createdAt: "2026-07-22T00:00:00.000Z", updatedAt: "2026-07-22T00:00:00.000Z" }],
+        clients: [{ id: clientId, fullName: "Rollback Client", email: null, phone: null, notes: null, deletedAt: null, ownerUserId, createdAt: "2026-07-22T00:00:00.000Z", updatedAt: "2026-07-22T00:00:00.000Z" }],
         analyses: [],
         imageAssets: [],
         imageAnalyses: [],
@@ -281,7 +292,7 @@ suite("m13 backup restore execution integration", () => {
     artifact.checksum = computeArtifactChecksumHex(artifact);
 
     try {
-      await prisma.client.create({ data: { id: randomUUID(), ownerUserId, name: "Current", createdAt: new Date(), updatedAt: new Date() } });
+      await prisma.client.create({ data: { id: randomUUID(), ownerUserId, fullName: "Current", createdAt: new Date(), updatedAt: new Date() } });
       await prisma.opsBackupSnapshot.create({
         data: {
           id: backupId,
@@ -321,11 +332,12 @@ suite("m13 backup restore execution integration", () => {
 
   it("rolls back on postcondition mismatch", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const clientId = randomUUID();
 
     const artifact: BackupV13Artifact = {
-      schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+      schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
       canonicalSerializationVersion: BACKUP_V13_CANONICAL_VERSION,
       checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
       checksum: null,
@@ -342,7 +354,7 @@ suite("m13 backup restore execution integration", () => {
         maxRowsPerSection: { clients: 2000, analyses: 10000, imageAssets: 10000, imageAnalyses: 10000, imageAnalysisReviews: 20000 },
       },
       sections: {
-        clients: [{ id: clientId, name: "Postcondition Client", ownerUserId, createdAt: "2026-07-22T00:00:00.000Z", updatedAt: "2026-07-22T00:00:00.000Z" }],
+        clients: [{ id: clientId, fullName: "Postcondition Client", email: null, phone: null, notes: null, deletedAt: null, ownerUserId, createdAt: "2026-07-22T00:00:00.000Z", updatedAt: "2026-07-22T00:00:00.000Z" }],
         analyses: [],
         imageAssets: [],
         imageAnalyses: [],
@@ -389,11 +401,12 @@ suite("m13 backup restore execution integration", () => {
 
   it("retries serialization failure and succeeds within three attempts", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const clientId = randomUUID();
 
     const artifact: BackupV13Artifact = {
-      schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+      schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
       canonicalSerializationVersion: BACKUP_V13_CANONICAL_VERSION,
       checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
       checksum: null,
@@ -410,7 +423,7 @@ suite("m13 backup restore execution integration", () => {
         maxRowsPerSection: { clients: 2000, analyses: 10000, imageAssets: 10000, imageAnalyses: 10000, imageAnalysisReviews: 20000 },
       },
       sections: {
-        clients: [{ id: clientId, name: "Retry Client", ownerUserId, createdAt: "2026-07-22T00:00:00.000Z", updatedAt: "2026-07-22T00:00:00.000Z" }],
+        clients: [{ id: clientId, fullName: "Retry Client", email: null, phone: null, notes: null, deletedAt: null, ownerUserId, createdAt: "2026-07-22T00:00:00.000Z", updatedAt: "2026-07-22T00:00:00.000Z" }],
         analyses: [],
         imageAssets: [],
         imageAnalyses: [],
@@ -453,11 +466,12 @@ suite("m13 backup restore execution integration", () => {
 
   it("fails with concurrency conflict after retry exhaustion", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const clientId = randomUUID();
 
     const artifact: BackupV13Artifact = {
-      schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+      schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
       canonicalSerializationVersion: BACKUP_V13_CANONICAL_VERSION,
       checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
       checksum: null,
@@ -474,7 +488,7 @@ suite("m13 backup restore execution integration", () => {
         maxRowsPerSection: { clients: 2000, analyses: 10000, imageAssets: 10000, imageAnalyses: 10000, imageAnalysisReviews: 20000 },
       },
       sections: {
-        clients: [{ id: clientId, name: "Retry Fail Client", ownerUserId, createdAt: "2026-07-22T00:00:00.000Z", updatedAt: "2026-07-22T00:00:00.000Z" }],
+        clients: [{ id: clientId, fullName: "Retry Fail Client", email: null, phone: null, notes: null, deletedAt: null, ownerUserId, createdAt: "2026-07-22T00:00:00.000Z", updatedAt: "2026-07-22T00:00:00.000Z" }],
         analyses: [],
         imageAssets: [],
         imageAnalyses: [],
@@ -517,6 +531,7 @@ suite("m13 backup restore execution integration", () => {
 
   it("blocks stale current-state fingerprint after current data changes", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const clientId = randomUUID();
     const artifact = createSingleClientArtifact({ ownerUserId, backupId, clientId, name: "Stale Current" });
@@ -536,7 +551,7 @@ suite("m13 backup restore execution integration", () => {
       });
 
       const preview = await getBackupRestorePreviewForUser(ownerUserId, backupId);
-      await prisma.client.create({ data: { id: randomUUID(), ownerUserId, name: "Mutation", createdAt: new Date(), updatedAt: new Date() } });
+      await prisma.client.create({ data: { id: randomUUID(), ownerUserId, fullName: "Mutation", createdAt: new Date(), updatedAt: new Date() } });
       const updatedPreview = await getBackupRestorePreviewForUser(ownerUserId, backupId);
 
       await expect(
@@ -556,6 +571,7 @@ suite("m13 backup restore execution integration", () => {
 
   it("blocks checksum mismatch artifacts", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const clientId = randomUUID();
     const artifact = createSingleClientArtifact({ ownerUserId, backupId, clientId, name: "Bad Checksum" });
@@ -590,6 +606,7 @@ suite("m13 backup restore execution integration", () => {
 
   it("blocks stale preview fingerprint", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const clientId = randomUUID();
     const artifact = createSingleClientArtifact({ ownerUserId, backupId, clientId, name: "Stale Preview" });
@@ -626,6 +643,7 @@ suite("m13 backup restore execution integration", () => {
 
   it("blocks unsupported schema artifacts", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
 
     try {
@@ -635,11 +653,11 @@ suite("m13 backup restore execution integration", () => {
           ownerUserId,
           label: "unsupported",
           snapshotJson: {
-            schemaVersion: "m13.v2",
+            schemaVersion: "m13.v3",
           },
           checksum: "legacy",
           checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
-          schemaVersion: "m13.v2",
+          schemaVersion: "m13.v3",
           createdByUserId: ownerUserId,
         },
       });
@@ -659,6 +677,7 @@ suite("m13 backup restore execution integration", () => {
 
   it("blocks malformed artifacts", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
 
     try {
@@ -700,6 +719,7 @@ suite("m13 backup restore execution integration", () => {
 
   it("blocks artifacts with missing external files", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const clientId = randomUUID();
     const assetId = randomUUID();
@@ -735,6 +755,7 @@ suite("m13 backup restore execution integration", () => {
 
   it("blocks artifacts with unsafe external paths", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const clientId = randomUUID();
     const assetId = randomUUID();
@@ -769,6 +790,7 @@ suite("m13 backup restore execution integration", () => {
 
   it("blocks artifacts with invalid reference graph", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const artifact = createSingleClientArtifact({ ownerUserId, backupId, clientId: randomUUID(), name: "Broken Ref" });
     artifact.sections.analyses = [
@@ -837,12 +859,13 @@ suite("m13 backup restore execution integration", () => {
   it("blocks owner collisions on globally unique ids", async () => {
     const ownerUserId = randomUUID();
     const otherOwnerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId, otherOwnerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const collidingClientId = randomUUID();
     const artifact = createSingleClientArtifact({ ownerUserId, backupId, clientId: collidingClientId, name: "Collision Client" });
 
     try {
-      await prisma.client.create({ data: { id: collidingClientId, ownerUserId: otherOwnerUserId, name: "Other Owner", createdAt: new Date(), updatedAt: new Date() } });
+      await prisma.client.create({ data: { id: collidingClientId, ownerUserId: otherOwnerUserId, fullName: "Other Owner", createdAt: new Date(), updatedAt: new Date() } });
       await prisma.opsBackupSnapshot.create({
         data: {
           id: backupId,
@@ -875,12 +898,17 @@ suite("m13 backup restore execution integration", () => {
 
   it("maps duplicate artifact ids to unique conflict", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const duplicateId = randomUUID();
     const artifact = createSingleClientArtifact({ ownerUserId, backupId, clientId: duplicateId, name: "Duplicate A" });
     artifact.sections.clients.push({
       id: duplicateId,
-      name: "Duplicate B",
+      fullName: "Duplicate B",
+      email: null,
+      phone: null,
+      notes: null,
+      deletedAt: null,
       ownerUserId,
       createdAt: "2026-07-22T00:00:00.000Z",
       updatedAt: "2026-07-22T00:00:00.000Z",
@@ -920,6 +948,7 @@ suite("m13 backup restore execution integration", () => {
 
   it("rolls back after intermediate insert failure", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const clientId = randomUUID();
     const assetId = randomUUID();
@@ -931,7 +960,7 @@ suite("m13 backup restore execution integration", () => {
     await fs.promises.writeFile(storagePath, Buffer.from("keep-me"));
 
     try {
-      await prisma.client.create({ data: { id: randomUUID(), ownerUserId, name: "Current", createdAt: new Date(), updatedAt: new Date() } });
+      await prisma.client.create({ data: { id: randomUUID(), ownerUserId, fullName: "Current", createdAt: new Date(), updatedAt: new Date() } });
       await prisma.opsBackupSnapshot.create({
         data: {
           id: backupId,
@@ -975,12 +1004,13 @@ suite("m13 backup restore execution integration", () => {
 
   it("allows only one of two concurrent restores to commit", async () => {
     const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
     const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
     const clientId = randomUUID();
     const artifact = createSingleClientArtifact({ ownerUserId, backupId, clientId, name: "Concurrent Restore" });
 
     try {
-      await prisma.client.create({ data: { id: randomUUID(), ownerUserId, name: "Current", createdAt: new Date(), updatedAt: new Date() } });
+      await prisma.client.create({ data: { id: randomUUID(), ownerUserId, fullName: "Current", createdAt: new Date(), updatedAt: new Date() } });
       await prisma.opsBackupSnapshot.create({
         data: {
           id: backupId,
@@ -1019,6 +1049,102 @@ suite("m13 backup restore execution integration", () => {
       await prisma.auditLog.deleteMany({ where: { actorUserId: ownerUserId } });
     }
   });
+
+  it("requires a matching post-preview v2 safety backup for legacy v1 restore", async () => {
+    const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
+    const currentClientId = randomUUID();
+    const legacyClientId = randomUUID();
+    const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
+    const artifact = createLegacySingleClientArtifact({ ownerUserId, backupId, clientId: legacyClientId });
+
+    try {
+      await prisma.client.create({
+        data: {
+          id: currentClientId,
+          ownerUserId,
+          fullName: "Current Rich Client",
+          email: "current@example.com",
+          phone: "+40123456789",
+          notes: "Must be captured before legacy restore",
+        },
+      });
+      await persistArtifact(artifact);
+
+      const previewGeneratedAt = new Date(Date.now() - 1000).toISOString();
+      const preview = await getBackupRestorePreviewForUser(ownerUserId, backupId, previewGeneratedAt);
+      await expect(executeBackupRestoreForUser(ownerUserId, backupId, {
+        previewFingerprint: preview.previewFingerprint,
+        currentStateFingerprint: preview.currentStateFingerprint,
+        previewGeneratedAt,
+        strategy: "replace_all",
+        acknowledgeDataLoss: true,
+      })).rejects.toMatchObject({ code: "BACKUP_RESTORE_LEGACY_CLIENT_SAFETY_REQUIRED", httpStatus: 409 });
+
+      const safetyBackup = await createPersistentBackupSnapshot({
+        ownerUserId,
+        createdByUserId: ownerUserId,
+        label: "legacy-client-safety",
+      });
+
+      const result = await executeBackupRestoreForUser(ownerUserId, backupId, {
+        previewFingerprint: preview.previewFingerprint,
+        currentStateFingerprint: preview.currentStateFingerprint,
+        previewGeneratedAt,
+        strategy: "replace_all",
+        acknowledgeDataLoss: true,
+        acknowledgeLegacyClientDataLoss: true,
+        safetyBackupId: safetyBackup.id,
+      });
+
+      expect(result.status).toBe("completed");
+      await expect(prisma.client.findFirst({ where: { id: legacyClientId } })).resolves.toMatchObject({
+        fullName: "Legacy Client",
+        email: null,
+        phone: null,
+        notes: null,
+      });
+    } finally {
+      await prisma.client.deleteMany({ where: { ownerUserId } });
+      await prisma.opsBackupSnapshot.deleteMany({ where: { ownerUserId } });
+      await prisma.auditLog.deleteMany({ where: { actorUserId: ownerUserId } });
+    }
+  });
+
+  it("blocks legacy restore after an intervening Client mutation", async () => {
+    const ownerUserId = randomUUID();
+    await ensureTestUsers(ownerUserId);
+    const currentClientId = randomUUID();
+    const backupId = `c${Date.now().toString(36)}${Math.random().toString(16).slice(2, 14)}`;
+    const artifact = createLegacySingleClientArtifact({ ownerUserId, backupId, clientId: randomUUID() });
+
+    try {
+      await prisma.client.create({ data: { id: currentClientId, ownerUserId, fullName: "Before Mutation" } });
+      await persistArtifact(artifact);
+      const previewGeneratedAt = new Date(Date.now() - 1000).toISOString();
+      const preview = await getBackupRestorePreviewForUser(ownerUserId, backupId, previewGeneratedAt);
+      const safetyBackup = await createPersistentBackupSnapshot({
+        ownerUserId,
+        createdByUserId: ownerUserId,
+        label: "legacy-client-safety",
+      });
+      await prisma.client.update({ where: { id: currentClientId }, data: { notes: "Intervening mutation" } });
+
+      await expect(executeBackupRestoreForUser(ownerUserId, backupId, {
+        previewFingerprint: preview.previewFingerprint,
+        currentStateFingerprint: preview.currentStateFingerprint,
+        previewGeneratedAt,
+        strategy: "replace_all",
+        acknowledgeDataLoss: true,
+        acknowledgeLegacyClientDataLoss: true,
+        safetyBackupId: safetyBackup.id,
+      })).rejects.toMatchObject({ code: "BACKUP_RESTORE_PREVIEW_FINGERPRINT_STALE", httpStatus: 409 });
+    } finally {
+      await prisma.client.deleteMany({ where: { ownerUserId } });
+      await prisma.opsBackupSnapshot.deleteMany({ where: { ownerUserId } });
+      await prisma.auditLog.deleteMany({ where: { actorUserId: ownerUserId } });
+    }
+  });
 });
 
 async function snapshotOwnerState(ownerUserId: string): Promise<Record<string, unknown>> {
@@ -1045,7 +1171,7 @@ async function snapshotOwnerState(ownerUserId: string): Promise<Record<string, u
 
 function createSingleClientArtifact(input: { ownerUserId: string; backupId: string; clientId: string; name: string }): BackupV13Artifact {
   const artifact: BackupV13Artifact = {
-    schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+    schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
     canonicalSerializationVersion: BACKUP_V13_CANONICAL_VERSION,
     checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
     checksum: null,
@@ -1062,7 +1188,7 @@ function createSingleClientArtifact(input: { ownerUserId: string; backupId: stri
       maxRowsPerSection: { clients: 2000, analyses: 10000, imageAssets: 10000, imageAnalyses: 10000, imageAnalysisReviews: 20000 },
     },
     sections: {
-      clients: [{ id: input.clientId, name: input.name, ownerUserId: input.ownerUserId, createdAt: "2026-07-22T00:00:00.000Z", updatedAt: "2026-07-22T00:00:00.000Z" }],
+      clients: [{ id: input.clientId, fullName: input.name, email: null, phone: null, notes: null, deletedAt: null, ownerUserId: input.ownerUserId, createdAt: "2026-07-22T00:00:00.000Z", updatedAt: "2026-07-22T00:00:00.000Z" }],
       analyses: [],
       imageAssets: [],
       imageAnalyses: [],
@@ -1096,4 +1222,58 @@ function createAssetArtifact(input: { ownerUserId: string; backupId: string; cli
   ];
   artifact.checksum = computeArtifactChecksumHex(artifact);
   return artifact;
+}
+
+async function ensureTestUsers(...userIds: string[]): Promise<void> {
+  await prisma.user.createMany({
+    data: userIds.map((id) => ({
+      id,
+      email: `${id}@restore.test`,
+      passwordHash: "test",
+      role: "professional",
+      locale: "en",
+    })),
+    skipDuplicates: true,
+  });
+  userIds.forEach((id) => testUserIds.add(id));
+}
+
+function createLegacySingleClientArtifact(input: {
+  ownerUserId: string;
+  backupId: string;
+  clientId: string;
+}): BackupV13V1Artifact {
+  const v2 = createSingleClientArtifact({ ...input, name: "Legacy Client" });
+  const artifact: BackupV13V1Artifact = {
+    ...v2,
+    schemaVersion: LEGACY_SCHEMA_VERSION,
+    checksum: null,
+    sections: {
+      ...v2.sections,
+      clients: [{
+        id: input.clientId,
+        name: "Legacy Client",
+        ownerUserId: input.ownerUserId,
+        createdAt: "2026-07-22T00:00:00.000Z",
+        updatedAt: "2026-07-22T00:00:00.000Z",
+      }],
+    },
+  };
+  artifact.checksum = computeArtifactChecksumHex(artifact);
+  return artifact;
+}
+
+async function persistArtifact(artifact: BackupV13Artifact): Promise<void> {
+  await prisma.opsBackupSnapshot.create({
+    data: {
+      id: artifact.backupId,
+      ownerUserId: artifact.ownerUserId,
+      label: artifact.label,
+      snapshotJson: artifact,
+      checksum: artifact.checksum!,
+      checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
+      schemaVersion: artifact.schemaVersion,
+      createdByUserId: artifact.createdByUserId,
+    },
+  });
 }

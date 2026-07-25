@@ -28,10 +28,19 @@ suite("m13 backup restore preview integration", () => {
     await fs.promises.writeFile(storagePath, Buffer.from("preview"));
 
     try {
+      await prisma.user.create({
+        data: {
+          id: ownerUserId,
+          email: `${ownerUserId}@preview.test`,
+          passwordHash: "test",
+          role: "professional",
+          locale: "en",
+        },
+      });
       await prisma.client.create({
         data: {
           id: clientId,
-          name: "Preview Client",
+          fullName: "Preview Client",
           ownerUserId,
         },
       });
@@ -266,7 +275,7 @@ suite("m13 backup restore preview integration", () => {
       await prisma.client.create({
         data: {
           id: randomUUID(),
-          name: "Later Client",
+          fullName: "Later Client",
           ownerUserId,
           createdAt: new Date("2026-07-23T00:00:00.000Z"),
           updatedAt: new Date("2026-07-23T00:00:00.000Z"),
@@ -283,7 +292,8 @@ suite("m13 backup restore preview integration", () => {
         prisma.auditLog.count({ where: { actorUserId: ownerUserId } }),
       ]);
 
-      const firstPreview = await getBackupRestorePreviewForUser(ownerUserId, backupId);
+      const previewGeneratedAt = "2026-07-25T20:00:00.000Z";
+      const firstPreview = await getBackupRestorePreviewForUser(ownerUserId, backupId, previewGeneratedAt);
       const afterFirstCounts = await Promise.all([
         prisma.client.count({ where: { ownerUserId } }),
         prisma.analysis.count({ where: { ownerUserId } }),
@@ -293,7 +303,7 @@ suite("m13 backup restore preview integration", () => {
         prisma.opsBackupSnapshot.count({ where: { ownerUserId } }),
         prisma.auditLog.count({ where: { actorUserId: ownerUserId } }),
       ]);
-      const secondPreview = await getBackupRestorePreviewForUser(ownerUserId, backupId);
+      const secondPreview = await getBackupRestorePreviewForUser(ownerUserId, backupId, previewGeneratedAt);
 
       const afterSecondCounts = await Promise.all([
         prisma.client.count({ where: { ownerUserId } }),
@@ -321,7 +331,8 @@ suite("m13 backup restore preview integration", () => {
       await prisma.imageAsset.deleteMany({ where: { id: assetId } });
       await prisma.client.deleteMany({ where: { id: clientId } });
       await prisma.opsBackupSnapshot.deleteMany({ where: { id: backupId } });
-      await prisma.client.deleteMany({ where: { ownerUserId, name: "Later Client" } });
+      await prisma.client.deleteMany({ where: { ownerUserId, fullName: "Later Client" } });
+      await prisma.user.deleteMany({ where: { id: ownerUserId } });
       await fs.promises.rm(path.join(process.cwd(), ".storage", "images", ownerUserId), { recursive: true, force: true });
     }
   });

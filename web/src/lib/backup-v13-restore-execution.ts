@@ -6,16 +6,21 @@ import type {
   BackupRestoreResponse,
   BackupRestoreWarning,
   BackupV13Artifact,
+  BackupV13ClientSectionRow,
+  BackupV13V2ClientSectionRow,
 } from "@/lib/contracts";
 import {
   BACKUP_V13_SCHEMA_VERSION,
+  BACKUP_V13_V2_SCHEMA_VERSION,
   BackupArtifactError,
   computeArtifactChecksumHex,
   isBackupV13Artifact,
+  isBackupV13V2Artifact,
 } from "@/lib/backup-v13-artifact";
 import {
   getBackupComparableStateFingerprintForArtifact,
   getBackupRestorePreviewForUserWithTransaction,
+  getClientStateFingerprintForArtifact,
   getCurrentComparableStateFingerprintForOwner,
   loadRestorePreviewSourceWithTransaction,
 } from "@/lib/backup-v13-restore-preview";
@@ -262,7 +267,12 @@ async function runRestoreAttempt(
   assertRestoreRequestShape(request);
   assertBackupArtifactExecutable(source.backupArtifact, source.backupRow);
 
-  const preview = await getBackupRestorePreviewForUserWithTransaction(tx, ownerUserId, backupId);
+  const preview = await getBackupRestorePreviewForUserWithTransaction(
+    tx,
+    ownerUserId,
+    backupId,
+    request.previewGeneratedAt,
+  );
   if (!preview.eligibleForRestorePlanning || preview.blockingReasons.length > 0) {
     throw new BackupArtifactError(
       "BACKUP_RESTORE_BLOCKED_BY_PREVIEW",
@@ -285,6 +295,15 @@ async function runRestoreAttempt(
       "BACKUP_RESTORE_CURRENT_STATE_FINGERPRINT_STALE",
       409,
       "Current state fingerprint no longer matches current restore conditions.",
+    );
+  }
+
+  if (source.backupArtifact.schemaVersion === BACKUP_V13_SCHEMA_VERSION) {
+    await assertLegacyClientSafetyBackup(
+      tx,
+      ownerUserId,
+      request,
+      preview.currentClientStateFingerprint,
     );
   }
 
@@ -375,8 +394,70 @@ function assertRestoreRequestShape(request: BackupRestoreRequest): void {
   }
 }
 
+async function assertLegacyClientSafetyBackup(
+  tx: RestoreTransactionalClient,
+  ownerUserId: string,
+  request: BackupRestoreRequest,
+  expectedClientStateFingerprint: string,
+): Promise<void> {
+  if (
+    request.acknowledgeLegacyClientDataLoss !== true ||
+    !request.safetyBackupId ||
+    !request.previewGeneratedAt ||
+    Number.isNaN(Date.parse(request.previewGeneratedAt))
+  ) {
+    throw new BackupArtifactError(
+      "BACKUP_RESTORE_LEGACY_CLIENT_SAFETY_REQUIRED",
+      409,
+      "Legacy restore requires explicit acknowledgement and a post-preview v2 safety backup.",
+    );
+  }
+
+  const safetyRow = await tx.opsBackupSnapshot.findFirst({
+    where: { id: request.safetyBackupId, ownerUserId },
+  });
+  if (!safetyRow) {
+    throw new BackupArtifactError("BACKUP_RESTORE_SAFETY_BACKUP_NOT_FOUND", 409, "Safety backup not found.");
+  }
+
+  if (
+    safetyRow.schemaVersion !== BACKUP_V13_V2_SCHEMA_VERSION ||
+    safetyRow.createdAt.getTime() <= new Date(request.previewGeneratedAt).getTime() ||
+    !isBackupV13V2Artifact(safetyRow.snapshotJson)
+  ) {
+    throw new BackupArtifactError(
+      "BACKUP_RESTORE_SAFETY_BACKUP_INVALID",
+      409,
+      "Safety backup must be a valid v2 artifact created after the preview.",
+    );
+  }
+
+  const safetyArtifact = safetyRow.snapshotJson;
+  const checksum = computeArtifactChecksumHex(safetyArtifact);
+  if (
+    safetyArtifact.backupId !== safetyRow.id ||
+    safetyArtifact.ownerUserId !== ownerUserId ||
+    safetyArtifact.checksum !== checksum ||
+    safetyRow.checksum !== checksum
+  ) {
+    throw new BackupArtifactError(
+      "BACKUP_RESTORE_SAFETY_BACKUP_INVALID",
+      409,
+      "Safety backup integrity validation failed.",
+    );
+  }
+
+  if (getClientStateFingerprintForArtifact(safetyArtifact, ownerUserId) !== expectedClientStateFingerprint) {
+    throw new BackupArtifactError(
+      "BACKUP_RESTORE_SAFETY_BACKUP_STATE_MISMATCH",
+      409,
+      "Safety backup Client state does not match the previewed current state.",
+    );
+  }
+}
+
 function assertBackupArtifactExecutable(artifact: BackupV13Artifact, row: { id: string; checksum: string }): void {
-  if (artifact.schemaVersion !== BACKUP_V13_SCHEMA_VERSION) {
+  if (artifact.schemaVersion !== BACKUP_V13_SCHEMA_VERSION && artifact.schemaVersion !== BACKUP_V13_V2_SCHEMA_VERSION) {
     throw new BackupArtifactError("BACKUP_RESTORE_SCHEMA_UNSUPPORTED", 422, "Unsupported backup schema version.");
   }
 
@@ -506,15 +587,9 @@ async function deleteOwnerScopedRows(tx: RestoreTransactionalClient, ownerUserId
 }
 
 async function insertBackupRows(tx: RestoreTransactionalClient, artifact: BackupV13Artifact, ownerUserId: string): Promise<void> {
-  for (const row of artifact.sections.clients) {
+  for (const clientData of mapClientRowsForRestore(artifact)) {
     await tx.client.create({
-      data: {
-        id: row.id,
-        name: row.name,
-        ownerUserId: row.ownerUserId,
-        createdAt: new Date(row.createdAt),
-        updatedAt: new Date(row.updatedAt),
-      },
+      data: clientData,
     });
   }
 
@@ -627,6 +702,45 @@ async function insertBackupRows(tx: RestoreTransactionalClient, artifact: Backup
   }
 }
 
+function mapClientRowsForRestore(artifact: BackupV13Artifact) {
+  switch (artifact.schemaVersion) {
+    case BACKUP_V13_SCHEMA_VERSION:
+      return artifact.sections.clients.map(mapV1ClientRowForRestore);
+    case BACKUP_V13_V2_SCHEMA_VERSION:
+      return artifact.sections.clients.map(mapV2ClientRowForRestore);
+    default:
+      throw new BackupArtifactError("BACKUP_RESTORE_SCHEMA_UNSUPPORTED", 422, "Unsupported backup schema version.");
+  }
+}
+
+function mapV1ClientRowForRestore(row: BackupV13ClientSectionRow) {
+  return {
+    id: row.id,
+    fullName: row.name,
+    email: null,
+    phone: null,
+    notes: null,
+    deletedAt: null,
+    ownerUserId: row.ownerUserId,
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
+}
+
+function mapV2ClientRowForRestore(row: BackupV13V2ClientSectionRow) {
+  return {
+    id: row.id,
+    fullName: row.fullName,
+    email: row.email,
+    phone: row.phone,
+    notes: row.notes,
+    deletedAt: row.deletedAt ? new Date(row.deletedAt) : null,
+    ownerUserId: row.ownerUserId,
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
+}
+
 async function countOwnerScopedRows(tx: RestoreTransactionalClient, ownerUserId: string): Promise<BackupRestoreCounts> {
   const [clients, analyses, imageAssets, imageAnalyses, imageAnalysisReviews] = await Promise.all([
     tx.client.count({ where: { ownerUserId } }),
@@ -710,4 +824,5 @@ export const __testUtils = {
     restoreTestHooks.retryableFailuresRemaining = 0;
   },
   countOwnerScopedRows,
+  mapClientRowsForRestore,
 };

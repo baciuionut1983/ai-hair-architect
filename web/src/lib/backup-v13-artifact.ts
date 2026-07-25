@@ -4,6 +4,8 @@ import path from "path";
 
 import type {
   BackupV13Artifact,
+  BackupV13V1Artifact,
+  BackupV13V2Artifact,
   BackupVerificationResult,
   BackupVerifyArtifactValidity,
   BackupVerifyChecksumStatus,
@@ -12,6 +14,7 @@ import type {
 } from "@/lib/contracts";
 
 export const BACKUP_V13_SCHEMA_VERSION = "m13.v1" as const;
+export const BACKUP_V13_V2_SCHEMA_VERSION = "m13.v2" as const;
 export const BACKUP_V13_CANONICAL_VERSION = "sorted-json-v1" as const;
 export const BACKUP_CHECKSUM_ALGORITHM = "sha256" as const;
 export const BACKUP_LEGACY_M12_SCHEMA_VERSION = "m12.v1" as const;
@@ -57,11 +60,11 @@ export function utf8ByteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");
 }
 
-export function withChecksumNull(artifact: BackupV13Artifact): BackupV13Artifact {
+export function withChecksumNull<T extends BackupV13Artifact>(artifact: T): T {
   return {
     ...artifact,
     checksum: null,
-  };
+  } as T;
 }
 
 export function computeArtifactChecksumHex(artifact: BackupV13Artifact): string {
@@ -137,6 +140,10 @@ export function parseSnapshotSchemaVersion(
 }
 
 export function isBackupV13Artifact(value: unknown): value is BackupV13Artifact {
+  return isBackupV13V1Artifact(value) || isBackupV13V2Artifact(value);
+}
+
+export function isBackupV13V1Artifact(value: unknown): value is BackupV13V1Artifact {
   const obj = asRecord(value);
   if (obj.schemaVersion !== BACKUP_V13_SCHEMA_VERSION) {
     return false;
@@ -166,6 +173,60 @@ export function isBackupV13Artifact(value: unknown): value is BackupV13Artifact 
     Array.isArray(sections.imageAnalyses) &&
     Array.isArray(sections.imageAnalysisReviews)
   );
+}
+
+export function isBackupV13V2Artifact(value: unknown): value is BackupV13V2Artifact {
+  const obj = asRecord(value);
+  if (obj.schemaVersion !== BACKUP_V13_V2_SCHEMA_VERSION) {
+    return false;
+  }
+
+  if (obj.canonicalSerializationVersion !== BACKUP_V13_CANONICAL_VERSION) {
+    return false;
+  }
+
+  if (obj.checksumAlgorithm !== BACKUP_CHECKSUM_ALGORITHM) {
+    return false;
+  }
+
+  if (typeof obj.backupId !== "string" || typeof obj.ownerUserId !== "string" || typeof obj.createdByUserId !== "string") {
+    return false;
+  }
+
+  if (!obj.sections || typeof obj.sections !== "object") {
+    return false;
+  }
+
+  const sections = obj.sections as Record<string, unknown>;
+  return (
+    Array.isArray(sections.clients) &&
+    sections.clients.every(isV2ClientRow) &&
+    Array.isArray(sections.analyses) &&
+    Array.isArray(sections.imageAssets) &&
+    Array.isArray(sections.imageAnalyses) &&
+    Array.isArray(sections.imageAnalysisReviews)
+  );
+}
+
+function isV2ClientRow(value: unknown): boolean {
+  const row = asRecord(value);
+  return hasClientIdentity(row) &&
+    typeof row.fullName === "string" &&
+    isNullableString(row.email) &&
+    isNullableString(row.phone) &&
+    isNullableString(row.notes) &&
+    isNullableString(row.deletedAt);
+}
+
+function hasClientIdentity(row: Record<string, unknown>): boolean {
+  return typeof row.id === "string" &&
+    typeof row.ownerUserId === "string" &&
+    typeof row.createdAt === "string" &&
+    typeof row.updatedAt === "string";
+}
+
+function isNullableString(value: unknown): boolean {
+  return value === null || typeof value === "string";
 }
 
 export async function verifyExternalReferences(artifact: BackupV13Artifact): Promise<{

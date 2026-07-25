@@ -15,7 +15,8 @@ import type {
 import { enrichTechnicalPlanExplanations } from "@/lib/ai-explainer";
 import { analyzeInitial } from "@/lib/analysis-engine";
 import { upsertPersistedAnalysis } from "@/lib/analysis-persistence";
-import { createAnalysis, getClientOwnedByUser, getSession } from "@/lib/milestone1-store";
+import { resolveOwnedClient } from "@/lib/client-repository";
+import { createAnalysis, getSession } from "@/lib/milestone1-store";
 
 const FACE_SHAPES: FaceShape[] = ["oval", "round", "square", "heart", "diamond", "oblong"];
 const HEAD_SHAPES: HeadShape[] = [
@@ -96,7 +97,8 @@ export async function POST(request: Request) {
     );
   }
 
-  const ownedClient = getClientOwnedByUser(body.clientId, sessionUser.id);
+  const ownedClient = await resolveOwnedClient(sessionUser.id, body.clientId);
+  if (ownedClient instanceof Response) return ownedClient;
   if (!ownedClient) {
     return NextResponse.json({ error: "Client not found." }, { status: 404 });
   }

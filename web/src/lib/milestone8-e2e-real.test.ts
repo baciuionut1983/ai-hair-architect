@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { analyzeInitial } from "./analysis-engine";
-import { createAnalysis, createClient, createUser, getClientTimelineByUser, getSession } from "./milestone1-store";
+import { createAnalysis, createUser, getClientTimelineByUser, getSession } from "./milestone1-store";
 
 describe("milestone8 e2e real domain flow", () => {
   it("creates user and client, generates technical analysis, and surfaces consultation timeline", () => {
@@ -15,10 +15,7 @@ describe("milestone8 e2e real domain flow", () => {
     const session = getSession("non-existent-token");
     expect(session).toBeNull();
 
-    const client = createClient({
-      ownerUserId: user.id,
-      fullName: "Milestone Eight Client"
-    });
+    const clientId = `client-${Date.now()}`;
 
     const seed = analyzeInitial({
       goal: "reshape",
@@ -35,7 +32,7 @@ describe("milestone8 e2e real domain flow", () => {
     });
 
     const analysis = createAnalysis({
-      clientId: client.id,
+      clientId,
       createdByUserId: user.id,
       goal: seed.goal,
       hairType: seed.hairType,
@@ -64,7 +61,7 @@ describe("milestone8 e2e real domain flow", () => {
     expect(analysis.technicalCutPlan?.structuralTechnique).toBe("precision_layering");
     expect(analysis.technicalCutPlan?.texturizingTechnique).toBeUndefined();
 
-    const timeline = getClientTimelineByUser(client.id, user.id);
+    const timeline = getClientTimelineByUser(clientId, user.id);
     expect(Array.isArray(timeline)).toBe(true);
   });
 });

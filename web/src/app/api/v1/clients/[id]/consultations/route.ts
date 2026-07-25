@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
+import { resolveOwnedClient } from "@/lib/client-repository";
 import type { ClientConsultationsResponse } from "@/lib/contracts";
 import { getConsultationsForClientByUser, getSession } from "@/lib/milestone1-store";
 
@@ -17,6 +18,9 @@ export async function GET(
   }
 
   const { id } = await context.params;
+  const client = await resolveOwnedClient(sessionUser.id, id);
+  if (client instanceof Response) return client;
+  if (!client) return NextResponse.json({ error: "Client not found." }, { status: 404 });
   const consultations = getConsultationsForClientByUser(id, sessionUser.id);
 
   const response: ClientConsultationsResponse = { consultations };

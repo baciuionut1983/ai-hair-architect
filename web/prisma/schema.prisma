@@ -80,6 +80,7 @@ model User {
   locale       String
   createdAt    DateTime          @default(now())
   sessions     Session[]
+  clients      Client[]
   webhooks     WebhookEndpoint[]
 }
 
@@ -95,13 +96,18 @@ model Session {
 }
 
 model Client {
-  id          String   @id @default(uuid())
-  name        String
+  id          String    @id @default(uuid())
   ownerUserId String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  fullName    String    @db.VarChar(200)
+  email       String?   @db.VarChar(320)
+  phone       String?   @db.VarChar(40)
+  notes       String?   @db.VarChar(4000)
+  deletedAt   DateTime? @db.Timestamp(6)
+  createdAt   DateTime  @default(now()) @db.Timestamp(6)
+  updatedAt   DateTime  @updatedAt @db.Timestamp(6)
+  owner       User      @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
 
-  @@index([ownerUserId])
+  @@index([ownerUserId, deletedAt, updatedAt, id])
 }
 
 model Analysis {

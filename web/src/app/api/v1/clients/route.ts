@@ -2,8 +2,14 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { guardBusinessPersistence } from "@/lib/business-persistence-guards";
+import {
+  clientPersistenceUnavailableResponse,
+  createClientForOwner,
+  isClientPersistenceError,
+  listClientsForOwner,
+} from "@/lib/client-repository";
 import type { ClientCreateRequest } from "@/lib/contracts";
-import { createClient, getSession, sanitize, store } from "@/lib/milestone1-store";
+import { getSession, sanitize } from "@/lib/milestone1-store";
 
 async function requireSession() {
   const cookieStore = await cookies();
@@ -22,11 +28,12 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const clients = store.clients
-    .filter((entry) => entry.ownerUserId === user.id)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-
-  return NextResponse.json({ clients }, { status: 200 });
+  try {
+    return NextResponse.json({ clients: await listClientsForOwner(user.id) }, { status: 200 });
+  } catch (error) {
+    if (isClientPersistenceError(error)) return clientPersistenceUnavailableResponse();
+    throw error;
+  }
 }
 
 export async function POST(request: Request) {
@@ -47,13 +54,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "fullName is required." }, { status: 400 });
   }
 
-  const client = createClient({
-    ownerUserId: user.id,
-    fullName,
-    email: sanitize(body.email),
-    phone: sanitize(body.phone),
-    notes: sanitize(body.notes)
-  });
+  if (fullName.length > 200) {
+    return NextResponse.json({ error: "fullName must not exceed 200 characters." }, { status: 400 });
+  }
 
-  return NextResponse.json({ client }, { status: 201 });
+  const email = sanitize(body.email);
+  const phone = sanitize(body.phone);
+  const notes = sanitize(body.notes);
+  if (email.length > 320 || phone.length > 40 || notes.length > 4000) {
+    return NextResponse.json({ error: "Client contact data exceeds the allowed length." }, { status: 400 });
+  }
+
+  try {
+    const client = await createClientForOwner(user.id, {
+      fullName,
+      email: email || null,
+      phone: phone || null,
+      notes: notes || null,
+    });
+    return NextResponse.json({ client }, { status: 201 });
+  } catch (error) {
+    if (isClientPersistenceError(error)) return clientPersistenceUnavailableResponse();
+    throw error;
+  }
 }

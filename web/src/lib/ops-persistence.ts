@@ -6,6 +6,7 @@ import type {
   AuthSessionResponse,
   BackupSnapshotRecord,
   BackupV13Artifact,
+  BackupV13V2Artifact,
   BackupVerificationResult,
   PushQueueRecord,
   RetentionRunResult,
@@ -19,6 +20,7 @@ import {
   BACKUP_LEGACY_M12_SCHEMA_VERSION,
   BACKUP_V13_CANONICAL_VERSION,
   BACKUP_V13_SCHEMA_VERSION,
+  BACKUP_V13_V2_SCHEMA_VERSION,
   BackupArtifactError,
   buildVerificationResult,
   computeArtifactChecksumHex,
@@ -31,10 +33,8 @@ import {
   verifyExternalReferences,
 } from "@/lib/backup-v13-artifact";
 import {
-  createBackupSnapshot,
   enqueuePushNotification,
   getAuditEventsForUser,
-  getBackupSnapshotsForUser,
   getSession,
   getWorkspacesForUser,
   processPushQueueForUser,
@@ -262,7 +262,7 @@ export async function listOpsAuditEventsForUser(userId: string): Promise<OpsAudi
 
 export async function listBackupSnapshotsForUser(userId: string): Promise<BackupSnapshotRecord[]> {
   if (!isDatabaseConfigured()) {
-    return getBackupSnapshotsForUser(userId);
+    throw new BackupArtifactError("BACKUP_PERSISTENCE_UNAVAILABLE", 503, "Backup listing requires durable persistence.");
   }
 
   const rows = await prisma.opsBackupSnapshot.findMany({
@@ -289,7 +289,7 @@ export async function createPersistentBackupSnapshot(input: {
   label: string;
 }): Promise<BackupSnapshotRecord> {
   if (!isDatabaseConfigured()) {
-    return createBackupSnapshot(input.ownerUserId, input.label);
+    throw new BackupArtifactError("BACKUP_PERSISTENCE_UNAVAILABLE", 503, "Backup creation requires durable persistence.");
   }
 
   if (!Prisma.TransactionIsolationLevel?.RepeatableRead) {
@@ -333,7 +333,11 @@ export async function createPersistentBackupSnapshot(input: {
           where: { ownerUserId: input.ownerUserId },
           select: {
             id: true,
-            name: true,
+            fullName: true,
+            email: true,
+            phone: true,
+            notes: true,
+            deletedAt: true,
             ownerUserId: true,
             createdAt: true,
             updatedAt: true,
@@ -442,7 +446,13 @@ export async function createPersistentBackupSnapshot(input: {
         counts,
         sections: {
           clients: clients.map((row) => ({
-            ...row,
+            id: row.id,
+            fullName: row.fullName,
+            email: row.email,
+            phone: row.phone,
+            notes: row.notes,
+            deletedAt: row.deletedAt?.toISOString() ?? null,
+            ownerUserId: row.ownerUserId,
             createdAt: row.createdAt.toISOString(),
             updatedAt: row.updatedAt.toISOString(),
           })),
@@ -491,8 +501,8 @@ export async function createPersistentBackupSnapshot(input: {
     workspacesCount: 0,
   };
 
-  const artifact: BackupV13Artifact = {
-    schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+  const artifact: BackupV13V2Artifact = {
+    schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
     canonicalSerializationVersion: BACKUP_V13_CANONICAL_VERSION,
     checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
     checksum: null,
@@ -525,7 +535,7 @@ export async function createPersistentBackupSnapshot(input: {
       snapshotJson: artifact as unknown as Prisma.InputJsonValue,
       checksum,
       checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
-      schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+      schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
     },
   });
 
@@ -538,7 +548,7 @@ export async function createPersistentBackupSnapshot(input: {
     metadata: {
       checksum,
       checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
-      schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+      schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
       label: input.label,
     },
   });
@@ -589,7 +599,7 @@ export async function verifyBackupSnapshotForUser(userId: string, backupId: stri
     });
   }
 
-  if (parsedSchemaVersion !== BACKUP_V13_SCHEMA_VERSION) {
+  if (parsedSchemaVersion !== BACKUP_V13_SCHEMA_VERSION && parsedSchemaVersion !== BACKUP_V13_V2_SCHEMA_VERSION) {
     throw new BackupArtifactError(
       "BACKUP_SCHEMA_UNSUPPORTED",
       422,
@@ -614,7 +624,7 @@ export async function verifyBackupSnapshotForUser(userId: string, backupId: stri
   const external = await verifyExternalReferences(artifact);
   return buildVerificationResult({
     backupId: row.id,
-    schemaVersion: BACKUP_V13_SCHEMA_VERSION,
+    schemaVersion: artifact.schemaVersion,
     checksumStatus: "verified_match",
     artifactValidity: "valid",
     externalReferenceStatus: external.status,
@@ -945,18 +955,6 @@ function setBeforePushProcessCommitHook(hook: null | (() => Promise<void> | void
 function resetHooks(): void {
   testHooks.beforeRetentionDelete = null;
   testHooks.beforePushProcessCommit = null;
-}
-
-function buildBackupSnapshot(ownerUserId: string): BackupSnapshotRecord["snapshot"] {
-  const ownedClientIds = new Set(store.clients.filter((entry) => entry.ownerUserId === ownerUserId).map((entry) => entry.id));
-
-  return {
-    clientsCount: ownedClientIds.size,
-    consultationsCount: store.consultations.filter((entry) => ownedClientIds.has(entry.clientId)).length,
-    appointmentsCount: store.appointments.filter((entry) => entry.ownerUserId === ownerUserId).length,
-    notificationsCount: store.notifications.filter((entry) => entry.ownerUserId === ownerUserId).length,
-    workspacesCount: getWorkspacesForUser(ownerUserId).length,
-  };
 }
 
 function asBackupSnapshot(value: Prisma.JsonValue): BackupSnapshotRecord["snapshot"] {

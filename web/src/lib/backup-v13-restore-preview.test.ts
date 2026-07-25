@@ -68,7 +68,11 @@ function createBaseSource(overrides?: Partial<Parameters<typeof buildBackupResto
 
   const currentClient = {
     id: "client-1",
-    name: "Client",
+    fullName: "Client",
+    email: null,
+    phone: null,
+    notes: null,
+    deletedAt: null,
     ownerUserId: "owner-1",
     createdAt: new Date("2026-07-22T00:00:00.000Z"),
     updatedAt: new Date("2026-07-22T00:00:00.000Z"),
@@ -76,7 +80,11 @@ function createBaseSource(overrides?: Partial<Parameters<typeof buildBackupResto
 
   const extraClient = {
     id: "client-2",
-    name: "Client B",
+    fullName: "Client B",
+    email: null,
+    phone: null,
+    notes: null,
+    deletedAt: null,
     ownerUserId: "owner-1",
     createdAt: new Date("2026-07-23T00:00:00.000Z"),
     updatedAt: new Date("2026-07-23T00:00:00.000Z"),
@@ -107,9 +115,10 @@ function createBaseSource(overrides?: Partial<Parameters<typeof buildBackupResto
 
 describe("backup-v13-restore-preview", () => {
   it("produces deterministic preview fingerprints for identical logical inputs", () => {
+    const previewGeneratedAt = "2026-07-25T20:00:00.000Z";
     return Promise.all([
-      buildBackupRestorePreview(createBaseSource({ currentExtraClient: true })),
-      buildBackupRestorePreview(createBaseSource({ currentExtraClient: true })),
+      buildBackupRestorePreview(createBaseSource({ currentExtraClient: true }), previewGeneratedAt),
+      buildBackupRestorePreview(createBaseSource({ currentExtraClient: true }), previewGeneratedAt),
     ]).then(([first, second]) => {
       expect(first.previewFingerprint).toBe(second.previewFingerprint);
       expect(first.backupStateFingerprint).toBe(second.backupStateFingerprint);
@@ -179,7 +188,11 @@ describe("backup-v13-restore-preview", () => {
         clients: [
           {
             id: "client-1",
-            name: "Client",
+            fullName: "Client",
+            email: null,
+            phone: null,
+            notes: null,
+            deletedAt: null,
             ownerUserId: "owner-1",
             createdAt: new Date("2026-07-22T00:00:00.000Z"),
             updatedAt: new Date("2026-07-22T00:00:00.000Z"),

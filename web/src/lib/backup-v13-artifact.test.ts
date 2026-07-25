@@ -12,6 +12,8 @@ import {
   canonicalizeSortedJsonV1,
   computeArtifactChecksumHex,
   computeCanonicalSectionBytes,
+  isBackupV13V1Artifact,
+  isBackupV13V2Artifact,
   isRecognizedLegacyM12Summary,
   resolveSafeStoragePath,
   utf8ByteLength,
@@ -150,7 +152,63 @@ function createArtifact(): BackupV13Artifact {
   };
 }
 
+function baselineV1Acceptance(value: unknown): boolean {
+  const obj = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  if (obj.schemaVersion !== BACKUP_V13_SCHEMA_VERSION) return false;
+  if (obj.canonicalSerializationVersion !== BACKUP_V13_CANONICAL_VERSION) return false;
+  if (obj.checksumAlgorithm !== BACKUP_CHECKSUM_ALGORITHM) return false;
+  if (typeof obj.backupId !== "string" || typeof obj.ownerUserId !== "string" || typeof obj.createdByUserId !== "string") {
+    return false;
+  }
+  if (!obj.sections || typeof obj.sections !== "object") return false;
+
+  const sections = obj.sections as Record<string, unknown>;
+  return Array.isArray(sections.clients) &&
+    Array.isArray(sections.analyses) &&
+    Array.isArray(sections.imageAssets) &&
+    Array.isArray(sections.imageAnalyses) &&
+    Array.isArray(sections.imageAnalysisReviews);
+}
+
 describe("backup-v13-artifact", () => {
+  it("matches baseline m13.v1 acceptance semantics", () => {
+    const withClients = (clients: unknown[]) => {
+      const artifact = structuredClone(createArtifact()) as unknown as Record<string, unknown>;
+      (artifact.sections as Record<string, unknown>).clients = clients;
+      return artifact;
+    };
+    const wrongCanonical = structuredClone(createArtifact()) as unknown as Record<string, unknown>;
+    wrongCanonical.canonicalSerializationVersion = "sorted-json-v2";
+    const missingBackupId = structuredClone(createArtifact()) as unknown as Record<string, unknown>;
+    delete missingBackupId.backupId;
+    const missingSection = structuredClone(createArtifact()) as unknown as Record<string, unknown>;
+    delete (missingSection.sections as Record<string, unknown>).analyses;
+
+    const cases: unknown[] = [
+      createArtifact(),
+      withClients([]),
+      withClients([{}]),
+      withClients([{ fullName: "Not v1" }]),
+      withClients([null, 1, "client"]),
+      { ...createArtifact(), schemaVersion: "m13.v2" },
+      wrongCanonical,
+      missingBackupId,
+      missingSection,
+      null,
+    ];
+
+    for (const value of cases) {
+      expect(isBackupV13V1Artifact(value)).toBe(baselineV1Acceptance(value));
+    }
+  });
+
+  it("keeps Client row validation exclusive to m13.v2", () => {
+    const artifact = createArtifact() as unknown as Record<string, unknown>;
+    artifact.schemaVersion = "m13.v2";
+
+    expect(isBackupV13V2Artifact(artifact)).toBe(false);
+  });
+
   it("produces deterministic checksum for same canonical content", () => {
     const first = createArtifact();
     const second = createArtifact();

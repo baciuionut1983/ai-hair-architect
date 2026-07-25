@@ -1,10 +1,10 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
+import { resolveOwnedClient } from "@/lib/client-repository";
 import type { TreatmentCreateRequest } from "@/lib/contracts";
 import {
   createTreatmentRecord,
-  getClientOwnedByUser,
   getSession,
   getTreatmentsForClientByUser,
   sanitize
@@ -23,7 +23,8 @@ export async function GET(
   }
 
   const { id } = await context.params;
-  const client = getClientOwnedByUser(id, sessionUser.id);
+  const client = await resolveOwnedClient(sessionUser.id, id);
+  if (client instanceof Response) return client;
   if (!client) {
     return NextResponse.json({ error: "Client not found." }, { status: 404 });
   }
@@ -44,7 +45,8 @@ export async function POST(
   }
 
   const { id } = await context.params;
-  const client = getClientOwnedByUser(id, sessionUser.id);
+  const client = await resolveOwnedClient(sessionUser.id, id);
+  if (client instanceof Response) return client;
   if (!client) {
     return NextResponse.json({ error: "Client not found." }, { status: 404 });
   }
