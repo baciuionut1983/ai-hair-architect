@@ -208,6 +208,7 @@ test.describe('Analytics E2E - Real PostgreSQL Persistence', () => {
     expect(data.data.summary.totalAnalyses).toBe(3);
     expect(data.data.summary.avgConfidence).toBeCloseTo(0.883, 2);
     expect(data.data.summary.mostCommonHairType).toBe('curly');
+    expect(Array.isArray(data.data.byHairType)).toBe(true);
     expect(data.data.confidence.min).toBe(0.85);
     expect(data.data.confidence.max).toBe(0.92);
     expect(data.data.confidence.median).toBeDefined();
@@ -287,6 +288,19 @@ test.describe('Analytics E2E - Real PostgreSQL Persistence', () => {
     const data = await response.json();
     expect(data.data).toHaveLength(3);
     expect(data.data.every((row: { ownerUserId: string }) => row.ownerUserId === userId1)).toBe(true);
+  });
+
+  test('Admin exports a selected user as CSV without leaking other users', async ({ request }) => {
+    const response = await request.get(
+      `/api/v1/analytics/export?format=csv&dateFrom=${analyticsDateFrom}&dateTo=${analyticsDateTo}&userId=${userId1}`,
+      { headers: { Authorization: `Bearer ${adminToken}` } }
+    );
+
+    expect(response.status()).toBe(200);
+    expect(response.headers()['content-type']).toContain('text/csv');
+    const csv = await response.text();
+    expect(csv).toContain(userId1);
+    expect(csv).not.toContain(userId2);
   });
 
   test('Invalid token returns 401 Unauthorized', async ({ request }) => {
