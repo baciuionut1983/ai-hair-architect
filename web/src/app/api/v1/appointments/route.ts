@@ -1,10 +1,17 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
+import {
+  AppointmentDependencyError,
+  appointmentPersistenceUnavailableResponse,
+  createAppointmentForOwner,
+  isAppointmentPersistenceError,
+  listAppointmentsForOwner,
+} from "@/lib/appointment-repository";
 import { guardBusinessPersistence } from "@/lib/business-persistence-guards";
 import { resolveOwnedClient } from "@/lib/client-repository";
 import type { AppointmentCreateRequest } from "@/lib/contracts";
-import { createAppointment, getAppointmentsForUser, getSession, sanitize } from "@/lib/milestone1-store";
+import { getSession, sanitize } from "@/lib/milestone1-store";
 
 function normalizeReminderMinutes(value: unknown): number {
   const parsed = Number(value);
@@ -30,8 +37,13 @@ export async function GET(request: Request) {
 
   const url = new URL(request.url);
   const clientId = url.searchParams.get("clientId") || undefined;
-  const appointments = getAppointmentsForUser(sessionUser.id, clientId);
-  return NextResponse.json({ appointments }, { status: 200 });
+  try {
+    const appointments = await listAppointmentsForOwner(sessionUser.id, clientId);
+    return NextResponse.json({ appointments }, { status: 200 });
+  } catch (error) {
+    if (isAppointmentPersistenceError(error)) return appointmentPersistenceUnavailableResponse();
+    throw error;
+  }
 }
 
 export async function POST(request: Request) {
@@ -73,15 +85,21 @@ export async function POST(request: Request) {
       ? body.reminderType
       : "appointment";
 
-  const appointment = createAppointment({
-    ownerUserId: sessionUser.id,
-    clientId: client.id,
-    title,
-    startsAt,
-    reminderMinutesBefore: normalizeReminderMinutes(body.reminderMinutesBefore),
-    reminderType,
-    notes
-  });
-
-  return NextResponse.json({ appointment }, { status: 201 });
+  try {
+    const appointment = await createAppointmentForOwner(sessionUser.id, {
+      clientId: client.id,
+      title,
+      startsAt: new Date(startsAt),
+      reminderMinutesBefore: normalizeReminderMinutes(body.reminderMinutesBefore),
+      reminderType,
+      notes
+    });
+    return NextResponse.json({ appointment }, { status: 201 });
+  } catch (error) {
+    if (error instanceof AppointmentDependencyError) {
+      return NextResponse.json({ error: error.message }, { status: error.httpStatus });
+    }
+    if (isAppointmentPersistenceError(error)) return appointmentPersistenceUnavailableResponse();
+    throw error;
+  }
 }

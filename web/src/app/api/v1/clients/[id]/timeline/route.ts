@@ -1,6 +1,11 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
+import {
+  appointmentPersistenceUnavailableResponse,
+  isAppointmentPersistenceError,
+  listAppointmentsForOwner,
+} from "@/lib/appointment-repository";
 import { resolveOwnedClient } from "@/lib/client-repository";
 import {
   consultationPersistenceUnavailableResponse,
@@ -9,8 +14,6 @@ import {
 } from "@/lib/consultation-repository";
 import type { ClientTimelineResponse, TimelineEntry } from "@/lib/contracts";
 import {
-  getAppointmentsForUser,
-  getClientTimelineByUser,
   getFormulasForClientByUser,
   getPhotosForClientByUser,
   getSession,
@@ -37,7 +40,36 @@ export async function GET(
       return NextResponse.json({ error: "Client not found." }, { status: 404 });
     }
 
-    const consultations = await listConsultationsForClient(sessionUser.id, id);
+    const [consultations, appointments] = await Promise.all([
+      listConsultationsForClient(sessionUser.id, id),
+      listAppointmentsForOwner(sessionUser.id, id),
+    ]);
+    const photos = getPhotosForClientByUser(id, sessionUser.id);
+    const formulas = getFormulasForClientByUser(id, sessionUser.id);
+    const treatments = getTreatmentsForClientByUser(id, sessionUser.id);
+    const legacyTimeline: TimelineEntry[] = [
+      ...photos.map((item) => ({
+        id: item.id,
+        kind: "photo" as const,
+        createdAt: item.createdAt,
+        title: item.caption || "Photo added",
+        details: item.imageUrl,
+      })),
+      ...formulas.map((item) => ({
+        id: item.id,
+        kind: "formula" as const,
+        createdAt: item.createdAt,
+        title: item.formulaName,
+        details: item.formulaDetails,
+      })),
+      ...treatments.map((item) => ({
+        id: item.id,
+        kind: "treatment" as const,
+        createdAt: item.createdAt,
+        title: item.treatmentName,
+        details: item.treatmentDetails,
+      })),
+    ];
     const consultationTimeline = consultations.map<TimelineEntry>((item) => ({
       id: item.id,
       kind: "consultation",
@@ -45,19 +77,30 @@ export async function GET(
       title: "Consultation",
       details: item.summary,
     }));
+    const appointmentTimeline = appointments.map<TimelineEntry>((item) => ({
+      id: item.id,
+      kind: "appointment",
+      createdAt: item.startsAt,
+      title: item.title,
+      details: item.notes,
+    }));
     const response: ClientTimelineResponse = {
-      photos: getPhotosForClientByUser(id, sessionUser.id),
-      formulas: getFormulasForClientByUser(id, sessionUser.id),
-      treatments: getTreatmentsForClientByUser(id, sessionUser.id),
+      photos,
+      formulas,
+      treatments,
       consultations,
-      appointments: getAppointmentsForUser(sessionUser.id, id),
-      timeline: [...getClientTimelineByUser(id, sessionUser.id), ...consultationTimeline].sort((left, right) =>
-        right.createdAt.localeCompare(left.createdAt)
+      appointments,
+      timeline: [...legacyTimeline, ...consultationTimeline, ...appointmentTimeline].sort(
+        (left, right) =>
+          right.createdAt.localeCompare(left.createdAt) ||
+          left.kind.localeCompare(right.kind) ||
+          right.id.localeCompare(left.id),
       ),
     };
 
     return NextResponse.json(response, { status: 200 });
   } catch (error) {
+    if (isAppointmentPersistenceError(error)) return appointmentPersistenceUnavailableResponse();
     if (isConsultationPersistenceError(error)) return consultationPersistenceUnavailableResponse();
     throw error;
   }

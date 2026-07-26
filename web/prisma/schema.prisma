@@ -72,6 +72,18 @@ enum OpsBackupRestoreRetentionRunStatus {
   failed
 }
 
+enum AppointmentReminderType {
+  appointment
+  follow_up
+  maintenance
+}
+
+enum NotificationType {
+  appointment
+  follow_up
+  maintenance
+}
+
 model User {
   id            String            @id @default(uuid())
   email         String            @unique
@@ -83,6 +95,8 @@ model User {
   clients       Client[]
   analyses      Analysis[]
   consultations Consultation[]
+  appointments  Appointment[]
+  notifications Notification[]
   webhooks      WebhookEndpoint[]
 }
 
@@ -110,6 +124,7 @@ model Client {
   owner         User           @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
   analyses      Analysis[]
   consultations Consultation[]
+  appointments  Appointment[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -174,6 +189,46 @@ model Consultation {
   @@index([ownerUserId, createdAt, id])
   @@index([ownerUserId, clientId, createdAt, id])
   @@index([analysisId, ownerUserId, clientId])
+}
+
+model Appointment {
+  id                    String                  @id @default(uuid())
+  ownerUserId           String
+  clientId              String
+  title                 String                  @db.VarChar(200)
+  startsAt              DateTime                @db.Timestamp(6)
+  reminderMinutesBefore Int                     @default(1440)
+  reminderType          AppointmentReminderType
+  reminderSentAt        DateTime?               @db.Timestamp(6)
+  notes                 String                  @default("") @db.VarChar(4000)
+  createdAt             DateTime                @default(now()) @db.Timestamp(6)
+  updatedAt             DateTime                @updatedAt @db.Timestamp(6)
+  owner                 User                    @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client                Client                  @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  notifications         Notification[]
+
+  @@unique([id, ownerUserId, clientId])
+  @@index([ownerUserId, startsAt, id])
+  @@index([ownerUserId, clientId, startsAt, id])
+  @@index([ownerUserId, reminderSentAt, startsAt, id])
+}
+
+model Notification {
+  id                   String           @id @default(uuid())
+  ownerUserId          String
+  type                 NotificationType
+  title                String           @db.VarChar(240)
+  message              String           @db.VarChar(1000)
+  relatedClientId      String
+  relatedAppointmentId String
+  createdAt            DateTime         @default(now()) @db.Timestamp(6)
+  readAt               DateTime?        @db.Timestamp(6)
+  owner                User             @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  relatedAppointment   Appointment      @relation(fields: [relatedAppointmentId, ownerUserId, relatedClientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([relatedAppointmentId, ownerUserId, type])
+  @@index([ownerUserId, createdAt, id])
+  @@index([ownerUserId, readAt, createdAt, id])
 }
 
 model ImageAsset {

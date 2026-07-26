@@ -20,7 +20,7 @@ describe("milestone7 ops health", () => {
       locale: "en"
     });
 
-    const health = getOpsHealthSnapshot(0, 0);
+    const health = getOpsHealthSnapshot(0, 0, 0, 0);
     expect(health.state).toBe("healthy");
     expect(health.usersCount).toBeGreaterThan(0);
     expect(health.clientsCount).toBeGreaterThanOrEqual(0);
@@ -47,7 +47,7 @@ describe("milestone7 ops health", () => {
       });
     }
 
-    const warningHealth = getOpsHealthSnapshot(0, 0);
+    const warningHealth = getOpsHealthSnapshot(0, 0, 0, 0);
     expect(warningHealth.state).toBe("warning");
 
     for (let index = 0; index < 15; index += 1) {
@@ -63,7 +63,7 @@ describe("milestone7 ops health", () => {
       });
     }
 
-    const degradedHealth = getOpsHealthSnapshot(0, 0);
+    const degradedHealth = getOpsHealthSnapshot(0, 0, 0, 0);
     expect(degradedHealth.state).toBe("degraded");
   });
 });

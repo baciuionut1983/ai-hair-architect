@@ -1,11 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  createAppointment,
   createUser,
-  executeReminderJobsForUser,
   getAnalyticsSnapshotForUser,
-  store,
   updateSubscriptionForUser
 } from "./milestone1-store";
 
@@ -18,22 +15,9 @@ describe("milestone6 analytics snapshot", () => {
       locale: "en"
     });
 
-    const clientId = `client-${Date.now()}`;
-
-    createAppointment({
-      ownerUserId: user.id,
-      clientId,
-      title: "M6 appointment",
-      startsAt: new Date(Date.now() + 3 * 60_000).toISOString(),
-      reminderMinutesBefore: 5,
-      reminderType: "appointment",
-      notes: ""
-    });
-
-    executeReminderJobsForUser(user.id, new Date().toISOString());
     updateSubscriptionForUser({ userId: user.id, plan: "pro", status: "active" });
 
-    const snapshot = getAnalyticsSnapshotForUser(user.id, 1);
+    const snapshot = getAnalyticsSnapshotForUser(user.id, 1, 1, 1);
     expect(snapshot.consultationsCount).toBeGreaterThanOrEqual(1);
     expect(snapshot.appointmentsCount).toBeGreaterThanOrEqual(1);
     expect(snapshot.remindersSentCount).toBeGreaterThanOrEqual(1);

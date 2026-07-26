@@ -3,6 +3,7 @@ import {
   type EnvValidationIssue,
 } from "@/lib/env-core-gate";
 import {
+  BUSINESS_PERSISTENCE_DOMAIN_REGISTRY,
   getBusinessPersistenceReadinessDomains,
   type BusinessPersistenceReadinessDomain,
   type BusinessPersistenceRuntime,
@@ -80,13 +81,7 @@ export function evaluateReadiness(input: {
 
   const checks: ReadinessCheck[] = [
     buildEnvCheck(envValidation.issues),
-    {
-      code: "BUSINESS_PERSISTENCE_PRODUCTION_READY",
-      status: "FAIL",
-      critical: true,
-      message:
-        "Business persistence remains in-memory for critical product domains and is not production-ready."
-    },
+    buildBusinessPersistenceCheck(businessPersistenceDomains),
     {
       code: "BILLING_WEBHOOK_AUTHENTICITY_READY",
       status: "FAIL",
@@ -114,6 +109,37 @@ export function evaluateReadiness(input: {
       requestId: input.requestId,
       timestamp: now.toISOString()
     }
+  };
+}
+
+export function buildBusinessPersistenceCheck(
+  domains: BusinessPersistenceReadinessDomain[],
+): ReadinessCheck {
+  const blockingDomains = domains.filter((domain) => {
+    const metadata = BUSINESS_PERSISTENCE_DOMAIN_REGISTRY[domain.domain];
+    return metadata.essential && (
+      domain.persistenceState !== "durable" ||
+      !domain.productionReady
+    );
+  });
+
+  if (blockingDomains.length === 0) {
+    return {
+      code: "BUSINESS_PERSISTENCE_PRODUCTION_READY",
+      status: "PASS",
+      critical: true,
+      message: "All essential business persistence domains are durable and production-ready."
+    };
+  }
+
+  const domainSummary = blockingDomains
+    .map((domain) => `${domain.domain} (${domain.persistenceState}, productionReady=${domain.productionReady})`)
+    .join(", ");
+  return {
+    code: "BUSINESS_PERSISTENCE_PRODUCTION_READY",
+    status: "FAIL",
+    critical: true,
+    message: `Essential business persistence domains are not production-ready: ${domainSummary}.`
   };
 }
 

@@ -2,6 +2,12 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import {
+  appointmentPersistenceUnavailableResponse,
+  countAppointmentsForOwner,
+  countSentRemindersForOwner,
+  isAppointmentPersistenceError,
+} from "@/lib/appointment-repository";
+import {
   clientPersistenceUnavailableResponse,
   isClientPersistenceError,
   listActiveClientIdsForOwner,
@@ -24,11 +30,22 @@ export async function GET() {
 
   try {
     await listActiveClientIdsForOwner(sessionUser.id);
-    const snapshot = getAnalyticsSnapshotForUser(sessionUser.id, await countConsultationsForOwner(sessionUser.id));
+    const [consultationsCount, appointmentsCount, remindersSentCount] = await Promise.all([
+      countConsultationsForOwner(sessionUser.id),
+      countAppointmentsForOwner(sessionUser.id),
+      countSentRemindersForOwner(sessionUser.id),
+    ]);
+    const snapshot = getAnalyticsSnapshotForUser(
+      sessionUser.id,
+      consultationsCount,
+      appointmentsCount,
+      remindersSentCount,
+    );
     return NextResponse.json({ snapshot }, { status: 200 });
   } catch (error) {
     if (isClientPersistenceError(error)) return clientPersistenceUnavailableResponse();
     if (isConsultationPersistenceError(error)) return consultationPersistenceUnavailableResponse();
+    if (isAppointmentPersistenceError(error)) return appointmentPersistenceUnavailableResponse();
     throw error;
   }
 }

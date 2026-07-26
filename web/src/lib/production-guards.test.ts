@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildBusinessPersistenceCheck,
   evaluateReadiness,
   getBillingWebhookProductionError,
   isProductionRuntime,
@@ -67,15 +68,65 @@ describe("production guards", () => {
       },
       {
         domain: "appointments",
-        persistenceState: "memory_only",
+        persistenceState: "durable",
         guardEnforcement: "active",
-        availability: "blocked",
-        productionReady: false,
+        availability: "available",
+        productionReady: true,
+      },
+      {
+        domain: "notifications",
+        persistenceState: "durable",
+        guardEnforcement: "active",
+        availability: "available",
+        productionReady: true,
       },
     ]);
     expect(
       result.payload.checks.find((check) => check.code === "BUSINESS_PERSISTENCE_PRODUCTION_READY"),
-    ).toMatchObject({ status: "FAIL" });
+    ).toMatchObject({
+      status: "PASS",
+      message: "All essential business persistence domains are durable and production-ready.",
+    });
+  });
+
+  it("derives PASS only when every essential registry domain is durable and production-ready", () => {
+    const domains = [
+      "clients",
+      "consultations",
+      "analyses",
+      "appointments",
+      "notifications",
+    ].map((domain) => ({
+      domain: domain as "clients" | "consultations" | "analyses" | "appointments" | "notifications",
+      persistenceState: "durable" as const,
+      guardEnforcement: "active" as const,
+      availability: "available" as const,
+      productionReady: true,
+    }));
+
+    expect(buildBusinessPersistenceCheck(domains)).toEqual({
+      code: "BUSINESS_PERSISTENCE_PRODUCTION_READY",
+      status: "PASS",
+      critical: true,
+      message: "All essential business persistence domains are durable and production-ready.",
+    });
+  });
+
+  it("derives FAIL for durable domains that are not production-ready", () => {
+    const domains = [
+      {
+        domain: "appointments" as const,
+        persistenceState: "durable" as const,
+        guardEnforcement: "active" as const,
+        availability: "blocked" as const,
+        productionReady: false,
+      },
+    ];
+
+    expect(buildBusinessPersistenceCheck(domains)).toMatchObject({
+      status: "FAIL",
+      message: expect.stringContaining("appointments (durable, productionReady=false)"),
+    });
   });
 
   it.each(["development", "test"] as const)(
@@ -88,7 +139,7 @@ describe("production guards", () => {
 
       expect(result.httpStatus).toBe(503);
       expect(result.payload.status).toBe("NOT_READY");
-      expect(result.payload.businessPersistenceDomains).toHaveLength(4);
+      expect(result.payload.businessPersistenceDomains).toHaveLength(5);
       const clients = result.payload.businessPersistenceDomains.find((domain) => domain.domain === "clients");
       expect(clients).toMatchObject({
         persistenceState: "durable",
@@ -112,10 +163,17 @@ describe("production guards", () => {
         });
       expect(result.payload.businessPersistenceDomains.find((domain) => domain.domain === "appointments"))
         .toMatchObject({
-          persistenceState: "memory_only",
+          persistenceState: "durable",
           guardEnforcement: "bypassed",
           availability: "available",
-          productionReady: false,
+          productionReady: true,
+        });
+      expect(result.payload.businessPersistenceDomains.find((domain) => domain.domain === "notifications"))
+        .toMatchObject({
+          persistenceState: "durable",
+          guardEnforcement: "bypassed",
+          availability: "available",
+          productionReady: true,
         });
     },
   );

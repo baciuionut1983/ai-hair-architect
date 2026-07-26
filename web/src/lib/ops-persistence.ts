@@ -310,6 +310,8 @@ export async function createPersistentBackupSnapshot(input: {
         clientsCount,
         analysesCount,
         consultationsCount,
+        appointmentsCount,
+        notificationsCount,
         imageAssetsCount,
         imageAnalysesCount,
         imageAnalysisReviewsCount,
@@ -317,6 +319,8 @@ export async function createPersistentBackupSnapshot(input: {
         tx.client.count({ where: { ownerUserId: input.ownerUserId } }),
         tx.analysis.count({ where: { ownerUserId: input.ownerUserId } }),
         tx.consultation.count({ where: { ownerUserId: input.ownerUserId } }),
+        tx.appointment.count({ where: { ownerUserId: input.ownerUserId } }),
+        tx.notification.count({ where: { ownerUserId: input.ownerUserId } }),
         tx.imageAsset.count({ where: { ownerUserId: input.ownerUserId } }),
         tx.imageAnalysis.count({ where: { asset: { ownerUserId: input.ownerUserId } } }),
         tx.imageAnalysisReview.count({ where: { analysis: { asset: { ownerUserId: input.ownerUserId } } } }),
@@ -461,6 +465,8 @@ export async function createPersistentBackupSnapshot(input: {
 
       return {
         counts,
+        appointmentsCount,
+        notificationsCount,
         sections: {
           clients: clients.map((row) => ({
             id: row.id,
@@ -522,8 +528,8 @@ export async function createPersistentBackupSnapshot(input: {
   const summarySnapshot = {
     clientsCount: sectionData.counts.clients,
     consultationsCount: sectionData.counts.consultations,
-    appointmentsCount: 0,
-    notificationsCount: 0,
+    appointmentsCount: sectionData.appointmentsCount,
+    notificationsCount: sectionData.notificationsCount,
     workspacesCount: 0,
   };
 

@@ -2,6 +2,11 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import {
+  appointmentPersistenceUnavailableResponse,
+  countAllAppointments,
+  isAppointmentPersistenceError,
+} from "@/lib/appointment-repository";
+import {
   clientPersistenceUnavailableResponse,
   countActiveClients,
   isClientPersistenceError,
@@ -12,6 +17,11 @@ import {
   isConsultationPersistenceError,
 } from "@/lib/consultation-repository";
 import { getOpsHealthSnapshot, getSession } from "@/lib/milestone1-store";
+import {
+  countAllNotifications,
+  isNotificationPersistenceError,
+  notificationPersistenceUnavailableResponse,
+} from "@/lib/notification-repository";
 
 export async function GET() {
   const cookieStore = await cookies();
@@ -23,12 +33,24 @@ export async function GET() {
   }
 
   try {
-    const [clientsCount, consultationsCount] = await Promise.all([countActiveClients(), countAllConsultations()]);
-    const health = getOpsHealthSnapshot(clientsCount, consultationsCount);
+    const [clientsCount, consultationsCount, appointmentsCount, notificationsCount] = await Promise.all([
+      countActiveClients(),
+      countAllConsultations(),
+      countAllAppointments(),
+      countAllNotifications(),
+    ]);
+    const health = getOpsHealthSnapshot(
+      clientsCount,
+      consultationsCount,
+      appointmentsCount,
+      notificationsCount,
+    );
     return NextResponse.json({ health }, { status: 200 });
   } catch (error) {
     if (isClientPersistenceError(error)) return clientPersistenceUnavailableResponse();
     if (isConsultationPersistenceError(error)) return consultationPersistenceUnavailableResponse();
+    if (isAppointmentPersistenceError(error)) return appointmentPersistenceUnavailableResponse();
+    if (isNotificationPersistenceError(error)) return notificationPersistenceUnavailableResponse();
     throw error;
   }
 }

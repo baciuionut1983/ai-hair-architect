@@ -5,26 +5,22 @@ import type {
   AcademyLesson,
   AnalysisGoal,
   AnalyticsSnapshot,
-  AppointmentRecord,
   BackupSnapshotRecord,
   AuthSessionResponse,
   ClientPhotoRecord,
   FormulaRecord,
   Locale,
-  NotificationRecord,
   OpsHealthSnapshot,
   PaymentRecord,
   PushPreferenceRecord,
   PushQueueRecord,
   ProductRecord,
-  ReminderType,
   RetentionRunResult,
   ShortlistRecord,
   SubscriptionPlan,
   SubscriptionRecord,
   SubscriptionStatus,
   SupplierRecord,
-  TimelineEntry,
   TreatmentRecord,
   UserRole,
   WorkspaceMemberRecord,
@@ -46,8 +42,6 @@ interface Store {
   photos: ClientPhotoRecord[];
   formulas: FormulaRecord[];
   treatments: TreatmentRecord[];
-  appointments: AppointmentRecord[];
-  notifications: NotificationRecord[];
   academyCategories: AcademyCategory[];
   academyLessons: AcademyLesson[];
   videoLessons: VideoLessonRecord[];
@@ -104,8 +98,6 @@ function createStore(): Store {
     photos: [],
     formulas: [],
     treatments: [],
-    appointments: [],
-    notifications: [],
     academyCategories: [],
     academyLessons: [],
     videoLessons: [],
@@ -135,14 +127,6 @@ if (!store.formulas) {
 
 if (!store.treatments) {
   store.treatments = [];
-}
-
-if (!store.appointments) {
-  store.appointments = [];
-}
-
-if (!store.notifications) {
-  store.notifications = [];
 }
 
 if (!store.academyCategories) {
@@ -627,11 +611,7 @@ export function addWorkspaceMember(input: {
   return membership;
 }
 
-export function getAnalyticsSnapshotForUser(userId: string, consultationsCount: number): AnalyticsSnapshot {
-  const appointmentsCount = store.appointments.filter((entry) => entry.ownerUserId === userId).length;
-  const remindersSentCount = store.appointments.filter(
-    (entry) => entry.ownerUserId === userId && entry.reminderSentAt !== null
-  ).length;
+export function getAnalyticsSnapshotForUser(userId: string, consultationsCount: number, appointmentsCount: number, remindersSentCount: number): AnalyticsSnapshot {
   const activeSubscriptionCount = store.subscriptions.filter(
     (entry) => entry.ownerUserId === userId && (entry.status === "active" || entry.status === "trialing")
   ).length;
@@ -726,11 +706,9 @@ export function getPushQueueForUser(userId: string): PushQueueRecord[] {
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
-export function getOpsHealthSnapshot(clientsCount: number, consultationsCount: number): OpsHealthSnapshot {
+export function getOpsHealthSnapshot(clientsCount: number, consultationsCount: number, appointmentsCount: number, notificationsCount: number): OpsHealthSnapshot {
   const queueBacklogCount = store.pushQueue.filter((entry) => entry.status === "queued").length;
   const usersCount = store.users.length;
-  const appointmentsCount = store.appointments.length;
-  const notificationsCount = store.notifications.length;
   const auditEventsCount = store.auditEvents.length;
 
   let state: OpsHealthSnapshot["state"] = "healthy";
@@ -763,8 +741,8 @@ export function createBackupSnapshot(ownerUserId: string, label: string, clientI
     snapshot: {
       clientsCount: ownedClientIds.size,
       consultationsCount: 0,
-      appointmentsCount: store.appointments.filter((entry) => entry.ownerUserId === ownerUserId).length,
-      notificationsCount: store.notifications.filter((entry) => entry.ownerUserId === ownerUserId).length,
+      appointmentsCount: 0,
+      notificationsCount: 0,
       workspacesCount: getWorkspacesForUser(ownerUserId).length
     }
   };
@@ -1016,154 +994,4 @@ export function getTreatmentsForClientByUser(clientId: string, _userId: string):
   return store.treatments
     .filter((entry) => entry.clientId === clientId)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-}
-
-export function createAppointment(input: {
-  ownerUserId: string;
-  clientId: string;
-  title: string;
-  startsAt: string;
-  reminderMinutesBefore: number;
-  reminderType: ReminderType;
-  notes: string;
-}): AppointmentRecord {
-  const record: AppointmentRecord = {
-    id: randomUUID(),
-    ownerUserId: input.ownerUserId,
-    clientId: input.clientId,
-    title: input.title,
-    startsAt: input.startsAt,
-    reminderMinutesBefore: input.reminderMinutesBefore,
-    reminderType: input.reminderType,
-    reminderSentAt: null,
-    notes: input.notes,
-    createdAt: new Date().toISOString()
-  };
-
-  store.appointments.push(record);
-  return record;
-}
-
-export function getAppointmentsForUser(userId: string, clientId?: string): AppointmentRecord[] {
-  return store.appointments
-    .filter((entry) => entry.ownerUserId === userId && (!clientId || entry.clientId === clientId))
-    .sort((left, right) => left.startsAt.localeCompare(right.startsAt));
-}
-
-export function createNotification(input: {
-  ownerUserId: string;
-  type: ReminderType;
-  title: string;
-  message: string;
-  relatedClientId: string;
-  relatedAppointmentId: string;
-}): NotificationRecord {
-  const record: NotificationRecord = {
-    id: randomUUID(),
-    ownerUserId: input.ownerUserId,
-    type: input.type,
-    title: input.title,
-    message: input.message,
-    relatedClientId: input.relatedClientId,
-    relatedAppointmentId: input.relatedAppointmentId,
-    createdAt: new Date().toISOString(),
-    readAt: null
-  };
-
-  store.notifications.push(record);
-  return record;
-}
-
-export function getNotificationsForUser(userId: string): NotificationRecord[] {
-  return store.notifications
-    .filter((entry) => entry.ownerUserId === userId)
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-}
-
-export function markNotificationsReadForUser(userId: string, notificationIds?: string[]): number {
-  const wanted = notificationIds ? new Set(notificationIds) : null;
-  let updated = 0;
-
-  for (const notification of store.notifications) {
-    const shouldUpdate =
-      notification.ownerUserId === userId &&
-      notification.readAt === null &&
-      (!wanted || wanted.has(notification.id));
-
-    if (shouldUpdate) {
-      notification.readAt = new Date().toISOString();
-      updated += 1;
-    }
-  }
-
-  return updated;
-}
-
-export function executeReminderJobsForUser(userId: string, nowIso = new Date().toISOString()) {
-  const nowMs = Date.parse(nowIso);
-  let remindersCreated = 0;
-
-  for (const appointment of store.appointments) {
-    if (appointment.ownerUserId !== userId || appointment.reminderSentAt) {
-      continue;
-    }
-
-    const startsAtMs = Date.parse(appointment.startsAt);
-    const dueAtMs = startsAtMs - appointment.reminderMinutesBefore * 60 * 1000;
-    if (Number.isNaN(startsAtMs) || dueAtMs > nowMs) {
-      continue;
-    }
-
-    createNotification({
-      ownerUserId: appointment.ownerUserId,
-      type: appointment.reminderType,
-      title: `Reminder: ${appointment.title}`,
-      message: `Upcoming ${appointment.reminderType.replace("_", " ")} at ${appointment.startsAt}`,
-      relatedClientId: appointment.clientId,
-      relatedAppointmentId: appointment.id
-    });
-
-    appointment.reminderSentAt = new Date().toISOString();
-    remindersCreated += 1;
-  }
-
-  return { remindersCreated };
-}
-
-export function getClientTimelineByUser(clientId: string, userId: string): TimelineEntry[] {
-  const photos = getPhotosForClientByUser(clientId, userId).map<TimelineEntry>((item) => ({
-    id: item.id,
-    kind: "photo",
-    createdAt: item.createdAt,
-    title: item.caption || "Photo added",
-    details: item.imageUrl
-  }));
-
-  const formulas = getFormulasForClientByUser(clientId, userId).map<TimelineEntry>((item) => ({
-    id: item.id,
-    kind: "formula",
-    createdAt: item.createdAt,
-    title: item.formulaName,
-    details: item.formulaDetails
-  }));
-
-  const treatments = getTreatmentsForClientByUser(clientId, userId).map<TimelineEntry>((item) => ({
-    id: item.id,
-    kind: "treatment",
-    createdAt: item.createdAt,
-    title: item.treatmentName,
-    details: item.treatmentDetails
-  }));
-
-  const appointments = getAppointmentsForUser(userId, clientId).map<TimelineEntry>((item) => ({
-    id: item.id,
-    kind: "appointment",
-    createdAt: item.startsAt,
-    title: item.title,
-    details: item.notes
-  }));
-
-  return [...photos, ...formulas, ...treatments, ...appointments].sort((left, right) =>
-    right.createdAt.localeCompare(left.createdAt)
-  );
 }
