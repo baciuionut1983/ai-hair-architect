@@ -81,6 +81,7 @@ model User {
   createdAt     DateTime          @default(now())
   sessions      Session[]
   clients       Client[]
+  analyses      Analysis[]
   consultations Consultation[]
   webhooks      WebhookEndpoint[]
 }
@@ -107,6 +108,7 @@ model Client {
   createdAt     DateTime       @default(now()) @db.Timestamp(6)
   updatedAt     DateTime       @updatedAt @db.Timestamp(6)
   owner         User           @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  analyses      Analysis[]
   consultations Consultation[]
 
   @@unique([id, ownerUserId])
@@ -143,6 +145,8 @@ model Analysis {
   m8FinalizedAt        DateTime?
   createdAt            DateTime       @default(now())
   updatedAt            DateTime       @updatedAt
+  owner                User           @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client               Client         @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
   imageAsset           ImageAsset?    @relation(fields: [imageAssetId], references: [id], onDelete: SetNull)
   imageAnalysis        ImageAnalysis? @relation(fields: [imageAnalysisId], references: [id], onDelete: SetNull)
   consultations        Consultation[]

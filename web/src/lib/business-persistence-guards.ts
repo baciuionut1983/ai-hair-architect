@@ -13,6 +13,11 @@ export const BUSINESS_PERSISTENCE_DOMAIN_REGISTRY = {
     essential: true,
     productionReady: true,
   },
+  analyses: {
+    persistenceState: "durable",
+    essential: true,
+    productionReady: true,
+  },
   appointments: {
     persistenceState: "memory_only",
     essential: true,

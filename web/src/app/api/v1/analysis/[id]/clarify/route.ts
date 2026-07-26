@@ -3,8 +3,13 @@ import { NextResponse } from "next/server";
 
 import type { AnalysisClarifyRequest, AnalysisResponse } from "@/lib/contracts";
 import { analyzeWithClarifications } from "@/lib/analysis-engine";
-import { upsertPersistedAnalysis } from "@/lib/analysis-persistence";
-import { getAnalysisOwnedByUser, getSession, sanitize, updateAnalysis } from "@/lib/milestone1-store";
+import {
+  AnalysisConcurrencyError,
+  analysisPersistenceUnavailableResponse,
+  clarifyAnalysisForOwner,
+  isAnalysisPersistenceError
+} from "@/lib/analysis-repository";
+import { getSession, sanitize } from "@/lib/milestone1-store";
 
 export async function POST(
   request: Request,
@@ -18,12 +23,6 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { id } = await context.params;
-  const analysis = getAnalysisOwnedByUser(id, sessionUser.id);
-  if (!analysis) {
-    return NextResponse.json({ error: "Analysis not found." }, { status: 404 });
-  }
-
   const body = (await request.json()) as Partial<AnalysisClarifyRequest>;
   const answers = Array.isArray(body.answers) ? body.answers.map((entry) => sanitize(entry)).filter(Boolean) : [];
 
@@ -31,39 +30,27 @@ export async function POST(
     return NextResponse.json({ error: "answers[] is required." }, { status: 400 });
   }
 
-  const nextState = analyzeWithClarifications(analysis, { answers });
-  const updated = updateAnalysis(id, nextState);
-  if (!updated) {
-    return NextResponse.json({ error: "Unable to update analysis." }, { status: 500 });
+  const { id } = await context.params;
+  let updated;
+  try {
+    updated = await clarifyAnalysisForOwner(
+      sessionUser.id,
+      id,
+      (current) => analyzeWithClarifications(current, { answers })
+    );
+  } catch (error) {
+    if (error instanceof AnalysisConcurrencyError) {
+      return NextResponse.json({ error: error.message }, { status: error.httpStatus });
+    }
+    if (isAnalysisPersistenceError(error)) {
+      return analysisPersistenceUnavailableResponse();
+    }
+    throw error;
   }
 
-  await upsertPersistedAnalysis({
-    id: updated.id,
-    clientId: updated.clientId,
-    ownerUserId: updated.createdByUserId,
-    goal: updated.goal,
-    hairType: updated.hairType,
-    density: updated.density,
-    porosity: updated.porosity,
-    phase: updated.phase,
-    clarificationRound: updated.clarificationRound,
-    confidenceScore: updated.confidenceScore,
-    uncertaintyReasons: updated.uncertaintyReasons,
-    followUpQuestions: updated.followUpQuestions,
-    recommendations: updated.recommendations,
-    safetyNotes: updated.safetyNotes,
-    faceShape: updated.faceShape,
-    headShape: updated.headShape,
-    hairLength: updated.hairLength,
-    hairTexture: updated.hairTexture,
-    hairCondition: updated.hairCondition,
-    growthPattern: updated.growthPattern,
-    targetShape: updated.targetShape,
-    technicalCutPlan: updated.technicalCutPlan ?? null,
-    clarificationAnswers: updated.clarificationAnswers,
-    createdAt: updated.createdAt,
-    updatedAt: updated.updatedAt
-  });
+  if (!updated) {
+    return NextResponse.json({ error: "Analysis not found." }, { status: 404 });
+  }
 
   const response: AnalysisResponse = {
     analysisId: updated.id,

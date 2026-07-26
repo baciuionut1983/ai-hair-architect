@@ -16,8 +16,12 @@ import type {
   PorosityLevel,
   TargetShape
 } from "@/lib/contracts";
-import { findPersistedAnalysisById } from "@/lib/analysis-persistence";
-import { getAnalysisOwnedByUser, getSession } from "@/lib/milestone1-store";
+import {
+  analysisPersistenceUnavailableResponse,
+  findAnalysisForOwner,
+  isAnalysisPersistenceError
+} from "@/lib/analysis-repository";
+import { getSession } from "@/lib/milestone1-store";
 
 export async function GET(
   _request: Request,
@@ -32,8 +36,16 @@ export async function GET(
   }
 
   const { id } = await context.params;
-  const persisted = await findPersistedAnalysisById(id, sessionUser.id);
-  const analysis = persisted ?? getAnalysisOwnedByUser(id, sessionUser.id);
+  let analysis;
+  try {
+    analysis = await findAnalysisForOwner(sessionUser.id, id);
+  } catch (error) {
+    if (isAnalysisPersistenceError(error)) {
+      return analysisPersistenceUnavailableResponse();
+    }
+    throw error;
+  }
+
   if (!analysis) {
     return NextResponse.json({ error: "Analysis not found." }, { status: 404 });
   }

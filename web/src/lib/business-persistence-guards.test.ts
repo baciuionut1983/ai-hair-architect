@@ -14,10 +14,11 @@ describe("business persistence guards", () => {
     mutableEnv.NODE_ENV = originalNodeEnv;
   });
 
-  it("registers durable Clients and Consultations while leaving Appointments memory-only", () => {
+  it("registers durable Clients, Consultations and Analyses while leaving Appointments memory-only", () => {
     expect(Object.keys(BUSINESS_PERSISTENCE_DOMAIN_REGISTRY)).toEqual([
       "clients",
       "consultations",
+      "analyses",
       "appointments",
     ]);
 
@@ -27,6 +28,11 @@ describe("business persistence guards", () => {
       productionReady: true,
     });
     expect(BUSINESS_PERSISTENCE_DOMAIN_REGISTRY.consultations).toEqual({
+      persistenceState: "durable",
+      essential: true,
+      productionReady: true,
+    });
+    expect(BUSINESS_PERSISTENCE_DOMAIN_REGISTRY.analyses).toEqual({
       persistenceState: "durable",
       essential: true,
       productionReady: true,
@@ -64,6 +70,17 @@ describe("business persistence guards", () => {
       knownDomain: true,
       persistenceState: "durable",
       blocked: false,
+      availability: "available",
+      productionReady: true,
+    });
+  });
+
+  it("allows durable Analyses in production", () => {
+    expect(evaluateBusinessPersistence("analyses", "production")).toMatchObject({
+      knownDomain: true,
+      persistenceState: "durable",
+      blocked: false,
+      guardEnforcement: "active",
       availability: "available",
       productionReady: true,
     });

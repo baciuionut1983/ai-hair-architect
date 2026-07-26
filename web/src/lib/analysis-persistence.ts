@@ -69,7 +69,7 @@ export async function findPersistedAnalysisById(
   }
 }
 
-function toCreateData(snapshot: PersistedAnalysisSnapshot): Prisma.AnalysisCreateInput {
+function toCreateData(snapshot: PersistedAnalysisSnapshot): Prisma.AnalysisUncheckedCreateInput {
   return {
     id: snapshot.id,
     clientId: snapshot.clientId,
@@ -101,7 +101,7 @@ function toCreateData(snapshot: PersistedAnalysisSnapshot): Prisma.AnalysisCreat
   };
 }
 
-function toUpdateData(snapshot: PersistedAnalysisSnapshot): Prisma.AnalysisUpdateInput {
+function toUpdateData(snapshot: PersistedAnalysisSnapshot): Prisma.AnalysisUncheckedUpdateInput {
   return {
     clientId: snapshot.clientId,
     ownerUserId: snapshot.ownerUserId,
