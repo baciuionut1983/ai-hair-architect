@@ -4,19 +4,12 @@ import type {
   AcademyCategory,
   AcademyLesson,
   AnalysisGoal,
-  AnalysisPhase,
   AnalyticsSnapshot,
   AppointmentRecord,
   BackupSnapshotRecord,
   AuthSessionResponse,
   ClientPhotoRecord,
-  FaceShape,
   FormulaRecord,
-  GrowthPattern,
-  HairCondition,
-  HairLength,
-  HairTexture,
-  HeadShape,
   Locale,
   NotificationRecord,
   OpsHealthSnapshot,
@@ -31,8 +24,6 @@ import type {
   SubscriptionRecord,
   SubscriptionStatus,
   SupplierRecord,
-  TargetShape,
-  TechnicalCutPlan,
   TimelineEntry,
   TreatmentRecord,
   UserRole,
@@ -52,7 +43,6 @@ interface UserRecord {
 interface Store {
   users: UserRecord[];
   sessions: Map<string, string>;
-  analyses: AnalysisRecord[];
   photos: ClientPhotoRecord[];
   formulas: FormulaRecord[];
   treatments: TreatmentRecord[];
@@ -104,34 +94,6 @@ interface AuditEventRecord {
   metadata: Record<string, unknown>;
 }
 
-export interface AnalysisRecord {
-  id: string;
-  clientId: string;
-  createdByUserId: string;
-  goal: AnalysisGoal;
-  hairType: "fine" | "medium" | "coarse";
-  density: "low" | "medium" | "high";
-  porosity: "low" | "medium" | "high";
-  phase: AnalysisPhase;
-  clarificationRound: number;
-  confidenceScore: number;
-  uncertaintyReasons: string[];
-  followUpQuestions: string[];
-  recommendations: string[];
-  safetyNotes: string[];
-  clarificationAnswers: string[];
-  faceShape?: FaceShape;
-  headShape?: HeadShape;
-  hairLength?: HairLength;
-  hairTexture?: HairTexture;
-  hairCondition?: HairCondition;
-  growthPattern?: GrowthPattern;
-  targetShape?: TargetShape;
-  technicalCutPlan?: TechnicalCutPlan;
-  createdAt: string;
-  updatedAt: string;
-}
-
 const globalKey = "__aiHairArchitectMilestone1Store";
 const globalRef = globalThis as typeof globalThis & { [globalKey]?: Store };
 
@@ -139,7 +101,6 @@ function createStore(): Store {
   return {
     users: [],
     sessions: new Map<string, string>(),
-    analyses: [],
     photos: [],
     formulas: [],
     treatments: [],
@@ -163,10 +124,6 @@ function createStore(): Store {
 }
 
 export const store = globalRef[globalKey] ?? (globalRef[globalKey] = createStore());
-
-if (!store.analyses) {
-  store.analyses = [];
-}
 
 if (!store.photos) {
   store.photos = [];
@@ -990,42 +947,6 @@ export function createUser(input: {
 
   store.users.push(user);
   return user;
-}
-
-export function createAnalysis(input: Omit<AnalysisRecord, "id" | "createdAt" | "updatedAt">): AnalysisRecord {
-  const now = new Date().toISOString();
-  const analysis: AnalysisRecord = {
-    id: randomUUID(),
-    ...input,
-    createdAt: now,
-    updatedAt: now
-  };
-
-  store.analyses.push(analysis);
-  return analysis;
-}
-
-export function getAnalysisById(analysisId: string): AnalysisRecord | null {
-  return store.analyses.find((entry) => entry.id === analysisId) ?? null;
-}
-
-export function updateAnalysis(analysisId: string, patch: Partial<AnalysisRecord>): AnalysisRecord | null {
-  const analysis = getAnalysisById(analysisId);
-  if (!analysis) {
-    return null;
-  }
-
-  Object.assign(analysis, patch, { updatedAt: new Date().toISOString() });
-  return analysis;
-}
-
-export function getAnalysisOwnedByUser(analysisId: string, userId: string): AnalysisRecord | null {
-  const analysis = getAnalysisById(analysisId);
-  if (!analysis || analysis.createdByUserId !== userId) {
-    return null;
-  }
-
-  return analysis;
 }
 
 export function createClientPhoto(input: {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { analyzeInitial } from "./analysis-engine";
-import { createAnalysis, createUser, getClientTimelineByUser, getSession } from "./milestone1-store";
+import { createUser, getClientTimelineByUser, getSession } from "./milestone1-store";
 
 describe("milestone8 e2e real domain flow", () => {
   it("creates user and client, generates technical analysis, and surfaces consultation timeline", () => {
@@ -31,35 +31,10 @@ describe("milestone8 e2e real domain flow", () => {
       targetShape: "face_framing_cascade"
     });
 
-    const analysis = createAnalysis({
-      clientId,
-      createdByUserId: user.id,
-      goal: seed.goal,
-      hairType: seed.hairType,
-      density: seed.density,
-      porosity: seed.porosity,
-      faceShape: seed.faceShape,
-      headShape: seed.headShape,
-      hairLength: seed.hairLength,
-      hairTexture: seed.hairTexture,
-      hairCondition: seed.hairCondition,
-      growthPattern: seed.growthPattern,
-      targetShape: seed.targetShape,
-      phase: seed.phase,
-      clarificationRound: seed.clarificationRound,
-      confidenceScore: seed.confidenceScore,
-      uncertaintyReasons: seed.uncertaintyReasons,
-      followUpQuestions: seed.followUpQuestions,
-      recommendations: seed.recommendations,
-      safetyNotes: seed.safetyNotes,
-      technicalCutPlan: seed.technicalCutPlan,
-      clarificationAnswers: []
-    });
-
-    expect(analysis.technicalCutPlan).toBeDefined();
-    expect(analysis.technicalCutPlan?.cuttingSteps.length).toBeGreaterThan(0);
-    expect(analysis.technicalCutPlan?.structuralTechnique).toBe("precision_layering");
-    expect(analysis.technicalCutPlan?.texturizingTechnique).toBeUndefined();
+    expect(seed.technicalCutPlan).toBeDefined();
+    expect(seed.technicalCutPlan?.cuttingSteps.length).toBeGreaterThan(0);
+    expect(seed.technicalCutPlan?.structuralTechnique).toBe("precision_layering");
+    expect(seed.technicalCutPlan?.texturizingTechnique).toBeUndefined();
 
     const timeline = getClientTimelineByUser(clientId, user.id);
     expect(Array.isArray(timeline)).toBe(true);

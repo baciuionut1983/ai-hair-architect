@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { analyzeInitial, analyzeWithClarifications } from "./analysis-engine";
-import { createAnalysis, getAnalysisById, updateAnalysis } from "./milestone1-store";
 
 describe("milestone8 integration", () => {
   it("persists technical plan in analysis lifecycle", () => {
@@ -19,30 +18,15 @@ describe("milestone8 integration", () => {
       targetShape: "graduated_bob"
     });
 
-    const record = createAnalysis({
+    const record = {
+      id: "m8-analysis-1",
       clientId: "m8-client-1",
       createdByUserId: "m8-user-1",
-      goal: initial.goal,
-      hairType: initial.hairType,
-      density: initial.density,
-      porosity: initial.porosity,
-      faceShape: initial.faceShape,
-      headShape: initial.headShape,
-      hairLength: initial.hairLength,
-      hairTexture: initial.hairTexture,
-      hairCondition: initial.hairCondition,
-      growthPattern: initial.growthPattern,
-      targetShape: initial.targetShape,
-      phase: initial.phase,
-      clarificationRound: initial.clarificationRound,
-      confidenceScore: initial.confidenceScore,
-      uncertaintyReasons: initial.uncertaintyReasons,
-      followUpQuestions: initial.followUpQuestions,
-      recommendations: initial.recommendations,
-      safetyNotes: initial.safetyNotes,
-      technicalCutPlan: initial.technicalCutPlan,
-      clarificationAnswers: []
-    });
+      ...initial,
+      clarificationAnswers: [],
+      createdAt: "2026-07-26T10:00:00.000Z",
+      updatedAt: "2026-07-26T10:00:00.000Z"
+    };
 
     expect(record.technicalCutPlan).toBeDefined();
     expect(record.technicalCutPlan?.structuralTechnique).toBe("graduation");
@@ -57,11 +41,8 @@ describe("milestone8 integration", () => {
       { answers: ["No scalp sensitivity", "Hair is healthy"] }
     );
 
-    const updated = updateAnalysis(record.id, withAnswers);
-    expect(updated?.technicalCutPlan?.version).toBe("1.0.0-m8");
-    expect(updated?.technicalCutPlan?.structuralTechnique).toBe("graduation");
-
-    const loaded = getAnalysisById(record.id);
-    expect(loaded?.technicalCutPlan?.stylistExplanation.length).toBeGreaterThan(0);
+    expect(withAnswers.technicalCutPlan?.version).toBe("1.0.0-m8");
+    expect(withAnswers.technicalCutPlan?.structuralTechnique).toBe("graduation");
+    expect(withAnswers.technicalCutPlan?.stylistExplanation.length).toBeGreaterThan(0);
   });
 });
