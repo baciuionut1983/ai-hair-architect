@@ -4,10 +4,10 @@ import { randomUUID } from "crypto";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { BACKUP_CHECKSUM_ALGORITHM, BACKUP_V13_CANONICAL_VERSION, BACKUP_V13_SCHEMA_VERSION as LEGACY_SCHEMA_VERSION, BACKUP_V13_V2_SCHEMA_VERSION, computeArtifactChecksumHex } from "@/lib/backup-v13-artifact";
+import { BACKUP_CHECKSUM_ALGORITHM, BACKUP_V13_CANONICAL_VERSION, BACKUP_V13_SCHEMA_VERSION as LEGACY_SCHEMA_VERSION, BACKUP_V13_V2_SCHEMA_VERSION, computeArtifactChecksumHex, isBackupV13V3Artifact } from "@/lib/backup-v13-artifact";
 import { executeBackupRestoreForUser, __testUtils as restoreTestUtils } from "@/lib/backup-v13-restore-execution";
 import { getBackupRestorePreviewForUser } from "@/lib/backup-v13-restore-preview";
-import type { BackupRestoreRequest, BackupV13Artifact, BackupV13V1Artifact } from "@/lib/contracts";
+import type { BackupRestoreRequest, BackupV13Artifact, BackupV13V1Artifact, BackupV13V2Artifact } from "@/lib/contracts";
 import { createPersistentBackupSnapshot } from "@/lib/ops-persistence";
 import { prisma } from "@/lib/prisma";
 
@@ -230,6 +230,7 @@ suite("m13 backup restore execution integration", () => {
       expect(result.restoredCounts).toEqual({
         clients: 1,
         analyses: 1,
+        consultations: 0,
         imageAssets: 1,
         imageAnalyses: 1,
         imageAnalysisReviews: 1,
@@ -653,11 +654,11 @@ suite("m13 backup restore execution integration", () => {
           ownerUserId,
           label: "unsupported",
           snapshotJson: {
-            schemaVersion: "m13.v3",
+            schemaVersion: "m13.v4",
           },
           checksum: "legacy",
           checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
-          schemaVersion: "m13.v3",
+          schemaVersion: "m13.v4",
           createdByUserId: ownerUserId,
         },
       });
@@ -1086,6 +1087,7 @@ suite("m13 backup restore execution integration", () => {
         createdByUserId: ownerUserId,
         label: "legacy-client-safety",
       });
+      await downgradeBackupSnapshotToV2(safetyBackup.id);
 
       const result = await executeBackupRestoreForUser(ownerUserId, backupId, {
         previewFingerprint: preview.previewFingerprint,
@@ -1274,6 +1276,31 @@ async function persistArtifact(artifact: BackupV13Artifact): Promise<void> {
       checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
       schemaVersion: artifact.schemaVersion,
       createdByUserId: artifact.createdByUserId,
+    },
+  });
+}
+
+async function downgradeBackupSnapshotToV2(backupId: string): Promise<void> {
+  const row = await prisma.opsBackupSnapshot.findUniqueOrThrow({ where: { id: backupId } });
+  if (!isBackupV13V3Artifact(row.snapshotJson)) throw new Error("Expected generated v3 safety backup");
+  const { consultations: _consultationCount, ...counts } = row.snapshotJson.counts;
+  const { consultations: _consultationLimit, ...maxRowsPerSection } = row.snapshotJson.limits.maxRowsPerSection;
+  const { consultations: _consultations, ...sections } = row.snapshotJson.sections;
+  const artifact: BackupV13V2Artifact = {
+    ...row.snapshotJson,
+    schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
+    checksum: null,
+    counts,
+    limits: { ...row.snapshotJson.limits, maxRowsPerSection },
+    sections,
+  };
+  artifact.checksum = computeArtifactChecksumHex(artifact);
+  await prisma.opsBackupSnapshot.update({
+    where: { id: backupId },
+    data: {
+      snapshotJson: artifact,
+      checksum: artifact.checksum,
+      schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
     },
   });
 }

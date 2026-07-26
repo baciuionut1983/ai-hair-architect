@@ -20,15 +20,6 @@ describe("milestone6 analytics snapshot", () => {
 
     const clientId = `client-${Date.now()}`;
 
-    store.consultations.push({
-      id: `c-${Date.now()}`,
-      clientId,
-      analysisId: "analysis",
-      summary: "M6 consultation",
-      nextSteps: [],
-      createdAt: new Date().toISOString()
-    });
-
     createAppointment({
       ownerUserId: user.id,
       clientId,
@@ -42,7 +33,7 @@ describe("milestone6 analytics snapshot", () => {
     executeReminderJobsForUser(user.id, new Date().toISOString());
     updateSubscriptionForUser({ userId: user.id, plan: "pro", status: "active" });
 
-    const snapshot = getAnalyticsSnapshotForUser(user.id, [clientId]);
+    const snapshot = getAnalyticsSnapshotForUser(user.id, 1);
     expect(snapshot.consultationsCount).toBeGreaterThanOrEqual(1);
     expect(snapshot.appointmentsCount).toBeGreaterThanOrEqual(1);
     expect(snapshot.remindersSentCount).toBeGreaterThanOrEqual(1);

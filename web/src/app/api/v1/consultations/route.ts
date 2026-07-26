@@ -2,10 +2,17 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { guardBusinessPersistence } from "@/lib/business-persistence-guards";
-import { resolveOwnedClient } from "@/lib/client-repository";
 import type { ConsultationCreateRequest } from "@/lib/contracts";
-import { findPersistedAnalysisById } from "@/lib/analysis-persistence";
-import { getAnalysisOwnedByUser, getSession, store } from "@/lib/milestone1-store";
+import {
+  ConsultationDependencyError,
+  ConsultationValidationError,
+  consultationPersistenceUnavailableResponse,
+  createConsultationForOwner,
+  isConsultationPersistenceError,
+  normalizeConsultationNextSteps,
+  normalizeConsultationSummary,
+} from "@/lib/consultation-repository";
+import { getSession } from "@/lib/milestone1-store";
 
 export async function POST(request: Request) {
   const blockedResponse = guardBusinessPersistence("consultations", request);
@@ -21,41 +28,33 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const body = (await request.json()) as Partial<ConsultationCreateRequest>;
-
-  if (!body.clientId || !body.analysisId || !body.summary) {
+  let body: Partial<ConsultationCreateRequest>;
+  try {
+    body = (await request.json()) as Partial<ConsultationCreateRequest>;
+  } catch {
     return NextResponse.json({ error: "Invalid consultation payload." }, { status: 400 });
   }
 
-  const ownedClient = await resolveOwnedClient(sessionUser.id, body.clientId);
-  if (ownedClient instanceof Response) return ownedClient;
-  if (!ownedClient) {
-    return NextResponse.json({ error: "Client not found." }, { status: 404 });
+  if (typeof body.clientId !== "string" || !body.clientId || typeof body.analysisId !== "string" || !body.analysisId) {
+    return NextResponse.json({ error: "Invalid consultation payload." }, { status: 400 });
   }
 
-  const analysis =
-    getAnalysisOwnedByUser(body.analysisId, sessionUser.id) ??
-    (await findPersistedAnalysisById(body.analysisId, sessionUser.id));
-  if (!analysis || analysis.clientId !== ownedClient.id) {
-    return NextResponse.json({ error: "Analysis not found." }, { status: 404 });
+  try {
+    const consultation = await createConsultationForOwner(sessionUser.id, {
+      clientId: body.clientId,
+      analysisId: body.analysisId,
+      summary: normalizeConsultationSummary(body.summary),
+      nextSteps: normalizeConsultationNextSteps(body.nextSteps),
+    });
+    return NextResponse.json({ consultation }, { status: 201 });
+  } catch (error) {
+    if (error instanceof ConsultationValidationError) {
+      return NextResponse.json({ error: error.code, message: error.message }, { status: error.httpStatus });
+    }
+    if (error instanceof ConsultationDependencyError) {
+      return NextResponse.json({ error: error.message }, { status: error.httpStatus });
+    }
+    if (isConsultationPersistenceError(error)) return consultationPersistenceUnavailableResponse();
+    throw error;
   }
-
-  if (analysis.phase !== "ready") {
-    return NextResponse.json(
-      { error: "Analysis is not ready. Complete clarifying questions first." },
-      { status: 409 }
-    );
-  }
-
-  const record = {
-    id: crypto.randomUUID(),
-    clientId: ownedClient.id,
-    analysisId: analysis.id,
-    summary: body.summary,
-    nextSteps: Array.isArray(body.nextSteps) ? body.nextSteps : [],
-    createdAt: new Date().toISOString()
-  };
-
-  store.consultations.push(record);
-  return NextResponse.json({ consultation: record }, { status: 201 });
 }

@@ -6,6 +6,11 @@ import {
   isClientPersistenceError,
   listActiveClientIdsForOwner,
 } from "@/lib/client-repository";
+import {
+  consultationPersistenceUnavailableResponse,
+  countConsultationsForOwner,
+  isConsultationPersistenceError,
+} from "@/lib/consultation-repository";
 import { getAnalyticsSnapshotForUser, getSession } from "@/lib/milestone1-store";
 
 export async function GET() {
@@ -18,11 +23,12 @@ export async function GET() {
   }
 
   try {
-    const ownedClientIds = await listActiveClientIdsForOwner(sessionUser.id);
-    const snapshot = getAnalyticsSnapshotForUser(sessionUser.id, ownedClientIds);
+    await listActiveClientIdsForOwner(sessionUser.id);
+    const snapshot = getAnalyticsSnapshotForUser(sessionUser.id, await countConsultationsForOwner(sessionUser.id));
     return NextResponse.json({ snapshot }, { status: 200 });
   } catch (error) {
     if (isClientPersistenceError(error)) return clientPersistenceUnavailableResponse();
+    if (isConsultationPersistenceError(error)) return consultationPersistenceUnavailableResponse();
     throw error;
   }
 }

@@ -51,7 +51,6 @@ describe("M12 ops persistence integration", () => {
 
     store.users = store.users.filter((entry) => entry.id !== ownerUserId);
     store.users = store.users.filter((entry) => entry.id !== secondOwnerUserId);
-    store.consultations = store.consultations.filter((entry) => entry.clientId !== "client-m12-1");
     store.appointments = store.appointments.filter((entry) => entry.ownerUserId !== ownerUserId);
     store.appointments = store.appointments.filter((entry) => entry.ownerUserId !== secondOwnerUserId);
     store.notifications = store.notifications.filter((entry) => entry.ownerUserId !== ownerUserId);

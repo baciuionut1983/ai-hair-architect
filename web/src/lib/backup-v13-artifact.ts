@@ -6,6 +6,7 @@ import type {
   BackupV13Artifact,
   BackupV13V1Artifact,
   BackupV13V2Artifact,
+  BackupV13V3Artifact,
   BackupVerificationResult,
   BackupVerifyArtifactValidity,
   BackupVerifyChecksumStatus,
@@ -15,6 +16,7 @@ import type {
 
 export const BACKUP_V13_SCHEMA_VERSION = "m13.v1" as const;
 export const BACKUP_V13_V2_SCHEMA_VERSION = "m13.v2" as const;
+export const BACKUP_V13_V3_SCHEMA_VERSION = "m13.v3" as const;
 export const BACKUP_V13_CANONICAL_VERSION = "sorted-json-v1" as const;
 export const BACKUP_CHECKSUM_ALGORITHM = "sha256" as const;
 export const BACKUP_LEGACY_M12_SCHEMA_VERSION = "m12.v1" as const;
@@ -25,6 +27,7 @@ export const MAX_BACKUP_SECTION_BYTES = 2 * 1024 * 1024;
 export const MAX_ROWS_PER_SECTION = {
   clients: 2000,
   analyses: 10000,
+  consultations: 10000,
   imageAssets: 10000,
   imageAnalyses: 10000,
   imageAnalysisReviews: 20000,
@@ -83,6 +86,7 @@ export function computeCanonicalArtifactBytes(artifact: BackupV13Artifact): numb
 export function assertSectionRowLimits(counts: BackupV13Artifact["counts"]): void {
   assertLimit("clients", counts.clients, MAX_ROWS_PER_SECTION.clients);
   assertLimit("analyses", counts.analyses, MAX_ROWS_PER_SECTION.analyses);
+  if ("consultations" in counts) assertLimit("consultations", counts.consultations, MAX_ROWS_PER_SECTION.consultations);
   assertLimit("imageAssets", counts.imageAssets, MAX_ROWS_PER_SECTION.imageAssets);
   assertLimit("imageAnalyses", counts.imageAnalyses, MAX_ROWS_PER_SECTION.imageAnalyses);
   assertLimit("imageAnalysisReviews", counts.imageAnalysisReviews, MAX_ROWS_PER_SECTION.imageAnalysisReviews);
@@ -91,6 +95,9 @@ export function assertSectionRowLimits(counts: BackupV13Artifact["counts"]): voi
 export function assertSectionByteLimits(artifact: BackupV13Artifact): void {
   assertBytes("clients", computeCanonicalSectionBytes(artifact.sections.clients));
   assertBytes("analyses", computeCanonicalSectionBytes(artifact.sections.analyses));
+  if (artifact.schemaVersion === BACKUP_V13_V3_SCHEMA_VERSION) {
+    assertBytes("consultations", computeCanonicalSectionBytes(artifact.sections.consultations));
+  }
   assertBytes("imageAssets", computeCanonicalSectionBytes(artifact.sections.imageAssets));
   assertBytes("imageAnalyses", computeCanonicalSectionBytes(artifact.sections.imageAnalyses));
   assertBytes("imageAnalysisReviews", computeCanonicalSectionBytes(artifact.sections.imageAnalysisReviews));
@@ -140,7 +147,7 @@ export function parseSnapshotSchemaVersion(
 }
 
 export function isBackupV13Artifact(value: unknown): value is BackupV13Artifact {
-  return isBackupV13V1Artifact(value) || isBackupV13V2Artifact(value);
+  return isBackupV13V1Artifact(value) || isBackupV13V2Artifact(value) || isBackupV13V3Artifact(value);
 }
 
 export function isBackupV13V1Artifact(value: unknown): value is BackupV13V1Artifact {
@@ -206,6 +213,40 @@ export function isBackupV13V2Artifact(value: unknown): value is BackupV13V2Artif
     Array.isArray(sections.imageAnalyses) &&
     Array.isArray(sections.imageAnalysisReviews)
   );
+}
+
+export function isBackupV13V3Artifact(value: unknown): value is BackupV13V3Artifact {
+  const obj = asRecord(value);
+  if (obj.schemaVersion !== BACKUP_V13_V3_SCHEMA_VERSION ||
+    obj.canonicalSerializationVersion !== BACKUP_V13_CANONICAL_VERSION ||
+    obj.checksumAlgorithm !== BACKUP_CHECKSUM_ALGORITHM ||
+    typeof obj.backupId !== "string" || typeof obj.ownerUserId !== "string" || typeof obj.createdByUserId !== "string" ||
+    !obj.sections || typeof obj.sections !== "object") {
+    return false;
+  }
+
+  const sections = obj.sections as Record<string, unknown>;
+  return Array.isArray(sections.clients) && sections.clients.every(isV2ClientRow) &&
+    Array.isArray(sections.analyses) &&
+    Array.isArray(sections.consultations) && sections.consultations.every(isV3ConsultationRow) &&
+    Array.isArray(sections.imageAssets) && Array.isArray(sections.imageAnalyses) &&
+    Array.isArray(sections.imageAnalysisReviews);
+}
+
+function isV3ConsultationRow(value: unknown): boolean {
+  const row = asRecord(value);
+  return typeof row.id === "string" && typeof row.ownerUserId === "string" &&
+    typeof row.clientId === "string" && typeof row.analysisId === "string" &&
+    typeof row.summary === "string" && Array.from(row.summary).length > 0 && Array.from(row.summary).length <= 4000 &&
+    typeof row.createdAt === "string" && !Number.isNaN(Date.parse(row.createdAt)) &&
+    isNormalizedNextSteps(row.nextSteps);
+}
+
+function isNormalizedNextSteps(value: unknown): value is string[] {
+  if (!Array.isArray(value) || value.length > 50 || value.some((entry) => typeof entry !== "string")) return false;
+  const values = value as string[];
+  if (values.some((entry) => !entry || entry !== entry.trim() || Array.from(entry).length > 500)) return false;
+  return utf8ByteLength(canonicalizeSortedJsonV1(values)) <= 32 * 1024;
 }
 
 function isV2ClientRow(value: unknown): boolean {

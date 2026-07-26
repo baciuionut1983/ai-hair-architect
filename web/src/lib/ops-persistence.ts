@@ -6,7 +6,7 @@ import type {
   AuthSessionResponse,
   BackupSnapshotRecord,
   BackupV13Artifact,
-  BackupV13V2Artifact,
+  BackupV13V3Artifact,
   BackupVerificationResult,
   PushQueueRecord,
   RetentionRunResult,
@@ -21,6 +21,7 @@ import {
   BACKUP_V13_CANONICAL_VERSION,
   BACKUP_V13_SCHEMA_VERSION,
   BACKUP_V13_V2_SCHEMA_VERSION,
+  BACKUP_V13_V3_SCHEMA_VERSION,
   BackupArtifactError,
   buildVerificationResult,
   computeArtifactChecksumHex,
@@ -308,12 +309,14 @@ export async function createPersistentBackupSnapshot(input: {
       const [
         clientsCount,
         analysesCount,
+        consultationsCount,
         imageAssetsCount,
         imageAnalysesCount,
         imageAnalysisReviewsCount,
       ] = await Promise.all([
         tx.client.count({ where: { ownerUserId: input.ownerUserId } }),
         tx.analysis.count({ where: { ownerUserId: input.ownerUserId } }),
+        tx.consultation.count({ where: { ownerUserId: input.ownerUserId } }),
         tx.imageAsset.count({ where: { ownerUserId: input.ownerUserId } }),
         tx.imageAnalysis.count({ where: { asset: { ownerUserId: input.ownerUserId } } }),
         tx.imageAnalysisReview.count({ where: { analysis: { asset: { ownerUserId: input.ownerUserId } } } }),
@@ -322,13 +325,14 @@ export async function createPersistentBackupSnapshot(input: {
       const counts = {
         clients: clientsCount,
         analyses: analysesCount,
+        consultations: consultationsCount,
         imageAssets: imageAssetsCount,
         imageAnalyses: imageAnalysesCount,
         imageAnalysisReviews: imageAnalysisReviewsCount,
       };
       assertSectionRowLimits(counts);
 
-      const [clients, analyses, imageAssets, imageAnalyses, imageAnalysisReviews] = await Promise.all([
+      const [clients, analyses, consultations, imageAssets, imageAnalyses, imageAnalysisReviews] = await Promise.all([
         tx.client.findMany({
           where: { ownerUserId: input.ownerUserId },
           select: {
@@ -376,6 +380,19 @@ export async function createPersistentBackupSnapshot(input: {
             m8FinalizedAt: true,
             createdAt: true,
             updatedAt: true,
+          },
+          orderBy: { id: "asc" },
+        }),
+        tx.consultation.findMany({
+          where: { ownerUserId: input.ownerUserId },
+          select: {
+            id: true,
+            ownerUserId: true,
+            clientId: true,
+            analysisId: true,
+            summary: true,
+            nextSteps: true,
+            createdAt: true,
           },
           orderBy: { id: "asc" },
         }),
@@ -463,6 +480,15 @@ export async function createPersistentBackupSnapshot(input: {
             createdAt: row.createdAt.toISOString(),
             updatedAt: row.updatedAt.toISOString(),
           })),
+          consultations: consultations.map((row) => ({
+            id: row.id,
+            ownerUserId: row.ownerUserId,
+            clientId: row.clientId,
+            analysisId: row.analysisId,
+            summary: row.summary,
+            nextSteps: row.nextSteps as string[],
+            createdAt: row.createdAt.toISOString(),
+          })),
           imageAssets: imageAssets.map((row) => ({
             ...row,
             uploadedAt: row.uploadedAt.toISOString(),
@@ -495,14 +521,14 @@ export async function createPersistentBackupSnapshot(input: {
 
   const summarySnapshot = {
     clientsCount: sectionData.counts.clients,
-    consultationsCount: 0,
+    consultationsCount: sectionData.counts.consultations,
     appointmentsCount: 0,
     notificationsCount: 0,
     workspacesCount: 0,
   };
 
-  const artifact: BackupV13V2Artifact = {
-    schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
+  const artifact: BackupV13V3Artifact = {
+    schemaVersion: BACKUP_V13_V3_SCHEMA_VERSION,
     canonicalSerializationVersion: BACKUP_V13_CANONICAL_VERSION,
     checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
     checksum: null,
@@ -535,7 +561,7 @@ export async function createPersistentBackupSnapshot(input: {
       snapshotJson: artifact as unknown as Prisma.InputJsonValue,
       checksum,
       checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
-      schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
+      schemaVersion: BACKUP_V13_V3_SCHEMA_VERSION,
     },
   });
 
@@ -548,7 +574,7 @@ export async function createPersistentBackupSnapshot(input: {
     metadata: {
       checksum,
       checksumAlgorithm: BACKUP_CHECKSUM_ALGORITHM,
-      schemaVersion: BACKUP_V13_V2_SCHEMA_VERSION,
+      schemaVersion: BACKUP_V13_V3_SCHEMA_VERSION,
       label: input.label,
     },
   });
@@ -599,7 +625,8 @@ export async function verifyBackupSnapshotForUser(userId: string, backupId: stri
     });
   }
 
-  if (parsedSchemaVersion !== BACKUP_V13_SCHEMA_VERSION && parsedSchemaVersion !== BACKUP_V13_V2_SCHEMA_VERSION) {
+  if (parsedSchemaVersion !== BACKUP_V13_SCHEMA_VERSION && parsedSchemaVersion !== BACKUP_V13_V2_SCHEMA_VERSION &&
+    parsedSchemaVersion !== BACKUP_V13_V3_SCHEMA_VERSION) {
     throw new BackupArtifactError(
       "BACKUP_SCHEMA_UNSUPPORTED",
       422,

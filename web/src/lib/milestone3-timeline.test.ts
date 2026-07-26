@@ -6,12 +6,11 @@ import {
   createFormulaRecord,
   createTreatmentRecord,
   createUser,
-  getClientTimelineByUser,
-  store
+  getClientTimelineByUser
 } from "./milestone1-store";
 
 describe("milestone3 timeline", () => {
-  it("includes photos, formulas, treatments, consultations and appointments", () => {
+  it("includes memory-backed photos, formulas, treatments and appointments", () => {
     const user = createUser({
       email: `timeline-${Date.now()}@example.com`,
       password: "password123",
@@ -39,16 +38,6 @@ describe("milestone3 timeline", () => {
       treatmentDetails: "15 minute protocol"
     });
 
-    const consultationCreatedAt = new Date(Date.now() + 2000).toISOString();
-    store.consultations.push({
-      id: `consult-${Date.now()}`,
-      clientId,
-      analysisId: "analysis-1",
-      summary: "Consultation summary",
-      nextSteps: ["Step 1"],
-      createdAt: consultationCreatedAt
-    });
-
     createAppointment({
       ownerUserId: user.id,
       clientId,
@@ -65,7 +54,6 @@ describe("milestone3 timeline", () => {
     expect(kinds.has("photo")).toBe(true);
     expect(kinds.has("formula")).toBe(true);
     expect(kinds.has("treatment")).toBe(true);
-    expect(kinds.has("consultation")).toBe(true);
     expect(kinds.has("appointment")).toBe(true);
 
     for (let index = 1; index < timeline.length; index += 1) {

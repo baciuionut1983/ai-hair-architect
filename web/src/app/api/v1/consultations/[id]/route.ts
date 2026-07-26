@@ -1,8 +1,12 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
-import { resolveOwnedClient } from "@/lib/client-repository";
-import { getConsultationByIdForUser, getSession } from "@/lib/milestone1-store";
+import {
+  consultationPersistenceUnavailableResponse,
+  findConsultationForOwner,
+  isConsultationPersistenceError,
+} from "@/lib/consultation-repository";
+import { getSession } from "@/lib/milestone1-store";
 
 export async function GET(
   _request: Request,
@@ -17,15 +21,14 @@ export async function GET(
   }
 
   const { id } = await context.params;
-  const consultation = getConsultationByIdForUser(id, sessionUser.id);
-
-  if (!consultation) {
-    return NextResponse.json({ error: "Consultation not found." }, { status: 404 });
+  try {
+    const consultation = await findConsultationForOwner(sessionUser.id, id);
+    if (!consultation) {
+      return NextResponse.json({ error: "Consultation not found." }, { status: 404 });
+    }
+    return NextResponse.json({ consultation }, { status: 200 });
+  } catch (error) {
+    if (isConsultationPersistenceError(error)) return consultationPersistenceUnavailableResponse();
+    throw error;
   }
-
-  const client = await resolveOwnedClient(sessionUser.id, consultation.clientId);
-  if (client instanceof Response) return client;
-  if (!client) return NextResponse.json({ error: "Consultation not found." }, { status: 404 });
-
-  return NextResponse.json({ consultation }, { status: 200 });
 }

@@ -73,15 +73,16 @@ enum OpsBackupRestoreRetentionRunStatus {
 }
 
 model User {
-  id           String            @id @default(uuid())
-  email        String            @unique
-  passwordHash String
-  role         String
-  locale       String
-  createdAt    DateTime          @default(now())
-  sessions     Session[]
-  clients      Client[]
-  webhooks     WebhookEndpoint[]
+  id            String            @id @default(uuid())
+  email         String            @unique
+  passwordHash  String
+  role          String
+  locale        String
+  createdAt     DateTime          @default(now())
+  sessions      Session[]
+  clients       Client[]
+  consultations Consultation[]
+  webhooks      WebhookEndpoint[]
 }
 
 model Session {
@@ -96,17 +97,19 @@ model Session {
 }
 
 model Client {
-  id          String    @id @default(uuid())
-  ownerUserId String
-  fullName    String    @db.VarChar(200)
-  email       String?   @db.VarChar(320)
-  phone       String?   @db.VarChar(40)
-  notes       String?   @db.VarChar(4000)
-  deletedAt   DateTime? @db.Timestamp(6)
-  createdAt   DateTime  @default(now()) @db.Timestamp(6)
-  updatedAt   DateTime  @updatedAt @db.Timestamp(6)
-  owner       User      @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  id            String         @id @default(uuid())
+  ownerUserId   String
+  fullName      String         @db.VarChar(200)
+  email         String?        @db.VarChar(320)
+  phone         String?        @db.VarChar(40)
+  notes         String?        @db.VarChar(4000)
+  deletedAt     DateTime?      @db.Timestamp(6)
+  createdAt     DateTime       @default(now()) @db.Timestamp(6)
+  updatedAt     DateTime       @updatedAt @db.Timestamp(6)
+  owner         User           @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  consultations Consultation[]
 
+  @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
 }
 
@@ -142,12 +145,31 @@ model Analysis {
   updatedAt            DateTime       @updatedAt
   imageAsset           ImageAsset?    @relation(fields: [imageAssetId], references: [id], onDelete: SetNull)
   imageAnalysis        ImageAnalysis? @relation(fields: [imageAnalysisId], references: [id], onDelete: SetNull)
+  consultations        Consultation[]
 
+  @@unique([id, ownerUserId, clientId])
   @@index([ownerUserId])
   @@index([clientId])
   @@index([ownerUserId, clientId])
   @@index([imageAssetId])
   @@index([imageAnalysisId])
+}
+
+model Consultation {
+  id          String   @id @default(uuid())
+  ownerUserId String
+  clientId    String
+  analysisId  String
+  summary     String   @db.VarChar(4000)
+  nextSteps   Json     @default("[]")
+  createdAt   DateTime @default(now()) @db.Timestamp(6)
+  owner       User     @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  client      Client   @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict)
+  analysis    Analysis @relation(fields: [analysisId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict)
+
+  @@index([ownerUserId, createdAt, id])
+  @@index([ownerUserId, clientId, createdAt, id])
+  @@index([analysisId, ownerUserId, clientId])
 }
 
 model ImageAsset {

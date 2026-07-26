@@ -106,9 +106,29 @@ describe("backup-v13-restore-execution", () => {
     });
   });
 
+  it("uses the v2 Client mapper for m13.v3", () => {
+    const artifact = createArtifact("m13.v2", {
+      id: "client-1",
+      fullName: "V3 Client",
+      email: null,
+      phone: null,
+      notes: null,
+      deletedAt: null,
+      ownerUserId: "owner-1",
+      createdAt: "2026-07-25T00:00:00.000Z",
+      updatedAt: "2026-07-25T00:00:00.000Z",
+    }) as unknown as { schemaVersion: string };
+    artifact.schemaVersion = "m13.v3";
+
+    expect(__testUtils.mapClientRowsForRestore(artifact as BackupV13Artifact)[0]).toMatchObject({
+      fullName: "V3 Client",
+      email: null,
+    });
+  });
+
   it("rejects an unknown schemaVersion fail-closed", () => {
     const artifact = createArtifact("m13.v1", {}) as unknown as { schemaVersion: string };
-    artifact.schemaVersion = "m13.v3";
+    artifact.schemaVersion = "m13.v4";
 
     expect(() => __testUtils.mapClientRowsForRestore(artifact as BackupV13Artifact)).toThrow(
       expect.objectContaining<Partial<BackupArtifactError>>({

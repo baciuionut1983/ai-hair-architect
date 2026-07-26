@@ -735,6 +735,7 @@ export type BackupRestorePreviewExternalReferenceStatus =
 export type BackupRestorePreviewSection =
   | "clients"
   | "analyses"
+  | "consultations"
   | "imageAssets"
   | "imageAnalyses"
   | "imageAnalysisReviews";
@@ -750,6 +751,7 @@ export type BackupRestorePreviewIssueCode =
   | "BACKUP_OLDER_THAN_CURRENT_STATE"
   | "CURRENT_STATE_HAS_EXTRA_ROWS"
   | "LEGACY_CLIENT_FIELDS_OMITTED"
+  | "LEGACY_CONSULTATIONS_OMITTED"
   | "CHECKSUM_MISMATCH"
   | "UNSUPPORTED_SCHEMA"
   | "ARTIFACT_INVALID";
@@ -789,6 +791,7 @@ export interface BackupRestorePreviewResponse {
   impact: {
     clients: BackupRestorePreviewImpactSection;
     analyses: BackupRestorePreviewImpactSection;
+    consultations?: BackupRestorePreviewImpactSection;
     imageAssets: BackupRestorePreviewImpactSection;
     imageAnalyses: BackupRestorePreviewImpactSection;
     imageAnalysisReviews: BackupRestorePreviewImpactSection;
@@ -808,12 +811,15 @@ export interface BackupRestoreRequest {
   previewGeneratedAt?: string;
   acknowledgeLegacyClientDataLoss?: true;
   safetyBackupId?: string;
+  consultationSafetyBackupId?: string;
+  acknowledgeLegacyConsultationDataLoss?: true;
 }
 
 export type BackupRestoreWarningCode =
   | "BACKUP_OLDER_THAN_CURRENT_STATE"
   | "CURRENT_STATE_HAS_EXTRA_ROWS"
-  | "LEGACY_CLIENT_FIELDS_OMITTED";
+  | "LEGACY_CLIENT_FIELDS_OMITTED"
+  | "LEGACY_CONSULTATIONS_OMITTED";
 
 export interface BackupRestoreWarning {
   code: BackupRestoreWarningCode;
@@ -823,6 +829,7 @@ export interface BackupRestoreWarning {
 export interface BackupRestoreCounts {
   clients: number;
   analyses: number;
+  consultations?: number;
   imageAssets: number;
   imageAnalyses: number;
   imageAnalysisReviews: number;
@@ -1095,6 +1102,16 @@ export interface BackupV13ImageAnalysisReviewSectionRow {
   updatedAt: string;
 }
 
+export interface BackupV13V3ConsultationSectionRow {
+  id: string;
+  ownerUserId: string;
+  clientId: string;
+  analysisId: string;
+  summary: string;
+  nextSteps: string[];
+  createdAt: string;
+}
+
 export interface BackupV13V1Artifact {
   schemaVersion: "m13.v1";
   canonicalSerializationVersion: "sorted-json-v1";
@@ -1144,7 +1161,18 @@ export interface BackupV13V2Artifact extends Omit<BackupV13V1Artifact, "schemaVe
   };
 }
 
-export type BackupV13Artifact = BackupV13V1Artifact | BackupV13V2Artifact;
+export interface BackupV13V3Artifact extends Omit<BackupV13V2Artifact, "schemaVersion" | "counts" | "limits" | "sections"> {
+  schemaVersion: "m13.v3";
+  counts: BackupV13V2Artifact["counts"] & { consultations: number };
+  limits: Omit<BackupV13V2Artifact["limits"], "maxRowsPerSection"> & {
+    maxRowsPerSection: BackupV13V2Artifact["limits"]["maxRowsPerSection"] & { consultations: number };
+  };
+  sections: BackupV13V2Artifact["sections"] & {
+    consultations: BackupV13V3ConsultationSectionRow[];
+  };
+}
+
+export type BackupV13Artifact = BackupV13V1Artifact | BackupV13V2Artifact | BackupV13V3Artifact;
 
 export interface BackupVerificationResult {
   backupId: string;

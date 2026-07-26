@@ -2,11 +2,15 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { resolveOwnedClient } from "@/lib/client-repository";
-import type { ClientTimelineResponse } from "@/lib/contracts";
+import {
+  consultationPersistenceUnavailableResponse,
+  isConsultationPersistenceError,
+  listConsultationsForClient,
+} from "@/lib/consultation-repository";
+import type { ClientTimelineResponse, TimelineEntry } from "@/lib/contracts";
 import {
   getAppointmentsForUser,
   getClientTimelineByUser,
-  getConsultationsForClientByUser,
   getFormulasForClientByUser,
   getPhotosForClientByUser,
   getSession,
@@ -26,20 +30,35 @@ export async function GET(
   }
 
   const { id } = await context.params;
-  const client = await resolveOwnedClient(sessionUser.id, id);
-  if (client instanceof Response) return client;
-  if (!client) {
-    return NextResponse.json({ error: "Client not found." }, { status: 404 });
+  try {
+    const client = await resolveOwnedClient(sessionUser.id, id);
+    if (client instanceof Response) return client;
+    if (!client) {
+      return NextResponse.json({ error: "Client not found." }, { status: 404 });
+    }
+
+    const consultations = await listConsultationsForClient(sessionUser.id, id);
+    const consultationTimeline = consultations.map<TimelineEntry>((item) => ({
+      id: item.id,
+      kind: "consultation",
+      createdAt: item.createdAt,
+      title: "Consultation",
+      details: item.summary,
+    }));
+    const response: ClientTimelineResponse = {
+      photos: getPhotosForClientByUser(id, sessionUser.id),
+      formulas: getFormulasForClientByUser(id, sessionUser.id),
+      treatments: getTreatmentsForClientByUser(id, sessionUser.id),
+      consultations,
+      appointments: getAppointmentsForUser(sessionUser.id, id),
+      timeline: [...getClientTimelineByUser(id, sessionUser.id), ...consultationTimeline].sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt)
+      ),
+    };
+
+    return NextResponse.json(response, { status: 200 });
+  } catch (error) {
+    if (isConsultationPersistenceError(error)) return consultationPersistenceUnavailableResponse();
+    throw error;
   }
-
-  const response: ClientTimelineResponse = {
-    photos: getPhotosForClientByUser(id, sessionUser.id),
-    formulas: getFormulasForClientByUser(id, sessionUser.id),
-    treatments: getTreatmentsForClientByUser(id, sessionUser.id),
-    consultations: getConsultationsForClientByUser(id, sessionUser.id),
-    appointments: getAppointmentsForUser(sessionUser.id, id),
-    timeline: getClientTimelineByUser(id, sessionUser.id)
-  };
-
-  return NextResponse.json(response, { status: 200 });
 }

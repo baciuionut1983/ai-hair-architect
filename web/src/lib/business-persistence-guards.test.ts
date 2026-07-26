@@ -14,7 +14,7 @@ describe("business persistence guards", () => {
     mutableEnv.NODE_ENV = originalNodeEnv;
   });
 
-  it("registers durable Clients and leaves dependent pilot domains memory-only", () => {
+  it("registers durable Clients and Consultations while leaving Appointments memory-only", () => {
     expect(Object.keys(BUSINESS_PERSISTENCE_DOMAIN_REGISTRY)).toEqual([
       "clients",
       "consultations",
@@ -26,11 +26,15 @@ describe("business persistence guards", () => {
       essential: true,
       productionReady: true,
     });
-    expect(BUSINESS_PERSISTENCE_DOMAIN_REGISTRY.consultations.persistenceState).toBe("memory_only");
+    expect(BUSINESS_PERSISTENCE_DOMAIN_REGISTRY.consultations).toEqual({
+      persistenceState: "durable",
+      essential: true,
+      productionReady: true,
+    });
     expect(BUSINESS_PERSISTENCE_DOMAIN_REGISTRY.appointments.persistenceState).toBe("memory_only");
   });
 
-  it.each(["consultations", "appointments"])(
+  it.each(["appointments"])(
     "blocks %s in production",
     (domain) => {
       expect(evaluateBusinessPersistence(domain, "production")).toMatchObject({
@@ -50,6 +54,16 @@ describe("business persistence guards", () => {
       persistenceState: "durable",
       blocked: false,
       guardEnforcement: "active",
+      availability: "available",
+      productionReady: true,
+    });
+  });
+
+  it("allows durable Consultations in production", () => {
+    expect(evaluateBusinessPersistence("consultations", "production")).toMatchObject({
+      knownDomain: true,
+      persistenceState: "durable",
+      blocked: false,
       availability: "available",
       productionReady: true,
     });
@@ -80,7 +94,7 @@ describe("business persistence guards", () => {
     mutableEnv.NODE_ENV = "production";
 
     const response = guardBusinessPersistence(
-      "consultations",
+      "appointments",
       new Request("http://localhost/api/v1/consultations", {
         headers: { "x-request-id": "req-phase-2a" },
       }),
@@ -94,7 +108,7 @@ describe("business persistence guards", () => {
     await expect(response?.json()).resolves.toEqual({
       error: "PRODUCTION_POLICY_BUSINESS_PERSISTENCE_NOT_READY",
       message: "Business persistence is unavailable in production for this domain.",
-      domain: "consultations",
+      domain: "appointments",
       requestId: "req-phase-2a",
     });
   });
@@ -103,7 +117,7 @@ describe("business persistence guards", () => {
     mutableEnv.NODE_ENV = "production";
 
     const response = guardBusinessPersistence(
-      "consultations",
+      "appointments",
       new Request("http://localhost/api/v1/consultations"),
     );
     const payload = await response?.json();

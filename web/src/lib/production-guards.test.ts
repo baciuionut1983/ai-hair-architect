@@ -53,10 +53,10 @@ describe("production guards", () => {
       },
       {
         domain: "consultations",
-        persistenceState: "memory_only",
+        persistenceState: "durable",
         guardEnforcement: "active",
-        availability: "blocked",
-        productionReady: false,
+        availability: "available",
+        productionReady: true,
       },
       {
         domain: "appointments",
@@ -72,7 +72,7 @@ describe("production guards", () => {
   });
 
   it.each(["development", "test"] as const)(
-    "reports bypassed but not production-ready domains in %s",
+    "reports bypassed domain readiness in %s",
     (runtime) => {
       const result = evaluateReadiness({
         requestId: `req-${runtime}`,
@@ -89,14 +89,20 @@ describe("production guards", () => {
         availability: "available",
         productionReady: true,
       });
-      for (const domain of result.payload.businessPersistenceDomains.filter((item) => item.domain !== "clients")) {
-        expect(domain).toMatchObject({
+      expect(result.payload.businessPersistenceDomains.find((domain) => domain.domain === "consultations"))
+        .toMatchObject({
+          persistenceState: "durable",
+          guardEnforcement: "bypassed",
+          availability: "available",
+          productionReady: true,
+        });
+      expect(result.payload.businessPersistenceDomains.find((domain) => domain.domain === "appointments"))
+        .toMatchObject({
           persistenceState: "memory_only",
           guardEnforcement: "bypassed",
           availability: "available",
           productionReady: false,
         });
-      }
     },
   );
 });

@@ -9,9 +9,9 @@ export const BUSINESS_PERSISTENCE_DOMAIN_REGISTRY = {
     productionReady: true,
   },
   consultations: {
-    persistenceState: "memory_only",
+    persistenceState: "durable",
     essential: true,
-    productionReady: false,
+    productionReady: true,
   },
   appointments: {
     persistenceState: "memory_only",

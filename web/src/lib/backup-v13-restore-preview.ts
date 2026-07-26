@@ -15,6 +15,7 @@ import type {
   BackupV13Artifact,
   BackupV13ClientSectionRow,
   BackupV13V2ClientSectionRow,
+  BackupV13V3ConsultationSectionRow,
   BackupV13ImageAnalysisReviewSectionRow,
   BackupV13ImageAnalysisSectionRow,
   BackupV13ImageAssetSectionRow,
@@ -23,6 +24,7 @@ import {
   BACKUP_CHECKSUM_ALGORITHM,
   BACKUP_V13_CANONICAL_VERSION,
   BACKUP_V13_SCHEMA_VERSION,
+  BACKUP_V13_V3_SCHEMA_VERSION,
   BackupArtifactError,
   canonicalizeSortedJsonV1,
   computeArtifactChecksumHex,
@@ -38,6 +40,7 @@ type ComparableState = {
   ownerUserId: string;
   clients: NormalizedClientRow[];
   analyses: NormalizedAnalysisRow[];
+  consultations: NormalizedConsultationRow[];
   imageAssets: NormalizedImageAssetRow[];
   imageAnalyses: NormalizedImageAnalysisRow[];
   imageAnalysisReviews: NormalizedImageAnalysisReviewRow[];
@@ -63,6 +66,7 @@ export interface BackupSnapshotRow {
 export interface CurrentStateRows {
   clients: CurrentClientRow[];
   analyses: CurrentAnalysisRow[];
+  consultations?: CurrentConsultationRow[];
   imageAssets: CurrentImageAssetRow[];
   imageAnalyses: CurrentImageAnalysisRow[];
   imageAnalysisReviews: CurrentImageAnalysisReviewRow[];
@@ -110,6 +114,16 @@ interface CurrentAnalysisRow {
   m8FinalizedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+}
+
+interface CurrentConsultationRow {
+  id: string;
+  ownerUserId: string;
+  clientId: string;
+  analysisId: string;
+  summary: string;
+  nextSteps: unknown;
+  createdAt: Date;
 }
 
 interface CurrentImageAssetRow {
@@ -202,6 +216,16 @@ interface NormalizedAnalysisRow {
   updatedAt: string;
 }
 
+interface NormalizedConsultationRow {
+  id: string;
+  ownerUserId: string;
+  clientId: string;
+  analysisId: string;
+  summary: string;
+  nextSteps: string[];
+  createdAt: string;
+}
+
 interface NormalizedImageAssetRow {
   id: string;
   fileName: string;
@@ -251,6 +275,7 @@ interface NormalizedImageAnalysisReviewRow {
 const SECTION_NAMES: BackupRestorePreviewSection[] = [
   "clients",
   "analyses",
+  "consultations",
   "imageAssets",
   "imageAnalyses",
   "imageAnalysisReviews",
@@ -259,12 +284,13 @@ const SECTION_NAMES: BackupRestorePreviewSection[] = [
 const ROW_KEY_SELECTORS: Record<BackupRestorePreviewSection, (row: ComparableRow) => string> = {
   clients: (row) => row.id,
   analyses: (row) => row.id,
+  consultations: (row) => row.id,
   imageAssets: (row) => row.id,
   imageAnalyses: (row) => row.id,
   imageAnalysisReviews: (row) => row.id,
 };
 
-type ComparableRow = NormalizedClientRow | NormalizedAnalysisRow | NormalizedImageAssetRow | NormalizedImageAnalysisRow | NormalizedImageAnalysisReviewRow;
+type ComparableRow = NormalizedClientRow | NormalizedAnalysisRow | NormalizedConsultationRow | NormalizedImageAssetRow | NormalizedImageAnalysisRow | NormalizedImageAnalysisReviewRow;
 
 export async function getBackupRestorePreviewForUser(
   ownerUserId: string,
@@ -357,6 +383,19 @@ export function getClientStateFingerprintForArtifact(artifact: BackupV13Artifact
   return hashCanonicalJson({ ownerUserId, clients });
 }
 
+export async function getConsultationStateFingerprintForOwner(
+  tx: Prisma.TransactionClient,
+  ownerUserId: string,
+): Promise<string> {
+  const currentState = normalizeCurrentState(await readCurrentStateForOwner(tx, ownerUserId), ownerUserId).state;
+  return hashCanonicalJson({ ownerUserId, consultations: currentState.consultations });
+}
+
+export function getConsultationStateFingerprintForArtifact(artifact: BackupV13Artifact, ownerUserId: string): string {
+  const consultations = normalizeBackupArtifact(artifact, ownerUserId).state.consultations;
+  return hashCanonicalJson({ ownerUserId, consultations });
+}
+
 export async function buildBackupRestorePreview(
   source: RestorePreviewDataSource,
   previewGeneratedAt = new Date().toISOString(),
@@ -415,6 +454,7 @@ export async function buildBackupRestorePreview(
 
   const clients = compareRowSets(normalizedBackup.state.clients, normalizedCurrent.state.clients, "clients");
   const analyses = compareRowSets(normalizedBackup.state.analyses, normalizedCurrent.state.analyses, "analyses");
+  const consultations = compareRowSets(normalizedBackup.state.consultations, normalizedCurrent.state.consultations, "consultations");
   const imageAssets = compareRowSets(normalizedBackup.state.imageAssets, normalizedCurrent.state.imageAssets, "imageAssets");
   const imageAnalyses = compareRowSets(normalizedBackup.state.imageAnalyses, normalizedCurrent.state.imageAnalyses, "imageAnalyses");
   const imageAnalysisReviews = compareRowSets(normalizedBackup.state.imageAnalysisReviews, normalizedCurrent.state.imageAnalysisReviews, "imageAnalysisReviews");
@@ -422,6 +462,7 @@ export async function buildBackupRestorePreview(
   const rowComparisonConflicts = [
     ...clients.conflicts,
     ...analyses.conflicts,
+    ...consultations.conflicts,
     ...imageAssets.conflicts,
     ...imageAnalyses.conflicts,
     ...imageAnalysisReviews.conflicts,
@@ -442,6 +483,17 @@ export async function buildBackupRestorePreview(
       "Legacy backup omits Client contact, notes, and deletion fields; execution requires a matching v2 safety backup.",
     ));
   }
+  const legacyOmitsCurrentConsultations = source.backupArtifact.schemaVersion !== BACKUP_V13_V3_SCHEMA_VERSION &&
+    normalizedCurrent.state.consultations.length > 0;
+  if (legacyOmitsCurrentConsultations) {
+    warnings.push(issue(
+      "LEGACY_CONSULTATIONS_OMITTED",
+      "consultations",
+      null,
+      null,
+      "Legacy backup omits Consultations; execution requires a matching post-preview v3 safety backup.",
+    ));
+  }
   if (compareTimestampOrder(latestBackupUpdatedAt, latestCurrentUpdatedAt) < 0) {
     warnings.push(
       issue("BACKUP_OLDER_THAN_CURRENT_STATE", null, null, null, "Current state is newer than the backup snapshot."),
@@ -455,7 +507,7 @@ export async function buildBackupRestorePreview(
   const eligibleForRestorePlanning = blockingReasons.length === 0;
   const previewFingerprint = computePreviewFingerprint({
     backupId: source.backupRow.id,
-    previewGeneratedAt: source.backupArtifact.schemaVersion === BACKUP_V13_SCHEMA_VERSION
+    previewGeneratedAt: source.backupArtifact.schemaVersion === BACKUP_V13_SCHEMA_VERSION || legacyOmitsCurrentConsultations
       ? normalizedPreviewGeneratedAt
       : null,
     backupStateFingerprint,
@@ -537,6 +589,9 @@ function normalizeBackupArtifact(artifact: BackupV13Artifact, ownerUserId: strin
     ? artifact.sections.clients.map((row) => normalizeBackupClientRow(row, ownerUserId))
     : artifact.sections.clients.map((row) => normalizeBackupV2ClientRow(row, ownerUserId));
   const analyses = artifact.sections.analyses.map((row) => normalizeBackupAnalysisRow(row, ownerUserId));
+  const consultations = artifact.schemaVersion === BACKUP_V13_V3_SCHEMA_VERSION
+    ? artifact.sections.consultations.map((row) => normalizeBackupConsultationRow(row, ownerUserId))
+    : [];
   const imageAssets = artifact.sections.imageAssets.map((row) => normalizeBackupImageAssetRow(row, ownerUserId));
   const imageAnalyses = artifact.sections.imageAnalyses.map((row) => normalizeBackupImageAnalysisRow(row, ownerUserId));
   const imageAnalysisReviews = artifact.sections.imageAnalysisReviews.map((row) => normalizeBackupImageAnalysisReviewRow(row, ownerUserId));
@@ -546,6 +601,7 @@ function normalizeBackupArtifact(artifact: BackupV13Artifact, ownerUserId: strin
     ownerUserId,
     clients: sortRows(clients),
     analyses: sortRows(analyses),
+    consultations: sortRows(consultations),
     imageAssets: sortRows(imageAssets),
     imageAnalyses: sortRows(imageAnalyses),
     imageAnalysisReviews: sortRows(imageAnalysisReviews),
@@ -560,6 +616,7 @@ function normalizeBackupArtifact(artifact: BackupV13Artifact, ownerUserId: strin
 function normalizeCurrentState(currentState: CurrentStateRows, ownerUserId: string): { state: ComparableState; maps: SectionMaps } {
   const clients = currentState.clients.map((row) => normalizeCurrentClientRow(row, ownerUserId));
   const analyses = currentState.analyses.map((row) => normalizeCurrentAnalysisRow(row, ownerUserId));
+  const consultations = (currentState.consultations ?? []).map((row) => normalizeCurrentConsultationRow(row, ownerUserId));
   const imageAssets = currentState.imageAssets.map((row) => normalizeCurrentImageAssetRow(row, ownerUserId));
   const imageAnalyses = currentState.imageAnalyses.map((row) => normalizeCurrentImageAnalysisRow(row, ownerUserId));
   const imageAnalysisReviews = currentState.imageAnalysisReviews.map((row) => normalizeCurrentImageAnalysisReviewRow(row, ownerUserId));
@@ -569,6 +626,7 @@ function normalizeCurrentState(currentState: CurrentStateRows, ownerUserId: stri
     ownerUserId,
     clients: sortRows(clients),
     analyses: sortRows(analyses),
+    consultations: sortRows(consultations),
     imageAssets: sortRows(imageAssets),
     imageAnalyses: sortRows(imageAnalyses),
     imageAnalysisReviews: sortRows(imageAnalysisReviews),
@@ -583,6 +641,7 @@ function normalizeCurrentState(currentState: CurrentStateRows, ownerUserId: stri
 interface SectionMaps {
   clients: Map<string, NormalizedClientRow>;
   analyses: Map<string, NormalizedAnalysisRow>;
+  consultations: Map<string, NormalizedConsultationRow>;
   imageAssets: Map<string, NormalizedImageAssetRow>;
   imageAnalyses: Map<string, NormalizedImageAnalysisRow>;
   imageAnalysisReviews: Map<string, NormalizedImageAnalysisReviewRow>;
@@ -717,6 +776,7 @@ function computeImpact(backup: ComparableState, current: ComparableState, confli
   return {
     clients: computeSectionImpact(backup.clients, current.clients, conflicts, "clients"),
     analyses: computeSectionImpact(backup.analyses, current.analyses, conflicts, "analyses"),
+    consultations: computeSectionImpact(backup.consultations, current.consultations, conflicts, "consultations"),
     imageAssets: computeSectionImpact(backup.imageAssets, current.imageAssets, conflicts, "imageAssets"),
     imageAnalyses: computeSectionImpact(backup.imageAnalyses, current.imageAnalyses, conflicts, "imageAnalyses"),
     imageAnalysisReviews: computeSectionImpact(backup.imageAnalysisReviews, current.imageAnalysisReviews, conflicts, "imageAnalysisReviews"),
@@ -863,6 +923,7 @@ function buildSectionMaps(state: ComparableState): SectionMaps {
   return {
     clients: new Map(state.clients.map((row) => [row.id, row])),
     analyses: new Map(state.analyses.map((row) => [row.id, row])),
+    consultations: new Map(state.consultations.map((row) => [row.id, row])),
     imageAssets: new Map(state.imageAssets.map((row) => [row.id, row])),
     imageAnalyses: new Map(state.imageAnalyses.map((row) => [row.id, row])),
     imageAnalysisReviews: new Map(state.imageAnalysisReviews.map((row) => [row.id, row])),
@@ -967,6 +1028,45 @@ function normalizeCurrentAnalysisRow(row: CurrentAnalysisRow, ownerUserId: strin
     },
     ownerUserId,
   );
+}
+
+function normalizeBackupConsultationRow(
+  row: BackupV13V3ConsultationSectionRow,
+  ownerUserId: string,
+): NormalizedConsultationRow {
+  return normalizeConsultationRow(row, ownerUserId);
+}
+
+function normalizeCurrentConsultationRow(row: CurrentConsultationRow, ownerUserId: string): NormalizedConsultationRow {
+  return normalizeConsultationRow({ ...row, createdAt: row.createdAt.toISOString() }, ownerUserId);
+}
+
+function normalizeConsultationRow(
+  row: Omit<NormalizedConsultationRow, "nextSteps"> & { nextSteps: unknown },
+  ownerUserId: string,
+): NormalizedConsultationRow {
+  if (!Array.isArray(row.nextSteps) || row.nextSteps.length > 50 ||
+    row.nextSteps.some((entry) => typeof entry !== "string")) {
+    throw new BackupArtifactError("BACKUP_PREVIEW_UNINTERPRETABLE", 422, "Consultation nextSteps is invalid.");
+  }
+  const nextSteps = row.nextSteps as string[];
+  if (nextSteps.some((entry) => !entry || entry !== entry.trim() || Array.from(entry).length > 500) ||
+    Buffer.byteLength(canonicalizeSortedJsonV1(nextSteps), "utf8") > 32 * 1024) {
+    throw new BackupArtifactError("BACKUP_PREVIEW_UNINTERPRETABLE", 422, "Consultation nextSteps is invalid.");
+  }
+  const summary = normalizeString(row.summary, "consultations.summary");
+  if (!summary.trim() || summary !== summary.trim() || Array.from(summary).length > 4000) {
+    throw new BackupArtifactError("BACKUP_PREVIEW_UNINTERPRETABLE", 422, "Consultation summary is invalid.");
+  }
+  return {
+    id: normalizeString(row.id, "consultations.id"),
+    ownerUserId: normalizeOwner(row.ownerUserId, ownerUserId, "consultations.ownerUserId"),
+    clientId: normalizeString(row.clientId, "consultations.clientId"),
+    analysisId: normalizeString(row.analysisId, "consultations.analysisId"),
+    summary,
+    nextSteps,
+    createdAt: normalizeTimestamp(row.createdAt, "consultations.createdAt"),
+  };
 }
 
 function normalizeAnalysisRow(
@@ -1207,7 +1307,7 @@ function isPreviewConflictCode(code: BackupRestorePreviewIssueCode): boolean {
 }
 
 async function readCurrentStateForOwner(tx: Prisma.TransactionClient, ownerUserId: string): Promise<CurrentStateRows> {
-  const [clients, analyses, imageAssets, imageAnalyses, imageAnalysisReviews] = await Promise.all([
+  const [clients, analyses, consultations, imageAssets, imageAnalyses, imageAnalysisReviews] = await Promise.all([
     tx.client.findMany({
       where: { ownerUserId },
       select: {
@@ -1255,6 +1355,19 @@ async function readCurrentStateForOwner(tx: Prisma.TransactionClient, ownerUserI
         m8FinalizedAt: true,
         createdAt: true,
         updatedAt: true,
+      },
+      orderBy: { id: "asc" },
+    }),
+    tx.consultation.findMany({
+      where: { ownerUserId },
+      select: {
+        id: true,
+        ownerUserId: true,
+        clientId: true,
+        analysisId: true,
+        summary: true,
+        nextSteps: true,
+        createdAt: true,
       },
       orderBy: { id: "asc" },
     }),
@@ -1318,6 +1431,7 @@ async function readCurrentStateForOwner(tx: Prisma.TransactionClient, ownerUserI
   return {
     clients,
     analyses,
+    consultations,
     imageAssets,
     imageAnalyses,
     imageAnalysisReviews,
@@ -1370,6 +1484,19 @@ function validateReferenceGraph(backup: { state: ComparableState; maps: SectionM
   for (const row of backup.state.analyses) {
     if (!backup.maps.clients.has(row.clientId)) {
       issues.push(buildArtifactIssue("REFERENCE_MISSING", "analyses", row.id, row.clientId, "Analysis references a missing client."));
+    }
+  }
+
+  for (const row of backup.state.consultations) {
+    const client = backup.maps.clients.get(row.clientId);
+    const analysis = backup.maps.analyses.get(row.analysisId);
+    if (!client) {
+      issues.push(buildArtifactIssue("REFERENCE_MISSING", "consultations", row.id, row.clientId, "Consultation references a missing client."));
+    }
+    if (!analysis) {
+      issues.push(buildArtifactIssue("REFERENCE_MISSING", "consultations", row.id, row.analysisId, "Consultation references a missing analysis."));
+    } else if (analysis.ownerUserId !== row.ownerUserId || analysis.clientId !== row.clientId) {
+      issues.push(buildArtifactIssue("REFERENCE_OWNER_MISMATCH", "consultations", row.id, row.analysisId, "Consultation analysis scope does not match."));
     }
   }
 

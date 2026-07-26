@@ -10,7 +10,6 @@ import type {
   BackupSnapshotRecord,
   AuthSessionResponse,
   ClientPhotoRecord,
-  ConsultationRecord,
   FaceShape,
   FormulaRecord,
   GrowthPattern,
@@ -54,7 +53,6 @@ interface Store {
   users: UserRecord[];
   sessions: Map<string, string>;
   analyses: AnalysisRecord[];
-  consultations: ConsultationRecord[];
   photos: ClientPhotoRecord[];
   formulas: FormulaRecord[];
   treatments: TreatmentRecord[];
@@ -142,7 +140,6 @@ function createStore(): Store {
     users: [],
     sessions: new Map<string, string>(),
     analyses: [],
-    consultations: [],
     photos: [],
     formulas: [],
     treatments: [],
@@ -673,10 +670,7 @@ export function addWorkspaceMember(input: {
   return membership;
 }
 
-export function getAnalyticsSnapshotForUser(userId: string, clientIds: string[]): AnalyticsSnapshot {
-  const ownedClientIds = new Set(clientIds);
-
-  const consultationsCount = store.consultations.filter((entry) => ownedClientIds.has(entry.clientId)).length;
+export function getAnalyticsSnapshotForUser(userId: string, consultationsCount: number): AnalyticsSnapshot {
   const appointmentsCount = store.appointments.filter((entry) => entry.ownerUserId === userId).length;
   const remindersSentCount = store.appointments.filter(
     (entry) => entry.ownerUserId === userId && entry.reminderSentAt !== null
@@ -775,10 +769,9 @@ export function getPushQueueForUser(userId: string): PushQueueRecord[] {
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
-export function getOpsHealthSnapshot(clientsCount: number): OpsHealthSnapshot {
+export function getOpsHealthSnapshot(clientsCount: number, consultationsCount: number): OpsHealthSnapshot {
   const queueBacklogCount = store.pushQueue.filter((entry) => entry.status === "queued").length;
   const usersCount = store.users.length;
-  const consultationsCount = store.consultations.length;
   const appointmentsCount = store.appointments.length;
   const notificationsCount = store.notifications.length;
   const auditEventsCount = store.auditEvents.length;
@@ -812,7 +805,7 @@ export function createBackupSnapshot(ownerUserId: string, label: string, clientI
     createdAt: new Date().toISOString(),
     snapshot: {
       clientsCount: ownedClientIds.size,
-      consultationsCount: store.consultations.filter((entry) => ownedClientIds.has(entry.clientId)).length,
+      consultationsCount: 0,
       appointmentsCount: store.appointments.filter((entry) => entry.ownerUserId === ownerUserId).length,
       notificationsCount: store.notifications.filter((entry) => entry.ownerUserId === ownerUserId).length,
       workspacesCount: getWorkspacesForUser(ownerUserId).length
@@ -1035,22 +1028,6 @@ export function getAnalysisOwnedByUser(analysisId: string, userId: string): Anal
   return analysis;
 }
 
-export function getConsultationsForClientByUser(
-  clientId: string,
-  _userId: string
-): ConsultationRecord[] {
-  return store.consultations
-    .filter((entry) => entry.clientId === clientId)
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-}
-
-export function getConsultationByIdForUser(
-  consultationId: string,
-  _userId: string
-): ConsultationRecord | null {
-  return store.consultations.find((entry) => entry.id === consultationId) ?? null;
-}
-
 export function createClientPhoto(input: {
   clientId: string;
   imageUrl: string;
@@ -1257,14 +1234,6 @@ export function getClientTimelineByUser(clientId: string, userId: string): Timel
     details: item.treatmentDetails
   }));
 
-  const consultations = getConsultationsForClientByUser(clientId, userId).map<TimelineEntry>((item) => ({
-    id: item.id,
-    kind: "consultation",
-    createdAt: item.createdAt,
-    title: "Consultation",
-    details: item.summary
-  }));
-
   const appointments = getAppointmentsForUser(userId, clientId).map<TimelineEntry>((item) => ({
     id: item.id,
     kind: "appointment",
@@ -1273,7 +1242,7 @@ export function getClientTimelineByUser(clientId: string, userId: string): Timel
     details: item.notes
   }));
 
-  return [...photos, ...formulas, ...treatments, ...consultations, ...appointments].sort((left, right) =>
+  return [...photos, ...formulas, ...treatments, ...appointments].sort((left, right) =>
     right.createdAt.localeCompare(left.createdAt)
   );
 }

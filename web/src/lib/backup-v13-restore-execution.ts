@@ -12,15 +12,19 @@ import type {
 import {
   BACKUP_V13_SCHEMA_VERSION,
   BACKUP_V13_V2_SCHEMA_VERSION,
+  BACKUP_V13_V3_SCHEMA_VERSION,
   BackupArtifactError,
   computeArtifactChecksumHex,
   isBackupV13Artifact,
   isBackupV13V2Artifact,
+  isBackupV13V3Artifact,
 } from "@/lib/backup-v13-artifact";
 import {
   getBackupComparableStateFingerprintForArtifact,
   getBackupRestorePreviewForUserWithTransaction,
   getClientStateFingerprintForArtifact,
+  getConsultationStateFingerprintForArtifact,
+  getConsultationStateFingerprintForOwner,
   getCurrentComparableStateFingerprintForOwner,
   loadRestorePreviewSourceWithTransaction,
 } from "@/lib/backup-v13-restore-preview";
@@ -306,6 +310,15 @@ async function runRestoreAttempt(
       preview.currentClientStateFingerprint,
     );
   }
+  if (source.backupArtifact.schemaVersion !== BACKUP_V13_V3_SCHEMA_VERSION &&
+    await tx.consultation.count({ where: { ownerUserId } }) > 0) {
+    await assertLegacyConsultationSafetyBackup(
+      tx,
+      ownerUserId,
+      request,
+      await getConsultationStateFingerprintForOwner(tx, ownerUserId),
+    );
+  }
 
   const previousCurrentStateFingerprint = preview.currentStateFingerprint;
   const backupStateFingerprint = preview.backupStateFingerprint;
@@ -456,8 +469,50 @@ async function assertLegacyClientSafetyBackup(
   }
 }
 
+async function assertLegacyConsultationSafetyBackup(
+  tx: RestoreTransactionalClient,
+  ownerUserId: string,
+  request: BackupRestoreRequest,
+  expectedConsultationStateFingerprint: string,
+): Promise<void> {
+  if (request.acknowledgeLegacyConsultationDataLoss !== true || !request.consultationSafetyBackupId ||
+    !request.previewGeneratedAt || Number.isNaN(Date.parse(request.previewGeneratedAt))) {
+    throw new BackupArtifactError(
+      "BACKUP_RESTORE_LEGACY_CONSULTATION_SAFETY_REQUIRED",
+      409,
+      "Legacy restore requires acknowledgement and a post-preview v3 Consultation safety backup.",
+    );
+  }
+
+  const safetyRow = await tx.opsBackupSnapshot.findFirst({
+    where: { id: request.consultationSafetyBackupId, ownerUserId },
+  });
+  if (!safetyRow || safetyRow.schemaVersion !== BACKUP_V13_V3_SCHEMA_VERSION ||
+    safetyRow.createdAt.getTime() <= new Date(request.previewGeneratedAt).getTime() ||
+    !isBackupV13V3Artifact(safetyRow.snapshotJson)) {
+    throw new BackupArtifactError(
+      "BACKUP_RESTORE_CONSULTATION_SAFETY_BACKUP_INVALID",
+      409,
+      "Consultation safety backup must be a valid same-owner v3 artifact created after preview.",
+    );
+  }
+
+  const safetyArtifact = safetyRow.snapshotJson;
+  const checksum = computeArtifactChecksumHex(safetyArtifact);
+  if (safetyArtifact.backupId !== safetyRow.id || safetyArtifact.ownerUserId !== ownerUserId ||
+    safetyArtifact.checksum !== checksum || safetyRow.checksum !== checksum ||
+    getConsultationStateFingerprintForArtifact(safetyArtifact, ownerUserId) !== expectedConsultationStateFingerprint) {
+    throw new BackupArtifactError(
+      "BACKUP_RESTORE_CONSULTATION_SAFETY_BACKUP_STATE_MISMATCH",
+      409,
+      "Consultation safety backup does not match the previewed current Consultation state.",
+    );
+  }
+}
+
 function assertBackupArtifactExecutable(artifact: BackupV13Artifact, row: { id: string; checksum: string }): void {
-  if (artifact.schemaVersion !== BACKUP_V13_SCHEMA_VERSION && artifact.schemaVersion !== BACKUP_V13_V2_SCHEMA_VERSION) {
+  if (artifact.schemaVersion !== BACKUP_V13_SCHEMA_VERSION && artifact.schemaVersion !== BACKUP_V13_V2_SCHEMA_VERSION &&
+    artifact.schemaVersion !== BACKUP_V13_V3_SCHEMA_VERSION) {
     throw new BackupArtifactError("BACKUP_RESTORE_SCHEMA_UNSUPPORTED", 422, "Unsupported backup schema version.");
   }
 
@@ -476,9 +531,13 @@ function assertBackupArtifactExecutable(artifact: BackupV13Artifact, row: { id: 
 }
 
 async function assertNoCrossOwnerCollisions(tx: RestoreTransactionalClient, ownerUserId: string, artifact: BackupV13Artifact): Promise<void> {
-  const [clientCollisions, analysisCollisions, assetCollisions, imageAnalysisCollisions, reviewCollisions] = await Promise.all([
+  const consultationIds = artifact.schemaVersion === BACKUP_V13_V3_SCHEMA_VERSION
+    ? artifact.sections.consultations.map((row) => row.id)
+    : [];
+  const [clientCollisions, analysisCollisions, consultationCollisions, assetCollisions, imageAnalysisCollisions, reviewCollisions] = await Promise.all([
     tx.client.findMany({ where: { id: { in: artifact.sections.clients.map((row) => row.id) } }, select: { id: true, ownerUserId: true } }),
     tx.analysis.findMany({ where: { id: { in: artifact.sections.analyses.map((row) => row.id) } }, select: { id: true, ownerUserId: true } }),
+    tx.consultation.findMany({ where: { id: { in: consultationIds } }, select: { id: true, ownerUserId: true } }),
     tx.imageAsset.findMany({ where: { id: { in: artifact.sections.imageAssets.map((row) => row.id) } }, select: { id: true, ownerUserId: true } }),
     tx.imageAnalysis.findMany({ where: { id: { in: artifact.sections.imageAnalyses.map((row) => row.id) } }, select: { id: true, asset: { select: { ownerUserId: true } } } }),
     tx.imageAnalysisReview.findMany({ where: { id: { in: artifact.sections.imageAnalysisReviews.map((row) => row.id) } }, select: { id: true, analysis: { select: { asset: { select: { ownerUserId: true } } } } } }),
@@ -492,6 +551,10 @@ async function assertNoCrossOwnerCollisions(tx: RestoreTransactionalClient, owne
   const crossOwnerAnalysis = analysisCollisions.find((row) => row.ownerUserId !== ownerUserId);
   if (crossOwnerAnalysis) {
     throw new BackupArtifactError("BACKUP_RESTORE_OWNER_COLLISION", 409, "Restore encountered a cross-owner analysis collision.", { id: crossOwnerAnalysis.id });
+  }
+  const crossOwnerConsultation = consultationCollisions.find((row) => row.ownerUserId !== ownerUserId);
+  if (crossOwnerConsultation) {
+    throw new BackupArtifactError("BACKUP_RESTORE_OWNER_COLLISION", 409, "Restore encountered a cross-owner Consultation collision.", { id: crossOwnerConsultation.id });
   }
 
   const crossOwnerAsset = assetCollisions.find((row) => row.ownerUserId !== ownerUserId);
@@ -516,6 +579,7 @@ async function assertReferenceTargetsAreInternal(artifact: BackupV13Artifact): P
   const clientIds = new Set(artifact.sections.clients.map((row) => row.id));
   const imageAssetIds = new Set(artifact.sections.imageAssets.map((row) => row.id));
   const imageAnalysisIds = new Set(artifact.sections.imageAnalyses.map((row) => row.id));
+  const analysisRows = new Map(artifact.sections.analyses.map((row) => [row.id, row]));
 
   for (const row of artifact.sections.analyses) {
     if (!clientIds.has(row.clientId)) {
@@ -528,6 +592,15 @@ async function assertReferenceTargetsAreInternal(artifact: BackupV13Artifact): P
 
     if (row.imageAnalysisId && !imageAnalysisIds.has(row.imageAnalysisId)) {
       throw new BackupArtifactError("BACKUP_RESTORE_REFERENCE_COLLISION", 409, "Analysis references an image analysis missing from the artifact.", { id: row.id, imageAnalysisId: row.imageAnalysisId });
+    }
+  }
+  if (artifact.schemaVersion === BACKUP_V13_V3_SCHEMA_VERSION) {
+    for (const row of artifact.sections.consultations) {
+      const analysis = analysisRows.get(row.analysisId);
+      if (!clientIds.has(row.clientId) || !analysis || analysis.ownerUserId !== row.ownerUserId ||
+        analysis.clientId !== row.clientId || row.ownerUserId !== artifact.ownerUserId) {
+        throw new BackupArtifactError("BACKUP_RESTORE_REFERENCE_COLLISION", 409, "Consultation references are not internal to the artifact scope.", { id: row.id });
+      }
     }
   }
 
@@ -562,6 +635,8 @@ async function deleteOwnerScopedRows(tx: RestoreTransactionalClient, ownerUserId
       },
     },
   });
+
+  await tx.consultation.deleteMany({ where: { ownerUserId } });
 
   await tx.analysis.deleteMany({
     where: { ownerUserId },
@@ -676,6 +751,22 @@ async function insertBackupRows(tx: RestoreTransactionalClient, artifact: Backup
     });
   }
 
+  if (artifact.schemaVersion === BACKUP_V13_V3_SCHEMA_VERSION) {
+    for (const row of artifact.sections.consultations) {
+      await tx.consultation.create({
+        data: {
+          id: row.id,
+          ownerUserId: row.ownerUserId,
+          clientId: row.clientId,
+          analysisId: row.analysisId,
+          summary: row.summary,
+          nextSteps: row.nextSteps,
+          createdAt: new Date(row.createdAt),
+        },
+      });
+    }
+  }
+
   for (const row of artifact.sections.imageAnalysisReviews) {
     await tx.imageAnalysisReview.create({
       data: {
@@ -707,6 +798,8 @@ function mapClientRowsForRestore(artifact: BackupV13Artifact) {
     case BACKUP_V13_SCHEMA_VERSION:
       return artifact.sections.clients.map(mapV1ClientRowForRestore);
     case BACKUP_V13_V2_SCHEMA_VERSION:
+      return artifact.sections.clients.map(mapV2ClientRowForRestore);
+    case BACKUP_V13_V3_SCHEMA_VERSION:
       return artifact.sections.clients.map(mapV2ClientRowForRestore);
     default:
       throw new BackupArtifactError("BACKUP_RESTORE_SCHEMA_UNSUPPORTED", 422, "Unsupported backup schema version.");
@@ -742,9 +835,10 @@ function mapV2ClientRowForRestore(row: BackupV13V2ClientSectionRow) {
 }
 
 async function countOwnerScopedRows(tx: RestoreTransactionalClient, ownerUserId: string): Promise<BackupRestoreCounts> {
-  const [clients, analyses, imageAssets, imageAnalyses, imageAnalysisReviews] = await Promise.all([
+  const [clients, analyses, consultations, imageAssets, imageAnalyses, imageAnalysisReviews] = await Promise.all([
     tx.client.count({ where: { ownerUserId } }),
     tx.analysis.count({ where: { ownerUserId } }),
+    tx.consultation.count({ where: { ownerUserId } }),
     tx.imageAsset.count({ where: { ownerUserId } }),
     tx.imageAnalysis.count({ where: { asset: { ownerUserId } } }),
     tx.imageAnalysisReview.count({ where: { analysis: { asset: { ownerUserId } } } }),
@@ -753,6 +847,7 @@ async function countOwnerScopedRows(tx: RestoreTransactionalClient, ownerUserId:
   return {
     clients,
     analyses,
+    consultations,
     imageAssets,
     imageAnalyses,
     imageAnalysisReviews,
@@ -763,6 +858,7 @@ function buildRestoredCounts(artifact: BackupV13Artifact): BackupRestoreCounts {
   return {
     clients: artifact.sections.clients.length,
     analyses: artifact.sections.analyses.length,
+    consultations: artifact.schemaVersion === BACKUP_V13_V3_SCHEMA_VERSION ? artifact.sections.consultations.length : 0,
     imageAssets: artifact.sections.imageAssets.length,
     imageAnalyses: artifact.sections.imageAnalyses.length,
     imageAnalysisReviews: artifact.sections.imageAnalysisReviews.length,
@@ -771,7 +867,13 @@ function buildRestoredCounts(artifact: BackupV13Artifact): BackupRestoreCounts {
 
 function mapWarnings(warnings: Array<{ code: string; messageSafe: string }>): BackupRestoreWarning[] {
   return warnings.map((warning) => ({
-    code: warning.code === "CURRENT_STATE_HAS_EXTRA_ROWS" ? "CURRENT_STATE_HAS_EXTRA_ROWS" : "BACKUP_OLDER_THAN_CURRENT_STATE",
+    code: warning.code === "CURRENT_STATE_HAS_EXTRA_ROWS"
+      ? "CURRENT_STATE_HAS_EXTRA_ROWS"
+      : warning.code === "LEGACY_CLIENT_FIELDS_OMITTED"
+        ? "LEGACY_CLIENT_FIELDS_OMITTED"
+        : warning.code === "LEGACY_CONSULTATIONS_OMITTED"
+          ? "LEGACY_CONSULTATIONS_OMITTED"
+          : "BACKUP_OLDER_THAN_CURRENT_STATE",
     messageSafe: warning.messageSafe,
   }));
 }

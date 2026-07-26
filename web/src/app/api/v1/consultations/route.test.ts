@@ -2,9 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
 const storeMock = vi.hoisted(() => ({
-  getAnalysisOwnedByUser: vi.fn(),
   getSession: vi.fn(),
-  store: { consultations: [] },
 }));
 
 vi.mock("next/headers", () => cookiesMock);
@@ -15,7 +13,7 @@ import { POST } from "./route";
 const mutableEnv = process.env as Record<string, string | undefined>;
 const originalNodeEnv = process.env.NODE_ENV;
 
-describe("consultations business persistence guard", () => {
+describe("consultations durable persistence guard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -24,16 +22,17 @@ describe("consultations business persistence guard", () => {
     mutableEnv.NODE_ENV = originalNodeEnv;
   });
 
-  it("blocks POST in production before session resolution", async () => {
+  it("allows durable Consultation flow in production", async () => {
     mutableEnv.NODE_ENV = "production";
+    cookiesMock.cookies.mockResolvedValue({ get: () => undefined });
+    storeMock.getSession.mockReturnValue(null);
 
     const response = await POST(
       new Request("http://localhost/api/v1/consultations", { method: "POST" }),
     );
 
-    expect(response.status).toBe(503);
-    expect(storeMock.getSession).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toMatchObject({ domain: "consultations" });
+    expect(response.status).toBe(401);
+    expect(storeMock.getSession).toHaveBeenCalledOnce();
   });
 
   it("bypasses the guard in test and continues the existing flow", async () => {

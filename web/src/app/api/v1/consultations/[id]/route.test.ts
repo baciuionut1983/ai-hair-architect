@@ -3,20 +3,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const cookiesMock = vi.hoisted(() => ({
   cookies: vi.fn(),
 }));
-const clientRepositoryMock = vi.hoisted(() => ({
-  resolveOwnedClient: vi.fn(),
+const consultationRepositoryMock = vi.hoisted(() => ({
+  findConsultationForOwner: vi.fn(),
+  isConsultationPersistenceError: vi.fn(() => false),
+  consultationPersistenceUnavailableResponse: vi.fn(),
 }));
 
 vi.mock("next/headers", () => cookiesMock);
-vi.mock("@/lib/client-repository", () => clientRepositoryMock);
+vi.mock("@/lib/consultation-repository", () => consultationRepositoryMock);
 
 vi.mock("@/lib/milestone1-store", () => ({
   getSession: vi.fn(),
-  getConsultationByIdForUser: vi.fn(),
 }));
 
 import { GET } from "./route";
-import { getConsultationByIdForUser, getSession } from "@/lib/milestone1-store";
+import { getSession } from "@/lib/milestone1-store";
 
 describe("consultation by id route", () => {
   beforeEach(() => {
@@ -46,13 +47,13 @@ describe("consultation by id route", () => {
       locale: "en",
       createdAt: new Date().toISOString(),
     });
-    vi.mocked(getConsultationByIdForUser).mockReturnValue(null);
+    consultationRepositoryMock.findConsultationForOwner.mockResolvedValue(null);
 
     const response = await GET({} as never, { params: Promise.resolve({ id: "consultation-1" }) });
 
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toMatchObject({ error: "Consultation not found." });
-    expect(vi.mocked(getConsultationByIdForUser)).toHaveBeenCalledWith("consultation-1", "user-1");
+    expect(consultationRepositoryMock.findConsultationForOwner).toHaveBeenCalledWith("user-1", "consultation-1");
   });
 
   it("returns consultation for owning user", async () => {
@@ -66,7 +67,7 @@ describe("consultation by id route", () => {
       locale: "en",
       createdAt: new Date().toISOString(),
     });
-    vi.mocked(getConsultationByIdForUser).mockReturnValue({
+    consultationRepositoryMock.findConsultationForOwner.mockResolvedValue({
       id: "consultation-1",
       clientId: "client-1",
       analysisId: "analysis-1",
@@ -74,12 +75,10 @@ describe("consultation by id route", () => {
       nextSteps: ["Step 1"],
       createdAt: new Date().toISOString(),
     });
-    clientRepositoryMock.resolveOwnedClient.mockResolvedValue({ id: "client-1", ownerUserId: "user-1" });
 
     const response = await GET({} as never, { params: Promise.resolve({ id: "consultation-1" }) });
 
     expect(response.status).toBe(200);
-    expect(clientRepositoryMock.resolveOwnedClient).toHaveBeenCalledWith("user-1", "client-1");
     await expect(response.json()).resolves.toMatchObject({
       consultation: {
         id: "consultation-1",
