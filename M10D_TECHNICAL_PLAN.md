@@ -1,18 +1,19 @@
-# M10D TECHNICAL PLAN - Webhook Management and Observability Surface
+# M10D IMPLEMENTATION RECONCILIATION - Webhook Management and Observability Surface
 
 **Date:** 20 iulie 2026  
-**Status:** Planning (awaiting approval)  
+**Status:** Implemented - Management API complete
 **Scope:** Read-only and management surfaces built on top of the webhook foundation delivered in M10
+**Implementation commit:** `a867840a8183c9b6cbcb96fd6ff0481b5a24f68f`
 
 ---
 
 ## 1. Objective M10D
 
-M10D converts the webhook foundation delivered by M10 into a complete management and observability surface.
+M10D converted the webhook foundation delivered by M10 into a management and observability API surface.
 
-The milestone does **not** change delivery execution, retry semantics, secret lifecycle semantics, or terminal-state behavior. Instead, it exposes the stable capabilities already built in M10 through a cohesive set of owner-scoped management APIs and read models so that webhook operators can inspect deliveries, review operational state, rotate secrets, and understand cleanup status without touching the worker pipeline.
+The milestone did **not** change delivery execution, retry semantics, secret lifecycle semantics, or terminal-state behavior. Instead, it exposed the stable capabilities already built in M10 through a cohesive set of owner-scoped management APIs and read models so that webhook operators can inspect deliveries, review operational state, and rotate secrets without touching the worker pipeline.
 
-The intended outcome is a webhook subsystem that is not only reliable at runtime, but also operationally usable and reviewable.
+The resulting webhook subsystem is reliable at runtime and operationally usable through the implemented management API. Cleanup visibility remains internal through the existing maintenance service and was not exposed as a public M10D route.
 
 ---
 
@@ -20,7 +21,7 @@ The intended outcome is a webhook subsystem that is not only reliable at runtime
 
 ### 2.1 Management and Observability API Surface
 
-M10D should expose the existing stable lifecycle services through owner-scoped HTTP routes:
+M10D exposed the existing stable lifecycle services through these owner-scoped HTTP routes:
 
 - `POST /api/v1/webhooks/:id/regenerate-secret`
 - `GET /api/v1/webhooks/:id/events`
@@ -28,20 +29,20 @@ M10D should expose the existing stable lifecycle services through owner-scoped H
 - `GET /api/v1/webhooks/:id/operational-snapshot`
 - `GET /api/v1/webhooks/:id/secret-versions` is **out of scope for M10D** and deferred to a later milestone if ever needed.
 
-These routes are planned as thin orchestration layers over already stable internal services, not as new persistence or execution systems.
+These routes were implemented as thin orchestration layers over stable internal services, not as new persistence or execution systems.
 
 ### 2.2 Operational Consumption
 
-UI is explicitly out of scope for M10D. The milestone focuses on backend contracts and service composition only.
+UI remained explicitly out of scope for M10D. The milestone delivered backend contracts and service composition only.
 
 ### 2.3 Maintenance Visibility
 
-The milestone should make secret rotation and cleanup legible to operators:
+The milestone made secret rotation, delivery history, and operational state legible through the management API:
 
-- current secret version and rotation history;
-- retired versions and retention windows;
-- cleanup eligibility and cleanup outcomes;
+- current secret version at regeneration time;
 - delivery history and event-level detail.
+
+Retired secret versions, retention windows, cleanup eligibility, and cleanup outcomes remain available only through the internal `webhook-secret-version-cleanup` service. Public cleanup visibility was not part of the implemented management API.
 
 ### 2.4 Secret Exposure Policy
 
@@ -57,7 +58,7 @@ Plaintext secret exposure follows a strict one-time policy:
 
 ## 3. M10D Responsibilities
 
-M10D is responsible for the following concerns:
+M10D delivered the following concerns:
 
 - expose stable webhook management actions without changing the worker or delivery state machine;
 - provide read-only inspection of delivery history and terminal delivery details;
@@ -66,7 +67,7 @@ M10D is responsible for the following concerns:
 - preserve strict ownership boundaries and 404 semantics for cross-user access;
 - keep the delivery engine, retry policy, and cleanup semantics unchanged.
 
-What M10D must **not** do:
+The implementation preserved these exclusions:
 
 - no new delivery worker behavior;
 - no new retry policy rules;
@@ -92,7 +93,7 @@ The M10 architecture already separates webhook concerns into stable layers:
 
 M10D sits on top of this stack and adds a stable management surface that composes these services without reinterpreting their responsibilities.
 
-The intended request flow is:
+The implemented request flow is:
 
 1. User opens a webhook management view or calls a management API.
 2. Route-level authorization confirms the caller owns the webhook.
@@ -102,9 +103,9 @@ The intended request flow is:
 
 ---
 
-## 5. Existing Stable Infrastructure M10D Reuses
+## 5. Existing Stable Infrastructure Reused by M10D
 
-M10D depends on, and should reuse directly, the following M10 components:
+M10D reused the following M10 components directly:
 
 - [web/src/lib/webhook-delivery-persistence.ts](web/src/lib/webhook-delivery-persistence.ts)
 - [web/src/lib/webhook-delivery-worker.ts](web/src/lib/webhook-delivery-worker.ts)
@@ -118,11 +119,11 @@ M10D depends on, and should reuse directly, the following M10 components:
 - [web/src/lib/webhook-validator.ts](web/src/lib/webhook-validator.ts)
 - [web/src/lib/webhook-safe-http-client.ts](web/src/lib/webhook-safe-http-client.ts)
 
-The existing M10 API surface already includes webhook CRUD and test delivery routes under `web/src/app/api/v1/webhooks/*`. M10D should build on those endpoints rather than redesigning them.
+The existing M10 API surface already included webhook CRUD and test delivery routes under `web/src/app/api/v1/webhooks/*`. M10D built on those endpoints without redesigning them.
 
 ### 5.1 Existing Route Contracts
 
-The following routes already exist and are treated as stable inputs for M10D planning:
+The following pre-M10D routes remained stable inputs to the implementation:
 
 - `POST /api/v1/webhooks`
   - request: `{ name, url }`
@@ -161,7 +162,7 @@ The following routes already exist and are treated as stable inputs for M10D pla
   - status codes: `200`, `401`, `404`, `409`, `500`
   - error model: JSON object with `error`, `status`, and `message`
 
-The M10D review should preserve these contracts unless an explicit follow-up milestone says otherwise.
+The M10D implementation preserved these contracts.
 
 ---
 
@@ -169,7 +170,7 @@ The M10D review should preserve these contracts unless an explicit follow-up mil
 
 ### 6.1 What Already Exists
 
-M10D should treat the following as stable and reusable:
+M10D treated the following as stable and reusable:
 
 - `WebhookEndpoint`
 - `WebhookEndpointSecretVersion`
@@ -185,47 +186,46 @@ The existing indexes already support the most important management reads:
 - owner + retainUntil for secret cleanup;
 - secretVersionId for reference checks and cleanup safety.
 
-### 6.2 Expected M10D Data Model Impact
+### 6.2 Actual M10D Data Model Impact
 
-M10D should not require new tables or changes to the delivery state model.
-
-If review finds a gap, the preferred response is a minimal additive index only. The default plan is no schema migration.
+M10D required no new tables, indexes, or changes to the delivery state model. No schema migration was introduced.
 
 ---
 
-## 7. Planned API Surfaces
+## 7. Implemented API Surfaces
 
-M10D is expected to expose the following stable management surfaces, all owner-scoped and read-safe unless explicitly mutating a secret version.
+M10D implemented the following stable management surfaces, all owner-scoped and read-safe unless explicitly mutating a secret version.
 
-- `POST /api/v1/webhooks/:id/regenerate-secret`
+- Implemented: `POST /api/v1/webhooks/:id/regenerate-secret`
   - request: path param `id`, no request body required;
   - response: `{ webhookEndpointId, secretVersionId, secretVersion, rotatedAt, retiredPreviousVersionAt, previousVersionRetainUntil, plainSecret }`;
   - status codes: `200`, `401`, `404`, `409`, `500`;
   - error model: JSON object with `error`, `status`, and `message`;
   - pagination: not applicable.
 
-- `GET /api/v1/webhooks/:id/events`
+- Implemented: `GET /api/v1/webhooks/:id/events`
   - request: path param `id`, query params `cursor`, `limit`, and optional `status` filter if supported by the underlying read model;
   - response: `{ data, pageInfo }` with delivery history items and a next-cursor token when more results exist;
   - pagination: cursor-based, ordered by `createdAt DESC`, with a stable secondary ordering on `id DESC` for tie-breaking;
   - status codes: `200`, `401`, `404`, `400`, `500`;
   - error model: JSON object with `error`, `status`, and `message`.
 
-- `GET /api/v1/webhooks/:id/events/:eventId`
+- Implemented: `GET /api/v1/webhooks/:id/events/:eventId`
   - request: path params `id` and `eventId`;
   - response: a single delivery detail object with event context and ordered attempts;
   - pagination: not applicable;
   - status codes: `200`, `401`, `404`, `500`;
   - error model: JSON object with `error`, `status`, and `message`.
 
-- `GET /api/v1/webhooks/:id/operational-snapshot`
+- Implemented: `GET /api/v1/webhooks/:id/operational-snapshot`
   - request: path param `id` and optional `now` context only if explicitly supported by the implementation review;
   - response: a single snapshot object with active counts, success rate, recent volume, latency, and retry distribution;
   - consistency model: transaction snapshot of the current persisted delivery state at read time, not a long-lived eventually consistent projection;
   - status codes: `200`, `401`, `404`, `500`;
   - error model: JSON object with `error`, `status`, and `message`.
 
-- `POST /api/v1/webhooks/:id/regenerate-secret` and the existing secret lifecycle services are the only secret-management surface in M10D.
+- `POST /api/v1/webhooks/:id/regenerate-secret` is the only public secret-management surface implemented by M10D.
+- Cleanup visibility remains internal through `cleanupRetiredWebhookSecretVersions`; no public cleanup or secret-version listing route was added.
 
 These routes are intentionally read-first and management-oriented. They are not a second worker, a second retry engine, or a second persistence model.
 
@@ -255,27 +255,27 @@ These routes are intentionally read-first and management-oriented. They are not 
 3. Route calls `getWebhookOperationalSnapshot`.
 4. Route returns a transaction snapshot of deterministic counts and recent-interval metrics derived from delivery state at read time.
 
-### 8.4 Cleanup Visibility Flow
+### 8.4 Internal Cleanup Flow
 
-1. An internal maintenance job or operator-triggered inspection requests cleanup status.
-2. Route or job calls `cleanupRetiredWebhookSecretVersions`.
+1. An internal maintenance job requests cleanup processing.
+2. The job calls `cleanupRetiredWebhookSecretVersions`.
 3. Service evaluates retired versions into explicit states: `eligible`, `retained`, `referenced`, `deleted`, or `failed`.
-4. Cleanup result is reported without altering delivery semantics.
+4. Cleanup results remain internal and do not alter delivery semantics.
 
 ---
 
 ## 9. Why No Refactor Is Needed
 
-M10D does not need a refactor of the M10 infrastructure because the core invariants are already in the correct shape:
+M10D did not require a refactor of the M10 infrastructure because the core invariants were already in the correct shape:
 
 - the delivery model already separates event, endpoint, secret version, delivery, and attempt;
 - the worker already owns execution and terminalization logic;
 - the history and snapshot services already produce owner-scoped read models;
 - the secret lifecycle already has atomic rotation and safe cleanup boundaries;
-- the existing indexes already align with the intended management reads;
+- the existing indexes already aligned with the implemented management reads;
 - the terminal timestamp is already stabilized in official finalization paths.
 
-Refactoring any of these layers would not reduce risk; it would only expand the change surface. M10D should therefore remain an additive milestone that composes the existing foundation.
+Refactoring these layers would not have reduced risk and would have expanded the change surface. M10D remained an additive milestone that composed the existing foundation.
 
 ---
 
@@ -299,35 +299,37 @@ Refactoring any of these layers would not reduce risk; it would only expand the 
 - New management routes may be mistaken for delivery-plane writes if they are not clearly separated.
 - Metrics exposed by snapshots can be misread as historical reporting; M10D must be explicit that these are operational snapshots, not a time-series system.
 
-### 10.4 Review Risks
+### 10.4 Reconciliation Notes
 
-- Adding a schema migration or new endpoint before explicit architecture approval would expand the change surface and is not allowed in M10D planning.
-- Introducing a second secret listing surface would duplicate responsibilities already covered by the existing secret lifecycle services.
+- No schema migration was introduced.
+- No second secret listing surface was introduced.
+- Cleanup visibility remains internal rather than being exposed through a public route.
 
 ---
 
-## 11. Acceptance Criteria
+## 11. Reconciled Acceptance Outcome
 
-M10D is acceptable when all of the following are true:
+The implemented M10D surface satisfies the following outcomes:
 
 - existing M10A, M10B, and M10C behavior remains unchanged;
 - webhook ownership checks continue to return 404 for cross-user access;
 - secret rotation is exposed as a stable management action and returns plaintext once only;
 - delivery history and delivery details are available in owner-scoped, paginated form;
 - operational snapshot data is available and consistent with the persisted delivery state;
-- cleanup status for retired secret versions is exposed without deleting active references;
+- cleanup handling for retired secret versions remains internal and preserves active references;
 - no new delivery engine, retry engine, or state-machine behavior is introduced;
-- no schema migration is added without explicit approval in architecture review;
+- no schema migration was added;
 - all relevant webhook test suites and regressions continue to pass.
 
 ---
 
-## 12. Test Strategy
+## 12. Validation Evidence
 
-M10D should be validated with focused tests that prove composition rather than re-implementation:
+M10D was validated with focused tests that prove composition rather than re-implementation:
 
-- unit tests for new route orchestration and ownership checks;
-- integration tests for history, snapshot, rotation, and cleanup visibility;
+- route orchestration, response shaping, and ownership checks in `web/src/app/api/v1/webhooks/[id]/m10d-management-routes.test.ts`;
+- integration coverage for delivery history in `web/tests/integration/webhook-delivery-history.integration.test.ts`;
+- existing integration coverage for operational snapshots, rotation, and internal cleanup services;
 - regression tests proving that M10A/B/C behavior and metrics remain unchanged;
 - authorization tests confirming 404 cross-user behavior;
 - secret regeneration tests proving plaintext is exposed exactly once and never on repeat fetches or follow-up reads;
@@ -336,14 +338,16 @@ M10D should be validated with focused tests that prove composition rather than r
 
 ---
 
-## 13. Readiness Assessment
+## 13. Implementation Reconciliation
 
-The webhook infrastructure is ready for M10D.
+The webhook infrastructure was ready for M10D, and the management API was implemented without reworking the M10 foundation.
 
-M10 already provides the stable persistence, worker execution, lifecycle services, terminal timestamp semantics, and operational metrics needed for the next milestone. M10D can therefore focus on a safe, additive management and observability surface without reworking the foundation.
+M10 provided the stable persistence, execution, lifecycle services, terminal timestamp semantics, and operational metrics used by M10D. The implementation added the management and observability routes as a safe composition layer.
 
 ---
 
-**Plan Status:** complete and awaiting approval before implementation begins.
+**Implementation Status:** Management API complete.
 
-**Next Step:** architectural review and approval of M10D scope.
+**Delivered by:** `a867840a8183c9b6cbcb96fd6ff0481b5a24f68f` (`feat(m10d): add webhook management and observability API`).
+
+**Known boundary:** cleanup visibility remains internal; no public cleanup-status or secret-version listing route was implemented.
