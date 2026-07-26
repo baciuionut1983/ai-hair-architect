@@ -11,7 +11,7 @@ export interface TestContext {
   email: string;
 }
 
-export async function setupE2ETestContext(role: 'professional' | 'salon'): Promise<TestContext> {
+export async function setupE2ETestContext(role: 'professional' | 'salon' | 'consumer'): Promise<TestContext> {
   // Generate truly unique identifier per test using UUID + timestamp for readability
   const uniqueId = crypto.randomUUID().replace(/-/g, '').slice(0, 8);
   const timestamp = Date.now();
@@ -41,7 +41,7 @@ export async function setupE2ETestContext(role: 'professional' | 'salon'): Promi
   // Create client
   const client = await prisma.client.create({
     data: {
-      name: `Test Client ${uniqueId}`,
+      fullName: `Test Client ${uniqueId}`,
       ownerUserId: user.id,
     },
   });

@@ -1,44 +1,27 @@
 import { test, expect } from '@playwright/test';
 import fs from 'fs';
 import path from 'path';
+import { cleanupE2ETestContext, setupE2ETestContext, type TestContext } from './e2e-setup';
 
 /**
  * Contract & Smoke Tests for Milestone 9 API and UI
  *
- * These tests verify API contracts and UI smoke tests WITHOUT database persistence.
- * They make real API calls but do not verify that data persists after reload.
+ * These tests verify API contracts and UI smoke tests with isolated persisted auth fixtures.
+ * They make real API calls but do not verify that uploaded data persists after reload.
  *
  * For real persisted E2E tests with database, see milestone9-real-e2e.spec.ts
  */
 
 const fixturesDir = path.join(__dirname, '../fixtures');
+let professionalContext: TestContext;
+let salonContext: TestContext;
+let consumerContext: TestContext;
 
 function getTestImagePath(name: string): string {
   return path.join(fixturesDir, name);
 }
 
-// Mock token generators
-const TOKENS = {
-  professional: 'test-token-professional-' + Math.random().toString(36).slice(2),
-  salon: 'test-token-salon-' + Math.random().toString(36).slice(2),
-  consumer: 'test-token-consumer-' + Math.random().toString(36).slice(2),
-};
-
-// Mock user data based on token
-function getUserByToken(token: string) {
-  if (token === TOKENS.professional) {
-    return { id: 'user-1', email: 'professional@test.com', role: 'professional' };
-  }
-  if (token === TOKENS.salon) {
-    return { id: 'user-2', email: 'salon@test.com', role: 'salon' };
-  }
-  if (token === TOKENS.consumer) {
-    return { id: 'user-3', email: 'consumer@test.com', role: 'consumer' };
-  }
-  return null;
-}
-
-test.beforeAll(() => {
+test.beforeAll(async () => {
   // Create minimal test images
   if (!fs.existsSync(fixturesDir)) fs.mkdirSync(fixturesDir, { recursive: true });
 
@@ -101,6 +84,16 @@ test.beforeAll(() => {
 
   // File with spoofed MIME (text content with .jpg extension)
   fs.writeFileSync(getTestImagePath('test-mime-spoofed.jpg'), 'text content, not an image');
+
+  professionalContext = await setupE2ETestContext('professional');
+  salonContext = await setupE2ETestContext('salon');
+  consumerContext = await setupE2ETestContext('consumer');
+});
+
+test.afterAll(async () => {
+  await cleanupE2ETestContext(consumerContext);
+  await cleanupE2ETestContext(salonContext);
+  await cleanupE2ETestContext(professionalContext);
 });
 
 test.describe('Milestone 9 - API Contract & UI Smoke Tests', () => {
@@ -108,7 +101,7 @@ test.describe('Milestone 9 - API Contract & UI Smoke Tests', () => {
     await page.goto('/milestone9');
     await page.evaluate((token) => {
       localStorage.setItem('token', token);
-    }, TOKENS.professional);
+    }, professionalContext.token);
 
     const fileInput = page.locator('input[type="file"]');
     await expect(fileInput).toBeVisible();
@@ -118,7 +111,7 @@ test.describe('Milestone 9 - API Contract & UI Smoke Tests', () => {
     await page.goto('/milestone9');
     await page.evaluate((token) => {
       localStorage.setItem('token', token);
-    }, TOKENS.salon);
+    }, salonContext.token);
 
     const fileInput = page.locator('input[type="file"]');
     await expect(fileInput).toBeVisible();
@@ -129,10 +122,10 @@ test.describe('Milestone 9 - API Contract & UI Smoke Tests', () => {
 
     const response = await request.post('/api/v1/uploads', {
       headers: {
-        'Authorization': `Bearer ${TOKENS.consumer}`,
+        'Authorization': `Bearer ${consumerContext.token}`,
       },
       multipart: {
-        clientId: 'test-client',
+        clientId: consumerContext.clientId,
         files: {
           name: 'test.jpg',
           mimeType: 'image/jpeg',
@@ -179,10 +172,10 @@ test.describe('Milestone 9 - API Contract & UI Smoke Tests', () => {
 
     const response = await request.post('/api/v1/uploads', {
       headers: {
-        'Authorization': `Bearer ${TOKENS.professional}`,
+        'Authorization': `Bearer ${professionalContext.token}`,
       },
       multipart: {
-        clientId: 'test-client-1',
+        clientId: professionalContext.clientId,
         files: {
           name: 'test.jpg',
           mimeType: 'image/jpeg',
@@ -191,7 +184,7 @@ test.describe('Milestone 9 - API Contract & UI Smoke Tests', () => {
       },
     });
 
-    expect([200, 201, 400, 500]).toContain(response.status());
+    expect([200, 201]).toContain(response.status());
   });
 
   test('invalid file rejected', async ({ request }) => {
@@ -199,10 +192,10 @@ test.describe('Milestone 9 - API Contract & UI Smoke Tests', () => {
 
     const response = await request.post('/api/v1/uploads', {
       headers: {
-        'Authorization': `Bearer ${TOKENS.professional}`,
+        'Authorization': `Bearer ${professionalContext.token}`,
       },
       multipart: {
-        clientId: 'test-client-2',
+        clientId: professionalContext.clientId,
         files: {
           name: 'test.txt',
           mimeType: 'text/plain',
@@ -211,7 +204,7 @@ test.describe('Milestone 9 - API Contract & UI Smoke Tests', () => {
       },
     });
 
-    expect([400, 401, 403]).toContain(response.status());
+    expect(response.status()).toBe(400);
   });
 
   test('MIME spoofed file rejected', async ({ request }) => {
@@ -219,10 +212,10 @@ test.describe('Milestone 9 - API Contract & UI Smoke Tests', () => {
 
     const response = await request.post('/api/v1/uploads', {
       headers: {
-        'Authorization': `Bearer ${TOKENS.professional}`,
+        'Authorization': `Bearer ${professionalContext.token}`,
       },
       multipart: {
-        clientId: 'test-client-3',
+        clientId: professionalContext.clientId,
         files: {
           name: 'spoofed.jpg',
           mimeType: 'image/jpeg',
@@ -231,6 +224,6 @@ test.describe('Milestone 9 - API Contract & UI Smoke Tests', () => {
       },
     });
 
-    expect([400, 401, 403]).toContain(response.status());
+    expect(response.status()).toBe(400);
   });
 });
