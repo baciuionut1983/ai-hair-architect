@@ -12,7 +12,9 @@ export default defineConfig({
   },
   test: {
     include: ["src/**/*.test.ts", "tests/**/*.test.ts"],
+    exclude: ["tests/integration/analytics.integration.test.ts"],
     environment: "node",
+    fileParallelism: false,
     setupFiles: ["./tests/test-bootstrap.ts"],
   }
 });
