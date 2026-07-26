@@ -61,7 +61,7 @@ function Check-PostgreSQL {
         if (-not $?) {
             throw "psql not found"
         }
-        Write-Host "✓ PostgreSQL found: $version" -ForegroundColor Green
+        Write-Host "OK: PostgreSQL found: $version" -ForegroundColor Green
         return $true
     }
     catch {
@@ -79,7 +79,7 @@ function Test-PostgreSQLConnection {
         if (-not $?) {
             throw "Connection failed"
         }
-        Write-Host "✓ PostgreSQL connection successful" -ForegroundColor Green
+        Write-Host "OK: PostgreSQL connection successful" -ForegroundColor Green
         return $true
     }
     catch {
@@ -94,7 +94,7 @@ function Create-TestDatabase {
     Write-Host "`nCreating test database..." -ForegroundColor Cyan
 
     # Check if database exists
-    $dbExists = & psql -h $PostgreSQLHost -U $PostgreSQLUser -d postgres -t -c "SELECT 1 FROM pg_database WHERE datname = '$TestDatabaseName';" 2>$null
+    $dbExists = (& psql -h $PostgreSQLHost -U $PostgreSQLUser -d postgres -t -c "SELECT 1 FROM pg_database WHERE datname = '$TestDatabaseName';" 2>$null | Out-String).Trim()
 
     if ($dbExists -eq "1") {
         Write-Host "! Database '$TestDatabaseName' already exists." -ForegroundColor Yellow
@@ -127,7 +127,7 @@ function Create-TestDatabase {
         Write-Host "ERROR: Failed to create database." -ForegroundColor Red
         exit 1
     }
-    Write-Host "✓ Database '$TestDatabaseName' created" -ForegroundColor Green
+    Write-Host "OK: Database '$TestDatabaseName' created" -ForegroundColor Green
 }
 
 # Create test user
@@ -135,11 +135,11 @@ function Create-TestUser {
     Write-Host "`nCreating test user..." -ForegroundColor Cyan
 
     # Check if user exists
-    $userExists = & psql -h $PostgreSQLHost -U $PostgreSQLUser -d postgres -t -c "SELECT 1 FROM pg_roles WHERE rolname = '$TestUser';" 2>$null
+    $userExists = (& psql -h $PostgreSQLHost -U $PostgreSQLUser -d postgres -t -c "SELECT 1 FROM pg_roles WHERE rolname = '$TestUser';" 2>$null | Out-String).Trim()
 
     if ($userExists -eq "1") {
         Write-Host "! User '$TestUser' already exists." -ForegroundColor Yellow
-        Write-Host "✓ User will be reused" -ForegroundColor Green
+        Write-Host "OK: User will be reused" -ForegroundColor Green
         return $true
     }
 
@@ -152,7 +152,7 @@ function Create-TestUser {
         Write-Host "ERROR: Failed to create user." -ForegroundColor Red
         exit 1
     }
-    Write-Host "✓ User '$TestUser' created" -ForegroundColor Green
+    Write-Host "OK: User '$TestUser' created" -ForegroundColor Green
 }
 
 # Grant privileges
@@ -165,7 +165,7 @@ function Grant-Privileges {
         Write-Host "ERROR: Failed to grant privileges." -ForegroundColor Red
         exit 1
     }
-    Write-Host "✓ Privileges granted" -ForegroundColor Green
+    Write-Host "OK: Privileges granted" -ForegroundColor Green
 }
 
 # Display connection string (WITHOUT password in console logs)
@@ -183,7 +183,7 @@ function Display-ConnectionString {
 
     Write-Host "`nNext steps:" -ForegroundColor Yellow
     Write-Host "1. Set TEST_DATABASE_URL environment variable:" -ForegroundColor Cyan
-    Write-Host "   `$env:TEST_DATABASE_URL = 'postgresql://<TEST_DB_USER>:<TEST_DB_PASSWORD>@$PostgreSQLHost:$PostgreSQLPort/$TestDatabaseName'" -ForegroundColor White
+    Write-Host "   `$env:TEST_DATABASE_URL = 'postgresql://<TEST_DB_USER>:<TEST_DB_PASSWORD>@${PostgreSQLHost}:$PostgreSQLPort/$TestDatabaseName'" -ForegroundColor White
     Write-Host "   (Replace <TEST_DB_USER> with '$TestUser' and <TEST_DB_PASSWORD> with your password)" -ForegroundColor Gray
 
     Write-Host "`n2. Apply Prisma migrations:" -ForegroundColor Cyan
