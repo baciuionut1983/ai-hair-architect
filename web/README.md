@@ -56,7 +56,7 @@ npm run db:test:setup
 npm run db:test:migrate
 
 # 3. Set environment variable (each session)
-$env:TEST_DATABASE_URL = "postgresql://test_user:test_pass@localhost:5432/ai_hair_architect_test"
+$env:TEST_DATABASE_URL = "postgresql://TEST_USER:TEST_PASSWORD@localhost:5432/ai_hair_architect_test"
 
 # 4. Run real persisted E2E tests
 npm run test:e2e:real
@@ -79,6 +79,22 @@ npm run lint        # ESLint
 npm run typecheck   # TypeScript type checking
 npm run build       # Full Next.js build
 ```
+
+### M15 Phase 1 Object Storage
+
+Phase 1 adds an S3-compatible storage contract, additive nullable `ImageAsset` metadata, and isolated tests. The adapter is not connected to uploads, downloads, deletion, image analysis, M13, or readiness.
+
+```bash
+npm run prisma:validate
+npm run typecheck
+npm run test -- src/lib/object-storage.test.ts src/lib/object-storage-config.test.ts src/lib/image-asset-storage-repository.test.ts src/lib/env-core-gate.test.ts
+npm run test -- tests/integration/m15-object-storage-postgresql.integration.test.ts
+npm run test -- tests/integration/m15-object-storage.integration.test.ts
+```
+
+The PostgreSQL suite requires an explicitly isolated `TEST_DATABASE_URL`. The object-store suite is skipped unless `M15_OBJECT_STORAGE_INTEGRATION=isolated` and a non-AWS S3-compatible endpoint are configured explicitly. It uses a unique synthetic bucket and prefix and never touches `.storage/images`.
+
+Production runtime requires a complete `OBJECT_STORAGE_BACKEND=s3` configuration with an explicit `OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION=AES256` or `aws:kms` mode and fails closed when it is missing or invalid. Development and test require no S3 configuration while the backend is inactive; isolated providers that do not implement request-level SSE must set the mode explicitly to `none`. This validation does not change global readiness, which remains `NOT_READY`. See [`docs/M15_OBJECT_STORAGE_RUNBOOK.md`](docs/M15_OBJECT_STORAGE_RUNBOOK.md) for configuration, least-privilege IAM, bucket controls, test isolation, and rollback.
 
 ### Test Database Management
 

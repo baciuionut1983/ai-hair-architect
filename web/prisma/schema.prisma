@@ -84,6 +84,14 @@ enum NotificationType {
   maintenance
 }
 
+enum ImageAssetStorageState {
+  pending_upload
+  available
+  delete_pending
+  deleted
+  quarantined
+}
+
 model User {
   id            String            @id @default(uuid())
   email         String            @unique
@@ -239,6 +247,16 @@ model ImageAsset {
   ownerUserId           String
   clientId              String
   storagePath           String
+  storageBackend        String?                 @db.VarChar(16)
+  storageBucketAlias    String?                 @db.VarChar(64)
+  storageKey            String?                 @db.VarChar(512)
+  storageVersionId      String?                 @db.VarChar(1024)
+  storageEtag           String?                 @db.VarChar(256)
+  contentSha256         String?                 @db.Char(64)
+  storageState          ImageAssetStorageState?
+  storageMigratedAt     DateTime?               @db.Timestamp(6)
+  objectDeletedAt       DateTime?               @db.Timestamp(6)
+  lastStorageErrorCode  String?                 @db.VarChar(80)
   exifStripped          Boolean         @default(false)
   normalizedOrientation Int             @default(0)
   uploadedAt            DateTime        @default(now())
@@ -253,6 +271,9 @@ model ImageAsset {
   @@index([clientId])
   @@index([ownerUserId, clientId])
   @@index([deletedAt])
+  @@unique([storageBucketAlias, storageKey])
+  @@index([ownerUserId, storageState, id])
+  @@index([storageState, retentionDeletesAt, id])
 }
 
 model ImageAnalysis {

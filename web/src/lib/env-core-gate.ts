@@ -13,7 +13,16 @@ export interface EnvValidationIssue {
     | "ENV_DATABASE_URL_REQUIRED"
     | "ENV_WEBHOOK_KEY_REQUIRED"
     | "ENV_WEBHOOK_KEY_INVALID"
-    | "ENV_AUTH_BCRYPT_COST_INVALID";
+    | "ENV_AUTH_BCRYPT_COST_INVALID"
+    | "OBJECT_STORAGE_BACKEND_REQUIRED"
+    | "OBJECT_STORAGE_BACKEND_INVALID"
+    | "OBJECT_STORAGE_S3_VALUE_REQUIRED"
+    | "OBJECT_STORAGE_BOOLEAN_INVALID"
+    | "OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION_REQUIRED"
+    | "OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION_INVALID"
+    | "OBJECT_STORAGE_ENDPOINT_INVALID"
+    | "OBJECT_STORAGE_PREFIX_INVALID"
+    | "OBJECT_STORAGE_TIMEOUT_INVALID";
   variable?: string;
   message: string;
 }
@@ -29,12 +38,26 @@ const BASE64_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
 const WEBHOOK_KEY_EXPECTED_BYTES = 32;
 
 export const ENV_CORE_GATE_MATRIX: EnvVariableMatrix = {
-  requiredInProduction: ["NODE_ENV", "DATABASE_URL", "WEBHOOK_SECRET_ENCRYPTION_KEY"],
+  requiredInProduction: [
+    "NODE_ENV",
+    "DATABASE_URL",
+    "WEBHOOK_SECRET_ENCRYPTION_KEY",
+    "OBJECT_STORAGE_BACKEND",
+    "OBJECT_STORAGE_BUCKET_ALIAS",
+    "OBJECT_STORAGE_BUCKET",
+    "OBJECT_STORAGE_REGION",
+    "OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION"
+  ],
   optionalInProduction: [
     "AUTH_BCRYPT_COST",
     "AI_EXPLAINER_ENDPOINT",
     "AI_EXPLAINER_API_KEY",
-    "AI_EXPLAINER_TIMEOUT_MS"
+    "AI_EXPLAINER_TIMEOUT_MS",
+    "OBJECT_STORAGE_ENDPOINT",
+    "OBJECT_STORAGE_FORCE_PATH_STYLE",
+    "OBJECT_STORAGE_KMS_KEY_ID",
+    "OBJECT_STORAGE_PREFIX",
+    "OBJECT_STORAGE_REQUEST_TIMEOUT_MS"
   ],
   developmentTestOnly: ["TEST_DATABASE_URL"]
 };
@@ -150,6 +173,8 @@ export function validateRuntimeProductionEnvironment(env: NodeJS.ProcessEnv): En
     }
   }
 
+  issues.push(...validateProductionObjectStorageEnvironment(env));
+
   return {
     phase: "runtime",
     mode,
@@ -182,4 +207,97 @@ function validateWebhookSecretEncryptionKey(rawValue: string): EnvValidationIssu
   }
 
   return null;
+}
+
+function validateProductionObjectStorageEnvironment(env: NodeJS.ProcessEnv): EnvValidationIssue[] {
+  const issues: EnvValidationIssue[] = [];
+  const backend = String(env.OBJECT_STORAGE_BACKEND ?? "").trim();
+
+  if (!backend) {
+    return [{
+      code: "OBJECT_STORAGE_BACKEND_REQUIRED",
+      variable: "OBJECT_STORAGE_BACKEND",
+      message: "OBJECT_STORAGE_BACKEND must be s3 in production."
+    }];
+  }
+  if (backend !== "s3") {
+    return [{
+      code: "OBJECT_STORAGE_BACKEND_INVALID",
+      variable: "OBJECT_STORAGE_BACKEND",
+      message: "Production object storage requires the s3 backend."
+    }];
+  }
+
+  for (const variable of ["OBJECT_STORAGE_BUCKET_ALIAS", "OBJECT_STORAGE_BUCKET", "OBJECT_STORAGE_REGION"] as const) {
+    if (!String(env[variable] ?? "").trim()) {
+      issues.push({
+        code: "OBJECT_STORAGE_S3_VALUE_REQUIRED",
+        variable,
+        message: `${variable} is required when the s3 backend is active.`
+      });
+    }
+  }
+
+  const forcePathStyle = String(env.OBJECT_STORAGE_FORCE_PATH_STYLE ?? "").trim();
+  if (forcePathStyle && forcePathStyle !== "true" && forcePathStyle !== "false") {
+    issues.push({
+      code: "OBJECT_STORAGE_BOOLEAN_INVALID",
+      variable: "OBJECT_STORAGE_FORCE_PATH_STYLE",
+      message: "OBJECT_STORAGE_FORCE_PATH_STYLE must be true or false."
+    });
+  }
+
+  const serverSideEncryption = String(env.OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION ?? "").trim();
+  if (!serverSideEncryption) {
+    issues.push({
+      code: "OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION_REQUIRED",
+      variable: "OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION",
+      message: "OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION must be configured explicitly in production."
+    });
+  } else if (serverSideEncryption !== "AES256" && serverSideEncryption !== "aws:kms") {
+    issues.push({
+      code: "OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION_INVALID",
+      variable: "OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION",
+      message: "Production object storage requires AES256 or aws:kms server-side encryption."
+    });
+  }
+
+  const endpoint = String(env.OBJECT_STORAGE_ENDPOINT ?? "").trim();
+  if (endpoint) {
+    try {
+      const parsed = new URL(endpoint);
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) {
+        throw new Error("invalid endpoint");
+      }
+    } catch {
+      issues.push({
+        code: "OBJECT_STORAGE_ENDPOINT_INVALID",
+        variable: "OBJECT_STORAGE_ENDPOINT",
+        message: "OBJECT_STORAGE_ENDPOINT must be an approved HTTPS URL without credentials or query data."
+      });
+    }
+  }
+
+  const prefix = String(env.OBJECT_STORAGE_PREFIX ?? "v1").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9/_-]{0,127}$/.test(prefix) || prefix.includes("..") || prefix.startsWith("/") || prefix.endsWith("/")) {
+    issues.push({
+      code: "OBJECT_STORAGE_PREFIX_INVALID",
+      variable: "OBJECT_STORAGE_PREFIX",
+      message: "OBJECT_STORAGE_PREFIX must be a relative, traversal-free prefix."
+    });
+  }
+
+  const rawTimeout = String(env.OBJECT_STORAGE_REQUEST_TIMEOUT_MS ?? "").trim();
+  if (rawTimeout) {
+    const timeout = Number(rawTimeout);
+    if (!Number.isInteger(timeout) || timeout < 250 || timeout > 30_000) {
+      issues.push({
+        code: "OBJECT_STORAGE_TIMEOUT_INVALID",
+        variable: "OBJECT_STORAGE_REQUEST_TIMEOUT_MS",
+        message: "OBJECT_STORAGE_REQUEST_TIMEOUT_MS must be an integer from 250 to 30000."
+      });
+    }
+  }
+
+  return issues;
 }
