@@ -1,7 +1,7 @@
 # M15 TECHNICAL PLAN - Production Object Storage
 
-**Date:** 27 iulie 2026
-**Status:** Proposed - implementation blocked pending review and approval
+**Date:** 28 iulie 2026
+**Status:** Architecture amended and frozen for `m15.v2`; implementation remains blocked pending work-package-specific approval
 **Blockers:** `PR-C-003` Production storage backend; `PR-D-002` Object storage implementation
 **Scope:** Private S3-compatible object storage for image bytes, zero-downtime migration from local filesystem storage, storage readiness, retention, and backup/restore reference compatibility
 
@@ -27,7 +27,7 @@ M15 closes `PR-C-003` and `PR-D-002` only after all active image assets are obje
 - The authenticated application download route returns bytes only for an active asset owned by the caller.
 - Production readiness passes storage only when configuration, provider capability, migration completion, and active-row invariants all pass.
 - Backup `m13.v1`, `m13.v2`, and `m13.v3` parsing, canonicalization, checksums, fingerprints, and dispatch remain unchanged.
-- New backups use `m15.v1` and carry structured object references plus content checksums, but not image bytes.
+- `m15.v1` remains an immutable object-only recovery contract; all new backups created during the hybrid Phase 2 period use `m15.v2` and represent local-only, object-only, or mixed owner state without embedding image bytes.
 - Restore never creates available metadata for a missing or mismatched object.
 - PostgreSQL, unit, integration, object-store, security, backup/restore, and production-readiness gates pass.
 - No production import of `fs` or `.storage/images` remains after final cutover, except the isolated migration utility.
@@ -111,7 +111,7 @@ The following are protected:
 - M13 restore governance, maintenance, retention, observability, and alert contracts;
 - public launch authorization: M15 does not override independent critical blockers.
 
-Allowed compatibility changes to shared backup files must be additive `m15.v1` dispatch branches. Existing M13 branches and fixtures are immutable.
+Allowed compatibility changes to shared backup files must preserve the existing additive `m15.v1` branch unchanged and add a distinct `m15.v2` branch. Existing M13 and `m15.v1` shapes, parsers, canonicalization, checksums, fingerprints, semantics, and fixtures are immutable.
 
 ---
 
@@ -147,6 +147,8 @@ interface ObjectStorage {
   delete(input: ObjectIdentity): Promise<void>;
 }
 ```
+
+The nullable `versionId` above is retained only for transitional Phase 1 adapter compatibility before provider capability qualification. It is not a valid Phase 2 runtime, `m15.v1`, or `m15.v2` recovery reference. Every Phase 2 object-backed operation must first require a non-empty exact `versionId` and must fail closed rather than use the current/latest object.
 
 The adapter must translate provider errors into stable internal categories: `not_found`, `access_denied`, `timeout`, `throttled`, `configuration`, and `provider_unavailable`. Raw provider messages are logged only after secret-safe sanitization and are not returned to clients.
 
@@ -203,7 +205,7 @@ The server-side route performs:
 1. bearer-session authentication using the established auth helper pattern;
 2. owner-scoped lookup with `deletedAt: null` and `storageState: available` in the query itself;
 3. object reference validation;
-4. provider `GET` pinned to `versionId` when available;
+4. provider `GET` pinned to the mandatory non-empty exact `versionId`; a missing version blocks the request without current/latest fallback;
 5. streamed response with stored `Content-Type`, exact `Content-Length`, safe `Content-Disposition`, `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store`, and request ID;
 6. stable `404/410/503` handling without disclosing cross-owner existence.
 
@@ -419,49 +421,79 @@ Client messages remain safe and generic. Request IDs correlate route, database, 
 - An M13 artifact containing local image references remains executable only under its existing verified local-reference contract.
 - M15 does not silently reinterpret a legacy `storagePath` as an object key.
 
-### 8.2 New `m15.v1` Artifact
+### 8.2 Frozen `m15.v1` and New Hybrid `m15.v2`
 
-`m15.v1` extends the current `m13.v3` business sections and replaces each forward `ImageAsset` external reference with:
+`m15.v1` remains strictly object-only and permanently compatible. Its artifact shape, exact-key validation, parser, canonical serialization, checksum, preview fingerprint, dispatch, and restore semantics do not change. Existing artifacts are never relabeled or converted implicitly to `m15.v2`.
+
+All backups newly created during the hybrid Phase 2 period use `m15.v2`. It retains the six approved business domains and models every `ImageAsset` through an exact-key discriminated union:
 
 ```ts
-interface BackupM15ObjectReference {
-  backend: "s3";
-  bucketAlias: string;
-  key: string;
-  versionId: string | null;
-  contentSha256: string;
-  sizeBytes: number;
-}
+type BackupM15V2ImageAsset =
+  | {
+      storageKind: "legacy-local";
+      legacyReference: {
+        backend: "local";
+        rootAlias: "legacy-images";
+        relativePath: string;
+        contentSha256: string;
+        sizeBytes: number;
+      };
+    }
+  | {
+      storageKind: "object-backed";
+      objectReference: {
+        backend: "s3";
+        bucketAlias: string;
+        key: string;
+        versionId: string;
+        contentSha256: string;
+        sizeBytes: number;
+      };
+    };
 ```
 
-Image bytes remain outside the JSON artifact. The artifact checksum protects the reference metadata; the per-object SHA-256 protects the referenced bytes.
+Both variants require exactly these common business fields: `id`, `fileName`, `mimeType`, `sizeBytes`, `ownerUserId`, `clientId`, `exifStripped`, `normalizedOrientation`, `uploadedAt`, `deletedAt`, `retentionDeletesAt`, `createdAt`, and `updatedAt`. `legacy-local` additionally requires only `storageKind` and the complete `legacyReference`; it forbids `storagePath`, `objectReference`, `storageEtag`, `storageState`, `storageMigratedAt`, `objectDeletedAt`, and `lastStorageErrorCode`. `object-backed` additionally requires `storageKind`, the complete exact-version `objectReference`, and present keys `storageEtag`, `storageState`, `storageMigratedAt`, `objectDeletedAt`, and `lastStorageErrorCode`; it forbids `storagePath`, `legacyReference`, and every local root/path field. Missing keys, additional keys, an unknown discriminator, both payloads, or a payload that disagrees with `storageKind` invalidate the complete artifact.
+
+For a restorable object-backed row, `storageState` is `available` for active metadata or `delete_pending` for soft-deleted metadata whose object still exists; `objectDeletedAt` remains null. `pending_upload`, `quarantined`, `deleted`, an active row not in `available`, or lifecycle timestamps inconsistent with the state block backup creation. Nullable lifecycle values remain explicit keys and `lastStorageErrorCode`, when non-null, must use the safe taxonomy.
+
+The legacy reference uses only logical root alias `legacy-images` and a canonical POSIX path relative to that root. It forbids an absolute path, drive letter, leading slash, empty/`.`/`..` segment, traversal, and symlink escape. Its owner and asset path segments must match the row identity. M13 absolute `storagePath` values are never serialized into `m15.v2`.
+
+The object reference retains only `bucketAlias`, canonical PII-free `key`, non-empty exact `versionId`, lowercase `contentSha256`, and positive bounded `sizeBytes`. Physical bucket, endpoint, credentials, tokens, public or presigned URLs, and current/latest-version fallback are prohibited.
+
+Image bytes remain outside the JSON artifact. The artifact checksum protects both reference variants; each per-reference SHA-256 protects the referenced bytes.
 
 ### 8.3 Backup Creation and Verification
 
-- backup creation reads `ImageAsset` metadata in the existing PostgreSQL `RepeatableRead` snapshot;
-- only complete object references are emitted;
-- verification performs bounded `HEAD` checks for every active referenced object;
-- verification requires size, checksum metadata, and pinned version identity where versioning is enabled;
-- missing, inaccessible, or mismatched objects make the artifact ineligible for restore;
+- backup creation reads all six domains owner-scoped in one PostgreSQL `RepeatableRead` transaction;
+- zero assets produces `m15.v2` with an empty `imageAssets` section; local-only, object-only, and mixed state each produce a complete `m15.v2` artifact;
+- a valid legacy source has `storageBackend` absent or `local`, null object state/reference metadata, and a safe readable regular file; a valid object source has `storageBackend=s3`, a complete exact-version reference, and coherent lifecycle metadata;
+- partial or contradictory metadata is neither variant and blocks the complete backup; no third implicit variant, row omission, or implicit legacy-to-object conversion is permitted;
+- every legacy file must exist at creation, remain confined beneath `legacy-images`, and match required size and a newly verified SHA-256;
+- every object reference must be complete and verified by bounded exact-version `HEAD` and streamed size/SHA-256 checks;
+- any missing, inaccessible, unsafe, incomplete, or mismatched reference blocks persistence of the entire backup;
 - provider throttling/unavailability is reported as verification unavailable, not as a false missing object;
-- backup JSON never includes credentials, endpoint, physical bucket name, signed URL, or response headers.
+- backup JSON never includes an M13 absolute `storagePath`, credentials, token, endpoint, physical bucket name, public/presigned URL, or provider response headers.
 
 Object-store durability is handled by infrastructure policy: versioning, encryption, lifecycle, provider durability, and independently documented replication/export. The database artifact alone is explicitly not a complete binary backup.
 
 ### 8.4 Restore
 
-- preview verifies every object reference before declaring eligibility;
-- execution repeats object verification inside the restore decision window before metadata replacement;
+- `m15.v2` preview verifies legacy and object references separately and validates every reference before declaring eligibility;
+- filesystem-to-S3 and S3-to-filesystem fallback are prohibited;
+- preview responses expose no path, key, version ID, endpoint, or provider details;
+- `m15.v2` uses the distinct `m15.restore-preview.v2` fingerprint contract; M13 and `m15.v1` fingerprints remain unchanged;
+- execution repeats complete legacy and exact-version object verification inside the restore decision window before metadata replacement;
 - restore maps `bucketAlias` to the target environment's configured bucket;
 - restore never copies bytes between providers in the PostgreSQL transaction;
-- a missing target object blocks restore before destructive database changes;
+- a missing or inconsistent legacy file or target object blocks restore before destructive database changes;
+- restore is all-or-nothing: partial restore, asset omission, latest-object fallback, and reconstruction of a local file from metadata alone are prohibited;
 - postconditions include row counts, state fingerprint, reference completeness, and object verification summary;
-- legacy M13 safety-backup requirements remain unchanged;
+- safety-backup rules for execution of historical M13 artifacts remain unchanged and apply only to their existing M13 restore path; they cannot satisfy object-backed or mixed Phase 2 state;
 - cross-region/object-copy restore is a separate pre-restore operational step that must preserve checksum and record the target version ID.
 
 ### 8.5 Restore Rollback Safety
 
-The pre-restore safety backup must be `m15.v1` when current state contains object-backed assets. A legacy M13 safety backup is insufficient because it cannot prove recoverability of structured object references. Object versions required by the safety backup must be protected from lifecycle deletion for the restore rollback window.
+The pre-restore safety backup for state containing local, object-backed, or mixed assets must be complete and representable as `m15.v2`. A legacy M13 safety backup is insufficient for object-backed or mixed state. Every legacy file must be verified and every referenced object version must be protected from deletion through the restore rollback window.
 
 ---
 
@@ -484,7 +516,7 @@ The pre-restore safety backup must be `m15.v1` when current state contains objec
 
 ### Phase 2 - Write Cutover
 
-- activate `m15.v1` backup creation before the first object-backed production row can be created, while retaining immutable M13 read/restore dispatch;
+- activate `m15.v2` hybrid backup creation before the first object-backed production row can be created, while retaining immutable M13 and object-only `m15.v1` read/restore dispatch;
 - deploy object-only writes for new uploads;
 - new rows use `pending_upload -> available` and never write local files;
 - reads use object storage for object-backed rows and temporary local read-only fallback for unmigrated legacy rows;
@@ -506,6 +538,8 @@ The migration utility processes deterministic owner/asset batches:
 
 Uploads and authenticated reads remain available during backfill. A row being migrated remains readable from its original source until the verified metadata switch commits.
 
+The transition is always explicit: verify the confined local file, upload it, verify exact version/size/SHA-256, conditionally update PostgreSQL against the unchanged legacy identity, and retain the local source through the rollback window. Historical M13, `m15.v1`, and `m15.v2` artifacts remain byte-for-byte unchanged. The `legacy-local` variant may be disabled for new creation only after zero active legacy assets, rollback-window expiry, resolution of retention for historical backups that depend on local files, and separate explicit approval; existing parsers remain supported.
+
 ### Phase 4 - Verification and Read Cutover
 
 - reconcile manifest, PostgreSQL rows, and provider `HEAD` results;
@@ -517,7 +551,7 @@ Uploads and authenticated reads remain available during backfill. A row being mi
 
 ### Phase 5 - Backup/Restore and Retention Cutover
 
-- validate the active `m15.v1` backup, preview, safety backup, restore, and postconditions against object-backed assets;
+- validate `m15.v1` object-only compatibility and the active `m15.v2` local-only, object-only, and mixed backup, preview, safety-backup, restore, and postcondition flows;
 - activate retention execution and reconciliation;
 - prove object version protection across a restore rollback drill.
 
@@ -528,6 +562,22 @@ Uploads and authenticated reads remain available during backfill. A row being mi
 - retain Billing authenticity as an independent blocker;
 - remove production imports of local storage and delete local copies only after the approved rollback window;
 - publish closure evidence and Git checkpoint.
+
+### WP2H Implementation Sequence
+
+The hybrid recovery work is strictly ordered:
+
+1. `WP2H0` - architecture amendment documentation;
+2. `WP2H1` - contract and artifact core v2;
+3. `WP2H2` - legacy and hybrid reference verification;
+4. `WP2H3` - pure restore preview v2;
+5. `WP2H4` - preview runtime integration;
+6. `WP2H5` - creation and verification persistence;
+7. `WP2H6` - HTTP activation;
+8. `WP2H7` - restore execution core;
+9. `WP2H8` - execution runtime and route wiring.
+
+Every package requires a separate read-only audit, exact allowlist, gates, approval, and implementation authorization. `WP2H0` changes documentation only and does not authorize or begin `WP2H1`.
 
 ### Migration Abort Conditions
 
@@ -575,7 +625,8 @@ Readiness remains synchronous from the route perspective and exposes only safe m
 - safe `Content-Disposition` and response headers;
 - readiness PASS/FAIL matrix and cache expiry;
 - M13 dispatch remains byte-for-byte compatible;
-- `m15.v1` validation, canonicalization, checksums, and structured references;
+- `m15.v1` validation, canonicalization, checksums, fingerprints, and object-only semantics remain byte-for-byte compatible;
+- `m15.v2` exact-key discriminated union, canonicalization, checksums, and hybrid references;
 - retention candidate selection and idempotency fingerprints.
 
 ### 11.2 Route and Contract Tests
@@ -619,11 +670,14 @@ Run against an isolated MinIO/S3-compatible test service, never mocks alone:
 ### 11.5 Backup/Restore Integration Tests
 
 - `m13.v1-v3` fixtures retain existing checksums and outcomes;
-- `m15.v1` backup round trip with object-backed assets;
+- existing `m15.v1` object-only artifacts retain their checksums and outcomes;
+- `m15.v2` zero-asset, local-only, object-only, and mixed backup round trips;
+- unknown discriminator, additional fields, partial/contradictory metadata, unsafe local path, symlink escape, missing local file, and local size/SHA-256 mismatch block creation or preview;
 - missing object, wrong size, wrong checksum, wrong version, and unknown alias block preview;
 - transient provider failure is distinguished from definitive missing object;
 - restore performs no destructive database step before reference verification;
-- safety backup must be `m15.v1` for object-backed current state;
+- safety backup must be complete `m15.v2` for local, object-backed, or mixed current state;
+- no preview response exposes path, key, version ID, endpoint, or provider information;
 - rollback restores metadata and resolves the original protected object versions;
 - backup artifact contains no credentials, physical bucket, endpoint, or signed URL.
 
@@ -680,7 +734,7 @@ Additionally required:
 | Credential or signed URL leakage | Bucket compromise | Workload identity, no presigned flow, log masking, no secrets in DB/backups/readiness |
 | Provider outage or throttling | Upload/download outage | Bounded SDK retries, timeouts, stable 503, observability; no unsafe local fallback |
 | Checksum mismatch or silent corruption | Wrong image served/restored | SHA-256 over normalized bytes, metadata verification, version pinning, fail closed |
-| Legacy M13 semantic drift | Restore regression | Immutable legacy dispatch and fixtures; additive `m15.v1` only |
+| Legacy M13 or `m15.v1` semantic drift | Restore regression | Immutable legacy dispatch, fixtures, and object-only v1 contract; distinct additive `m15.v2` branch only |
 | Backup gives false confidence | Metadata restored without bytes | Explicit external-object contract, HEAD/checksum verification, version protection, restore drill |
 | Retention deletes rollback objects | Irrecoverable rollback | Versioning, lifecycle hold window, safety-backup version protection |
 | Zero-downtime dual-source inconsistency | Different bytes across instances | New writes object-only, row-level verified switch, temporary read-only legacy fallback only |
@@ -716,12 +770,12 @@ Additionally required:
 - if mixed-version application rollback cannot understand object rows, block affected image routes with controlled `503` rather than return missing/corrupt data;
 - use a forward fix as the preferred recovery.
 
-### 13.4 After Local Cleanup or `m15.v1` Backups
+### 13.4 After Local Cleanup or M15 Backups
 
 - do not deploy pre-M15 code against production data;
 - preserve bucket, versions, aliases, and all additive database fields;
 - disable writes if necessary, keep authenticated reads on the object adapter, and forward-fix;
-- restore only from a verified `m15.v1` safety backup plus protected object versions;
+- restore object-only historical state from a verified `m15.v1` artifact when applicable; restore any newly captured local, object-backed, or mixed state only from a complete verified `m15.v2` safety backup plus all required local files and protected object versions;
 - never drop M15 columns, delete the bucket, or expire protected versions as rollback actions.
 
 ### 13.5 Rollback Validation

@@ -1,8 +1,8 @@
 # M15 Architecture Freeze - Production Object Storage
 
-**Date:** 27 iulie 2026
-**Status:** Proposed for final architecture review
-**Implementation status:** Not authorized
+**Date:** 28 iulie 2026
+**Status:** Amended and frozen - `m15.v2` hybrid recovery contract
+**Implementation status:** WP2H0 documentation authorized; WP2H1 and later implementation not authorized
 **Frozen source:** `M15_TECHNICAL_PLAN.md` plus approved Phase 0 and Phase 0B evidence
 **Critical blockers addressed:** `PR-C-003`, `PR-D-002`
 
@@ -38,7 +38,7 @@ Phase 0/0B established that the current local baseline is `ai_hair_architect_tes
 
 For any future environment with authoritative local assets, migration is online and row-by-row: validate source confinement, checksum bytes, upload to the deterministic key, verify size/checksum/version, switch metadata conditionally, and retain the local source read-only through the rollback window. Final cutover requires zero active local rows, zero stale pending uploads, zero missing/mismatched objects, and zero duplicate keys.
 
-M13 `m13.v1-v3` behavior, canonicalization, checksums, fingerprints, fixtures, and dispatch remain immutable. M15 introduces additive `m15.v1` only before the first object-backed production row. It stores structured external references (`backend`, `bucketAlias`, `key`, `versionId`, `contentSha256`, `sizeBytes`) but not image bytes. Backup verification and restore must prove object existence and integrity before destructive database work. Safety backups for object-backed state must be `m15.v1`, with referenced versions protected through the rollback window.
+M13 `m13.v1-v3` behavior, canonicalization, checksums, fingerprints, fixtures, and dispatch remain immutable. `m15.v1` also remains immutable, strictly object-only, and permanently compatible; it is never relabeled or converted implicitly. All backups newly created during the hybrid Phase 2 period use `m15.v2`, whose exact-key `ImageAsset` union discriminates `legacy-local` from `object-backed` state. Backup verification and restore must prove every local or object reference before destructive database work. Safety backups for local, object-backed, or mixed state must be complete `m15.v2` artifacts, with local files retained and referenced object versions protected through the rollback window.
 
 ### 1.4 Readiness and Closure
 
@@ -56,7 +56,7 @@ The following cannot change without a revised architecture review:
 - deterministic PII-free keys and owner-scoped lookup before provider access;
 - additive two-step schema and explicit lifecycle state machine;
 - object-only new writes before online backfill;
-- immutable M13 behavior and additive `m15.v1` recovery contract;
+- immutable M13 behavior, immutable object-only `m15.v1`, and a distinct additive hybrid `m15.v2` recovery contract;
 - test/fixture exclusion for the 222 Phase 0 artifacts, with no deletion authorization;
 - storage readiness remains fail-closed until Phase 6;
 - no extension of the legacy root runtime or changes to AI analysis semantics.
@@ -72,13 +72,13 @@ Any change to these decisions, phase ordering, protected components, or approved
 | 0 | Baseline and read-only inventory | closed | Exact local database/storage inventory without mutation |
 | 0B | Baseline verification and anonymous classification | closed | Local test baseline confirmed; storage classified as test/fixture data |
 | 1 | Additive storage foundation | not approved | Provider configuration, adapter, additive M15a schema, isolated tests; no runtime cutover |
-| 2 | Recovery contract and object-write cutover | blocked by Phase 1 | Activate `m15.v1`, then route new writes to object storage with temporary legacy reads |
+| 2 | Recovery contract and object-write cutover | blocked by Phase 1 | Activate hybrid `m15.v2`, retain immutable `m15.v1`, then route new writes to object storage with temporary legacy reads |
 | 3 | Online authoritative backfill | blocked by Phase 2 | Migrate only DB-authoritative legacy assets with resumable byte verification |
 | 4 | Reconciliation and object-read cutover | blocked by Phase 3 | Validate M15b invariants and disable production local fallback |
 | 5 | Restore, retention, and rollback qualification | blocked by Phase 4 | Prove recovery, retention, reconciliation, and protected-version rollback |
 | 6 | Readiness and closure | blocked by Phase 5 | Derive storage readiness, close blockers, publish evidence |
 
-Phase numbers and ownership boundaries are frozen. Phase 2 combines recovery-contract activation with write cutover because `m15.v1` must exist before the first object-backed production row. It may use separate commits inside the phase, but the phase gate is atomic.
+Phase numbers and ownership boundaries are frozen. Phase 2 combines recovery-contract activation with write cutover because `m15.v2` must be active before the first object-backed production row. It may use separate commits inside the phase, but the phase gate is atomic.
 
 ---
 
@@ -133,11 +133,12 @@ Phase numbers and ownership boundaries are frozen. Phase 2 combines recovery-con
 
 **GO entry:** Phase 1 DoD and checkpoint approved; provider capability evidence current; M15a deployed; Phase 2 API/M13 scope approved; rollback drill for pre-write state passed.
 
-**NO-GO:** `m15.v1` is not active before object writes; legacy M13 fixtures/checksums change; owner isolation or conditional-write semantics fail; compensating cleanup is unproven; provider access is public or over-privileged.
+**NO-GO:** `m15.v2` is not active before object writes; legacy M13 or `m15.v1` shape/checksum/semantics change; hybrid state cannot be represented completely; owner isolation or conditional-write semantics fail; compensating cleanup is unproven; provider access is public or over-privileged.
 
 **Definition of Done:**
 
-- additive `m15.v1` creation/verification/preview/restore dispatch exists while `m13.v1-v3` remain behaviorally identical;
+- additive `m15.v2` creation/verification/preview/restore dispatch represents zero-asset, local-only, object-only, and mixed state while `m13.v1-v3` and object-only `m15.v1` remain behaviorally identical;
+- every source row is strictly classified as valid `legacy-local`, valid `object-backed`, or inconsistent; an inconsistent row blocks the complete backup without omission or implicit conversion;
 - new uploads use `pending_upload -> available` and never write locally;
 - object bytes are verified by size, SHA-256, and version identity before availability;
 - authenticated proxy download and owner-scoped metadata paths pass security tests;
@@ -162,6 +163,8 @@ Phase numbers and ownership boundaries are frozen. Phase 2 combines recovery-con
 - manifest reconciliation accounts for every authoritative row and object;
 - failures are quarantined/reportable without fabricated success.
 
+Each transition verifies the local source, uploads bytes, verifies exact version/size/SHA-256, conditionally switches PostgreSQL metadata, and retains the source through the rollback window. Historical artifacts remain byte-for-byte unchanged. Disabling new `legacy-local` creation requires zero active legacy assets, rollback-window expiry, resolved retention for dependent historical backups, and separate explicit approval.
+
 For the approved local test baseline, authoritative backfill count is zero; Phase 3 still validates tooling and produces a zero-work reconciliation record.
 
 ### Phase 4 - Reconciliation and Object-Read Cutover
@@ -182,13 +185,14 @@ For the approved local test baseline, authoritative backfill count is zero; Phas
 
 ### Phase 5 - Restore, Retention, and Rollback Qualification
 
-**GO entry:** Phase 4 DoD/checkpoint approved; `m15.v1` artifacts exist; object versions are protected; retention policy and destructive operations receive explicit authorization.
+**GO entry:** Phase 4 DoD/checkpoint approved; `m15.v1` compatibility and complete `m15.v2` artifacts are proven; required local files and object versions are protected; retention policy and destructive operations receive explicit authorization.
 
-**NO-GO:** safety backup is legacy-only for object-backed state; target object/version cannot be verified; restore performs destructive DB work before verification; lifecycle may expire rollback versions; retention is unaudited or non-idempotent.
+**NO-GO:** safety backup is M13 for object-backed or mixed state; any legacy file or target exact object version cannot be verified; restore permits fallback, omission, or partial mutation; lifecycle may remove rollback bytes; retention is unaudited or non-idempotent.
 
 **Definition of Done:**
 
-- `m15.v1` backup, verification, preview, execution, postconditions, and safety-backup flow pass end to end;
+- object-only `m15.v1` remains compatible and `m15.v2` local-only, object-only, mixed, verification, preview, execution, postcondition, and safety-backup flows pass end to end;
+- `m15.v2` restore performs complete pre-verification and all-or-nothing metadata mutation, with no filesystem/S3 fallback, latest-object fallback, asset omission, or reconstruction from metadata alone;
 - missing/wrong checksum/wrong size/wrong version/unknown alias block restore;
 - `m13.v1-v3` full regression remains unchanged;
 - retention dry-run and authorized execution are bounded, audited, idempotent, and retryable;
@@ -222,7 +226,7 @@ For the approved local test baseline, authoritative backfill count is zero; Phas
 | 0 | approved read-only scope | inventory and initial risks | none affecting baseline |
 | 0B | Phase 0 | verified test baseline and provenance | documentation only |
 | 1 | 0B + freeze approval + provider/security/schema decisions | additive schema, adapter, isolated capability evidence | bucket/IAM provisioning and adapter tests |
-| 2 | Phase 1 | object-backed new-write path and `m15.v1` | M13 legacy regression may run in parallel |
+| 2 | Phase 1 | object-backed new-write path and hybrid `m15.v2`, with immutable `m15.v1` compatibility | M13 and `m15.v1` regression may run in parallel |
 | 3 | Phase 2 | migrated authoritative rows and manifest | batches may run in parallel only with disjoint claims |
 | 4 | Phase 3 | object-only reads and final constraints | smoke suites across instance classes |
 | 5 | Phase 4 | qualified recovery, retention, reconciliation | non-destructive preview and dry-run suites |
@@ -233,14 +237,14 @@ flowchart LR
     P0[Phase 0<br/>Inventory] --> P0B[Phase 0B<br/>Classification]
     P0B --> AF[Architecture Freeze]
     AF --> P1[Phase 1<br/>Foundation]
-    P1 --> P2[Phase 2<br/>m15.v1 + Write Cutover]
+    P1 --> P2[Phase 2<br/>m15.v2 + Write Cutover]
     P2 --> P3[Phase 3<br/>Backfill]
     P3 --> P4[Phase 4<br/>Read Cutover]
     P4 --> P5[Phase 5<br/>Recovery + Retention]
     P5 --> P6[Phase 6<br/>Readiness + Closure]
 ```
 
-No phase may consume an unapproved output from a later phase. Schema foundation cannot include runtime cutover; write cutover cannot precede `m15.v1`; read cutover cannot precede reconciliation; readiness cannot precede recovery qualification.
+No phase may consume an unapproved output from a later phase. Schema foundation cannot include runtime cutover; write cutover cannot precede `m15.v2`; read cutover cannot precede reconciliation; readiness cannot precede recovery qualification.
 
 ---
 
@@ -257,7 +261,7 @@ Scales: probability `L/M/H`; impact `L/M/H/Critical`. Residual risk is evaluated
 | R5 | Provider incompatibility despite S3 API | M | H | qualify checksum, `HEAD`, version, conditional write, delete semantics; Phase 1 | M |
 | R6 | Provider outage/throttling | M | H | bounded retries/timeouts, stable `503`, fail closed, telemetry; Phases 1/2 | M |
 | R7 | Object overwrite/collision | L | Critical | deterministic unique key, conditional create, checksum/version verification; Phase 2 | L |
-| R8 | M13 semantic regression | M | Critical | immutable legacy dispatch/fixtures/checksums, additive `m15.v1`; Phases 2/5 | L |
+| R8 | M13 or `m15.v1` semantic regression | M | Critical | immutable legacy dispatch/fixtures/checksums and immutable object-only v1; distinct additive `m15.v2`; Phases 2/5 | L |
 | R9 | Backup restores metadata without bytes | M | Critical | external object verification before destructive work, protected versions; Phase 5 | L |
 | R10 | Lifecycle deletes rollback versions | M | Critical | version hold window, safety-backup binding, rollback drill; Phase 5 | L |
 | R11 | Mixed local/object reads diverge | M | H | object-only writes, explicit legacy fallback, row-level verified switch; Phases 2-4 | L |
@@ -283,7 +287,7 @@ Checkpoint creation is never implicit. Each requires successful DoD evidence, re
 | `m15-phase0b-baseline-classification` | Phase 0B accepted | reproducible DB identity and fixture provenance |
 | `m15-architecture-freeze` | this document approved | final architecture approval; no implementation |
 | `m15-phase1-additive-storage-foundation` | Phase 1 DoD | M15a, adapter/config tests, unchanged runtime/M13/readiness |
-| `m15-phase2-object-write-cutover` | Phase 2 DoD | `m15.v1`, object writes, private reads, owner isolation, compensation |
+| `m15-phase2-object-write-cutover` | Phase 2 DoD | hybrid `m15.v2`, immutable `m15.v1` regression, object writes, private reads, owner isolation, compensation |
 | `m15-phase3-authoritative-backfill` | Phase 3 DoD | reconciled manifest and zero unexplained migration failures |
 | `m15-phase4-object-read-cutover` | Phase 4 DoD | M15b validation, object-only reads, fallback disabled |
 | `m15-phase5-recovery-retention-qualified` | Phase 5 DoD | restore/retention/reconciliation/rollback drill evidence |
@@ -306,7 +310,33 @@ The freeze protects:
 - independent Billing blocker and public-launch authorization;
 - all 222 Phase 0 test artifacts from mutation absent separate approval.
 
-Changes to shared backup files are permitted only as additive `m15.v1` branches in Phases 2/5. Existing migration SQL is immutable. Any new production path outside the phase-approved inventory requires a freeze amendment before editing.
+Changes to shared backup files are permitted only as distinct additive `m15.v2` branches; existing M13 and `m15.v1` branches are immutable. Existing migration SQL is immutable. Any new production path outside the phase-approved inventory requires a freeze amendment before editing.
+
+### 7.1 Frozen `m15.v2` Hybrid Contract
+
+Every `m15.v2` `ImageAsset` uses exact-key validation and exactly one discriminator: `storageKind: "legacy-local"` with a complete `legacyReference`, or `storageKind: "object-backed"` with a complete exact-version `objectReference`. Both variants require common keys `id`, `fileName`, `mimeType`, `sizeBytes`, `ownerUserId`, `clientId`, `exifStripped`, `normalizedOrientation`, `uploadedAt`, `deletedAt`, `retentionDeletesAt`, `createdAt`, and `updatedAt`. Unknown discriminators, missing or additional fields, both payloads, payload/discriminator drift, partial metadata, and contradictory lifecycle state invalidate the complete artifact. No third implicit variant exists.
+
+`legacy-local` additionally requires only `storageKind` and complete `legacyReference`; it forbids `storagePath`, `objectReference`, `storageEtag`, `storageState`, `storageMigratedAt`, `objectDeletedAt`, and `lastStorageErrorCode`. It uses logical root alias `legacy-images`, a canonical POSIX relative path, lowercase SHA-256, and positive bounded size. Absolute paths, drive letters, leading slashes, empty/`.`/`..` segments, traversal, symlink escape, owner/asset identity mismatch, and serialized M13 absolute `storagePath` are prohibited. The file must exist and match size/SHA-256 at creation; failure blocks the complete backup and no asset may be omitted.
+
+`object-backed` additionally requires `storageKind`, complete `objectReference`, and present lifecycle keys `storageEtag`, `storageState`, `storageMigratedAt`, `objectDeletedAt`, and `lastStorageErrorCode`; it forbids `storagePath`, `legacyReference`, and every local root/path field. Its reference retains only logical `bucketAlias`, canonical key, non-empty exact `versionId`, lowercase SHA-256, and positive bounded size. Physical bucket, endpoint, credentials, tokens, public/presigned URLs, and latest-version fallback are prohibited. Only coherent `available` or `delete_pending` rows whose object still exists are restorable; `pending_upload`, `quarantined`, `deleted`, lifecycle drift, or unsafe error values block creation.
+
+All six domains are read owner-scoped in one `RepeatableRead` transaction. Zero assets, local-only, object-only, and mixed state each create `m15.v2`; any inconsistent asset creates no backup. Preview verifies both reference classes independently with zero fallback, discloses no path/key/version/provider details, and uses `m15.restore-preview.v2`; M13 and `m15.v1` fingerprints remain unchanged. Execution requires complete pre-verification and all-or-nothing mutation.
+
+### 7.2 WP2H Sequencing
+
+The frozen implementation order is:
+
+1. `WP2H0` - architecture amendment documentation;
+2. `WP2H1` - contract and artifact core v2;
+3. `WP2H2` - legacy and hybrid reference verification;
+4. `WP2H3` - pure restore preview v2;
+5. `WP2H4` - preview runtime integration;
+6. `WP2H5` - creation and verification persistence;
+7. `WP2H6` - HTTP activation;
+8. `WP2H7` - restore execution core;
+9. `WP2H8` - execution runtime and route wiring.
+
+Each package requires its own read-only audit, exact allowlist, gates, approval, and implementation authorization. `WP2H0` changes documentation only and does not authorize or begin `WP2H1`.
 
 ---
 
