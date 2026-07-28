@@ -2,7 +2,7 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { BackupArtifactError } from "@/lib/backup-v13-artifact";
-import { getBackupRestorePreviewForUser } from "@/lib/backup-v13-restore-preview";
+import { getRuntimeBackupRestorePreviewForUser } from "@/lib/backup-restore-preview-runtime";
 import { resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
 
 export const dynamic = "force-dynamic";
@@ -36,7 +36,7 @@ export async function POST(request: Request, context: { params: Promise<{ backup
   }
 
   try {
-    const preview = await getBackupRestorePreviewForUser(sessionUser.id, backupId);
+    const preview = await getRuntimeBackupRestorePreviewForUser(sessionUser.id, backupId);
     return NextResponse.json(preview, {
       status: 200,
       headers: {

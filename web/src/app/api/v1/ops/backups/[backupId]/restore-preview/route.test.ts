@@ -12,12 +12,12 @@ vi.mock("@/lib/ops-persistence", () => ({
   resolveOpsSessionUserReadOnly: vi.fn(),
 }));
 
-vi.mock("@/lib/backup-v13-restore-preview", () => ({
-  getBackupRestorePreviewForUser: vi.fn(),
+vi.mock("@/lib/backup-restore-preview-runtime", () => ({
+  getRuntimeBackupRestorePreviewForUser: vi.fn(),
 }));
 
 import { POST } from "./route";
-import { getBackupRestorePreviewForUser } from "@/lib/backup-v13-restore-preview";
+import { getRuntimeBackupRestorePreviewForUser } from "@/lib/backup-restore-preview-runtime";
 import { resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
 
 describe("restore-preview route", () => {
@@ -52,7 +52,7 @@ describe("restore-preview route", () => {
   });
 
   it("returns a preview payload on success", async () => {
-    vi.mocked(getBackupRestorePreviewForUser).mockResolvedValue({
+    vi.mocked(getRuntimeBackupRestorePreviewForUser).mockResolvedValue({
       backupId: "backup-1",
       schemaVersion: "m13.v1",
       eligibleForRestorePlanning: true,
@@ -88,8 +88,63 @@ describe("restore-preview route", () => {
     });
   });
 
+  it("returns an M15 preview payload without transport transformation", async () => {
+    const preview = {
+      backupId: "backup-m15",
+      schemaVersion: "m15.v1" as const,
+      eligibleForRestorePlanning: false,
+      checksumStatus: "valid" as const,
+      artifactValidity: "valid" as const,
+      externalReferenceStatus: "failed" as const,
+      externalReferences: {
+        status: "failed" as const,
+        code: "storage_unavailable" as const,
+        verifiedAt: "2026-07-28T10:00:00.000Z",
+        totalReferences: 1,
+        verifiedReferences: 0,
+        referenceIndex: 0,
+        assetId: "asset-1",
+      },
+      backupStateFingerprint: "a".repeat(64),
+      currentStateFingerprint: "b".repeat(64),
+      currentClientStateFingerprint: "c".repeat(64),
+      previewGeneratedAt: "2026-07-28T10:00:00.000Z",
+      previewFingerprint: "d".repeat(64),
+      latestBackupUpdatedAt: null,
+      latestCurrentUpdatedAt: null,
+      impact: {
+        clients: { backupCount: 0, currentCount: 0, wouldCreate: 0, wouldReplace: 0, wouldDelete: 0, unchanged: 0, conflictCount: 0 },
+        analyses: { backupCount: 0, currentCount: 0, wouldCreate: 0, wouldReplace: 0, wouldDelete: 0, unchanged: 0, conflictCount: 0 },
+        consultations: { backupCount: 0, currentCount: 0, wouldCreate: 0, wouldReplace: 0, wouldDelete: 0, unchanged: 0, conflictCount: 0 },
+        imageAssets: { backupCount: 1, currentCount: 1, wouldCreate: 0, wouldReplace: 0, wouldDelete: 0, unchanged: 1, conflictCount: 0 },
+        imageAnalyses: { backupCount: 0, currentCount: 0, wouldCreate: 0, wouldReplace: 0, wouldDelete: 0, unchanged: 0, conflictCount: 0 },
+        imageAnalysisReviews: { backupCount: 0, currentCount: 0, wouldCreate: 0, wouldReplace: 0, wouldDelete: 0, unchanged: 0, conflictCount: 0 },
+      },
+      conflicts: [],
+      warnings: [],
+      blockingReasons: [{
+        code: "ARTIFACT_INVALID" as const,
+        section: "imageAssets" as const,
+        recordId: null,
+        referenceId: null,
+        messageSafe: "External object storage is unavailable.",
+      }],
+    };
+    vi.mocked(getRuntimeBackupRestorePreviewForUser).mockResolvedValue(preview);
+
+    const response = await POST(
+      { json: async () => ({}) } as never,
+      { params: Promise.resolve({ backupId: "backup-m15" }) },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual(preview);
+    expect(getRuntimeBackupRestorePreviewForUser).toHaveBeenCalledWith("user-1", "backup-m15");
+  });
+
   it("maps backup artifact errors to HTTP responses", async () => {
-    vi.mocked(getBackupRestorePreviewForUser).mockRejectedValue(
+    vi.mocked(getRuntimeBackupRestorePreviewForUser).mockRejectedValue(
       new BackupArtifactError("BACKUP_PREVIEW_UNINTERPRETABLE", 422, "Backup snapshot cannot be interpreted for restore planning."),
     );
 
