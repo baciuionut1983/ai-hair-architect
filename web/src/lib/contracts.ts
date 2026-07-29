@@ -1226,7 +1226,61 @@ export interface BackupM15V1Artifact extends Omit<BackupV13V3Artifact, "schemaVe
   };
 }
 
-export type BackupRecoveryArtifact = BackupV13Artifact | BackupM15V1Artifact;
+export interface BackupM15V2LegacyReference {
+  backend: "local";
+  rootAlias: "legacy-images";
+  relativePath: string;
+  contentSha256: string;
+  sizeBytes: number;
+}
+
+export interface BackupM15V2ObjectReference {
+  backend: "s3";
+  bucketAlias: string;
+  key: string;
+  versionId: string;
+  contentSha256: string;
+  sizeBytes: number;
+}
+
+export interface BackupM15V2LegacyLocalImageAsset extends Omit<BackupV13ImageAssetSectionRow, "storagePath"> {
+  storageKind: "legacy-local";
+  legacyReference: BackupM15V2LegacyReference;
+}
+
+export interface BackupM15V2ObjectBackedImageAsset extends Omit<BackupV13ImageAssetSectionRow, "storagePath"> {
+  storageKind: "object-backed";
+  objectReference: BackupM15V2ObjectReference;
+  storageEtag: string | null;
+  storageState: "available" | "delete_pending";
+  storageMigratedAt: string | null;
+  objectDeletedAt: null;
+  lastStorageErrorCode: string | null;
+}
+
+export type BackupM15V2ImageAssetSectionRow =
+  | BackupM15V2LegacyLocalImageAsset
+  | BackupM15V2ObjectBackedImageAsset;
+
+export interface BackupM15V2Sections {
+  clients: BackupV13V2ClientSectionRow[];
+  analyses: BackupV13AnalysisSectionRow[];
+  consultations: BackupV13V3ConsultationSectionRow[];
+  imageAssets: BackupM15V2ImageAssetSectionRow[];
+  imageAnalyses: BackupV13ImageAnalysisSectionRow[];
+  imageAnalysisReviews: BackupV13ImageAnalysisReviewSectionRow[];
+}
+
+export interface BackupM15V2Artifact extends Omit<
+  BackupV13V3Artifact,
+  "schemaVersion" | "canonicalSerializationVersion" | "sections"
+> {
+  schemaVersion: "m15.v2";
+  canonicalSerializationVersion: "sorted-json-v2";
+  sections: BackupM15V2Sections;
+}
+
+export type BackupRecoveryArtifact = BackupV13Artifact | BackupM15V1Artifact | BackupM15V2Artifact;
 
 export interface BackupVerificationResult {
   backupId: string;
