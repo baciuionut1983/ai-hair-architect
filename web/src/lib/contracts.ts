@@ -1,3 +1,5 @@
+import type { M15V1ObjectReference } from "./object-storage-runtime";
+
 export type UserRole = "professional" | "salon" | "consumer";
 
 export type Locale = "en" | "ro";
@@ -801,6 +803,40 @@ export interface BackupRestorePreviewResponse {
   blockingReasons: BackupRestorePreviewIssue[];
 }
 
+export type BackupM15RestorePreviewExternalReferenceStatus = "verified" | "failed";
+
+export type BackupM15RestorePreviewExternalReferenceCode =
+  | "verified"
+  | "invalid_reference"
+  | "unknown_alias"
+  | "missing_object"
+  | "identity_mismatch"
+  | "version_mismatch"
+  | "size_mismatch"
+  | "checksum_metadata_mismatch"
+  | "streamed_checksum_mismatch"
+  | "streamed_size_mismatch"
+  | "stream_limit_exceeded"
+  | "storage_timeout"
+  | "storage_access_denied"
+  | "storage_unavailable";
+
+export interface BackupM15RestorePreviewExternalReferences {
+  status: BackupM15RestorePreviewExternalReferenceStatus;
+  code: BackupM15RestorePreviewExternalReferenceCode;
+  totalReferences: number;
+  verifiedReferences: number;
+}
+
+export interface BackupM15RestorePreviewResponse extends Omit<
+  BackupRestorePreviewResponse,
+  "schemaVersion" | "externalReferenceStatus"
+> {
+  schemaVersion: "m15.v1";
+  externalReferenceStatus: BackupM15RestorePreviewExternalReferenceStatus;
+  externalReferences: BackupM15RestorePreviewExternalReferences;
+}
+
 export type BackupRestoreStrategy = "replace_all";
 
 export interface BackupRestoreRequest {
@@ -1173,6 +1209,24 @@ export interface BackupV13V3Artifact extends Omit<BackupV13V2Artifact, "schemaVe
 }
 
 export type BackupV13Artifact = BackupV13V1Artifact | BackupV13V2Artifact | BackupV13V3Artifact;
+
+export interface BackupM15V1ImageAssetSectionRow extends Omit<BackupV13ImageAssetSectionRow, "storagePath"> {
+  objectReference: M15V1ObjectReference;
+  storageEtag: string | null;
+  storageState: "pending_upload" | "available" | "delete_pending" | "deleted" | "quarantined";
+  storageMigratedAt: string | null;
+  objectDeletedAt: string | null;
+  lastStorageErrorCode: string | null;
+}
+
+export interface BackupM15V1Artifact extends Omit<BackupV13V3Artifact, "schemaVersion" | "sections"> {
+  schemaVersion: "m15.v1";
+  sections: Omit<BackupV13V3Artifact["sections"], "imageAssets"> & {
+    imageAssets: BackupM15V1ImageAssetSectionRow[];
+  };
+}
+
+export type BackupRecoveryArtifact = BackupV13Artifact | BackupM15V1Artifact;
 
 export interface BackupVerificationResult {
   backupId: string;

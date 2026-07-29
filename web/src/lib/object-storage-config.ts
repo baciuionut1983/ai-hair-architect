@@ -2,6 +2,7 @@ import { ObjectStorageError } from "./object-storage-errors";
 
 export type ObjectStorageMode = "production" | "development" | "test" | "unknown";
 export type ObjectStorageServerSideEncryption = "none" | "AES256" | "aws:kms";
+export type ObjectStorageWriteMode = "disabled" | "enabled";
 
 export interface LocalObjectStorageConfig {
   backend: "local";
@@ -31,7 +32,8 @@ export type ObjectStorageConfigIssueCode =
   | "OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION_INVALID"
   | "OBJECT_STORAGE_ENDPOINT_INVALID"
   | "OBJECT_STORAGE_PREFIX_INVALID"
-  | "OBJECT_STORAGE_TIMEOUT_INVALID";
+  | "OBJECT_STORAGE_TIMEOUT_INVALID"
+  | "OBJECT_STORAGE_WRITE_MODE_INVALID";
 
 export interface ObjectStorageConfigIssue {
   code: ObjectStorageConfigIssueCode;
@@ -120,6 +122,27 @@ export function loadObjectStorageConfig(env: EnvironmentSource, mode: ObjectStor
     throw new ObjectStorageError("configuration");
   }
   return validation.config;
+}
+
+export function validateObjectStorageWriteMode(env: EnvironmentSource): {
+  mode: ObjectStorageWriteMode;
+  issues: ObjectStorageConfigIssue[];
+} {
+  const configuredMode = value(env.OBJECT_STORAGE_WRITE_MODE);
+  if (!configuredMode || configuredMode === "disabled") {
+    return { mode: "disabled", issues: [] };
+  }
+  if (configuredMode === "enabled") {
+    return { mode: "enabled", issues: [] };
+  }
+  return {
+    mode: "disabled",
+    issues: [issue(
+      "OBJECT_STORAGE_WRITE_MODE_INVALID",
+      "OBJECT_STORAGE_WRITE_MODE",
+      "OBJECT_STORAGE_WRITE_MODE must be disabled or enabled."
+    )]
+  };
 }
 
 function required(env: EnvironmentSource, variable: string, issues: ObjectStorageConfigIssue[]): string {

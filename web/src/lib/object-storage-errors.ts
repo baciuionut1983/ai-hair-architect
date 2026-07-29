@@ -4,6 +4,10 @@ export type ObjectStorageErrorCode =
   | "timeout"
   | "throttled"
   | "configuration"
+  | "missing_version"
+  | "integrity_mismatch"
+  | "invalid_state"
+  | "capability_unavailable"
   | "provider_unavailable";
 
 const SAFE_MESSAGES: Record<ObjectStorageErrorCode, string> = {
@@ -12,6 +16,10 @@ const SAFE_MESSAGES: Record<ObjectStorageErrorCode, string> = {
   timeout: "The object storage operation timed out.",
   throttled: "Object storage temporarily throttled the operation.",
   configuration: "Object storage is not configured correctly.",
+  missing_version: "An exact object version is required.",
+  integrity_mismatch: "Object storage integrity verification failed.",
+  invalid_state: "The image asset storage state does not allow this operation.",
+  capability_unavailable: "Required object storage capabilities are unavailable.",
   provider_unavailable: "Object storage is temporarily unavailable."
 };
 

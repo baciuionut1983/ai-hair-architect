@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { loadObjectStorageConfig, validateObjectStorageConfig } from "./object-storage-config";
+import {
+  loadObjectStorageConfig,
+  validateObjectStorageConfig,
+  validateObjectStorageWriteMode
+} from "./object-storage-config";
 
 describe("object storage configuration", () => {
   it("allows an inactive backend in development and test", () => {
@@ -76,6 +80,22 @@ describe("object storage configuration", () => {
   it("throws only a safe typed error when loading invalid configuration", () => {
     expect(() => loadObjectStorageConfig({ OBJECT_STORAGE_BUCKET: "physical-secret-name" }, "production"))
       .toThrow("Object storage is not configured correctly.");
+  });
+
+  it("keeps object writes disabled by default and for invalid values", () => {
+    expect(validateObjectStorageWriteMode({})).toEqual({ mode: "disabled", issues: [] });
+    expect(validateObjectStorageWriteMode({ OBJECT_STORAGE_WRITE_MODE: "disabled" })).toEqual({
+      mode: "disabled",
+      issues: []
+    });
+    expect(validateObjectStorageWriteMode({ OBJECT_STORAGE_WRITE_MODE: "enabled" })).toEqual({
+      mode: "enabled",
+      issues: []
+    });
+
+    const invalid = validateObjectStorageWriteMode({ OBJECT_STORAGE_WRITE_MODE: "on" });
+    expect(invalid.mode).toBe("disabled");
+    expect(invalid.issues.map((issue) => issue.code)).toEqual(["OBJECT_STORAGE_WRITE_MODE_INVALID"]);
   });
 });
 

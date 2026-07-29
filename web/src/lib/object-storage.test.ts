@@ -1,8 +1,9 @@
 import { PutObjectCommand, type S3Client } from "@aws-sdk/client-s3";
 import { describe, expect, it, vi } from "vitest";
 
-import { buildImageAssetObjectKey } from "./object-storage";
+import { buildImageAssetObjectKey, toExactObjectReference } from "./object-storage";
 import type { S3ObjectStorageConfig } from "./object-storage-config";
+import { classifyObjectStorageError, ObjectStorageError } from "./object-storage-errors";
 import { S3ObjectStorage } from "./object-storage-s3";
 
 const ownerUserId = "123e4567-e89b-42d3-a456-426614174000";
@@ -14,6 +15,22 @@ describe("object storage", () => {
       `owners/${ownerUserId}/assets/${assetId}/original`
     );
     expect(() => buildImageAssetObjectKey("person@example.com", assetId)).toThrow("trusted UUID");
+  });
+
+  it("requires a complete exact-version reference for Phase 2 consumers", () => {
+    const reference = {
+      backend: "s3" as const,
+      bucketAlias: "images",
+      key: `v1/owners/${ownerUserId}/assets/${assetId}/original`,
+      versionId: "version-1",
+      etag: "etag-1",
+      contentSha256: "a".repeat(64),
+      sizeBytes: 3
+    };
+
+    expect(toExactObjectReference(reference)).toEqual(reference);
+    expect(() => toExactObjectReference({ ...reference, versionId: null })).toThrow("exact-version");
+    expect(() => toExactObjectReference({ ...reference, versionId: " " })).toThrow("exact-version");
   });
 
   it("creates the S3 client lazily and maps put metadata", async () => {
@@ -76,6 +93,19 @@ describe("object storage", () => {
       code: "access_denied",
       message: "Object storage denied the operation.",
       retryable: false
+    });
+  });
+
+  it("keeps contract and unknown provider failures safe", () => {
+    expect(new ObjectStorageError("missing_version")).toMatchObject({
+      message: "An exact object version is required.",
+      retryable: false
+    });
+    expect(new ObjectStorageError("integrity_mismatch")).toMatchObject({ retryable: false });
+    expect(classifyObjectStorageError(new Error("endpoint-and-bucket-secret"))).toMatchObject({
+      code: "provider_unavailable",
+      message: "Object storage is temporarily unavailable.",
+      retryable: true
     });
   });
 
