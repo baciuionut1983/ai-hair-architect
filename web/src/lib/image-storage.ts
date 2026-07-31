@@ -54,3 +54,47 @@ export async function deleteImageFile(filePath: string): Promise<void> {
 export function getPrivateImageUrl(userId: string, assetId: string): string {
   return `/api/v1/image-assets/${assetId}/download`;
 }
+
+export class ConfinedImageStorageError extends Error {
+  constructor() {
+    super('Image storage path is not accessible.');
+    this.name = 'ConfinedImageStorageError';
+  }
+}
+
+export interface ConfinedImageReadStream {
+  stream: fs.ReadStream;
+  // The actual, freshly-stat()'d byte size of the file being streamed --
+  // never the caller's own possibly-stale record of it.
+  sizeBytes: number;
+}
+
+// Streams a legacy-local image file, confined to STORAGE_DIR by both lexical
+// path comparison and realpath resolution (the latter defeats symlink escape,
+// which lexical comparison alone cannot catch).
+export async function createConfinedImageReadStream(storagePath: string): Promise<ConfinedImageReadStream> {
+  const resolvedRoot = path.resolve(STORAGE_DIR);
+  const resolvedPath = path.resolve(storagePath);
+  if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(resolvedRoot + path.sep)) {
+    throw new ConfinedImageStorageError();
+  }
+
+  let realPath: string;
+  try {
+    realPath = await fs.promises.realpath(resolvedPath);
+  } catch {
+    throw new ConfinedImageStorageError();
+  }
+
+  const realRoot = await fs.promises.realpath(resolvedRoot);
+  if (realPath !== realRoot && !realPath.startsWith(realRoot + path.sep)) {
+    throw new ConfinedImageStorageError();
+  }
+
+  const stat = await fs.promises.stat(realPath).catch(() => null);
+  if (!stat || !stat.isFile()) {
+    throw new ConfinedImageStorageError();
+  }
+
+  return { stream: fs.createReadStream(realPath), sizeBytes: stat.size };
+}

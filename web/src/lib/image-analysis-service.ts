@@ -1,3 +1,5 @@
+import { createHash } from 'crypto';
+
 import { ImageAsset, ImageAnalysis } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import {
@@ -8,10 +10,109 @@ import {
 import { saveImageFile } from '@/lib/image-storage';
 import { processImageForStorage } from '@/lib/image-normalizer';
 import { getProvider, ImageAnalysisResult } from '@/lib/image-analysis-provider';
+import { buildImageAssetObjectKey, type ObjectStorage } from '@/lib/object-storage';
+import { createObjectStorageAliasResolver } from '@/lib/object-storage-alias-resolver';
+import {
+  loadObjectStorageConfig,
+  validateObjectStorageWriteMode,
+  type ObjectStorageMode,
+} from '@/lib/object-storage-config';
 
 export interface UploadedAsset {
   asset: ImageAsset;
   analysis: ImageAnalysis;
+}
+
+// Deliberately not imported from any backup/restore module (this is the live
+// upload path, not a backup consumer) -- matches createObjectStorageAliasResolver's
+// own real return type exactly.
+type ObjectStorageResolver = (bucketAlias: string) => ObjectStorage | null | Promise<ObjectStorage | null>;
+
+interface ObjectStorageWriteTarget {
+  bucketAlias: string;
+  resolve: ObjectStorageResolver;
+}
+
+// Resolved once per upload batch (not per-file), so every file in the same
+// request is classified identically -- deterministic, no per-file coin-flip.
+function resolveObjectStorageWriteTarget(): ObjectStorageWriteTarget | null {
+  const { mode } = validateObjectStorageWriteMode(process.env);
+  if (mode !== 'enabled') {
+    return null;
+  }
+
+  const config = loadObjectStorageConfig(process.env, resolveRuntimeMode(process.env.NODE_ENV));
+  if (config.backend !== 's3') {
+    // Fail closed: an enabled write mode paired with a non-s3 configuration is a
+    // misconfiguration, never a silent local-storage fallback.
+    throw new Error('Object storage write mode is enabled but object storage is not configured for the s3 backend.');
+  }
+
+  return { bucketAlias: config.bucketAlias, resolve: createObjectStorageAliasResolver() };
+}
+
+function resolveRuntimeMode(nodeEnv: string | undefined): ObjectStorageMode {
+  if (nodeEnv === 'production' || nodeEnv === 'development' || nodeEnv === 'test') {
+    return nodeEnv;
+  }
+  return 'unknown';
+}
+
+async function writeImageToObjectStorage(
+  asset: ImageAsset,
+  body: Buffer,
+  contentType: string,
+  target: ObjectStorageWriteTarget
+): Promise<void> {
+  const contentSha256 = createHash('sha256').update(body).digest('hex');
+
+  const storage = await target.resolve(target.bucketAlias);
+  if (!storage) {
+    throw new Error('Object storage is unavailable for the configured bucket alias.');
+  }
+
+  const reference = await storage.put({
+    key: buildImageAssetObjectKey(asset.ownerUserId, asset.id),
+    body,
+    contentType,
+    contentSha256,
+  });
+
+  // Integrity is confirmed via an independent head() round-trip against the
+  // exact returned version, never assumed from the put() response alone.
+  const verification = await storage.head({
+    bucketAlias: reference.bucketAlias,
+    key: reference.key,
+    versionId: reference.versionId,
+  });
+
+  if (
+    !reference.versionId ||
+    verification.versionId !== reference.versionId ||
+    verification.contentSha256 !== contentSha256 ||
+    verification.sizeBytes !== body.length
+  ) {
+    throw new Error('Object storage integrity verification failed.');
+  }
+
+  // Single atomic update: the row only ever transitions from
+  // storageBackend=null to a fully-populated, "available" object-backed row.
+  // No intermediate object-backed state is ever persisted.
+  await prisma.imageAsset.update({
+    where: { id: asset.id },
+    data: {
+      storageBackend: 's3',
+      storageBucketAlias: reference.bucketAlias,
+      storageKey: reference.key,
+      storageVersionId: reference.versionId,
+      storageEtag: reference.etag,
+      contentSha256,
+      storageState: 'available',
+      storageMigratedAt: null,
+      objectDeletedAt: null,
+      lastStorageErrorCode: null,
+    },
+  });
 }
 
 export async function uploadAndAnalyzeImages(
@@ -23,6 +124,8 @@ export async function uploadAndAnalyzeImages(
   if (validation) {
     throw new Error(validation.message);
   }
+
+  const objectStorageTarget = resolveObjectStorageWriteTarget();
 
   const results: UploadedAsset[] = [];
 
@@ -50,12 +153,19 @@ export async function uploadAndAnalyzeImages(
       },
     });
 
-    const storagePath = await saveImageFile(userId, asset.id, asset.fileName, processed.buffer);
+    if (objectStorageTarget) {
+      // No local-disk fallback: a failure here leaves the row exactly as
+      // created (storageBackend=null, storagePath="pending") and the upload
+      // request fails closed.
+      await writeImageToObjectStorage(asset, processed.buffer, file.type, objectStorageTarget);
+    } else {
+      const storagePath = await saveImageFile(userId, asset.id, asset.fileName, processed.buffer);
 
-    await prisma.imageAsset.update({
-      where: { id: asset.id },
-      data: { storagePath },
-    });
+      await prisma.imageAsset.update({
+        where: { id: asset.id },
+        data: { storagePath },
+      });
+    }
 
     const provider = getProvider('mock-deterministic');
     const analysisResult = await provider.analyze({
