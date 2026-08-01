@@ -24,7 +24,7 @@ export type BillingWebhookEventRow = PrismaBillingWebhookEventRow;
 
 export type BillingTransaction = Pick<
   Prisma.TransactionClient,
-  "billingCustomer" | "billingSubscription" | "billingPayment" | "billingWebhookEvent"
+  "billingCustomer" | "billingSubscription" | "billingPayment" | "billingWebhookEvent" | "$executeRaw"
 >;
 
 export class BillingPersistenceError extends Error {
@@ -92,9 +92,10 @@ export async function findOrCreateBillingCustomer(
 export async function findOwnerByProviderCustomerId(
   provider: BillingProvider,
   providerCustomerId: string,
+  db: BillingTransaction = prisma,
 ): Promise<{ ownerUserId: string; billingCustomerId: string } | null> {
   return runBillingQuery(async () => {
-    const row = await prisma.billingCustomer.findUnique({
+    const row = await db.billingCustomer.findUnique({
       where: { provider_providerCustomerId: { provider, providerCustomerId } },
       select: { id: true, ownerUserId: true },
     });
@@ -116,10 +117,14 @@ export interface RecordWebhookEventInput {
 
 export async function recordWebhookEventIdempotently(
   input: RecordWebhookEventInput,
+  db: BillingTransaction = prisma,
 ): Promise<{ outcome: "recorded" | "duplicate"; event: BillingWebhookEventRow }> {
   return runBillingQuery(async () => {
+    const insideTransaction = db !== prisma;
+    if (insideTransaction) await db.$executeRaw`SAVEPOINT record_webhook_event`;
+
     try {
-      const created = await prisma.billingWebhookEvent.create({
+      const created = await db.billingWebhookEvent.create({
         data: {
           provider: input.provider,
           providerEventId: input.providerEventId,
@@ -136,7 +141,9 @@ export async function recordWebhookEventIdempotently(
     } catch (error) {
       if (!isUniqueConstraintViolation(error)) throw error;
 
-      const existing = await prisma.billingWebhookEvent.findUnique({
+      if (insideTransaction) await db.$executeRaw`ROLLBACK TO SAVEPOINT record_webhook_event`;
+
+      const existing = await db.billingWebhookEvent.findUnique({
         where: { provider_providerEventId: { provider: input.provider, providerEventId: input.providerEventId } },
       });
       if (!existing) throw error;
@@ -156,9 +163,10 @@ export interface MarkWebhookEventStatusInput {
 export async function markWebhookEventStatus(
   id: string,
   input: MarkWebhookEventStatusInput,
+  db: BillingTransaction = prisma,
 ): Promise<void> {
   return runBillingQuery(async () => {
-    await prisma.billingWebhookEvent.update({
+    await db.billingWebhookEvent.update({
       where: { id },
       data: {
         status: input.status,
@@ -188,9 +196,14 @@ export interface UpsertSubscriptionInput {
 
 export async function upsertSubscriptionWithOrderingGuard(
   input: UpsertSubscriptionInput,
+  tx?: BillingTransaction,
 ): Promise<{ applied: boolean; subscription: BillingSubscriptionRow }> {
-  return runBillingQuery(() => runSerializableBillingTransaction(async (tx) => {
-    const existing = await tx.billingSubscription.findUnique({
+  if (tx) {
+    return runBillingQuery(() => applySubscriptionOrderingGuardAtomically(tx, input));
+  }
+
+  return runBillingQuery(() => runSerializableBillingTransaction(async (standaloneTx) => {
+    const existing = await standaloneTx.billingSubscription.findUnique({
       where: {
         provider_providerSubscriptionId: {
           provider: input.provider,
@@ -205,11 +218,53 @@ export async function upsertSubscriptionWithOrderingGuard(
 
     const data = buildSubscriptionData(input);
     const upserted = existing
-      ? await tx.billingSubscription.update({ where: { id: existing.id }, data })
-      : await tx.billingSubscription.create({ data });
+      ? await standaloneTx.billingSubscription.update({ where: { id: existing.id }, data })
+      : await standaloneTx.billingSubscription.create({ data });
 
     return { applied: true, subscription: upserted };
   }));
+}
+
+async function applySubscriptionOrderingGuardAtomically(
+  tx: BillingTransaction,
+  input: UpsertSubscriptionInput,
+): Promise<{ applied: boolean; subscription: BillingSubscriptionRow }> {
+  const data = buildSubscriptionData(input);
+
+  await tx.$executeRaw`SAVEPOINT upsert_subscription_ordering_guard`;
+  try {
+    const created = await tx.billingSubscription.create({ data });
+    return { applied: true, subscription: created };
+  } catch (error) {
+    if (!isUniqueConstraintViolation(error)) throw error;
+    await tx.$executeRaw`ROLLBACK TO SAVEPOINT upsert_subscription_ordering_guard`;
+  }
+
+  const claimed = await tx.billingSubscription.updateMany({
+    where: {
+      provider: input.provider,
+      providerSubscriptionId: input.providerSubscriptionId,
+      OR: [
+        { lastAppliedEventCreatedAt: null },
+        { lastAppliedEventCreatedAt: { lt: input.eventCreatedAt } },
+        {
+          lastAppliedEventCreatedAt: input.eventCreatedAt,
+          lastAppliedEventId: { lt: input.providerEventId },
+        },
+      ],
+    },
+    data,
+  });
+
+  const current = await tx.billingSubscription.findUniqueOrThrow({
+    where: {
+      provider_providerSubscriptionId: {
+        provider: input.provider,
+        providerSubscriptionId: input.providerSubscriptionId,
+      },
+    },
+  });
+  return { applied: claimed.count === 1, subscription: current };
 }
 
 export interface UpsertPaymentInput {
@@ -226,7 +281,10 @@ export interface UpsertPaymentInput {
   failureCode?: string | null;
 }
 
-export async function upsertPayment(input: UpsertPaymentInput): Promise<BillingPaymentRow> {
+export async function upsertPayment(
+  input: UpsertPaymentInput,
+  db: BillingTransaction = prisma,
+): Promise<BillingPaymentRow> {
   return runBillingQuery(async () => {
     const data = {
       ownerUserId: input.ownerUserId,
@@ -241,7 +299,7 @@ export async function upsertPayment(input: UpsertPaymentInput): Promise<BillingP
       failedAt: input.failedAt ?? null,
       failureCode: input.failureCode ?? null,
     };
-    return prisma.billingPayment.upsert({
+    return db.billingPayment.upsert({
       where: {
         provider_providerInvoiceId: { provider: input.provider, providerInvoiceId: input.providerInvoiceId },
       },

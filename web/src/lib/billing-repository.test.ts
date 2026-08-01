@@ -72,6 +72,14 @@ const tx = {
   },
 };
 
+const injectedTx = {
+  billingCustomer: { findUnique: vi.fn() },
+  billingWebhookEvent: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
+  billingPayment: { upsert: vi.fn() },
+  billingSubscription: { create: vi.fn(), updateMany: vi.fn(), findUniqueOrThrow: vi.fn() },
+  $executeRaw: vi.fn(),
+};
+
 const unitSuite = hasRealDatabase ? describe.skip : describe;
 const integrationSuite = hasRealDatabase ? describe : describe.skip;
 
@@ -90,6 +98,15 @@ unitSuite("billing-repository (mocked)", () => {
     prismaMocks.txBillingSubscriptionCreate.mockReset();
     prismaMocks.txBillingSubscriptionUpdate.mockReset();
     prismaMocks.transaction.mockImplementation(async (operation) => operation(tx));
+    injectedTx.billingCustomer.findUnique.mockReset();
+    injectedTx.billingWebhookEvent.create.mockReset();
+    injectedTx.billingWebhookEvent.findUnique.mockReset();
+    injectedTx.billingWebhookEvent.update.mockReset();
+    injectedTx.billingPayment.upsert.mockReset();
+    injectedTx.billingSubscription.create.mockReset();
+    injectedTx.billingSubscription.updateMany.mockReset();
+    injectedTx.billingSubscription.findUniqueOrThrow.mockReset();
+    injectedTx.$executeRaw.mockReset();
   });
 
   describe("findOrCreateBillingCustomer", () => {
@@ -310,6 +327,93 @@ unitSuite("billing-repository (mocked)", () => {
         BillingPersistenceError,
       );
       expect(prismaMocks.transaction).toHaveBeenCalledTimes(3);
+    });
+
+    it("with an injected transaction client, creates atomically with no retry/isolation machinery", async () => {
+      injectedTx.billingSubscription.create.mockResolvedValueOnce(subscriptionRow());
+
+      await expect(
+        upsertSubscriptionWithOrderingGuard(subscriptionInput(), injectedTx as never),
+      ).resolves.toMatchObject({ applied: true });
+      expect(injectedTx.billingSubscription.create).toHaveBeenCalledTimes(1);
+      expect(prismaMocks.transaction).not.toHaveBeenCalled();
+    });
+
+    it("with an injected transaction client, falls back to a conditional atomic update on a create race and applies a newer event", async () => {
+      const input = subscriptionInput();
+      injectedTx.billingSubscription.create.mockRejectedValueOnce(uniqueConstraintError());
+      injectedTx.billingSubscription.updateMany.mockResolvedValueOnce({ count: 1 });
+      injectedTx.billingSubscription.findUniqueOrThrow.mockResolvedValueOnce(subscriptionRow());
+
+      await expect(
+        upsertSubscriptionWithOrderingGuard(input, injectedTx as never),
+      ).resolves.toMatchObject({ applied: true });
+      expect(injectedTx.billingSubscription.updateMany).toHaveBeenCalledWith({
+        where: {
+          provider: "stripe",
+          providerSubscriptionId: "sub-1",
+          OR: [
+            { lastAppliedEventCreatedAt: null },
+            { lastAppliedEventCreatedAt: { lt: input.eventCreatedAt } },
+            { lastAppliedEventCreatedAt: input.eventCreatedAt, lastAppliedEventId: { lt: "evt_1" } },
+          ],
+        },
+        data: expect.objectContaining({ providerSubscriptionId: "sub-1" }),
+      });
+    });
+
+    it("with an injected transaction client, reports not-applied when the conditional update matches zero rows", async () => {
+      injectedTx.billingSubscription.create.mockRejectedValueOnce(uniqueConstraintError());
+      injectedTx.billingSubscription.updateMany.mockResolvedValueOnce({ count: 0 });
+      injectedTx.billingSubscription.findUniqueOrThrow.mockResolvedValueOnce(subscriptionRow({
+        lastAppliedEventCreatedAt: new Date("2026-08-01T05:00:00.000Z"),
+        lastAppliedEventId: "evt_9",
+      }));
+
+      await expect(
+        upsertSubscriptionWithOrderingGuard(subscriptionInput(), injectedTx as never),
+      ).resolves.toMatchObject({ applied: false });
+    });
+  });
+
+  describe("injected transaction client (other functions)", () => {
+    it("findOwnerByProviderCustomerId uses the injected client instead of the default", async () => {
+      injectedTx.billingCustomer.findUnique.mockResolvedValueOnce({ id: "cust-9", ownerUserId: "owner-9" });
+
+      await expect(
+        findOwnerByProviderCustomerId("stripe", "cus_9", injectedTx as never),
+      ).resolves.toEqual({ ownerUserId: "owner-9", billingCustomerId: "cust-9" });
+      expect(injectedTx.billingCustomer.findUnique).toHaveBeenCalledTimes(1);
+      expect(prismaMocks.billingCustomerFindUnique).not.toHaveBeenCalled();
+    });
+
+    it("recordWebhookEventIdempotently uses the injected client", async () => {
+      injectedTx.billingWebhookEvent.create.mockResolvedValueOnce(webhookEventRow());
+
+      await expect(
+        recordWebhookEventIdempotently(webhookEventInput(), injectedTx as never),
+      ).resolves.toMatchObject({ outcome: "recorded" });
+      expect(injectedTx.billingWebhookEvent.create).toHaveBeenCalledTimes(1);
+      expect(prismaMocks.billingWebhookEventCreate).not.toHaveBeenCalled();
+    });
+
+    it("markWebhookEventStatus uses the injected client", async () => {
+      injectedTx.billingWebhookEvent.update.mockResolvedValueOnce(webhookEventRow());
+
+      await markWebhookEventStatus("event-1", { status: "processed" }, injectedTx as never);
+
+      expect(injectedTx.billingWebhookEvent.update).toHaveBeenCalledTimes(1);
+      expect(prismaMocks.billingWebhookEventUpdate).not.toHaveBeenCalled();
+    });
+
+    it("upsertPayment uses the injected client", async () => {
+      injectedTx.billingPayment.upsert.mockResolvedValueOnce(paymentRow());
+
+      await expect(
+        upsertPayment(paymentInput(), injectedTx as never),
+      ).resolves.toMatchObject({ providerInvoiceId: "in_1" });
+      expect(injectedTx.billingPayment.upsert).toHaveBeenCalledTimes(1);
+      expect(prismaMocks.billingPaymentUpsert).not.toHaveBeenCalled();
     });
   });
 
@@ -594,6 +698,80 @@ integrationSuite("billing-repository (real Postgres)", () => {
     const { prisma } = await import("@/lib/prisma");
     await expect(prisma.billingPayment.count({ where: { ownerUserId: first } })).resolves.toBe(1);
     await expect(prisma.billingPayment.count({ where: { ownerUserId: second } })).resolves.toBe(0);
+  });
+
+  it("runs the full atomic sequence (claim, resolve owner, mutate, finalize) as one commit", async () => {
+    const ownerUserId = await createOwner(owners);
+    const customer = await findOrCreateBillingCustomer({
+      ownerUserId,
+      provider: "stripe",
+      providerCustomerId: `cus_${ownerUserId}`,
+    });
+    const providerEventId = `evt_${randomUUID()}`;
+    const providerSubscriptionId = `sub_${randomUUID()}`;
+
+    const result = await runBillingWebhookTransaction(async (tx) => {
+      const claim = await recordWebhookEventIdempotently({
+        provider: "stripe",
+        providerEventId,
+        eventType: "customer.subscription.created",
+        eventCreatedAt: new Date("2026-08-01T00:00:00.000Z"),
+      }, tx);
+
+      const owner = await findOwnerByProviderCustomerId("stripe", customer.providerCustomerId, tx);
+      if (!owner) throw new Error("owner must resolve in this test");
+
+      const upsert = await upsertSubscriptionWithOrderingGuard({
+        ownerUserId: owner.ownerUserId,
+        billingCustomerId: owner.billingCustomerId,
+        provider: "stripe",
+        providerSubscriptionId,
+        planKey: "pro",
+        status: "active",
+        eventCreatedAt: new Date("2026-08-01T00:00:00.000Z"),
+        providerEventId,
+      }, tx);
+
+      await markWebhookEventStatus(claim.event.id, {
+        status: "processed",
+        processedAt: new Date("2026-08-01T00:00:00.500Z"),
+      }, tx);
+
+      return { eventId: claim.event.id, applied: upsert.applied };
+    });
+    webhookEventIds.add(result.eventId);
+
+    expect(result.applied).toBe(true);
+
+    const { prisma } = await import("@/lib/prisma");
+    await expect(prisma.billingWebhookEvent.findUnique({ where: { id: result.eventId } })).resolves.toMatchObject({
+      status: "processed",
+    });
+    await expect(prisma.billingSubscription.findUnique({
+      where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId } },
+    })).resolves.toMatchObject({ status: "active" });
+  });
+
+  it("rolls back the entire sequence, including the initial claim, on an unexpected exception", async () => {
+    const ownerUserId = await createOwner(owners);
+    const providerEventId = `evt_${randomUUID()}`;
+
+    await expect(runBillingWebhookTransaction(async (tx) => {
+      await recordWebhookEventIdempotently({
+        provider: "stripe",
+        providerEventId,
+        eventType: "customer.subscription.created",
+        eventCreatedAt: new Date("2026-08-01T00:00:00.000Z"),
+        ownerUserId,
+      }, tx);
+
+      throw new Error("simulated unexpected failure mid-processing");
+    })).rejects.toBeInstanceOf(BillingPersistenceError);
+
+    const { prisma } = await import("@/lib/prisma");
+    await expect(prisma.billingWebhookEvent.findUnique({
+      where: { provider_providerEventId: { provider: "stripe", providerEventId } },
+    })).resolves.toBeNull();
   });
 
   it("restart-safe idempotency: a fresh PrismaClient instance observes the same durable event row", async () => {
