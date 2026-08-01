@@ -1,3 +1,5 @@
+import { randomUUID } from "crypto";
+
 import {
   Prisma,
   type BillingCustomer as PrismaBillingCustomerRow,
@@ -334,6 +336,113 @@ export async function getWebhookEventByProviderId(
   return runBillingQuery(() => prisma.billingWebhookEvent.findUnique({
     where: { provider_providerEventId: { provider, providerEventId } },
   }));
+}
+
+export type BillingRepositoryHealthCode =
+  | "BILLING_READINESS_DATABASE_UNAVAILABLE"
+  | "BILLING_READINESS_CUSTOMER_TABLE_UNAVAILABLE"
+  | "BILLING_READINESS_SUBSCRIPTION_TABLE_UNAVAILABLE"
+  | "BILLING_READINESS_PAYMENT_TABLE_UNAVAILABLE"
+  | "BILLING_READINESS_EVENT_TABLE_UNAVAILABLE"
+  | "BILLING_READINESS_IDEMPOTENCY_PROBE_FAILED"
+  | "BILLING_READINESS_CUSTOMER_MAPPING_PROBE_FAILED"
+  | "BILLING_READINESS_INTERNAL_ERROR"
+  | "BILLING_READINESS_SUCCEEDED";
+
+export interface BillingRepositoryHealthResult {
+  readonly ok: boolean;
+  readonly code: BillingRepositoryHealthCode;
+}
+
+type ReadinessProbeTable = "customer" | "subscription" | "payment" | "webhookEvent";
+
+const READINESS_PROBE_TABLE_CODE: Record<ReadinessProbeTable, BillingRepositoryHealthCode> = {
+  customer: "BILLING_READINESS_CUSTOMER_TABLE_UNAVAILABLE",
+  subscription: "BILLING_READINESS_SUBSCRIPTION_TABLE_UNAVAILABLE",
+  payment: "BILLING_READINESS_PAYMENT_TABLE_UNAVAILABLE",
+  webhookEvent: "BILLING_READINESS_EVENT_TABLE_UNAVAILABLE",
+};
+
+class ReadinessProbeTableUnavailable extends Error {
+  constructor(readonly table: ReadinessProbeTable) {
+    super("readiness probe table unavailable");
+  }
+}
+
+interface ReadinessProbeOutcome {
+  readonly idempotencyProven: boolean;
+  readonly customerMappingProven: boolean;
+}
+
+class ReadinessProbeRollback {
+  constructor(readonly outcome: ReadinessProbeOutcome) {}
+}
+
+/**
+ * Reserved, database-only readiness probe for M17 GO-4. Runs entirely inside
+ * one transaction and always rolls back via a function-local sentinel -- no
+ * row from this probe is ever durably persisted, no Stripe API is called, and
+ * no real customer/subscription/payment data is touched. Not intended for use
+ * outside the billing-readiness gate.
+ */
+export async function checkBillingRepositoryHealth(): Promise<BillingRepositoryHealthResult> {
+  if (!isDatabaseConfigured()) {
+    return { ok: false, code: "BILLING_READINESS_DATABASE_UNAVAILABLE" };
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.billingCustomer.count().catch(() => {
+        throw new ReadinessProbeTableUnavailable("customer");
+      });
+      await tx.billingSubscription.count().catch(() => {
+        throw new ReadinessProbeTableUnavailable("subscription");
+      });
+      await tx.billingPayment.count().catch(() => {
+        throw new ReadinessProbeTableUnavailable("payment");
+      });
+      await tx.billingWebhookEvent.count().catch(() => {
+        throw new ReadinessProbeTableUnavailable("webhookEvent");
+      });
+
+      const probeIdentifier = `internal-readiness-probe:${randomUUID()}`;
+      const mapping = await findOwnerByProviderCustomerId("stripe", probeIdentifier, tx);
+
+      const first = await recordWebhookEventIdempotently({
+        provider: "stripe",
+        providerEventId: probeIdentifier,
+        eventType: "internal.readiness_probe",
+        eventCreatedAt: new Date(0),
+      }, tx);
+      const second = await recordWebhookEventIdempotently({
+        provider: "stripe",
+        providerEventId: probeIdentifier,
+        eventType: "internal.readiness_probe",
+        eventCreatedAt: new Date(0),
+      }, tx);
+
+      throw new ReadinessProbeRollback({
+        idempotencyProven: first.outcome === "recorded" && second.outcome === "duplicate",
+        customerMappingProven: mapping === null,
+      });
+    });
+
+    return { ok: false, code: "BILLING_READINESS_INTERNAL_ERROR" };
+  } catch (error) {
+    if (error instanceof ReadinessProbeRollback) {
+      if (!error.outcome.idempotencyProven) {
+        return { ok: false, code: "BILLING_READINESS_IDEMPOTENCY_PROBE_FAILED" };
+      }
+      if (!error.outcome.customerMappingProven) {
+        return { ok: false, code: "BILLING_READINESS_CUSTOMER_MAPPING_PROBE_FAILED" };
+      }
+      return { ok: true, code: "BILLING_READINESS_SUCCEEDED" };
+    }
+    if (error instanceof ReadinessProbeTableUnavailable) {
+      return { ok: false, code: READINESS_PROBE_TABLE_CODE[error.table] };
+    }
+    return { ok: false, code: "BILLING_READINESS_DATABASE_UNAVAILABLE" };
+  }
 }
 
 export async function runBillingWebhookTransaction<T>(

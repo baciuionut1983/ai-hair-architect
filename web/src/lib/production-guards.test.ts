@@ -129,6 +129,40 @@ describe("production guards", () => {
     });
   });
 
+  it("surfaces BILLING_WEBHOOK_AUTHENTICITY_READY as FAIL when billing processing mode is unset, without affecting other checks", async () => {
+    const result = await evaluateReadiness({
+      requestId: "req-billing-1",
+      env: { NODE_ENV: "test" },
+    });
+
+    expect(result.payload.checks.find((check) => check.code === "BILLING_WEBHOOK_AUTHENTICITY_READY")).toMatchObject({
+      status: "FAIL",
+      message: "Billing webhook processing is not enabled.",
+    });
+    expect(result.payload.checks).toHaveLength(4);
+  });
+
+  const billingReadySuite = process.env.TEST_DATABASE_URL ? it : it.skip;
+
+  billingReadySuite(
+    "surfaces BILLING_WEBHOOK_AUTHENTICITY_READY as PASS when billing configuration is fully valid (real Postgres)",
+    async () => {
+      const result = await evaluateReadiness({
+        requestId: "req-billing-2",
+        env: {
+          NODE_ENV: "test",
+          BILLING_PROCESSING_MODE: "webhook_only",
+          STRIPE_SECRET_KEY: `sk_test_${"a".repeat(24)}`,
+          STRIPE_WEBHOOK_SECRET: `whsec_${"b".repeat(24)}`,
+        },
+      });
+
+      expect(
+        result.payload.checks.find((check) => check.code === "BILLING_WEBHOOK_AUTHENTICITY_READY"),
+      ).toMatchObject({ status: "PASS", message: "Billing webhook processing is ready." });
+    },
+  );
+
   it.each(["development", "test"] as const)(
     "reports bypassed domain readiness in %s",
     async (runtime) => {

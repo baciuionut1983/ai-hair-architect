@@ -1,3 +1,4 @@
+import { evaluateBillingReadiness } from "@/lib/billing-readiness";
 import {
   validateRuntimeProductionEnvironment,
   type EnvValidationIssue,
@@ -82,16 +83,16 @@ export async function evaluateReadiness(input: {
   const runtime = resolveReadinessRuntime(env);
   const businessPersistenceDomains = getBusinessPersistenceReadinessDomains(runtime);
   const storageReadiness = await evaluateStorageReadiness({ env, mode: runtime, now: nowFn });
+  const billingReadiness = await evaluateBillingReadiness({ env });
 
   const checks: ReadinessCheck[] = [
     buildEnvCheck(envValidation.issues),
     buildBusinessPersistenceCheck(businessPersistenceDomains),
     {
       code: "BILLING_WEBHOOK_AUTHENTICITY_READY",
-      status: "FAIL",
+      status: billingReadiness.status === "ready" ? "PASS" : "FAIL",
       critical: true,
-      message:
-        "Billing webhook provider authenticity verification is not implemented."
+      message: billingReadiness.message
     },
     {
       code: "STORAGE_PRODUCTION_POLICY_READY",

@@ -51,6 +51,7 @@ import {
   BillingCustomerConflictError,
   BillingPersistenceError,
   billingPersistenceUnavailableResponse,
+  checkBillingRepositoryHealth,
   findOrCreateBillingCustomer,
   findOwnerByProviderCustomerId,
   getBillingCustomerByOwner,
@@ -79,6 +80,28 @@ const injectedTx = {
   billingSubscription: { create: vi.fn(), updateMany: vi.fn(), findUniqueOrThrow: vi.fn() },
   $executeRaw: vi.fn(),
 };
+
+const healthProbeTx = {
+  billingCustomer: { count: vi.fn(), findUnique: vi.fn() },
+  billingSubscription: { count: vi.fn() },
+  billingPayment: { count: vi.fn() },
+  billingWebhookEvent: { count: vi.fn(), create: vi.fn(), findUnique: vi.fn() },
+  $executeRaw: vi.fn(),
+};
+
+function resetHealthProbeTxToHealthy(): void {
+  healthProbeTx.billingCustomer.count.mockReset().mockResolvedValue(0);
+  healthProbeTx.billingSubscription.count.mockReset().mockResolvedValue(0);
+  healthProbeTx.billingPayment.count.mockReset().mockResolvedValue(0);
+  healthProbeTx.billingWebhookEvent.count.mockReset().mockResolvedValue(0);
+  healthProbeTx.billingCustomer.findUnique.mockReset().mockResolvedValue(null);
+  healthProbeTx.billingWebhookEvent.create
+    .mockReset()
+    .mockResolvedValueOnce(webhookEventRow())
+    .mockRejectedValueOnce(uniqueConstraintError());
+  healthProbeTx.billingWebhookEvent.findUnique.mockReset().mockResolvedValueOnce(webhookEventRow());
+  healthProbeTx.$executeRaw.mockReset();
+}
 
 const unitSuite = hasRealDatabase ? describe.skip : describe;
 const integrationSuite = hasRealDatabase ? describe : describe.skip;
@@ -414,6 +437,81 @@ unitSuite("billing-repository (mocked)", () => {
       ).resolves.toMatchObject({ providerInvoiceId: "in_1" });
       expect(injectedTx.billingPayment.upsert).toHaveBeenCalledTimes(1);
       expect(prismaMocks.billingPaymentUpsert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("checkBillingRepositoryHealth", () => {
+    it("returns DATABASE_UNAVAILABLE immediately when the database is not configured, without opening a transaction", async () => {
+      prismaMocks.configured = false;
+
+      await expect(checkBillingRepositoryHealth()).resolves.toEqual({
+        ok: false,
+        code: "BILLING_READINESS_DATABASE_UNAVAILABLE",
+      });
+      expect(prismaMocks.transaction).not.toHaveBeenCalled();
+    });
+
+    it("succeeds when all tables are reachable and idempotency/mapping are proven", async () => {
+      resetHealthProbeTxToHealthy();
+      prismaMocks.transaction.mockImplementationOnce(async (operation) => operation(healthProbeTx));
+
+      await expect(checkBillingRepositoryHealth()).resolves.toEqual({
+        ok: true,
+        code: "BILLING_READINESS_SUCCEEDED",
+      });
+      expect(healthProbeTx.billingCustomer.count).toHaveBeenCalledTimes(1);
+      expect(healthProbeTx.billingSubscription.count).toHaveBeenCalledTimes(1);
+      expect(healthProbeTx.billingPayment.count).toHaveBeenCalledTimes(1);
+      expect(healthProbeTx.billingWebhookEvent.count).toHaveBeenCalledTimes(1);
+      expect(healthProbeTx.billingWebhookEvent.create).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      ["customer", "BILLING_READINESS_CUSTOMER_TABLE_UNAVAILABLE"],
+      ["subscription", "BILLING_READINESS_SUBSCRIPTION_TABLE_UNAVAILABLE"],
+      ["payment", "BILLING_READINESS_PAYMENT_TABLE_UNAVAILABLE"],
+      ["webhookEvent", "BILLING_READINESS_EVENT_TABLE_UNAVAILABLE"],
+    ] as const)("attributes a %s table failure to the correct code", async (table, expectedCode) => {
+      resetHealthProbeTxToHealthy();
+      const modelKey = table === "customer" ? "billingCustomer"
+        : table === "subscription" ? "billingSubscription"
+        : table === "payment" ? "billingPayment"
+        : "billingWebhookEvent";
+      healthProbeTx[modelKey].count.mockReset().mockRejectedValue(new Error("relation does not exist"));
+      prismaMocks.transaction.mockImplementationOnce(async (operation) => operation(healthProbeTx));
+
+      await expect(checkBillingRepositoryHealth()).resolves.toEqual({ ok: false, code: expectedCode });
+    });
+
+    it("classifies an idempotency probe failure when the second insert is not detected as a duplicate", async () => {
+      resetHealthProbeTxToHealthy();
+      healthProbeTx.billingWebhookEvent.create.mockReset().mockResolvedValue(webhookEventRow());
+      prismaMocks.transaction.mockImplementationOnce(async (operation) => operation(healthProbeTx));
+
+      await expect(checkBillingRepositoryHealth()).resolves.toEqual({
+        ok: false,
+        code: "BILLING_READINESS_IDEMPOTENCY_PROBE_FAILED",
+      });
+    });
+
+    it("classifies a customer-mapping probe failure when the reserved lookup unexpectedly matches", async () => {
+      resetHealthProbeTxToHealthy();
+      healthProbeTx.billingCustomer.findUnique.mockReset().mockResolvedValue({ id: "x", ownerUserId: "y" });
+      prismaMocks.transaction.mockImplementationOnce(async (operation) => operation(healthProbeTx));
+
+      await expect(checkBillingRepositoryHealth()).resolves.toEqual({
+        ok: false,
+        code: "BILLING_READINESS_CUSTOMER_MAPPING_PROBE_FAILED",
+      });
+    });
+
+    it("does not mistake an unrelated transaction failure for the intentional rollback sentinel", async () => {
+      prismaMocks.transaction.mockRejectedValueOnce(new Error("connection reset"));
+
+      await expect(checkBillingRepositoryHealth()).resolves.toEqual({
+        ok: false,
+        code: "BILLING_READINESS_DATABASE_UNAVAILABLE",
+      });
     });
   });
 
@@ -794,6 +892,35 @@ integrationSuite("billing-repository (real Postgres)", () => {
       })).resolves.toMatchObject({ id: event.id, status: "received" });
     } finally {
       await freshClient.$disconnect();
+    }
+  });
+
+  it("checkBillingRepositoryHealth succeeds against real Postgres and leaves zero durable probe rows", async () => {
+    const { prisma } = await import("@/lib/prisma");
+
+    await expect(checkBillingRepositoryHealth()).resolves.toEqual({
+      ok: true,
+      code: "BILLING_READINESS_SUCCEEDED",
+    });
+
+    await expect(prisma.billingWebhookEvent.count({
+      where: { providerEventId: { startsWith: "internal-readiness-probe:" } },
+    })).resolves.toBe(0);
+    await expect(prisma.billingCustomer.count({
+      where: { providerCustomerId: { startsWith: "internal-readiness-probe:" } },
+    })).resolves.toBe(0);
+  });
+
+  it("checkBillingRepositoryHealth reports DATABASE_UNAVAILABLE when the database is not configured", async () => {
+    const originalUrl = process.env.DATABASE_URL;
+    delete process.env.DATABASE_URL;
+    try {
+      await expect(checkBillingRepositoryHealth()).resolves.toEqual({
+        ok: false,
+        code: "BILLING_READINESS_DATABASE_UNAVAILABLE",
+      });
+    } finally {
+      process.env.DATABASE_URL = originalUrl;
     }
   });
 });
