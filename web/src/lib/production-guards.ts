@@ -8,6 +8,7 @@ import {
   type BusinessPersistenceReadinessDomain,
   type BusinessPersistenceRuntime,
 } from "@/lib/business-persistence-guards";
+import { evaluateStorageReadiness } from "@/lib/storage-readiness-canary";
 
 export type ReadinessStatus = "READY" | "NOT_READY";
 export type ReadinessCheckStatus = "PASS" | "FAIL";
@@ -69,15 +70,18 @@ export function getBillingWebhookProductionError(
   };
 }
 
-export function evaluateReadiness(input: {
+export async function evaluateReadiness(input: {
   requestId: string;
   now?: Date;
   env?: NodeJS.ProcessEnv;
-}): ReadinessEvaluation {
+}): Promise<ReadinessEvaluation> {
   const env = input.env ?? process.env;
   const now = input.now ?? new Date();
+  const nowFn = () => now;
   const envValidation = validateRuntimeProductionEnvironment(env);
-  const businessPersistenceDomains = getBusinessPersistenceReadinessDomains(resolveReadinessRuntime(env));
+  const runtime = resolveReadinessRuntime(env);
+  const businessPersistenceDomains = getBusinessPersistenceReadinessDomains(runtime);
+  const storageReadiness = await evaluateStorageReadiness({ env, mode: runtime, now: nowFn });
 
   const checks: ReadinessCheck[] = [
     buildEnvCheck(envValidation.issues),
@@ -91,10 +95,9 @@ export function evaluateReadiness(input: {
     },
     {
       code: "STORAGE_PRODUCTION_POLICY_READY",
-      status: "FAIL",
+      status: storageReadiness.status === "READY" ? "PASS" : "FAIL",
       critical: true,
-      message:
-        "Local filesystem storage is not an approved production backend."
+      message: storageReadiness.message
     }
   ];
 

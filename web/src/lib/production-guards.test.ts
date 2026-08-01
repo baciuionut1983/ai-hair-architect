@@ -28,8 +28,8 @@ describe("production guards", () => {
     expect(error).toBeNull();
   });
 
-  it("returns NOT_READY and 503 with known critical blockers", () => {
-    const result = evaluateReadiness({
+  it("returns NOT_READY and 503 with known critical blockers", async () => {
+    const result = await evaluateReadiness({
       requestId: "req-1",
       now: new Date("2026-07-24T00:00:00.000Z"),
       env: {
@@ -131,8 +131,8 @@ describe("production guards", () => {
 
   it.each(["development", "test"] as const)(
     "reports bypassed domain readiness in %s",
-    (runtime) => {
-      const result = evaluateReadiness({
+    async (runtime) => {
+      const result = await evaluateReadiness({
         requestId: `req-${runtime}`,
         env: { NODE_ENV: runtime },
       });

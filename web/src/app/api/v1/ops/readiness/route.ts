@@ -7,7 +7,7 @@ const NO_STORE_HEADERS = { "Cache-Control": "no-store" } as const;
 
 export async function GET(request: Request) {
   const requestId = ensureRequestId(request.headers.get("x-request-id"));
-  const evaluation = evaluateReadiness({ requestId });
+  const evaluation = await evaluateReadiness({ requestId });
 
   return NextResponse.json(evaluation.payload, {
     status: evaluation.httpStatus,

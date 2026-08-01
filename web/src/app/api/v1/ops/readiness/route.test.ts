@@ -16,7 +16,7 @@ import { GET } from "./route";
 describe("ops readiness route", () => {
   it("returns the readiness payload and status from centralized guards", async () => {
     vi.mocked(hardeningMock.ensureRequestId).mockReturnValue("req-123");
-    vi.mocked(guardsMock.evaluateReadiness).mockReturnValue({
+    vi.mocked(guardsMock.evaluateReadiness).mockResolvedValue({
       httpStatus: 503,
       payload: {
         status: "NOT_READY",
