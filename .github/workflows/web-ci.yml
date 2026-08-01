@@ -17,15 +17,180 @@ jobs:
       run:
         working-directory: web
 
+    # PostgreSQL runs as a native GitHub Actions service container: it starts
+    # before the first step, and its own health check (pg_isready) gates step
+    # execution automatically -- no explicit "wait for postgres" step is needed.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci_test_user
+          POSTGRES_PASSWORD: ci_test_password_not_for_prod
+          POSTGRES_DB: ai_hair_architect_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ci_test_user -d ai_hair_architect_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Disposable, job-scoped test credentials only. Never real infrastructure,
+      # never production, never a GitHub repository secret (nothing here needs
+      # to survive past this single job run).
+      TEST_DATABASE_URL: postgresql://ci_test_user:ci_test_password_not_for_prod@localhost:5432/ai_hair_architect_test
+      M15_OBJECT_STORAGE_INTEGRATION: isolated
+      OBJECT_STORAGE_BACKEND: s3
+      OBJECT_STORAGE_ENDPOINT: http://127.0.0.1:9000
+      OBJECT_STORAGE_BUCKET_ALIAS: ci-isolated-alias
+      OBJECT_STORAGE_BUCKET: ci-isolated-bucket
+      OBJECT_STORAGE_REGION: us-east-1
+      OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION: none
+      OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
+      AWS_ACCESS_KEY_ID: ci_test_minio_root_not_for_prod
+      AWS_SECRET_ACCESS_KEY: ci_test_minio_root_secret_not_for_prod
+      MINIO_CONTAINER_NAME: ci-minio-${{ github.run_id }}-${{ github.run_attempt }}
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: web/package-lock.json
+
+      - name: Mask temporary test credentials in logs
+        run: |
+          echo "::add-mask::$AWS_ACCESS_KEY_ID"
+          echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+
       - run: npm ci
+
+      # Fast, infrastructure-free checks run first so a lint/type failure fails
+      # the job before any container is started.
       - run: npm run lint
       - run: npm run typecheck
+
+      # GitHub Actions "services:" cannot pass a custom container command, and
+      # the official MinIO image requires one ("server /data") to actually
+      # start serving -- so MinIO is started explicitly via `docker run`
+      # instead of as a service container (per approved Decision B).
+      - name: Start pinned MinIO container
+        run: |
+          docker run -d \
+            --name "$MINIO_CONTAINER_NAME" \
+            -p 9000:9000 \
+            -e "MINIO_ROOT_USER=$AWS_ACCESS_KEY_ID" \
+            -e "MINIO_ROOT_PASSWORD=$AWS_SECRET_ACCESS_KEY" \
+            minio/minio:RELEASE.2025-04-08T15-41-24Z \
+            server /data
+
+      - name: Wait for MinIO readiness (bounded)
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf "http://127.0.0.1:9000/minio/health/live" > /dev/null; then
+              echo "MinIO is ready."
+              exit 0
+            fi
+            echo "Waiting for MinIO... ($i/30)"
+            sleep 2
+          done
+          echo "::error::MinIO did not become ready within the bounded wait window."
+          docker logs "$MINIO_CONTAINER_NAME" || true
+          exit 1
+
+      - name: Create the dedicated private test bucket
+        run: |
+          docker run --rm \
+            --network host \
+            -e "MC_HOST_ciminio=http://$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY@127.0.0.1:9000" \
+            minio/mc:RELEASE.2025-07-16T15-35-03Z \
+            mb --ignore-existing "ciminio/$OBJECT_STORAGE_BUCKET"
+
+      - name: Verify the test bucket exists
+        run: |
+          docker run --rm \
+            --network host \
+            -e "MC_HOST_ciminio=http://$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY@127.0.0.1:9000" \
+            minio/mc:RELEASE.2025-07-16T15-35-03Z \
+            ls "ciminio/$OBJECT_STORAGE_BUCKET"
+
+      # No step anywhere in this workflow ever applies an anonymous/public
+      # policy (no `mc anonymous set public`, no `mc policy set`) -- the
+      # bucket is guaranteed private by never being made otherwise. This is
+      # verified below by behavior rather than by parsing `mc`'s
+      # human-readable policy-status text, which is not reliably stable
+      # across client versions: an unauthenticated, unsigned request for a
+      # definitely-nonexistent object is sent directly to the S3 API. Per
+      # S3/MinIO semantics, a private bucket answers any anonymous request
+      # (regardless of whether the object exists) with 403 Access Denied,
+      # before object existence is even checked; only a bucket with a public
+      # policy would instead answer 404 Not Found (NoSuchKey) for a missing
+      # object. This holds regardless of `mc` version and touches no real
+      # object or credential.
+      - name: Confirm the test bucket denies unauthenticated access (fail-closed)
+        run: |
+          canary_key="ci-privacy-canary-$(date +%s)-$RANDOM"
+          response_file="$(mktemp)"
+          status="$(curl -s -o "$response_file" -w "%{http_code}" \
+            "http://127.0.0.1:9000/$OBJECT_STORAGE_BUCKET/$canary_key")"
+          if [ "$status" != "403" ]; then
+            echo "::error::Unauthenticated request to the test bucket returned HTTP $status, expected 403 Access Denied. The bucket may not be private."
+            echo "Sanitized response body (no credentials, no real object data):"
+            cat "$response_file"
+            rm -f "$response_file"
+            exit 1
+          fi
+          rm -f "$response_file"
+          echo "Confirmed: unauthenticated access to the test bucket is denied (403)."
+
+      # @prisma/client's own postinstall hook already runs `prisma generate`
+      # during `npm ci` above -- no separate generate step is required by the
+      # existing workflow.
+      - name: Apply Prisma migrations to the test database
+        run: npm run prisma:migrate:deploy
+        env:
+          DATABASE_URL: ${{ env.TEST_DATABASE_URL }}
+
+      # Re-derives, verbatim, the exact activation conditions already read by
+      # tests/integration/*.integration.test.ts (TEST_DATABASE_URL presence;
+      # M15_OBJECT_STORAGE_INTEGRATION=isolated + OBJECT_STORAGE_BACKEND=s3 +
+      # OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION=none + a non-AWS endpoint). If
+      # this check passes, the integration tests below are mathematically
+      # guaranteed to run rather than silently self-skip -- no new
+      # configuration contract is introduced, only the existing one is
+      # verified before relying on it.
+      - name: Confirm integration tests cannot silently skip
+        run: |
+          node -e '
+            const dbOk = Boolean(process.env.TEST_DATABASE_URL);
+            const endpoint = process.env.OBJECT_STORAGE_ENDPOINT || "";
+            const s3Ok =
+              process.env.M15_OBJECT_STORAGE_INTEGRATION === "isolated" &&
+              process.env.OBJECT_STORAGE_BACKEND === "s3" &&
+              process.env.OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION === "none" &&
+              Boolean(endpoint) &&
+              !endpoint.toLowerCase().includes("amazonaws.com");
+            if (!dbOk || !s3Ok) {
+              console.error("Integration test activation conditions are not met -- tests would silently skip.");
+              console.error(`  TEST_DATABASE_URL set: ${dbOk}`);
+              console.error(`  isolated S3 activation conditions met: ${s3Ok}`);
+              process.exit(1);
+            }
+            console.log("Confirmed: PostgreSQL and isolated S3-compatible integration tests will execute, not skip.");
+          '
+
+      # Unit and integration tests share one command (already the existing CI
+      # structure: tests/**/*.test.ts is included in the same vitest run as
+      # src/**/*.test.ts). With the services and environment above in place,
+      # the previously self-skipping PostgreSQL- and object-storage-gated
+      # integration tests now execute for real as part of this same command.
       - run: npm run test
+
       - run: npm run build
+
+      - name: Remove the temporary MinIO container
+        if: always()
+        run: docker rm -f "$MINIO_CONTAINER_NAME" || true
