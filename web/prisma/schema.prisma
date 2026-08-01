@@ -92,20 +92,56 @@ enum ImageAssetStorageState {
   quarantined
 }
 
+enum BillingProvider {
+  stripe
+}
+
+enum BillingSubscriptionStatus {
+  incomplete
+  incomplete_expired
+  trialing
+  active
+  past_due
+  canceled
+  unpaid
+  paused
+}
+
+enum BillingPaymentStatus {
+  pending
+  succeeded
+  failed
+  refunded
+  disputed
+}
+
+enum BillingWebhookEventStatus {
+  received
+  processing
+  processed
+  ignored_out_of_order
+  ignored_unsupported
+  failed_retryable
+  failed_terminal
+}
+
 model User {
-  id            String            @id @default(uuid())
-  email         String            @unique
-  passwordHash  String
-  role          String
-  locale        String
-  createdAt     DateTime          @default(now())
-  sessions      Session[]
-  clients       Client[]
-  analyses      Analysis[]
-  consultations Consultation[]
-  appointments  Appointment[]
-  notifications Notification[]
-  webhooks      WebhookEndpoint[]
+  id                   String                @id @default(uuid())
+  email                String                @unique
+  passwordHash         String
+  role                 String
+  locale               String
+  createdAt            DateTime              @default(now())
+  sessions             Session[]
+  clients              Client[]
+  analyses             Analysis[]
+  consultations        Consultation[]
+  appointments         Appointment[]
+  notifications        Notification[]
+  webhooks             WebhookEndpoint[]
+  billingCustomers     BillingCustomer[]
+  billingSubscriptions BillingSubscription[]
+  billingPayments      BillingPayment[]
 }
 
 model Session {
@@ -609,4 +645,98 @@ model WebhookDeliveryAttempt {
   @@unique([webhookDeliveryId, attemptNumber])
   @@index([webhookDeliveryId, attemptNumber])
   @@index([createdAt])
+}
+
+model BillingCustomer {
+  id                 String          @id @default(cuid())
+  ownerUserId        String
+  provider           BillingProvider @default(stripe)
+  providerCustomerId String          @db.VarChar(255)
+  createdAt          DateTime        @default(now()) @db.Timestamp(6)
+  updatedAt          DateTime        @updatedAt @db.Timestamp(6)
+
+  owner         User                  @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  subscriptions BillingSubscription[]
+
+  @@unique([id, ownerUserId])
+  @@unique([provider, providerCustomerId])
+  @@unique([ownerUserId, provider])
+  @@index([ownerUserId])
+}
+
+model BillingSubscription {
+  id                        String                    @id @default(cuid())
+  ownerUserId               String
+  billingCustomerId         String
+  provider                  BillingProvider           @default(stripe)
+  providerSubscriptionId    String                    @db.VarChar(255)
+  planKey                   String                    @db.VarChar(64)
+  status                    BillingSubscriptionStatus
+  currentPeriodStart        DateTime?                 @db.Timestamp(6)
+  currentPeriodEnd          DateTime?                 @db.Timestamp(6)
+  cancelAtPeriodEnd         Boolean                   @default(false)
+  canceledAt                DateTime?                 @db.Timestamp(6)
+  lastAppliedEventCreatedAt DateTime?                 @db.Timestamp(6)
+  lastAppliedEventId        String?                   @db.VarChar(255)
+  createdAt                 DateTime                  @default(now()) @db.Timestamp(6)
+  updatedAt                 DateTime                  @updatedAt @db.Timestamp(6)
+
+  owner    User             @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  customer BillingCustomer  @relation(fields: [billingCustomerId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  payments BillingPayment[]
+
+  @@unique([id, ownerUserId])
+  @@unique([provider, providerSubscriptionId])
+  @@index([ownerUserId, status])
+  @@index([billingCustomerId])
+}
+
+model BillingPayment {
+  id                      String               @id @default(cuid())
+  ownerUserId             String
+  billingSubscriptionId   String?
+  provider                BillingProvider      @default(stripe)
+  providerInvoiceId       String               @db.VarChar(255)
+  providerPaymentIntentId String?              @db.VarChar(255)
+  amountCents             Int
+  currency                String               @db.VarChar(3)
+  status                  BillingPaymentStatus
+  paidAt                  DateTime?            @db.Timestamp(6)
+  failedAt                DateTime?            @db.Timestamp(6)
+  failureCode             String?              @db.VarChar(80)
+  createdAt               DateTime             @default(now()) @db.Timestamp(6)
+  updatedAt               DateTime             @updatedAt @db.Timestamp(6)
+
+  owner        User                 @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  subscription BillingSubscription? @relation(fields: [billingSubscriptionId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([provider, providerInvoiceId])
+  @@index([ownerUserId, createdAt])
+  @@index([billingSubscriptionId])
+}
+
+model BillingWebhookEvent {
+  id                     String                    @id @default(cuid())
+  provider               BillingProvider           @default(stripe)
+  providerEventId        String                    @db.VarChar(255)
+  eventType              String                    @db.VarChar(120)
+  apiVersion             String?                   @db.VarChar(32)
+  status                 BillingWebhookEventStatus @default(received)
+  ownerUserId            String?
+  providerCustomerId     String?                   @db.VarChar(255)
+  providerSubscriptionId String?                   @db.VarChar(255)
+  providerInvoiceId      String?                   @db.VarChar(255)
+  eventCreatedAt         DateTime                  @db.Timestamp(6)
+  receivedAt             DateTime                  @default(now()) @db.Timestamp(6)
+  lastAttemptedAt        DateTime?                 @db.Timestamp(6)
+  processedAt            DateTime?                 @db.Timestamp(6)
+  attemptCount           Int                       @default(0)
+  lastFailureCode        String?                   @db.VarChar(80)
+  createdAt              DateTime                  @default(now()) @db.Timestamp(6)
+  updatedAt              DateTime                  @updatedAt @db.Timestamp(6)
+
+  @@unique([provider, providerEventId])
+  @@index([ownerUserId, receivedAt])
+  @@index([status, receivedAt])
+  @@index([providerSubscriptionId])
 }
