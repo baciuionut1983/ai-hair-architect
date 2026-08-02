@@ -126,22 +126,23 @@ enum BillingWebhookEventStatus {
 }
 
 model User {
-  id                   String                @id @default(uuid())
-  email                String                @unique
-  passwordHash         String
-  role                 String
-  locale               String
-  createdAt            DateTime              @default(now())
-  sessions             Session[]
-  clients              Client[]
-  analyses             Analysis[]
-  consultations        Consultation[]
-  appointments         Appointment[]
-  notifications        Notification[]
-  webhooks             WebhookEndpoint[]
-  billingCustomers     BillingCustomer[]
-  billingSubscriptions BillingSubscription[]
-  billingPayments      BillingPayment[]
+  id                            String                         @id @default(uuid())
+  email                         String                         @unique
+  passwordHash                  String
+  role                          String
+  locale                        String
+  createdAt                     DateTime                       @default(now())
+  sessions                      Session[]
+  clients                       Client[]
+  analyses                      Analysis[]
+  consultations                 Consultation[]
+  appointments                  Appointment[]
+  notifications                 Notification[]
+  webhooks                      WebhookEndpoint[]
+  billingCustomers              BillingCustomer[]
+  billingSubscriptions          BillingSubscription[]
+  billingPayments               BillingPayment[]
+  imageAnalysisProviderAttempts ImageAnalysisProviderAttempt[]
 }
 
 model Session {
@@ -313,28 +314,49 @@ model ImageAsset {
 }
 
 model ImageAnalysis {
-  id                 String                @id @default(uuid())
-  assetId            String
-  status             String                @default("draft")
-  providerName       String                @default("manual-only")
-  modelVersion       String                @default("mock-1.0")
-  analysisPayload    Json                  @default("{}")
-  confidences        Json                  @default("{}")
-  unknownFields      Json                  @default("[]")
-  warnings           Json                  @default("[]")
-  limitations        Json                  @default("[]")
-  consentTimestamp   DateTime              @default(now())
-  deletedAt          DateTime?
-  retentionDeletesAt DateTime?
-  createdAt          DateTime              @default(now())
-  updatedAt          DateTime              @updatedAt
-  asset              ImageAsset            @relation(fields: [assetId], references: [id], onDelete: Cascade)
-  reviews            ImageAnalysisReview[]
-  analysisResults    Analysis[]
+  id                         String                         @id @default(uuid())
+  assetId                    String
+  status                     String                         @default("draft")
+  providerName               String                         @default("manual-only")
+  modelVersion               String                         @default("mock-1.0")
+  analysisPayload            Json                           @default("{}")
+  confidences                Json                           @default("{}")
+  unknownFields              Json                           @default("[]")
+  warnings                   Json                           @default("[]")
+  limitations                Json                           @default("[]")
+  consentTimestamp           DateTime                       @default(now())
+  externalAiConsentGrantedAt DateTime?                      @db.Timestamp(6)
+  externalAiConsentVersion   String?                        @db.VarChar(32)
+  lastFailureCode            String?                        @db.VarChar(80)
+  deletedAt                  DateTime?
+  retentionDeletesAt         DateTime?
+  createdAt                  DateTime                       @default(now())
+  updatedAt                  DateTime                       @updatedAt
+  asset                      ImageAsset                     @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  reviews                    ImageAnalysisReview[]
+  analysisResults            Analysis[]
+  providerAttempts           ImageAnalysisProviderAttempt[]
 
   @@index([assetId])
   @@index([status])
   @@index([deletedAt])
+}
+
+model ImageAnalysisProviderAttempt {
+  id              String   @id @default(cuid())
+  imageAnalysisId String
+  ownerUserId     String
+  providerName    String   @db.VarChar(64)
+  modelVersion    String   @db.VarChar(64)
+  attemptNumber   Int
+  createdAt       DateTime @default(now()) @db.Timestamp(6)
+
+  imageAnalysis ImageAnalysis @relation(fields: [imageAnalysisId], references: [id], onDelete: Cascade)
+  owner         User          @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([imageAnalysisId, attemptNumber])
+  @@index([ownerUserId, createdAt])
+  @@index([imageAnalysisId])
 }
 
 model ImageAnalysisReview {
