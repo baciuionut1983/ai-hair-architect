@@ -189,11 +189,31 @@ export async function claimQueuedAnalysisForProcessing({
   }));
 }
 
-export async function markAnalysisSucceeded(analysisId: string, ownerUserId: string): Promise<void> {
+export interface AnalysisSuccessPayload {
+  result: Prisma.InputJsonValue;
+  confidences: Prisma.InputJsonValue;
+  providerName: string;
+  modelVersion: string;
+  warnings: string[];
+}
+
+export async function markAnalysisSucceeded(
+  analysisId: string,
+  ownerUserId: string,
+  payload: AnalysisSuccessPayload,
+): Promise<void> {
   return runAnalysisJobQuery(async () => {
     const claimed = await prisma.imageAnalysis.updateMany({
       where: { id: analysisId, asset: { ownerUserId }, status: ANALYSIS_STATUS_PROCESSING },
-      data: { status: ANALYSIS_STATUS_DRAFT, lastFailureCode: null },
+      data: {
+        status: ANALYSIS_STATUS_DRAFT,
+        lastFailureCode: null,
+        analysisPayload: payload.result,
+        confidences: payload.confidences,
+        providerName: payload.providerName,
+        modelVersion: payload.modelVersion,
+        warnings: payload.warnings,
+      },
     });
     if (claimed.count !== 1) {
       throw new ImageAnalysisJobStateError();

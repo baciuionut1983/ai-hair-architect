@@ -217,28 +217,36 @@ unitSuite("image-analysis-job-repository (mocked)", () => {
   });
 
   describe("markAnalysisSucceeded", () => {
-    it("transitions a processing row to draft", async () => {
+    it("transitions a processing row to draft and persists the validated payload atomically", async () => {
       prismaMocks.imageAnalysisUpdateMany.mockResolvedValue({ count: 1 });
-      await expect(markAnalysisSucceeded("analysis-1", "owner-1")).resolves.toBeUndefined();
+      await expect(markAnalysisSucceeded("analysis-1", "owner-1", successPayload())).resolves.toBeUndefined();
       expect(prismaMocks.imageAnalysisUpdateMany).toHaveBeenCalledWith({
         where: { id: "analysis-1", asset: { ownerUserId: "owner-1" }, status: ANALYSIS_STATUS_PROCESSING },
-        data: { status: ANALYSIS_STATUS_DRAFT, lastFailureCode: null },
+        data: {
+          status: ANALYSIS_STATUS_DRAFT,
+          lastFailureCode: null,
+          analysisPayload: successPayload().result,
+          confidences: successPayload().confidences,
+          providerName: "gemini",
+          modelVersion: "gemini-3.6-flash",
+          warnings: successPayload().warnings,
+        },
       });
     });
 
     it("rejects the transition when the row is not in processing state", async () => {
       prismaMocks.imageAnalysisUpdateMany.mockResolvedValue({ count: 0 });
-      await expect(markAnalysisSucceeded("analysis-1", "owner-1")).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
+      await expect(markAnalysisSucceeded("analysis-1", "owner-1", successPayload())).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
     });
 
     it("maps unexpected database failures to a controlled persistence error", async () => {
       prismaMocks.imageAnalysisUpdateMany.mockRejectedValueOnce(new Error("database unavailable"));
-      await expect(markAnalysisSucceeded("analysis-1", "owner-1")).rejects.toBeInstanceOf(ImageAnalysisJobPersistenceError);
+      await expect(markAnalysisSucceeded("analysis-1", "owner-1", successPayload())).rejects.toBeInstanceOf(ImageAnalysisJobPersistenceError);
     });
 
     it("fails closed without database configuration", async () => {
       prismaMocks.configured = false;
-      await expect(markAnalysisSucceeded("analysis-1", "owner-1")).rejects.toBeInstanceOf(ImageAnalysisJobPersistenceError);
+      await expect(markAnalysisSucceeded("analysis-1", "owner-1", successPayload())).rejects.toBeInstanceOf(ImageAnalysisJobPersistenceError);
     });
   });
 
@@ -580,7 +588,7 @@ integrationSuite("image-analysis-job-repository (real Postgres)", () => {
     await claimQueuedAnalysisForProcessing({
       analysisId, ownerUserId, providerName: "gemini", modelVersion: "gemini-3.6-flash", now,
     });
-    await markAnalysisSucceeded(analysisId, ownerUserId);
+    await markAnalysisSucceeded(analysisId, ownerUserId, successPayload());
 
     await expect(claimQueuedAnalysisForProcessing({
       analysisId, ownerUserId, providerName: "gemini", modelVersion: "gemini-3.6-flash", now,
@@ -637,14 +645,14 @@ integrationSuite("image-analysis-job-repository (real Postgres)", () => {
     const ownerUserId = await createOwner(owners);
     const analysisId = await createAnalysis(ownerUserId);
 
-    await expect(markAnalysisSucceeded(analysisId, ownerUserId)).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
+    await expect(markAnalysisSucceeded(analysisId, ownerUserId, successPayload())).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
 
     const now = new Date("2026-08-15T12:00:00.000Z");
     await recordExternalAiConsent(analysisId, ownerUserId, "v1", now);
     await claimQueuedAnalysisForProcessing({
       analysisId, ownerUserId, providerName: "gemini", modelVersion: "gemini-3.6-flash", now,
     });
-    await markAnalysisSucceeded(analysisId, ownerUserId);
+    await markAnalysisSucceeded(analysisId, ownerUserId, successPayload());
 
     await expect(markAnalysisFailed(analysisId, ownerUserId, "PROVIDER_TIMEOUT")).rejects.toBeInstanceOf(
       ImageAnalysisJobStateError,
@@ -682,12 +690,28 @@ integrationSuite("image-analysis-job-repository (real Postgres)", () => {
     await claimQueuedAnalysisForProcessing({
       analysisId, ownerUserId: ownerA, providerName: "gemini", modelVersion: "gemini-3.6-flash", now,
     });
-    await expect(markAnalysisSucceeded(analysisId, ownerB)).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
+    await expect(markAnalysisSucceeded(analysisId, ownerB, successPayload())).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
     await expect(markAnalysisFailed(analysisId, ownerB, "PROVIDER_TIMEOUT")).rejects.toBeInstanceOf(
       ImageAnalysisJobStateError,
     );
   });
 });
+
+function successPayload(): {
+  result: Prisma.InputJsonValue;
+  confidences: Prisma.InputJsonValue;
+  providerName: string;
+  modelVersion: string;
+  warnings: string[];
+} {
+  return {
+    result: { hairType: "curly", density: "high", porosity: "medium" },
+    confidences: { hairType: 0.9, density: 0.8, porosity: 0.7 },
+    providerName: "gemini",
+    modelVersion: "gemini-3.6-flash",
+    warnings: ["Automated analysis limited to hairType, density, and porosity (Gemini provider)."],
+  };
+}
 
 async function createOwner(owners: Set<string>): Promise<string> {
   const { prisma } = await import("@/lib/prisma");
