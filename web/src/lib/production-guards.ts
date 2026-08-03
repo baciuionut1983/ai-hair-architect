@@ -1,3 +1,4 @@
+import { evaluateCheckoutReadiness } from "@/lib/billing-checkout-readiness";
 import { evaluateBillingReadiness } from "@/lib/billing-readiness";
 import {
   validateRuntimeProductionEnvironment,
@@ -18,6 +19,7 @@ export type ReadinessCheckCode =
   | "ENV_RUNTIME_VALID"
   | "BUSINESS_PERSISTENCE_PRODUCTION_READY"
   | "BILLING_WEBHOOK_AUTHENTICITY_READY"
+  | "BILLING_CHECKOUT_READY"
   | "STORAGE_PRODUCTION_POLICY_READY";
 
 export interface ReadinessCheck {
@@ -84,6 +86,7 @@ export async function evaluateReadiness(input: {
   const businessPersistenceDomains = getBusinessPersistenceReadinessDomains(runtime);
   const storageReadiness = await evaluateStorageReadiness({ env, mode: runtime, now: nowFn });
   const billingReadiness = await evaluateBillingReadiness({ env });
+  const checkoutReadiness = evaluateCheckoutReadiness(env);
 
   const checks: ReadinessCheck[] = [
     buildEnvCheck(envValidation.issues),
@@ -93,6 +96,12 @@ export async function evaluateReadiness(input: {
       status: billingReadiness.status === "ready" ? "PASS" : "FAIL",
       critical: true,
       message: billingReadiness.message
+    },
+    {
+      code: "BILLING_CHECKOUT_READY",
+      status: checkoutReadiness.status === "ready" ? "PASS" : "FAIL",
+      critical: true,
+      message: checkoutReadiness.message
     },
     {
       code: "STORAGE_PRODUCTION_POLICY_READY",

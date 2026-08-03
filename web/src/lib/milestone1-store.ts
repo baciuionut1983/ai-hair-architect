@@ -11,7 +11,6 @@ import type {
   FormulaRecord,
   Locale,
   OpsHealthSnapshot,
-  PaymentRecord,
   PushPreferenceRecord,
   PushQueueRecord,
   ProductRecord,
@@ -49,7 +48,6 @@ interface Store {
   suppliers: SupplierRecord[];
   shortlists: ShortlistRecord[];
   subscriptions: SubscriptionRecord[];
-  payments: PaymentRecord[];
   auditEvents: AuditEventRecord[];
     workspaces: WorkspaceRecord[];
     workspaceMembers: WorkspaceMemberRecord[];
@@ -105,7 +103,6 @@ function createStore(): Store {
     suppliers: [],
     shortlists: [],
     subscriptions: [],
-    payments: [],
     auditEvents: [],
     workspaces: [],
     workspaceMembers: [],
@@ -155,10 +152,6 @@ if (!store.shortlists) {
 
 if (!store.subscriptions) {
   store.subscriptions = [];
-}
-
-if (!store.payments) {
-  store.payments = [];
 }
 
 if (!store.auditEvents) {
@@ -487,35 +480,6 @@ export function updateSubscriptionForUser(input: {
   subscription.currentPeriodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
   subscription.updatedAt = new Date().toISOString();
   return subscription;
-}
-
-export function createPaymentRecord(input: {
-  ownerUserId: string;
-  providerEventId: string;
-  amountCents: number;
-  currency: string;
-  status: "succeeded" | "failed";
-}): PaymentRecord {
-  const existing = store.payments.find(
-    (entry) => entry.ownerUserId === input.ownerUserId && entry.providerEventId === input.providerEventId
-  );
-
-  if (existing) {
-    return existing;
-  }
-
-  const payment: PaymentRecord = {
-    id: randomUUID(),
-    ownerUserId: input.ownerUserId,
-    providerEventId: input.providerEventId,
-    amountCents: input.amountCents,
-    currency: input.currency,
-    status: input.status,
-    createdAt: new Date().toISOString()
-  };
-
-  store.payments.push(payment);
-  return payment;
 }
 
 export function createAuditEvent(input: {

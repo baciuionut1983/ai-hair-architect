@@ -12,7 +12,8 @@ const PRICE_ENV_VAR: Record<PaidSubscriptionPlan, string> = {
 
 export type BillingCheckoutConfigIssueCode =
   | "STRIPE_SECRET_KEY_REQUIRED"
-  | "STRIPE_PRICE_ID_REQUIRED";
+  | "STRIPE_PRICE_ID_REQUIRED"
+  | "APP_BASE_URL_REQUIRED";
 
 export interface BillingCheckoutConfigIssue {
   code: BillingCheckoutConfigIssueCode;
@@ -24,6 +25,7 @@ export interface BillingCheckoutEnabledConfig {
   status: "enabled";
   secretKey: string;
   priceIds: Record<PaidSubscriptionPlan, string>;
+  appBaseUrl: string;
 }
 
 export type BillingCheckoutConfigResult =
@@ -69,11 +71,18 @@ export function resolveBillingCheckoutConfig(env: NodeJS.ProcessEnv = process.en
     }
   }
 
+  const appBaseUrl = value(env.APP_BASE_URL);
+  if (!appBaseUrl) {
+    issues.push(
+      issue("APP_BASE_URL_REQUIRED", "APP_BASE_URL", "APP_BASE_URL is required when BILLING_PROCESSING_MODE is enabled."),
+    );
+  }
+
   if (issues.length > 0) {
     return { status: "invalid", issues };
   }
 
-  return { status: "enabled", secretKey, priceIds };
+  return { status: "enabled", secretKey, priceIds, appBaseUrl };
 }
 
 export function isPaidSubscriptionPlan(value: string): value is PaidSubscriptionPlan {

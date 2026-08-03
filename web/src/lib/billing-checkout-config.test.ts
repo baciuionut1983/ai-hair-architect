@@ -13,6 +13,7 @@ function baseEnv(overrides: Record<string, string | undefined> = {}): NodeJS.Pro
     STRIPE_PRICE_PRO: "price_pro_123",
     STRIPE_PRICE_SALON: "price_salon_123",
     STRIPE_PRICE_BUSINESS: "price_business_123",
+    APP_BASE_URL: "https://app.example.com",
     ...overrides,
   };
 }
@@ -73,12 +74,39 @@ describe("resolveBillingCheckoutConfig", () => {
     const env = baseEnv({
       STRIPE_SECRET_KEY: "  sk_test_secret  ",
       STRIPE_PRICE_PRO: "  price_pro_123  ",
+      APP_BASE_URL: "  https://app.example.com  ",
     });
     expect(resolveBillingCheckoutConfig(env)).toEqual({
       status: "enabled",
       secretKey: "sk_test_secret",
       priceIds: { pro: "price_pro_123", salon: "price_salon_123", business: "price_business_123" },
+      appBaseUrl: "https://app.example.com",
     });
+  });
+
+  it("is invalid when enabled but APP_BASE_URL is missing", () => {
+    const env = baseEnv({ APP_BASE_URL: undefined });
+    const result = resolveBillingCheckoutConfig(env);
+    expect(result.status).toBe("invalid");
+    if (result.status === "invalid") {
+      expect(result.issues).toEqual([
+        { code: "APP_BASE_URL_REQUIRED", variable: "APP_BASE_URL", message: "APP_BASE_URL is required when BILLING_PROCESSING_MODE is enabled." },
+      ]);
+    }
+  });
+
+  it("treats a whitespace-only APP_BASE_URL as missing", () => {
+    const env = baseEnv({ APP_BASE_URL: "   " });
+    expect(resolveBillingCheckoutConfig(env).status).toBe("invalid");
+  });
+
+  it("collects the APP_BASE_URL issue alongside other missing values", () => {
+    const env = baseEnv({ STRIPE_SECRET_KEY: undefined, APP_BASE_URL: undefined });
+    const result = resolveBillingCheckoutConfig(env);
+    expect(result.status).toBe("invalid");
+    if (result.status === "invalid") {
+      expect(result.issues.map((i) => i.variable)).toEqual(["STRIPE_SECRET_KEY", "APP_BASE_URL"]);
+    }
   });
 });
 

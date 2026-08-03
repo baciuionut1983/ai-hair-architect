@@ -42,7 +42,7 @@ describe("production guards", () => {
     expect(result.httpStatus).toBe(503);
     expect(result.payload.status).toBe("NOT_READY");
     expect(result.payload.requestId).toBe("req-1");
-    expect(result.payload.checks).toHaveLength(4);
+    expect(result.payload.checks).toHaveLength(5);
     expect(result.payload.checks.filter((check) => check.status === "FAIL").length).toBeGreaterThan(0);
     expect(result.payload.businessPersistenceDomains).toEqual([
       {
@@ -139,7 +139,51 @@ describe("production guards", () => {
       status: "FAIL",
       message: "Billing webhook processing is not enabled.",
     });
-    expect(result.payload.checks).toHaveLength(4);
+    expect(result.payload.checks).toHaveLength(5);
+  });
+
+  it("surfaces BILLING_CHECKOUT_READY as FAIL when checkout is not enabled, without affecting the webhook check", async () => {
+    const result = await evaluateReadiness({
+      requestId: "req-checkout-1",
+      env: { NODE_ENV: "test" },
+    });
+
+    expect(result.payload.checks.find((check) => check.code === "BILLING_CHECKOUT_READY")).toMatchObject({
+      status: "FAIL",
+      message: 'Stripe Checkout is not enabled (BILLING_PROCESSING_MODE is not "enabled").',
+    });
+    expect(result.payload.checks).toHaveLength(5);
+  });
+
+  it("surfaces BILLING_CHECKOUT_READY as FAIL with issue detail when enabled but misconfigured", async () => {
+    const result = await evaluateReadiness({
+      requestId: "req-checkout-2",
+      env: { NODE_ENV: "test", BILLING_PROCESSING_MODE: "enabled" },
+    });
+
+    const check = result.payload.checks.find((check) => check.code === "BILLING_CHECKOUT_READY");
+    expect(check).toMatchObject({ status: "FAIL" });
+    expect(check?.message).toContain("issue(s)");
+  });
+
+  it("surfaces BILLING_CHECKOUT_READY as PASS when checkout configuration is fully valid", async () => {
+    const result = await evaluateReadiness({
+      requestId: "req-checkout-3",
+      env: {
+        NODE_ENV: "test",
+        BILLING_PROCESSING_MODE: "enabled",
+        STRIPE_SECRET_KEY: "sk_test_secret",
+        STRIPE_PRICE_PRO: "price_pro",
+        STRIPE_PRICE_SALON: "price_salon",
+        STRIPE_PRICE_BUSINESS: "price_business",
+        APP_BASE_URL: "https://app.example.com",
+      },
+    });
+
+    expect(result.payload.checks.find((check) => check.code === "BILLING_CHECKOUT_READY")).toMatchObject({
+      status: "PASS",
+      message: "Stripe Checkout is ready.",
+    });
   });
 
   const billingReadySuite = process.env.TEST_DATABASE_URL ? it : it.skip;

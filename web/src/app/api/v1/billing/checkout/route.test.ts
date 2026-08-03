@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const authMock = vi.hoisted(() => ({
   authenticateBillingSessionOwner: vi.fn(),
@@ -43,8 +43,6 @@ function buildRequest(body: unknown, headers: Record<string, string> = {}): Requ
   });
 }
 
-const originalAppBaseUrl = process.env.APP_BASE_URL;
-
 beforeEach(() => {
   authMock.authenticateBillingSessionOwner.mockReset().mockResolvedValue(OWNER);
   hardeningMock.checkRateLimit.mockReset().mockReturnValue({ allowed: true, retryAfter: 0 });
@@ -53,17 +51,13 @@ beforeEach(() => {
     status: "enabled",
     secretKey: "sk_test_x",
     priceIds: { pro: "price_pro", salon: "price_salon", business: "price_business" },
+    appBaseUrl: "https://app.example.com",
   });
   createBillingCheckoutAdapterMock.mockReset().mockReturnValue(adapterMock);
   adapterMock.createCustomer.mockReset().mockResolvedValue({ id: "cus_created" });
   adapterMock.createCheckoutSession.mockReset().mockResolvedValue({ id: "cs_1", url: "https://checkout.stripe.com/cs_1" });
   repositoryMock.getBillingCustomerByOwner.mockReset().mockResolvedValue(null);
   repositoryMock.findOrCreateBillingCustomer.mockReset().mockResolvedValue({ id: "cust-1", providerCustomerId: "cus_created" });
-  process.env.APP_BASE_URL = "https://app.example.com";
-});
-
-afterEach(() => {
-  process.env.APP_BASE_URL = originalAppBaseUrl;
 });
 
 describe("POST /api/v1/billing/checkout", () => {
@@ -150,15 +144,6 @@ describe("POST /api/v1/billing/checkout", () => {
 
   it("returns 503 when checkout configuration is invalid", async () => {
     configMock.resolveBillingCheckoutConfig.mockReturnValue({ status: "invalid", issues: [] });
-
-    const response = await POST(buildRequest({ plan: "pro" }));
-
-    expect(response.status).toBe(503);
-    expect(adapterMock.createCheckoutSession).not.toHaveBeenCalled();
-  });
-
-  it("fails closed with 503 when APP_BASE_URL is not configured", async () => {
-    delete process.env.APP_BASE_URL;
 
     const response = await POST(buildRequest({ plan: "pro" }));
 

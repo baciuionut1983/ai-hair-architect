@@ -56,11 +56,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "BILLING_CHECKOUT_MISCONFIGURED" }, { status: 503 });
     }
 
-    const appBaseUrl = String(process.env.APP_BASE_URL ?? "").trim();
-    if (!appBaseUrl) {
-      return NextResponse.json({ error: "BILLING_CHECKOUT_MISCONFIGURED" }, { status: 503 });
-    }
-
     const adapter = createBillingCheckoutAdapter(config.secretKey);
 
     const existingCustomer = await getBillingCustomerByOwner(owner.id, "stripe");
@@ -85,8 +80,8 @@ export async function POST(request: Request) {
         priceId: config.priceIds[plan],
         plan,
         ownerUserId: owner.id,
-        successUrl: `${appBaseUrl}/billing/success?plan=${plan}`,
-        cancelUrl: `${appBaseUrl}/billing/cancel`,
+        successUrl: `${config.appBaseUrl}/billing/success?plan=${plan}`,
+        cancelUrl: `${config.appBaseUrl}/billing/cancel`,
       });
     } catch {
       return NextResponse.json({ error: "BILLING_CHECKOUT_SESSION_FAILED" }, { status: 502 });
