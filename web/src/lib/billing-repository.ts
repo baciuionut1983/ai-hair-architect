@@ -335,6 +335,16 @@ export async function getSubscriptionByProviderId(
   }));
 }
 
+export async function getSubscriptionByOwner(
+  ownerUserId: string,
+  provider: BillingProvider,
+): Promise<BillingSubscriptionRow | null> {
+  return runBillingQuery(() => prisma.billingSubscription.findFirst({
+    where: { ownerUserId, provider },
+    orderBy: { updatedAt: "desc" },
+  }));
+}
+
 export async function getWebhookEventByProviderId(
   provider: BillingProvider,
   providerEventId: string,

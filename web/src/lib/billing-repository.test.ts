@@ -11,6 +11,7 @@ const prismaMocks = vi.hoisted(() => ({
   billingCustomerFindUnique: vi.fn(),
   billingCustomerCreate: vi.fn(),
   billingSubscriptionFindUnique: vi.fn(),
+  billingSubscriptionFindFirst: vi.fn(),
   billingWebhookEventCreate: vi.fn(),
   billingWebhookEventFindUnique: vi.fn(),
   billingWebhookEventUpdate: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock("@/lib/prisma", async (importOriginal) => {
       },
       billingSubscription: {
         findUnique: prismaMocks.billingSubscriptionFindUnique,
+        findFirst: prismaMocks.billingSubscriptionFindFirst,
       },
       billingWebhookEvent: {
         create: prismaMocks.billingWebhookEventCreate,
@@ -55,6 +57,7 @@ import {
   findOrCreateBillingCustomer,
   findOwnerByProviderCustomerId,
   getBillingCustomerByOwner,
+  getSubscriptionByOwner,
   getSubscriptionByProviderId,
   getWebhookEventByProviderId,
   isBillingPersistenceError,
@@ -113,6 +116,7 @@ unitSuite("billing-repository (mocked)", () => {
     prismaMocks.billingCustomerFindUnique.mockReset();
     prismaMocks.billingCustomerCreate.mockReset();
     prismaMocks.billingSubscriptionFindUnique.mockReset();
+    prismaMocks.billingSubscriptionFindFirst.mockReset();
     prismaMocks.billingWebhookEventCreate.mockReset();
     prismaMocks.billingWebhookEventFindUnique.mockReset();
     prismaMocks.billingWebhookEventUpdate.mockReset();
@@ -570,6 +574,26 @@ unitSuite("billing-repository (mocked)", () => {
     });
   });
 
+  describe("getSubscriptionByOwner", () => {
+    it("returns the most recently updated subscription for the owner", async () => {
+      prismaMocks.billingSubscriptionFindFirst.mockResolvedValueOnce(subscriptionRow());
+
+      await expect(getSubscriptionByOwner("owner-1", "stripe")).resolves.toMatchObject({
+        ownerUserId: "owner-1",
+      });
+      expect(prismaMocks.billingSubscriptionFindFirst).toHaveBeenCalledWith({
+        where: { ownerUserId: "owner-1", provider: "stripe" },
+        orderBy: { updatedAt: "desc" },
+      });
+    });
+
+    it("returns null when the owner has no subscription", async () => {
+      prismaMocks.billingSubscriptionFindFirst.mockResolvedValueOnce(null);
+
+      await expect(getSubscriptionByOwner("owner-1", "stripe")).resolves.toBeNull();
+    });
+  });
+
   describe("runBillingWebhookTransaction", () => {
     it("delegates to prisma.$transaction and returns its result", async () => {
       prismaMocks.transaction.mockImplementationOnce(async (operation) => operation("tx-placeholder"));
@@ -690,6 +714,45 @@ integrationSuite("billing-repository (real Postgres)", () => {
       ownerUserId,
     });
     await expect(findOwnerByProviderCustomerId("stripe", "cus_never_seen")).resolves.toBeNull();
+  });
+
+  it("getSubscriptionByOwner returns the most recently updated subscription and null for an owner with none", async () => {
+    const ownerUserId = await createOwner(owners);
+    const customer = await findOrCreateBillingCustomer({
+      ownerUserId,
+      provider: "stripe",
+      providerCustomerId: `cus_${ownerUserId}`,
+    });
+
+    await expect(getSubscriptionByOwner(ownerUserId, "stripe")).resolves.toBeNull();
+
+    const older = await upsertSubscriptionWithOrderingGuard({
+      ownerUserId,
+      billingCustomerId: customer.id,
+      provider: "stripe",
+      providerSubscriptionId: `sub_${randomUUID()}`,
+      planKey: "pro",
+      status: "canceled",
+      eventCreatedAt: new Date("2026-08-01T00:00:00.000Z"),
+      providerEventId: "evt_a",
+    });
+    const newer = await upsertSubscriptionWithOrderingGuard({
+      ownerUserId,
+      billingCustomerId: customer.id,
+      provider: "stripe",
+      providerSubscriptionId: `sub_${randomUUID()}`,
+      planKey: "salon",
+      status: "active",
+      eventCreatedAt: new Date("2026-08-01T01:00:00.000Z"),
+      providerEventId: "evt_b",
+    });
+
+    await expect(getSubscriptionByOwner(ownerUserId, "stripe")).resolves.toMatchObject({
+      id: newer.subscription.id,
+      planKey: "salon",
+      status: "active",
+    });
+    expect(older.applied).toBe(true);
   });
 
   it("records exactly one durable row and classifies the losing concurrent delivery as duplicate", async () => {
