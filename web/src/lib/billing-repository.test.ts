@@ -74,7 +74,7 @@ const tx = {
 };
 
 const injectedTx = {
-  billingCustomer: { findUnique: vi.fn() },
+  billingCustomer: { findUnique: vi.fn(), create: vi.fn() },
   billingWebhookEvent: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
   billingPayment: { upsert: vi.fn() },
   billingSubscription: { create: vi.fn(), updateMany: vi.fn(), findUniqueOrThrow: vi.fn() },
@@ -122,6 +122,7 @@ unitSuite("billing-repository (mocked)", () => {
     prismaMocks.txBillingSubscriptionUpdate.mockReset();
     prismaMocks.transaction.mockImplementation(async (operation) => operation(tx));
     injectedTx.billingCustomer.findUnique.mockReset();
+    injectedTx.billingCustomer.create.mockReset();
     injectedTx.billingWebhookEvent.create.mockReset();
     injectedTx.billingWebhookEvent.findUnique.mockReset();
     injectedTx.billingWebhookEvent.update.mockReset();
@@ -184,6 +185,30 @@ unitSuite("billing-repository (mocked)", () => {
       await expect(findOrCreateBillingCustomer(customerInput())).rejects.toBeInstanceOf(
         BillingCustomerConflictError,
       );
+    });
+
+    it("uses the injected transaction client instead of the default when provided", async () => {
+      injectedTx.billingCustomer.findUnique.mockResolvedValueOnce(null);
+      injectedTx.billingCustomer.create.mockResolvedValueOnce(customerRow());
+
+      await expect(
+        findOrCreateBillingCustomer(customerInput(), injectedTx as never),
+      ).resolves.toMatchObject({ providerCustomerId: "cus_1" });
+      expect(injectedTx.billingCustomer.create).toHaveBeenCalledTimes(1);
+      expect(prismaMocks.billingCustomerFindUnique).not.toHaveBeenCalled();
+      expect(prismaMocks.billingCustomerCreate).not.toHaveBeenCalled();
+    });
+
+    it("protects the caller's transaction with a savepoint when reconciling a concurrent create race", async () => {
+      injectedTx.billingCustomer.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(customerRow());
+      injectedTx.billingCustomer.create.mockRejectedValueOnce(uniqueConstraintError());
+
+      await expect(
+        findOrCreateBillingCustomer(customerInput(), injectedTx as never),
+      ).resolves.toMatchObject({ providerCustomerId: "cus_1" });
+      expect(injectedTx.$executeRaw).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -625,6 +650,21 @@ integrationSuite("billing-repository (real Postgres)", () => {
     } finally {
       await freshClient.$disconnect();
     }
+  });
+
+  it("findOrCreateBillingCustomer participates in the caller's transaction and rolls back with it", async () => {
+    const ownerUserId = await createOwner(owners);
+
+    await expect(runBillingWebhookTransaction(async (tx) => {
+      await findOrCreateBillingCustomer(
+        { ownerUserId, provider: "stripe", providerCustomerId: `cus_${ownerUserId}` },
+        tx,
+      );
+      throw new Error("simulated failure after customer creation");
+    })).rejects.toBeInstanceOf(BillingPersistenceError);
+
+    const { prisma } = await import("@/lib/prisma");
+    await expect(prisma.billingCustomer.count({ where: { ownerUserId } })).resolves.toBe(0);
   });
 
   it("rejects a provider customer id already mapped to a different owner", async () => {

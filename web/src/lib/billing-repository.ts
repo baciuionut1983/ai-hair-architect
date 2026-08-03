@@ -57,9 +57,10 @@ export interface FindOrCreateBillingCustomerInput {
 
 export async function findOrCreateBillingCustomer(
   input: FindOrCreateBillingCustomerInput,
+  db: BillingTransaction = prisma,
 ): Promise<BillingCustomerRow> {
   return runBillingQuery(async () => {
-    const existingByOwner = await prisma.billingCustomer.findUnique({
+    const existingByOwner = await db.billingCustomer.findUnique({
       where: { ownerUserId_provider: { ownerUserId: input.ownerUserId, provider: input.provider } },
     });
     if (existingByOwner) {
@@ -69,8 +70,11 @@ export async function findOrCreateBillingCustomer(
       return existingByOwner;
     }
 
+    const insideTransaction = db !== prisma;
+    if (insideTransaction) await db.$executeRaw`SAVEPOINT find_or_create_billing_customer`;
+
     try {
-      return await prisma.billingCustomer.create({
+      return await db.billingCustomer.create({
         data: {
           ownerUserId: input.ownerUserId,
           provider: input.provider,
@@ -80,7 +84,9 @@ export async function findOrCreateBillingCustomer(
     } catch (error) {
       if (!isUniqueConstraintViolation(error)) throw error;
 
-      const reconciled = await prisma.billingCustomer.findUnique({
+      if (insideTransaction) await db.$executeRaw`ROLLBACK TO SAVEPOINT find_or_create_billing_customer`;
+
+      const reconciled = await db.billingCustomer.findUnique({
         where: { ownerUserId_provider: { ownerUserId: input.ownerUserId, provider: input.provider } },
       });
       if (reconciled && reconciled.providerCustomerId === input.providerCustomerId) {

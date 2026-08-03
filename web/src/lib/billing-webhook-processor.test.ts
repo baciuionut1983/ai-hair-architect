@@ -111,6 +111,40 @@ function invoiceEvent(overrides: {
   };
 }
 
+function checkoutSessionEvent(overrides: {
+  id?: string;
+  created?: number;
+  mode?: string;
+  clientReferenceId?: string | null;
+  ownerUserId?: string | null;
+  plan?: string | null;
+  customerId?: string | null;
+  subscriptionId?: string | null;
+} = {}) {
+  const created = overrides.created ?? Math.floor(Date.now() / 1000);
+  const metadata: Record<string, string> = {};
+  if (overrides.ownerUserId !== null) metadata.ownerUserId = overrides.ownerUserId ?? "owner-default";
+  if (overrides.plan !== null) metadata.plan = overrides.plan ?? "pro";
+
+  return {
+    id: overrides.id ?? `evt_${randomUUID()}`,
+    object: "event",
+    created,
+    type: "checkout.session.completed",
+    data: {
+      object: {
+        id: `cs_${randomUUID()}`,
+        object: "checkout.session",
+        mode: overrides.mode ?? "subscription",
+        client_reference_id: overrides.clientReferenceId === null ? null : overrides.clientReferenceId ?? "owner-default",
+        customer: overrides.customerId === null ? null : overrides.customerId ?? "cus_default",
+        subscription: overrides.subscriptionId === null ? null : overrides.subscriptionId ?? `sub_${randomUUID()}`,
+        metadata,
+      },
+    },
+  };
+}
+
 describe("billing-webhook-processor: signature verification (no database required)", () => {
   it("accepts a validly signed event and proceeds past signature verification", async () => {
     const { rawBody, signatureHeader } = signedRequest(subscriptionEvent());
@@ -378,20 +412,288 @@ suite("billing-webhook-processor (real Postgres)", () => {
     })).resolves.toBe(0);
   });
 
-  it("defers checkout.session.completed as ignored_unsupported", async () => {
-    const event = {
-      id: `evt_${randomUUID()}`,
-      object: "event",
-      created: Math.floor(Date.now() / 1000),
-      type: "checkout.session.completed",
-      data: { object: { id: `cs_${randomUUID()}`, object: "checkout.session" } },
-    };
+  it("processes checkout.session.completed end-to-end, linking the customer and recording the subscription id without granting active status", async () => {
+    const ownerUserId = randomUUID();
+    owners.add(ownerUserId);
+    await prisma.user.create({
+      data: {
+        id: ownerUserId,
+        email: `${ownerUserId}@billing-webhook.test`,
+        passwordHash: "test",
+        role: "professional",
+        locale: "en",
+      },
+    });
+    const providerCustomerId = `cus_${ownerUserId}`;
+    const subscriptionId = `sub_${randomUUID()}`;
+
+    const event = checkoutSessionEvent({
+      clientReferenceId: ownerUserId,
+      ownerUserId,
+      plan: "pro",
+      customerId: providerCustomerId,
+      subscriptionId,
+    });
+    const { rawBody, signatureHeader } = signedRequest(event);
+
+    const result = await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
+    webhookEventIds.add(event.id);
+
+    expect(result).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" });
+    await expect(
+      prisma.billingCustomer.findUnique({ where: { ownerUserId_provider: { ownerUserId, provider: "stripe" } } }),
+    ).resolves.toMatchObject({ providerCustomerId });
+    await expect(
+      prisma.billingSubscription.findUnique({
+        where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: subscriptionId } },
+      }),
+    ).resolves.toMatchObject({ ownerUserId, status: "incomplete", planKey: "pro" });
+    await expect(
+      prisma.billingWebhookEvent.findUnique({
+        where: { provider_providerEventId: { provider: "stripe", providerEventId: event.id } },
+      }),
+    ).resolves.toMatchObject({ status: "processed", ownerUserId });
+  });
+
+  it("never grants active status from checkout.session.completed alone, regardless of plan", async () => {
+    const ownerUserId = randomUUID();
+    owners.add(ownerUserId);
+    await prisma.user.create({
+      data: {
+        id: ownerUserId,
+        email: `${ownerUserId}@billing-webhook.test`,
+        passwordHash: "test",
+        role: "professional",
+        locale: "en",
+      },
+    });
+    const providerCustomerId = `cus_${ownerUserId}`;
+    const subscriptionId = `sub_${randomUUID()}`;
+
+    const event = checkoutSessionEvent({
+      clientReferenceId: ownerUserId,
+      ownerUserId,
+      plan: "business",
+      customerId: providerCustomerId,
+      subscriptionId,
+    });
+    const { rawBody, signatureHeader } = signedRequest(event);
+
+    await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
+    webhookEventIds.add(event.id);
+
+    const subscription = await prisma.billingSubscription.findUnique({
+      where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: subscriptionId } },
+    });
+    expect(subscription?.status).not.toBe("active");
+    expect(subscription?.status).toBe("incomplete");
+  });
+
+  it("upgrades to the real status once customer.subscription.created arrives after checkout.session.completed", async () => {
+    const ownerUserId = randomUUID();
+    owners.add(ownerUserId);
+    await prisma.user.create({
+      data: {
+        id: ownerUserId,
+        email: `${ownerUserId}@billing-webhook.test`,
+        passwordHash: "test",
+        role: "professional",
+        locale: "en",
+      },
+    });
+    const providerCustomerId = `cus_${ownerUserId}`;
+    const subscriptionId = `sub_${randomUUID()}`;
+    const checkoutTime = Math.floor(Date.now() / 1000);
+
+    const checkoutEvent = checkoutSessionEvent({
+      clientReferenceId: ownerUserId,
+      ownerUserId,
+      plan: "pro",
+      customerId: providerCustomerId,
+      subscriptionId,
+      created: checkoutTime,
+    });
+    const { rawBody: rb1, signatureHeader: sig1 } = signedRequest(checkoutEvent);
+    const checkoutResult = await processBillingWebhookRequest({ rawBody: rb1, signatureHeader: sig1, env: testEnv() });
+    webhookEventIds.add(checkoutEvent.id);
+    expect(checkoutResult).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" });
+
+    const subscriptionCreated = subscriptionEvent({
+      type: "customer.subscription.created",
+      customerId: providerCustomerId,
+      subscriptionId,
+      status: "active",
+      created: checkoutTime + 10,
+    });
+    const { rawBody: rb2, signatureHeader: sig2 } = signedRequest(subscriptionCreated);
+    const subscriptionResult = await processBillingWebhookRequest({ rawBody: rb2, signatureHeader: sig2, env: testEnv() });
+    webhookEventIds.add(subscriptionCreated.id);
+    expect(subscriptionResult).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" });
+
+    await expect(
+      prisma.billingSubscription.findUnique({
+        where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: subscriptionId } },
+      }),
+    ).resolves.toMatchObject({ status: "active" });
+  });
+
+  it("returns duplicate for a redelivered checkout.session.completed event without reprocessing", async () => {
+    const { ownerUserId, providerCustomerId } = await createOwnerWithCustomer();
+    const event = checkoutSessionEvent({ clientReferenceId: ownerUserId, ownerUserId, customerId: providerCustomerId });
+    const { rawBody, signatureHeader } = signedRequest(event);
+
+    const first = await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
+    webhookEventIds.add(event.id);
+    const second = await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
+
+    expect(first).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" });
+    expect(second).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_DUPLICATE" });
+    await expect(
+      prisma.billingWebhookEvent.count({ where: { provider: "stripe", providerEventId: event.id } }),
+    ).resolves.toBe(1);
+  });
+
+  it("rejects checkout.session.completed missing client_reference_id, with no subscription created", async () => {
+    const event = checkoutSessionEvent({ clientReferenceId: null, ownerUserId: randomUUID() });
+    const { rawBody, signatureHeader } = signedRequest(event);
+
+    const result = await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
+    webhookEventIds.add(event.id);
+
+    expect(result).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_MALFORMED" });
+    await expect(
+      prisma.billingSubscription.count({ where: { providerSubscriptionId: event.data.object.subscription as string } }),
+    ).resolves.toBe(0);
+  });
+
+  it("rejects checkout.session.completed missing metadata.ownerUserId", async () => {
+    const event = checkoutSessionEvent({ clientReferenceId: randomUUID(), ownerUserId: null });
+    const { rawBody, signatureHeader } = signedRequest(event);
+
+    const result = await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
+    webhookEventIds.add(event.id);
+
+    expect(result).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_MALFORMED" });
+  });
+
+  it("rejects checkout.session.completed when client_reference_id contradicts metadata.ownerUserId", async () => {
+    const event = checkoutSessionEvent({ clientReferenceId: "owner-a", ownerUserId: "owner-b" });
+    const { rawBody, signatureHeader } = signedRequest(event);
+
+    const result = await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
+    webhookEventIds.add(event.id);
+
+    expect(result).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_MALFORMED" });
+    await expect(
+      prisma.billingSubscription.count({ where: { ownerUserId: { in: ["owner-a", "owner-b"] } } }),
+    ).resolves.toBe(0);
+  });
+
+  it("rejects checkout.session.completed with an unrecognized plan", async () => {
+    const ownerUserId = randomUUID();
+    const event = checkoutSessionEvent({ clientReferenceId: ownerUserId, ownerUserId, plan: "enterprise" });
+    const { rawBody, signatureHeader } = signedRequest(event);
+
+    const result = await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
+    webhookEventIds.add(event.id);
+
+    expect(result).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_MALFORMED" });
+  });
+
+  it("rejects checkout.session.completed missing the Stripe customer id", async () => {
+    const ownerUserId = randomUUID();
+    const event = checkoutSessionEvent({ clientReferenceId: ownerUserId, ownerUserId, customerId: null });
+    const { rawBody, signatureHeader } = signedRequest(event);
+
+    const result = await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
+    webhookEventIds.add(event.id);
+
+    expect(result).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_MALFORMED" });
+  });
+
+  it("rejects checkout.session.completed missing the Stripe subscription id", async () => {
+    const ownerUserId = randomUUID();
+    const event = checkoutSessionEvent({ clientReferenceId: ownerUserId, ownerUserId, subscriptionId: null });
+    const { rawBody, signatureHeader } = signedRequest(event);
+
+    const result = await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
+    webhookEventIds.add(event.id);
+
+    expect(result).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_MALFORMED" });
+  });
+
+  it("ignores a non-subscription-mode checkout session as unsupported", async () => {
+    const ownerUserId = randomUUID();
+    const event = checkoutSessionEvent({ mode: "payment", clientReferenceId: ownerUserId, ownerUserId });
     const { rawBody, signatureHeader } = signedRequest(event);
 
     const result = await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
     webhookEventIds.add(event.id);
 
     expect(result).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_UNSUPPORTED" });
+    await expect(
+      prisma.billingWebhookEvent.findUnique({
+        where: { provider_providerEventId: { provider: "stripe", providerEventId: event.id } },
+      }),
+    ).resolves.toMatchObject({ status: "ignored_unsupported" });
+  });
+
+  it("ignores an out-of-order checkout.session.completed that is older than an already-applied subscription event", async () => {
+    const { ownerUserId, providerCustomerId } = await createOwnerWithCustomer();
+    const subscriptionId = `sub_${randomUUID()}`;
+    const sameTime = Math.floor(Date.now() / 1000);
+
+    const newerSubscriptionEvent = subscriptionEvent({
+      type: "customer.subscription.created",
+      customerId: providerCustomerId,
+      subscriptionId,
+      status: "trialing",
+      created: sameTime,
+    });
+    const { rawBody: rb1, signatureHeader: sig1 } = signedRequest(newerSubscriptionEvent);
+    await processBillingWebhookRequest({ rawBody: rb1, signatureHeader: sig1, env: testEnv() });
+    webhookEventIds.add(newerSubscriptionEvent.id);
+
+    const staleCheckout = checkoutSessionEvent({
+      clientReferenceId: ownerUserId,
+      ownerUserId,
+      customerId: providerCustomerId,
+      subscriptionId,
+      created: sameTime - 100,
+    });
+    const { rawBody: rb2, signatureHeader: sig2 } = signedRequest(staleCheckout);
+    const staleResult = await processBillingWebhookRequest({ rawBody: rb2, signatureHeader: sig2, env: testEnv() });
+    webhookEventIds.add(staleCheckout.id);
+
+    expect(staleResult).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_OUT_OF_ORDER" });
+    await expect(
+      prisma.billingSubscription.findUnique({
+        where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: subscriptionId } },
+      }),
+    ).resolves.toMatchObject({ status: "trialing" });
+  });
+
+  it("rolls back with no partial writes when checkout.session.completed conflicts with an existing customer mapping", async () => {
+    const { ownerUserId } = await createOwnerWithCustomer();
+    const conflictingCustomerId = `cus_conflict_${randomUUID()}`;
+    const event = checkoutSessionEvent({
+      clientReferenceId: ownerUserId,
+      ownerUserId,
+      customerId: conflictingCustomerId,
+    });
+    const { rawBody, signatureHeader } = signedRequest(event);
+
+    const result = await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
+
+    expect(result).toEqual({ httpStatus: 500, code: "BILLING_WEBHOOK_INTERNAL_ERROR" });
+    await expect(
+      prisma.billingWebhookEvent.findUnique({
+        where: { provider_providerEventId: { provider: "stripe", providerEventId: event.id } },
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      prisma.billingSubscription.count({ where: { providerSubscriptionId: event.data.object.subscription as string } }),
+    ).resolves.toBe(0);
   });
 
   it("classifies an unmapped customer as durably failed_terminal and acknowledges 200, with no mutation", async () => {

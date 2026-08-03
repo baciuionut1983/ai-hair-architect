@@ -1,6 +1,7 @@
 import Stripe from "stripe";
 
 import {
+  findOrCreateBillingCustomer,
   findOwnerByProviderCustomerId,
   markWebhookEventStatus,
   recordWebhookEventIdempotently,
@@ -49,6 +50,8 @@ const SUPPORTED_SUBSCRIPTION_EVENT_TYPES = new Set([
   "customer.subscription.deleted",
 ]);
 const SUPPORTED_INVOICE_EVENT_TYPES = new Set(["invoice.paid", "invoice.payment_failed"]);
+const SUPPORTED_CHECKOUT_EVENT_TYPES = new Set(["checkout.session.completed"]);
+const SUPPORTED_CHECKOUT_PLAN_KEYS = new Set(["pro", "salon", "business"]);
 const TERMINAL_EVENT_STATUSES = new Set([
   "processed",
   "ignored_out_of_order",
@@ -155,6 +158,9 @@ async function routeVerifiedEvent(
   }
   if (SUPPORTED_INVOICE_EVENT_TYPES.has(event.type)) {
     return processInvoiceEvent(event, eventId, tx, now);
+  }
+  if (SUPPORTED_CHECKOUT_EVENT_TYPES.has(event.type)) {
+    return processCheckoutSessionCompletedEvent(event, eventId, tx, now);
   }
 
   await markWebhookEventStatus(eventId, { status: "ignored_unsupported" }, tx);
@@ -277,6 +283,95 @@ async function processInvoiceEvent(
     tx,
   );
   return { httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" };
+}
+
+async function processCheckoutSessionCompletedEvent(
+  event: Stripe.Event,
+  eventId: string,
+  tx: BillingTransaction,
+  now: Date,
+): Promise<BillingWebhookProcessResult> {
+  const session = event.data.object as Stripe.Checkout.Session;
+
+  if (session.mode !== "subscription") {
+    await markWebhookEventStatus(eventId, { status: "ignored_unsupported" }, tx);
+    return { httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_UNSUPPORTED" };
+  }
+
+  const clientReferenceId = trimmedOrNull(session.client_reference_id);
+  const metadataOwnerUserId = trimmedOrNull(session.metadata?.ownerUserId);
+  const plan = trimmedOrNull(session.metadata?.plan);
+  const providerCustomerId = extractStripeId(session.customer);
+  const providerSubscriptionId = extractStripeId(session.subscription);
+
+  const isMalformed =
+    !clientReferenceId ||
+    !metadataOwnerUserId ||
+    clientReferenceId !== metadataOwnerUserId ||
+    !plan ||
+    !SUPPORTED_CHECKOUT_PLAN_KEYS.has(plan) ||
+    !providerCustomerId ||
+    !providerSubscriptionId;
+
+  if (isMalformed) {
+    await markWebhookEventStatus(
+      eventId,
+      { status: "failed_terminal", failureCode: "BILLING_WEBHOOK_EVENT_MALFORMED" },
+      tx,
+    );
+    return { httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_MALFORMED" };
+  }
+
+  const ownerUserId = clientReferenceId;
+
+  const customer = await findOrCreateBillingCustomer(
+    { ownerUserId, provider: "stripe", providerCustomerId },
+    tx,
+  );
+
+  // Checkout completing does not itself confirm the subscription is active -- Stripe
+  // does not include subscription status on this event without an extra API call, and
+  // making one here would add live network I/O inside this atomic transaction. "incomplete"
+  // records the linkage without granting access; customer.subscription.created/updated
+  // remains the sole authority for the real status, applied through the same ordering guard.
+  const upsert = await upsertSubscriptionWithOrderingGuard(
+    {
+      ownerUserId: customer.ownerUserId,
+      billingCustomerId: customer.id,
+      provider: "stripe",
+      providerSubscriptionId,
+      planKey: plan,
+      status: "incomplete",
+      currentPeriodStart: null,
+      currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
+      canceledAt: null,
+      eventCreatedAt: new Date(event.created * 1000),
+      providerEventId: event.id,
+    },
+    tx,
+  );
+
+  if (!upsert.applied) {
+    await markWebhookEventStatus(
+      eventId,
+      { status: "ignored_out_of_order", ownerUserId: customer.ownerUserId },
+      tx,
+    );
+    return { httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_OUT_OF_ORDER" };
+  }
+
+  await markWebhookEventStatus(
+    eventId,
+    { status: "processed", processedAt: now, ownerUserId: customer.ownerUserId },
+    tx,
+  );
+  return { httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" };
+}
+
+function trimmedOrNull(value: string | null | undefined): string | null {
+  const trimmed = String(value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function resolvePlanKey(subscription: Stripe.Subscription): string {
