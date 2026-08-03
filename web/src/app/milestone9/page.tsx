@@ -26,6 +26,8 @@ export default function Milestone9Page() {
   const [selectedAssetId, setSelectedAssetId] = useState<string>('');
   const [uploading, setUploading] = useState(false);
   const [reviewing, setReviewing] = useState(false);
+  const [aiConsent, setAiConsent] = useState(false);
+  const [requestingAi, setRequestingAi] = useState(false);
   const [m8Draft, setM8Draft] = useState<Record<string, unknown> | null>(null);
   const [review, setReview] = useState<Review>({});
   const [error, setError] = useState('');
@@ -121,6 +123,37 @@ export default function Milestone9Page() {
     }
   };
 
+  const handleRequestAiAnalysis = async () => {
+    if (!selectedAssetId) return;
+
+    setRequestingAi(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/v1/image-analyses/${selectedAssetId}/request-ai-analysis`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ consent: aiConsent }),
+      });
+
+      const data = await res.json() as Record<string, unknown>;
+      if (!res.ok) {
+        throw new Error(String(data.error) || 'AI analysis request failed');
+      }
+
+      setAnalyses(prev => ({
+        ...prev,
+        [selectedAssetId]: data.analysis as ImageAnalysis,
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setRequestingAi(false);
+    }
+  };
+
   const selectedAnalysis = selectedAssetId ? analyses[selectedAssetId] : null;
 
   return (
@@ -191,6 +224,28 @@ export default function Milestone9Page() {
                 }`}>
                   {selectedAnalysis.status?.toUpperCase()}
                 </span>
+              </div>
+
+              {/* Real AI Analysis (opt-in) */}
+              <div className="mb-4 bg-gray-50 border border-gray-200 rounded p-3">
+                <label className="flex items-start gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={aiConsent}
+                    onChange={e => setAiConsent(e.target.checked)}
+                    className="mt-1"
+                  />
+                  <span>
+                    I consent to sending this photo to an external AI provider (Gemini) for analysis.
+                  </span>
+                </label>
+                <button
+                  onClick={handleRequestAiAnalysis}
+                  disabled={!aiConsent || requestingAi}
+                  className="w-full mt-3 bg-purple-600 text-white px-4 py-2 rounded hover:bg-purple-700 disabled:bg-gray-400"
+                >
+                  {requestingAi ? 'Analyzing with AI...' : 'Analyze with Real AI'}
+                </button>
               </div>
 
               {/* Fields with Confidence */}

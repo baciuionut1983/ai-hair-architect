@@ -81,6 +81,49 @@ export class ImageAnalysisJobStateError extends Error {
   }
 }
 
+export interface QueueAnalysisResult {
+  analysisId: string;
+  created: boolean;
+}
+
+/**
+ * Ensures an owner-scoped, claimable ImageAnalysis row exists for an asset,
+ * reusing any already-active (queued or processing) row instead of creating
+ * a duplicate on repeated calls. Never touches consent, quota, or any
+ * terminal-state row for the same asset -- ImageAnalysis is intentionally
+ * one-to-many per asset, and claimQueuedAnalysisForProcessing already
+ * prioritizes an active row over any terminal one when resolving which
+ * analysis to act on.
+ */
+export async function queueAnalysisForExternalProvider(
+  assetId: string,
+  ownerUserId: string,
+): Promise<QueueAnalysisResult> {
+  return runAnalysisJobQuery(async () => {
+    const existing = await prisma.imageAnalysis.findFirst({
+      where: {
+        assetId,
+        asset: { ownerUserId },
+        status: { in: [ANALYSIS_STATUS_QUEUED, ANALYSIS_STATUS_PROCESSING] },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    if (existing) {
+      return { analysisId: existing.id, created: false };
+    }
+
+    const asset = await prisma.imageAsset.findFirst({ where: { id: assetId, ownerUserId } });
+    if (!asset || asset.deletedAt) {
+      throw new ImageAnalysisJobStateError();
+    }
+
+    const created = await prisma.imageAnalysis.create({
+      data: { assetId, status: ANALYSIS_STATUS_QUEUED },
+    });
+    return { analysisId: created.id, created: true };
+  });
+}
+
 /**
  * Records durable, mandatory consent evidence before any external-provider
  * claim can succeed. Deliberately the only writer of these two columns --
