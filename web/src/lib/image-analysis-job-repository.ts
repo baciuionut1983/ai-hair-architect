@@ -59,7 +59,17 @@ export interface MarkAnalysisFailedResult {
   status: typeof ANALYSIS_STATUS_QUEUED | typeof ANALYSIS_STATUS_FAILED;
 }
 
-type AnalysisJobTransaction = Pick<Prisma.TransactionClient, "imageAnalysis" | "imageAnalysisProviderAttempt">;
+type AnalysisJobTransaction = Pick<
+  Prisma.TransactionClient,
+  "imageAnalysis" | "imageAnalysisProviderAttempt" | "imageAsset"
+>;
+
+// The exact providerName upload-time placeholders are created with (M21) --
+// signals "no automated analysis has ever been attempted for this row" when
+// paired with a null externalAiConsentGrantedAt. Never touched by a
+// successful or failed real-provider run (only markAnalysisSucceeded ever
+// overwrites providerName, and only on success).
+const PLACEHOLDER_PROVIDER_NAME = "manual-only";
 
 export class ImageAnalysisJobPersistenceError extends Error {
   readonly code = IMAGE_ANALYSIS_JOB_PERSISTENCE_ERROR_CODE;
@@ -87,41 +97,138 @@ export interface QueueAnalysisResult {
 }
 
 /**
- * Ensures an owner-scoped, claimable ImageAnalysis row exists for an asset,
- * reusing any already-active (queued or processing) row instead of creating
- * a duplicate on repeated calls. Never touches consent, quota, or any
- * terminal-state row for the same asset -- ImageAnalysis is intentionally
- * one-to-many per asset, and claimQueuedAnalysisForProcessing already
- * prioritizes an active row over any terminal one when resolving which
- * analysis to act on.
+ * Ensures an owner-scoped, claimable ImageAnalysis row exists for an asset.
+ * Exactly one row is ever the "target" for a given asset at a time -- this
+ * function never creates a second row while an eligible one already exists.
+ * Priority, evaluated inside one Serializable transaction:
+ *
+ *   1. An active row (queued or processing) -- reused as-is (unchanged from
+ *      the row's pre-M21 behavior).
+ *   2. Exactly one "fresh" upload-time placeholder (draft, providerName
+ *      still PLACEHOLDER_PROVIDER_NAME, never consented) -- reused via an
+ *      atomic in-place transition to queued. Never a second draft row.
+ *   3. Exactly one failed row still eligible for another attempt under the
+ *      existing M18 retry policy (not a permanent failure code, and fewer
+ *      than MAX_ATTEMPTS_PER_ANALYSIS attempts recorded) -- reused via an
+ *      atomic in-place transition to queued. Consent and the
+ *      ImageAnalysisProviderAttempt history are never touched or reset here;
+ *      only markAnalysisFailed/markAnalysisSucceeded/consent-recording ever
+ *      write those.
+ *   4. Anything else for this asset (a draft that already carries a real
+ *      analysis awaiting review, a confirmed analysis, a failed row with no
+ *      retry left, or more than one row eligible under 2+3 at once) fails
+ *      closed with ImageAnalysisJobStateError -- never an arbitrary pick,
+ *      never a second row created alongside it.
+ *   5. No row at all for this asset -- creates a fresh queued row (unchanged
+ *      compatibility path for assets that predate the M21 placeholder).
+ *
+ * Two concurrent callers racing on the same eligible row (case 2 or 3) both
+ * resolve to that same single row: whichever transitions it first wins, and
+ * the loser reconciles by re-reading rather than creating a duplicate or
+ * erroring.
  */
 export async function queueAnalysisForExternalProvider(
   assetId: string,
   ownerUserId: string,
 ): Promise<QueueAnalysisResult> {
-  return runAnalysisJobQuery(async () => {
-    const existing = await prisma.imageAnalysis.findFirst({
-      where: {
-        assetId,
-        asset: { ownerUserId },
-        status: { in: [ANALYSIS_STATUS_QUEUED, ANALYSIS_STATUS_PROCESSING] },
-      },
-      orderBy: { createdAt: "desc" },
-    });
-    if (existing) {
-      return { analysisId: existing.id, created: false };
-    }
+  return runAnalysisJobQuery(() => runSerializableClaimTransaction((tx) =>
+    queueAnalysisForExternalProviderTx(tx, assetId, ownerUserId)
+  ));
+}
 
-    const asset = await prisma.imageAsset.findFirst({ where: { id: assetId, ownerUserId } });
-    if (!asset || asset.deletedAt) {
-      throw new ImageAnalysisJobStateError();
-    }
-
-    const created = await prisma.imageAnalysis.create({
-      data: { assetId, status: ANALYSIS_STATUS_QUEUED },
-    });
-    return { analysisId: created.id, created: true };
+async function queueAnalysisForExternalProviderTx(
+  tx: AnalysisJobTransaction,
+  assetId: string,
+  ownerUserId: string,
+): Promise<QueueAnalysisResult> {
+  const rows = await tx.imageAnalysis.findMany({
+    where: { assetId, asset: { ownerUserId } },
+    orderBy: { createdAt: "desc" },
   });
+
+  const activeRow = rows.find(
+    (row) => row.status === ANALYSIS_STATUS_QUEUED || row.status === ANALYSIS_STATUS_PROCESSING,
+  );
+  if (activeRow) {
+    return { analysisId: activeRow.id, created: false };
+  }
+
+  const freshPlaceholders = rows.filter(
+    (row) =>
+      row.status === ANALYSIS_STATUS_DRAFT &&
+      row.providerName === PLACEHOLDER_PROVIDER_NAME &&
+      row.externalAiConsentGrantedAt === null,
+  );
+
+  const retryableFailed = [];
+  for (const row of rows) {
+    if (row.status !== ANALYSIS_STATUS_FAILED) continue;
+    const attemptCount = await tx.imageAnalysisProviderAttempt.count({
+      where: { imageAnalysisId: row.id },
+    });
+    const isPermanent =
+      row.lastFailureCode !== null &&
+      (PERMANENT_FAILURE_CODES as readonly string[]).includes(row.lastFailureCode);
+    if (!isPermanent && attemptCount < MAX_ATTEMPTS_PER_ANALYSIS) {
+      retryableFailed.push(row);
+    }
+  }
+
+  const eligible = [...freshPlaceholders, ...retryableFailed];
+
+  if (eligible.length > 1) {
+    throw new ImageAnalysisJobStateError();
+  }
+
+  if (eligible.length === 1) {
+    const candidate = eligible[0];
+    const isFreshPlaceholder = freshPlaceholders.length === 1;
+    const guardWhere = isFreshPlaceholder
+      ? {
+          id: candidate.id,
+          status: ANALYSIS_STATUS_DRAFT,
+          providerName: PLACEHOLDER_PROVIDER_NAME,
+          externalAiConsentGrantedAt: null,
+        }
+      : { id: candidate.id, status: ANALYSIS_STATUS_FAILED };
+
+    const claimed = await tx.imageAnalysis.updateMany({
+      where: guardWhere,
+      data: { status: ANALYSIS_STATUS_QUEUED },
+    });
+
+    if (claimed.count === 1) {
+      return { analysisId: candidate.id, created: false };
+    }
+
+    // Lost a race: another concurrent call already transitioned this exact
+    // row. Reconcile by re-reading rather than erroring or creating a second
+    // row -- both callers must resolve to the same single row.
+    const current = await tx.imageAnalysis.findUniqueOrThrow({ where: { id: candidate.id } });
+    if (current.status === ANALYSIS_STATUS_QUEUED || current.status === ANALYSIS_STATUS_PROCESSING) {
+      return { analysisId: current.id, created: false };
+    }
+    throw new ImageAnalysisJobStateError();
+  }
+
+  if (rows.length > 0) {
+    // Rows exist for this asset, but none are eligible for reuse: already
+    // confirmed, a draft that already carries a real analysis awaiting
+    // review, or a terminally failed row with no retry remaining. Fail
+    // closed rather than creating a second, ambiguous row or silently
+    // picking one.
+    throw new ImageAnalysisJobStateError();
+  }
+
+  const asset = await tx.imageAsset.findFirst({ where: { id: assetId, ownerUserId } });
+  if (!asset || asset.deletedAt) {
+    throw new ImageAnalysisJobStateError();
+  }
+
+  const created = await tx.imageAnalysis.create({
+    data: { assetId, status: ANALYSIS_STATUS_QUEUED },
+  });
+  return { analysisId: created.id, created: true };
 }
 
 /**

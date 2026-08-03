@@ -8,16 +8,17 @@ const hasRealDatabase = Boolean(process.env.TEST_DATABASE_URL);
 const prismaMocks = vi.hoisted(() => ({
   configured: true,
   transaction: vi.fn(),
-  imageAnalysisFindFirst: vi.fn(),
   imageAnalysisUpdateMany: vi.fn(),
-  imageAnalysisCreate: vi.fn(),
-  imageAssetFindFirst: vi.fn(),
   attemptCount: vi.fn(),
   txImageAnalysisFindFirst: vi.fn(),
+  txImageAnalysisFindMany: vi.fn(),
+  txImageAnalysisFindUniqueOrThrow: vi.fn(),
+  txImageAnalysisCreate: vi.fn(),
   txImageAnalysisUpdateMany: vi.fn(),
   txAttemptFindFirst: vi.fn(),
   txAttemptCount: vi.fn(),
   txAttemptCreate: vi.fn(),
+  txImageAssetFindFirst: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", async (importOriginal) => {
@@ -29,12 +30,7 @@ vi.mock("@/lib/prisma", async (importOriginal) => {
     prisma: {
       $transaction: prismaMocks.transaction,
       imageAnalysis: {
-        findFirst: prismaMocks.imageAnalysisFindFirst,
         updateMany: prismaMocks.imageAnalysisUpdateMany,
-        create: prismaMocks.imageAnalysisCreate,
-      },
-      imageAsset: {
-        findFirst: prismaMocks.imageAssetFindFirst,
       },
       imageAnalysisProviderAttempt: {
         count: prismaMocks.attemptCount,
@@ -64,12 +60,18 @@ import {
 const tx = {
   imageAnalysis: {
     findFirst: prismaMocks.txImageAnalysisFindFirst,
+    findMany: prismaMocks.txImageAnalysisFindMany,
+    findUniqueOrThrow: prismaMocks.txImageAnalysisFindUniqueOrThrow,
+    create: prismaMocks.txImageAnalysisCreate,
     updateMany: prismaMocks.txImageAnalysisUpdateMany,
   },
   imageAnalysisProviderAttempt: {
     findFirst: prismaMocks.txAttemptFindFirst,
     count: prismaMocks.txAttemptCount,
     create: prismaMocks.txAttemptCreate,
+  },
+  imageAsset: {
+    findFirst: prismaMocks.txImageAssetFindFirst,
   },
 };
 
@@ -80,16 +82,17 @@ unitSuite("image-analysis-job-repository (mocked)", () => {
   beforeEach(() => {
     prismaMocks.configured = true;
     prismaMocks.transaction.mockReset();
-    prismaMocks.imageAnalysisFindFirst.mockReset();
     prismaMocks.imageAnalysisUpdateMany.mockReset();
-    prismaMocks.imageAnalysisCreate.mockReset();
-    prismaMocks.imageAssetFindFirst.mockReset();
     prismaMocks.attemptCount.mockReset();
     prismaMocks.txImageAnalysisFindFirst.mockReset();
+    prismaMocks.txImageAnalysisFindMany.mockReset();
+    prismaMocks.txImageAnalysisFindUniqueOrThrow.mockReset();
+    prismaMocks.txImageAnalysisCreate.mockReset();
     prismaMocks.txImageAnalysisUpdateMany.mockReset();
     prismaMocks.txAttemptFindFirst.mockReset();
     prismaMocks.txAttemptCount.mockReset();
     prismaMocks.txAttemptCreate.mockReset();
+    prismaMocks.txImageAssetFindFirst.mockReset();
     prismaMocks.transaction.mockImplementation(async (operation) => operation(tx));
   });
 
@@ -116,45 +119,184 @@ unitSuite("image-analysis-job-repository (mocked)", () => {
   });
 
   describe("queueAnalysisForExternalProvider", () => {
-    it("creates a new queued row when no active row exists for the asset", async () => {
-      prismaMocks.imageAnalysisFindFirst.mockResolvedValue(null);
-      prismaMocks.imageAssetFindFirst.mockResolvedValue({ id: "asset-1", ownerUserId: "owner-1", deletedAt: null });
-      prismaMocks.imageAnalysisCreate.mockResolvedValue({ id: "analysis-new" });
+    function row(overrides: Record<string, unknown> = {}) {
+      return {
+        id: "analysis-1",
+        status: ANALYSIS_STATUS_DRAFT,
+        providerName: "manual-only",
+        externalAiConsentGrantedAt: null,
+        lastFailureCode: null,
+        ...overrides,
+      };
+    }
+
+    it("creates a new queued row when no row at all exists for the asset", async () => {
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([]);
+      prismaMocks.txImageAssetFindFirst.mockResolvedValue({ id: "asset-1", ownerUserId: "owner-1", deletedAt: null });
+      prismaMocks.txImageAnalysisCreate.mockResolvedValue({ id: "analysis-new" });
 
       await expect(queueAnalysisForExternalProvider("asset-1", "owner-1")).resolves.toEqual({
         analysisId: "analysis-new",
         created: true,
       });
-      expect(prismaMocks.imageAnalysisFindFirst).toHaveBeenCalledWith({
-        where: {
-          assetId: "asset-1",
-          asset: { ownerUserId: "owner-1" },
-          status: { in: [ANALYSIS_STATUS_QUEUED, ANALYSIS_STATUS_PROCESSING] },
-        },
+      expect(prismaMocks.txImageAnalysisFindMany).toHaveBeenCalledWith({
+        where: { assetId: "asset-1", asset: { ownerUserId: "owner-1" } },
         orderBy: { createdAt: "desc" },
       });
-      expect(prismaMocks.imageAnalysisCreate).toHaveBeenCalledWith({
+      expect(prismaMocks.txImageAnalysisCreate).toHaveBeenCalledWith({
         data: { assetId: "asset-1", status: ANALYSIS_STATUS_QUEUED },
       });
     });
 
-    it("reuses an existing active (queued or processing) row instead of creating a duplicate", async () => {
-      prismaMocks.imageAnalysisFindFirst.mockResolvedValue({ id: "analysis-existing" });
+    it("rejects when the owner-scoped asset does not exist or is soft-deleted, with no row created", async () => {
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([]);
+      prismaMocks.txImageAssetFindFirst.mockResolvedValue(null);
+
+      await expect(queueAnalysisForExternalProvider("asset-1", "owner-1")).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
+      expect(prismaMocks.txImageAnalysisCreate).not.toHaveBeenCalled();
+    });
+
+    it("reuses an existing queued row instead of creating a duplicate", async () => {
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([row({ id: "analysis-existing", status: ANALYSIS_STATUS_QUEUED })]);
 
       await expect(queueAnalysisForExternalProvider("asset-1", "owner-1")).resolves.toEqual({
         analysisId: "analysis-existing",
         created: false,
       });
-      expect(prismaMocks.imageAssetFindFirst).not.toHaveBeenCalled();
-      expect(prismaMocks.imageAnalysisCreate).not.toHaveBeenCalled();
+      expect(prismaMocks.txImageAssetFindFirst).not.toHaveBeenCalled();
+      expect(prismaMocks.txImageAnalysisCreate).not.toHaveBeenCalled();
+      expect(prismaMocks.txImageAnalysisUpdateMany).not.toHaveBeenCalled();
     });
 
-    it("rejects when the owner-scoped asset does not exist or is soft-deleted", async () => {
-      prismaMocks.imageAnalysisFindFirst.mockResolvedValue(null);
-      prismaMocks.imageAssetFindFirst.mockResolvedValue(null);
+    it("reuses an existing processing row instead of creating a duplicate", async () => {
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([row({ id: "analysis-existing", status: ANALYSIS_STATUS_PROCESSING })]);
+
+      await expect(queueAnalysisForExternalProvider("asset-1", "owner-1")).resolves.toEqual({
+        analysisId: "analysis-existing",
+        created: false,
+      });
+      expect(prismaMocks.txImageAnalysisUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("reuses a fresh manual-only draft placeholder, transitioning the same row to queued", async () => {
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([row({ id: "placeholder-1" })]);
+      prismaMocks.txImageAnalysisUpdateMany.mockResolvedValue({ count: 1 });
+
+      await expect(queueAnalysisForExternalProvider("asset-1", "owner-1")).resolves.toEqual({
+        analysisId: "placeholder-1",
+        created: false,
+      });
+      expect(prismaMocks.txImageAnalysisUpdateMany).toHaveBeenCalledWith({
+        where: {
+          id: "placeholder-1",
+          status: ANALYSIS_STATUS_DRAFT,
+          providerName: "manual-only",
+          externalAiConsentGrantedAt: null,
+        },
+        data: { status: ANALYSIS_STATUS_QUEUED },
+      });
+      expect(prismaMocks.txImageAnalysisCreate).not.toHaveBeenCalled();
+    });
+
+    it("the reused placeholder never carries data that could be presented as a real AI result", async () => {
+      const placeholder = row({ id: "placeholder-1", providerName: "manual-only", externalAiConsentGrantedAt: null });
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([placeholder]);
+      prismaMocks.txImageAnalysisUpdateMany.mockResolvedValue({ count: 1 });
+
+      await queueAnalysisForExternalProvider("asset-1", "owner-1");
+
+      const [[{ data }]] = prismaMocks.txImageAnalysisUpdateMany.mock.calls;
+      expect(data).toEqual({ status: ANALYSIS_STATUS_QUEUED });
+      expect(data).not.toHaveProperty("analysisPayload");
+      expect(data).not.toHaveProperty("confidences");
+      expect(data).not.toHaveProperty("providerName");
+    });
+
+    it("rejects a draft that already carries a real analysis awaiting review, without creating a second row", async () => {
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([
+        row({ id: "real-draft", providerName: "gemini", externalAiConsentGrantedAt: new Date("2026-08-01T00:00:00.000Z") }),
+      ]);
 
       await expect(queueAnalysisForExternalProvider("asset-1", "owner-1")).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
-      expect(prismaMocks.imageAnalysisCreate).not.toHaveBeenCalled();
+      expect(prismaMocks.txImageAnalysisCreate).not.toHaveBeenCalled();
+      expect(prismaMocks.txImageAnalysisUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("rejects a confirmed analysis, never overwriting it", async () => {
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([row({ id: "confirmed-1", status: "confirmed" })]);
+
+      await expect(queueAnalysisForExternalProvider("asset-1", "owner-1")).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
+      expect(prismaMocks.txImageAnalysisUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("reuses a failed row when the M18 retry policy still allows another attempt, preserving attempt history", async () => {
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([
+        row({ id: "failed-1", status: ANALYSIS_STATUS_FAILED, lastFailureCode: "PROVIDER_TIMEOUT" }),
+      ]);
+      prismaMocks.txAttemptCount.mockResolvedValue(1);
+      prismaMocks.txImageAnalysisUpdateMany.mockResolvedValue({ count: 1 });
+
+      await expect(queueAnalysisForExternalProvider("asset-1", "owner-1")).resolves.toEqual({
+        analysisId: "failed-1",
+        created: false,
+      });
+      expect(prismaMocks.txAttemptCount).toHaveBeenCalledWith({ where: { imageAnalysisId: "failed-1" } });
+      expect(prismaMocks.txImageAnalysisUpdateMany).toHaveBeenCalledWith({
+        where: { id: "failed-1", status: ANALYSIS_STATUS_FAILED },
+        data: { status: ANALYSIS_STATUS_QUEUED },
+      });
+      expect(prismaMocks.txImageAnalysisCreate).not.toHaveBeenCalled();
+    });
+
+    it("rejects a failed row once the M18 attempt cap has been reached, without requeueing", async () => {
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([
+        row({ id: "failed-1", status: ANALYSIS_STATUS_FAILED, lastFailureCode: "NETWORK_FAILURE" }),
+      ]);
+      prismaMocks.txAttemptCount.mockResolvedValue(MAX_ATTEMPTS_PER_ANALYSIS);
+
+      await expect(queueAnalysisForExternalProvider("asset-1", "owner-1")).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
+      expect(prismaMocks.txImageAnalysisUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("rejects a failed row whose last failure code was permanent, regardless of attempt count", async () => {
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([
+        row({ id: "failed-1", status: ANALYSIS_STATUS_FAILED, lastFailureCode: "POLICY_VIOLATION" }),
+      ]);
+      prismaMocks.txAttemptCount.mockResolvedValue(1);
+
+      await expect(queueAnalysisForExternalProvider("asset-1", "owner-1")).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
+      expect(prismaMocks.txImageAnalysisUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("rejects when more than one row is eligible for reuse (ambiguous historical state)", async () => {
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([
+        row({ id: "placeholder-1" }),
+        row({ id: "failed-1", status: ANALYSIS_STATUS_FAILED, lastFailureCode: "PROVIDER_TIMEOUT" }),
+      ]);
+      prismaMocks.txAttemptCount.mockResolvedValue(0);
+
+      await expect(queueAnalysisForExternalProvider("asset-1", "owner-1")).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
+      expect(prismaMocks.txImageAnalysisUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("reconciles a lost race on the same placeholder by reusing whatever the winner already queued, without creating a second row", async () => {
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([row({ id: "placeholder-1" })]);
+      prismaMocks.txImageAnalysisUpdateMany.mockResolvedValue({ count: 0 });
+      prismaMocks.txImageAnalysisFindUniqueOrThrow.mockResolvedValue(row({ id: "placeholder-1", status: ANALYSIS_STATUS_QUEUED }));
+
+      await expect(queueAnalysisForExternalProvider("asset-1", "owner-1")).resolves.toEqual({
+        analysisId: "placeholder-1",
+        created: false,
+      });
+      expect(prismaMocks.txImageAnalysisCreate).not.toHaveBeenCalled();
+    });
+
+    it("fails closed if a lost race resolves to neither queued nor processing", async () => {
+      prismaMocks.txImageAnalysisFindMany.mockResolvedValue([row({ id: "placeholder-1" })]);
+      prismaMocks.txImageAnalysisUpdateMany.mockResolvedValue({ count: 0 });
+      prismaMocks.txImageAnalysisFindUniqueOrThrow.mockResolvedValue(row({ id: "placeholder-1", status: "confirmed" }));
+
+      await expect(queueAnalysisForExternalProvider("asset-1", "owner-1")).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
     });
 
     it("fails closed without database configuration", async () => {
@@ -801,16 +943,148 @@ integrationSuite("image-analysis-job-repository (real Postgres)", () => {
       expect(result).toEqual({ analysisId, created: false });
     });
 
-    it("creates a new queued row alongside an existing terminal (draft) analysis for the same asset", async () => {
+    it("reuses a fresh manual-only draft placeholder instead of creating a second row", async () => {
       const ownerUserId = await createOwner(owners);
-      const terminalAnalysisId = await createAnalysis(ownerUserId, { status: ANALYSIS_STATUS_DRAFT });
+      const placeholderId = await createAnalysis(ownerUserId, { status: ANALYSIS_STATUS_DRAFT });
       const { prisma } = await import("@/lib/prisma");
-      const terminalRow = await prisma.imageAnalysis.findUniqueOrThrow({ where: { id: terminalAnalysisId } });
+      const placeholderRow = await prisma.imageAnalysis.findUniqueOrThrow({ where: { id: placeholderId } });
+      expect(placeholderRow.providerName).toBe("manual-only");
+      expect(placeholderRow.externalAiConsentGrantedAt).toBeNull();
 
-      const result = await queueAnalysisForExternalProvider(terminalRow.assetId, ownerUserId);
-      expect(result.created).toBe(true);
-      expect(result.analysisId).not.toBe(terminalAnalysisId);
-      await expect(prisma.imageAnalysis.count({ where: { assetId: terminalRow.assetId } })).resolves.toBe(2);
+      const result = await queueAnalysisForExternalProvider(placeholderRow.assetId, ownerUserId);
+
+      expect(result).toEqual({ analysisId: placeholderId, created: false });
+      await expect(prisma.imageAnalysis.count({ where: { assetId: placeholderRow.assetId } })).resolves.toBe(1);
+      const updated = await prisma.imageAnalysis.findUniqueOrThrow({ where: { id: placeholderId } });
+      expect(updated.status).toBe(ANALYSIS_STATUS_QUEUED);
+    });
+
+    it("rejects a draft that already carries a real analysis awaiting review, without creating a second row", async () => {
+      const ownerUserId = await createOwner(owners);
+      const now = new Date("2026-08-15T12:00:00.000Z");
+      const analysisId = await createAnalysis(ownerUserId);
+      await recordExternalAiConsent(analysisId, ownerUserId, "v1", now);
+      await claimQueuedAnalysisForProcessing({
+        analysisId, ownerUserId, providerName: "gemini", modelVersion: "gemini-3.6-flash", now,
+      });
+      await markAnalysisSucceeded(analysisId, ownerUserId, successPayload());
+
+      const { prisma } = await import("@/lib/prisma");
+      const row = await prisma.imageAnalysis.findUniqueOrThrow({ where: { id: analysisId } });
+      expect(row.status).toBe(ANALYSIS_STATUS_DRAFT);
+      expect(row.providerName).toBe("gemini");
+
+      await expect(queueAnalysisForExternalProvider(row.assetId, ownerUserId)).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
+      await expect(prisma.imageAnalysis.count({ where: { assetId: row.assetId } })).resolves.toBe(1);
+    });
+
+    it("rejects a confirmed analysis, without creating a second row", async () => {
+      const ownerUserId = await createOwner(owners);
+      const analysisId = await createAnalysis(ownerUserId, { status: "confirmed" });
+      const { prisma } = await import("@/lib/prisma");
+      const row = await prisma.imageAnalysis.findUniqueOrThrow({ where: { id: analysisId } });
+
+      await expect(queueAnalysisForExternalProvider(row.assetId, ownerUserId)).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
+      await expect(prisma.imageAnalysis.count({ where: { assetId: row.assetId } })).resolves.toBe(1);
+    });
+
+    it("reuses a failed row when the M18 retry policy still allows another attempt, preserving consent and attempt history", async () => {
+      const ownerUserId = await createOwner(owners);
+      const now = new Date("2026-08-15T12:00:00.000Z");
+      // Constructed directly (not via markAnalysisFailed, which already
+      // re-queues automatically whenever a retry is allowed) to prove this
+      // repository defensively recomputes retry eligibility from the
+      // attempt count and failure code, rather than trusting the status
+      // label alone -- covering a restored/historical row, not just the
+      // live markAnalysisFailed path.
+      const analysisId = await createAnalysis(ownerUserId, {
+        status: ANALYSIS_STATUS_FAILED,
+        providerName: "gemini",
+        lastFailureCode: "PROVIDER_TIMEOUT",
+        externalAiConsentGrantedAt: now,
+        externalAiConsentVersion: "v1",
+      });
+      const { prisma } = await import("@/lib/prisma");
+      await prisma.imageAnalysisProviderAttempt.create({
+        data: {
+          imageAnalysisId: analysisId, ownerUserId, providerName: "gemini",
+          modelVersion: "gemini-3.6-flash", attemptNumber: 1, createdAt: now,
+        },
+      });
+      const row = await prisma.imageAnalysis.findUniqueOrThrow({ where: { id: analysisId } });
+
+      const result = await queueAnalysisForExternalProvider(row.assetId, ownerUserId);
+      expect(result).toEqual({ analysisId, created: false });
+
+      const updated = await prisma.imageAnalysis.findUniqueOrThrow({ where: { id: analysisId } });
+      expect(updated.status).toBe(ANALYSIS_STATUS_QUEUED);
+      expect(updated.externalAiConsentGrantedAt).toEqual(now);
+      expect(updated.externalAiConsentVersion).toBe("v1");
+      await expect(prisma.imageAnalysisProviderAttempt.count({ where: { imageAnalysisId: analysisId } })).resolves.toBe(1);
+
+      // The requeued row resumes at attempt #2 -- history was not reset.
+      await expect(claimQueuedAnalysisForProcessing({
+        analysisId, ownerUserId, providerName: "gemini", modelVersion: "gemini-3.6-flash", now,
+      })).resolves.toEqual({ outcome: "claimed", attemptNumber: 2 });
+    });
+
+    it("rejects a failed row once the M18 attempt cap has been reached, without requeueing", async () => {
+      const ownerUserId = await createOwner(owners);
+      const now = new Date("2026-08-15T12:00:00.000Z");
+      const analysisId = await createAnalysis(ownerUserId);
+      await recordExternalAiConsent(analysisId, ownerUserId, "v1", now);
+
+      await claimQueuedAnalysisForProcessing({
+        analysisId, ownerUserId, providerName: "gemini", modelVersion: "gemini-3.6-flash", now,
+      });
+      await markAnalysisFailed(analysisId, ownerUserId, "PROVIDER_TIMEOUT");
+      await claimQueuedAnalysisForProcessing({
+        analysisId, ownerUserId, providerName: "gemini", modelVersion: "gemini-3.6-flash", now,
+      });
+      await expect(markAnalysisFailed(analysisId, ownerUserId, "PROVIDER_TIMEOUT")).resolves.toEqual({
+        status: ANALYSIS_STATUS_FAILED,
+      });
+
+      const { prisma } = await import("@/lib/prisma");
+      const row = await prisma.imageAnalysis.findUniqueOrThrow({ where: { id: analysisId } });
+      expect(row.status).toBe(ANALYSIS_STATUS_FAILED);
+
+      await expect(queueAnalysisForExternalProvider(row.assetId, ownerUserId)).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
+      const unchanged = await prisma.imageAnalysis.findUniqueOrThrow({ where: { id: analysisId } });
+      expect(unchanged.status).toBe(ANALYSIS_STATUS_FAILED);
+      await expect(prisma.imageAnalysis.count({ where: { assetId: row.assetId } })).resolves.toBe(1);
+    });
+
+    it("fails closed when historical data left more than one row eligible for reuse", async () => {
+      const ownerUserId = await createOwner(owners);
+      const placeholderA = await createAnalysis(ownerUserId, { status: ANALYSIS_STATUS_DRAFT });
+      const { prisma } = await import("@/lib/prisma");
+      const assetId = (await prisma.imageAnalysis.findUniqueOrThrow({ where: { id: placeholderA } })).assetId;
+      // A second, independent placeholder for the same asset -- simulates
+      // pre-fix historical data; the live code path can no longer produce
+      // this once this repository change ships.
+      await prisma.imageAnalysis.create({ data: { assetId, status: ANALYSIS_STATUS_DRAFT } });
+
+      await expect(queueAnalysisForExternalProvider(assetId, ownerUserId)).rejects.toBeInstanceOf(ImageAnalysisJobStateError);
+      await expect(prisma.imageAnalysis.count({ where: { assetId } })).resolves.toBe(2);
+    });
+
+    it("under a concurrent race on the same fresh placeholder, both callers resolve to the same single row", async () => {
+      const ownerUserId = await createOwner(owners);
+      const placeholderId = await createAnalysis(ownerUserId, { status: ANALYSIS_STATUS_DRAFT });
+      const { prisma } = await import("@/lib/prisma");
+      const assetId = (await prisma.imageAnalysis.findUniqueOrThrow({ where: { id: placeholderId } })).assetId;
+
+      const [resultA, resultB] = await Promise.all([
+        queueAnalysisForExternalProvider(assetId, ownerUserId),
+        queueAnalysisForExternalProvider(assetId, ownerUserId),
+      ]);
+
+      expect(resultA).toEqual({ analysisId: placeholderId, created: false });
+      expect(resultB).toEqual({ analysisId: placeholderId, created: false });
+      await expect(prisma.imageAnalysis.count({ where: { assetId } })).resolves.toBe(1);
+      const row = await prisma.imageAnalysis.findUniqueOrThrow({ where: { id: placeholderId } });
+      expect(row.status).toBe(ANALYSIS_STATUS_QUEUED);
     });
 
     it("rejects a missing asset and a foreign owner's asset identically, without creating a row", async () => {
