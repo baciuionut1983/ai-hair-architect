@@ -75,7 +75,10 @@ const BASE_ASSET = {
 describe('GET /api/v1/image-assets/[id]/content', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    PRISMA_MOCK.session.findUnique.mockResolvedValue({ user: { id: OWNER_ID } });
+    PRISMA_MOCK.session.findUnique.mockResolvedValue({
+      user: { id: OWNER_ID },
+      expiresAt: new Date(Date.now() + 60_000),
+    });
   });
 
   it('1. returns 401 when unauthenticated (no token)', async () => {
@@ -88,6 +91,21 @@ describe('GET /api/v1/image-assets/[id]/content', () => {
     PRISMA_MOCK.session.findUnique.mockResolvedValue(null);
     const response = await GET(request('bad-token') as never, ctx());
     expect(response.status).toBe(401);
+  });
+
+  it('2b. returns 401 for an expired session and never reaches the asset lookup or storage', async () => {
+    PRISMA_MOCK.session.findUnique.mockResolvedValue({
+      user: { id: OWNER_ID },
+      expiresAt: new Date(Date.now() - 1000),
+    });
+
+    const response = await GET(request('token') as never, ctx());
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: 'Unauthorized' });
+    expect(PRISMA_MOCK.imageAsset.findFirst).not.toHaveBeenCalled();
+    expect(REPOSITORY_FIND_MOCK).not.toHaveBeenCalled();
+    expect(RESOLVE_STORAGE_MOCK).not.toHaveBeenCalled();
   });
 
   it('3. returns 404 for an absent asset', async () => {

@@ -8,6 +8,7 @@ import { createObjectStorageAliasResolver } from '@/lib/object-storage-alias-res
 import { ObjectStorageError } from '@/lib/object-storage-errors';
 import { toExactObjectReference } from '@/lib/object-storage';
 import { prisma } from '@/lib/prisma';
+import { authenticateSessionUser } from '@/lib/session-auth';
 
 const SERVABLE_OBJECT_STATES = new Set(['available', 'delete_pending']);
 
@@ -21,7 +22,7 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  const user = await getAuthenticatedUser(req);
+  const user = await authenticateSessionUser(req);
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
@@ -138,16 +139,4 @@ function buildHeaders(
   }
 
   return headers;
-}
-
-async function getAuthenticatedUser(req: NextRequest) {
-  const token = req.headers.get('Authorization')?.replace('Bearer ', '');
-  if (!token) return null;
-
-  const session = await prisma.session.findUnique({
-    where: { token },
-    include: { user: true },
-  });
-
-  return session?.user || null;
 }

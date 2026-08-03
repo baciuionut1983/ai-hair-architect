@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
+import { authenticateSessionUser } from '@/lib/session-auth';
 
 export async function GET(
   req: NextRequest,
@@ -7,7 +8,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const user = await getAuthenticatedUser(req);
+    const user = await authenticateSessionUser(req);
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
@@ -36,16 +37,4 @@ export async function GET(
       { status: 500 }
     );
   }
-}
-
-async function getAuthenticatedUser(req: NextRequest) {
-  const token = req.headers.get('Authorization')?.replace('Bearer ', '');
-  if (!token) return null;
-
-  const session = await prisma.session.findUnique({
-    where: { token },
-    include: { user: true },
-  });
-
-  return session?.user || null;
 }

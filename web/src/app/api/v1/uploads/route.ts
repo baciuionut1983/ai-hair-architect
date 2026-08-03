@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { uploadAndAnalyzeImages } from '@/lib/image-analysis-service';
-import { prisma } from '@/lib/prisma';
 import { checkRateLimit, getRateLimitStatus } from '@/lib/rate-limiter';
 import { checkRole } from '@/lib/auth-role';
+import { authenticateSessionUser } from '@/lib/session-auth';
 
 export async function POST(req: NextRequest) {
   try {
-    const user = await getAuthenticatedUser(req);
+    const user = await authenticateSessionUser(req);
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
@@ -75,16 +75,4 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
-}
-
-async function getAuthenticatedUser(req: NextRequest) {
-  const token = req.headers.get('Authorization')?.replace('Bearer ', '');
-  if (!token) return null;
-
-  const session = await prisma.session.findUnique({
-    where: { token },
-    include: { user: true },
-  });
-
-  return session?.user || null;
 }
