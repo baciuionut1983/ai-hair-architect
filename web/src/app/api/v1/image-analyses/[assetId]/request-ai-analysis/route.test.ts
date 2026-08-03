@@ -58,8 +58,16 @@ function sanitizedFixture() {
   };
 }
 
+function activeSession(user: { id: string; role: string }) {
+  return { user, expiresAt: new Date(Date.now() + 60_000) };
+}
+
+function expiredSession(user: { id: string; role: string }) {
+  return { user, expiresAt: new Date(Date.now() - 1000) };
+}
+
 function mockHappyPathThrough(userId: string) {
-  prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role: "professional" } });
+  prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
   repositoryMock.queueAnalysisForExternalProvider.mockResolvedValue({ analysisId: "analysis-1", created: true });
   repositoryMock.recordExternalAiConsent.mockResolvedValue(undefined);
   serviceMock.processImageAnalysis.mockResolvedValue({ outcome: "succeeded", analysis: sanitizedFixture() });
@@ -85,8 +93,21 @@ describe("POST /api/v1/image-analyses/[assetId]/request-ai-analysis", () => {
     expect(response.status).toBe(401);
   });
 
+  it("returns 401 for an expired session and never reaches business logic (no queue/consent/analysis calls)", async () => {
+    const userId = randomUUID();
+    prismaMock.sessionFindUnique.mockResolvedValue(expiredSession({ id: userId, role: "professional" }));
+
+    const response = await invoke(randomUUID(), "token", { consent: true });
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: "Unauthorized" });
+    expect(repositoryMock.queueAnalysisForExternalProvider).not.toHaveBeenCalled();
+    expect(repositoryMock.recordExternalAiConsent).not.toHaveBeenCalled();
+    expect(serviceMock.processImageAnalysis).not.toHaveBeenCalled();
+  });
+
   it("returns 403 for a disallowed role, never touching the repository or service", async () => {
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: randomUUID(), role: "client" } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: randomUUID(), role: "client" }));
     const response = await invoke(randomUUID(), "token", { consent: true });
     expect(response.status).toBe(403);
     expect(repositoryMock.queueAnalysisForExternalProvider).not.toHaveBeenCalled();
@@ -94,7 +115,7 @@ describe("POST /api/v1/image-analyses/[assetId]/request-ai-analysis", () => {
 
   it.each(["professional", "salon", "admin"])("allows role %s through when consent is given", async (role) => {
     const userId = randomUUID();
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role }));
     repositoryMock.queueAnalysisForExternalProvider.mockResolvedValue({ analysisId: "analysis-1", created: true });
     repositoryMock.recordExternalAiConsent.mockResolvedValue(undefined);
     serviceMock.processImageAnalysis.mockResolvedValue({ outcome: "succeeded", analysis: sanitizedFixture() });
@@ -106,7 +127,7 @@ describe("POST /api/v1/image-analyses/[assetId]/request-ai-analysis", () => {
 
   it("rejects with CONSENT_REQUIRED when consent is not explicitly true, without creating any row", async () => {
     const userId = randomUUID();
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role: "professional" } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
 
     const withoutBody = await invoke(randomUUID(), "token");
     expect(withoutBody.status).toBe(403);
@@ -155,7 +176,7 @@ describe("POST /api/v1/image-analyses/[assetId]/request-ai-analysis", () => {
 
   it("returns 404 ANALYSIS_NOT_FOUND when the asset cannot be queued, without recording consent or invoking the service", async () => {
     const userId = randomUUID();
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role: "professional" } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
     repositoryMock.queueAnalysisForExternalProvider.mockRejectedValue(new ImageAnalysisJobStateError());
 
     const response = await invoke(randomUUID(), "token", { consent: true });
@@ -167,7 +188,7 @@ describe("POST /api/v1/image-analyses/[assetId]/request-ai-analysis", () => {
 
   it("returns a sanitized 500 when queueing fails unexpectedly", async () => {
     const userId = randomUUID();
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role: "professional" } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
     repositoryMock.queueAnalysisForExternalProvider.mockRejectedValue(new Error("unexpected database detail"));
 
     const response = await invoke(randomUUID(), "token", { consent: true });
@@ -178,7 +199,7 @@ describe("POST /api/v1/image-analyses/[assetId]/request-ai-analysis", () => {
 
   it("returns a sanitized 500 when consent recording fails, without invoking the service", async () => {
     const userId = randomUUID();
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role: "professional" } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
     repositoryMock.queueAnalysisForExternalProvider.mockResolvedValue({ analysisId: "analysis-1", created: true });
     repositoryMock.recordExternalAiConsent.mockRejectedValue(new Error("unexpected internal detail"));
 
@@ -191,7 +212,7 @@ describe("POST /api/v1/image-analyses/[assetId]/request-ai-analysis", () => {
     "maps a processing failure code %s to the approved HTTP status",
     async (code, status) => {
       const userId = randomUUID();
-      prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role: "professional" } });
+      prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
       repositoryMock.queueAnalysisForExternalProvider.mockResolvedValue({ analysisId: "analysis-1", created: true });
       repositoryMock.recordExternalAiConsent.mockResolvedValue(undefined);
       serviceMock.processImageAnalysis.mockResolvedValue({ outcome: "failed", code });
@@ -217,7 +238,7 @@ describe("POST /api/v1/image-analyses/[assetId]/request-ai-analysis", () => {
 
   it("returns a sanitized 500 if the service throws unexpectedly, never leaking internal details", async () => {
     const userId = randomUUID();
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role: "professional" } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
     repositoryMock.queueAnalysisForExternalProvider.mockResolvedValue({ analysisId: "analysis-1", created: true });
     repositoryMock.recordExternalAiConsent.mockResolvedValue(undefined);
     serviceMock.processImageAnalysis.mockRejectedValue(new Error("raw provider detail leak attempt"));

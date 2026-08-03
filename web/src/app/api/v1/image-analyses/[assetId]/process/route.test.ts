@@ -44,6 +44,14 @@ function sanitizedFixture() {
   };
 }
 
+function activeSession(user: { id: string; role: string }) {
+  return { user, expiresAt: new Date(Date.now() + 60_000) };
+}
+
+function expiredSession(user: { id: string; role: string }) {
+  return { user, expiresAt: new Date(Date.now() - 1000) };
+}
+
 describe("POST /api/v1/image-analyses/[assetId]/process", () => {
   beforeEach(() => {
     prismaMock.sessionFindUnique.mockReset();
@@ -63,8 +71,19 @@ describe("POST /api/v1/image-analyses/[assetId]/process", () => {
     expect(serviceMock.processImageAnalysis).not.toHaveBeenCalled();
   });
 
+  it("returns 401 for an expired session and never reaches the processing service", async () => {
+    const userId = randomUUID();
+    prismaMock.sessionFindUnique.mockResolvedValue(expiredSession({ id: userId, role: "professional" }));
+
+    const response = await invoke(randomUUID(), "token");
+
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({ error: "Unauthorized" });
+    expect(serviceMock.processImageAnalysis).not.toHaveBeenCalled();
+  });
+
   it("returns 403 for a disallowed role, never calling the service", async () => {
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: randomUUID(), role: "client" } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: randomUUID(), role: "client" }));
     const response = await invoke(randomUUID(), "token");
     expect(response.status).toBe(403);
     expect(serviceMock.processImageAnalysis).not.toHaveBeenCalled();
@@ -72,7 +91,7 @@ describe("POST /api/v1/image-analyses/[assetId]/process", () => {
 
   it.each(["professional", "salon", "admin"])("allows role %s through to the service", async (role) => {
     const userId = randomUUID();
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role }));
     serviceMock.processImageAnalysis.mockResolvedValue({ outcome: "succeeded", analysis: sanitizedFixture() });
 
     const response = await invoke(randomUUID(), "token");
@@ -82,7 +101,7 @@ describe("POST /api/v1/image-analyses/[assetId]/process", () => {
 
   it("derives owner strictly from the authenticated session, ignoring any body-supplied owner/provider/consent fields", async () => {
     const userId = randomUUID();
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role: "professional" } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
     serviceMock.processImageAnalysis.mockResolvedValue({ outcome: "succeeded", analysis: sanitizedFixture() });
 
     await invoke("asset-1", "token", {
@@ -107,7 +126,7 @@ describe("POST /api/v1/image-analyses/[assetId]/process", () => {
     "maps failure code %s to the approved HTTP status",
     async (code, status) => {
       const userId = randomUUID();
-      prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role: "professional" } });
+      prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
       serviceMock.processImageAnalysis.mockResolvedValue({ outcome: "failed", code });
 
       const response = await invoke(randomUUID(), "token");
@@ -118,7 +137,7 @@ describe("POST /api/v1/image-analyses/[assetId]/process", () => {
 
   it("returns 200 with the sanitized analysis for a succeeded outcome", async () => {
     const userId = randomUUID();
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role: "professional" } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
     const analysis = sanitizedFixture();
     serviceMock.processImageAnalysis.mockResolvedValue({ outcome: "succeeded", analysis });
 
@@ -129,7 +148,7 @@ describe("POST /api/v1/image-analyses/[assetId]/process", () => {
 
   it("returns 200 with the sanitized analysis for a current_state outcome (idempotent, no reprocessing)", async () => {
     const userId = randomUUID();
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role: "professional" } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
     const analysis = sanitizedFixture();
     serviceMock.processImageAnalysis.mockResolvedValue({ outcome: "current_state", analysis });
 
@@ -140,7 +159,7 @@ describe("POST /api/v1/image-analyses/[assetId]/process", () => {
 
   it("returns a sanitized 500 if the service throws unexpectedly, never leaking internal details", async () => {
     const userId = randomUUID();
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role: "professional" } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
     serviceMock.processImageAnalysis.mockRejectedValue(new Error("unexpected internal database detail"));
 
     const response = await invoke(randomUUID(), "token");
@@ -151,7 +170,7 @@ describe("POST /api/v1/image-analyses/[assetId]/process", () => {
 
   it("applies the ANALYZE rate limiter as a secondary check, returning 429 once exceeded", async () => {
     const userId = randomUUID();
-    prismaMock.sessionFindUnique.mockResolvedValue({ user: { id: userId, role: "professional" } });
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
     serviceMock.processImageAnalysis.mockResolvedValue({ outcome: "succeeded", analysis: sanitizedFixture() });
 
     let lastResponse: Response | undefined;

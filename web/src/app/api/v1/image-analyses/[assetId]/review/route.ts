@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { reviewAnalysis } from '@/lib/image-analysis-service';
 import { mapAnalysisToM8Draft } from '@/lib/image-analysis-m8-mapper';
 import { ImageAnalysisResult } from '@/lib/image-analysis-provider';
+import { authenticateSessionUser } from '@/lib/session-auth';
 
 export async function POST(
   req: NextRequest,
@@ -10,7 +11,7 @@ export async function POST(
 ) {
   try {
     const { assetId } = await params;
-    const user = await getAuthenticatedUser(req);
+    const user = await authenticateSessionUser(req);
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
@@ -107,16 +108,4 @@ export async function POST(
       { status: 400 }
     );
   }
-}
-
-async function getAuthenticatedUser(req: NextRequest) {
-  const token = req.headers.get('Authorization')?.replace('Bearer ', '');
-  if (!token) return null;
-
-  const session = await prisma.session.findUnique({
-    where: { token },
-    include: { user: true },
-  });
-
-  return session?.user || null;
 }

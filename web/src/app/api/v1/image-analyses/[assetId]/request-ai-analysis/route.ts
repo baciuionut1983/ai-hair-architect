@@ -10,8 +10,8 @@ import {
   PROCESSING_RESULT_HTTP_STATUS,
   processImageAnalysis,
 } from '@/lib/image-analysis-processing-service';
-import { prisma } from '@/lib/prisma';
 import { checkRateLimit, getRateLimitStatus } from '@/lib/rate-limiter';
+import { authenticateSessionUser } from '@/lib/session-auth';
 
 const CONSENT_VERSION = 'v1';
 
@@ -21,7 +21,7 @@ export async function POST(
 ) {
   try {
     const { assetId } = await params;
-    const user = await getAuthenticatedUser(req);
+    const user = await authenticateSessionUser(req);
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
@@ -98,16 +98,4 @@ export async function POST(
   } catch {
     return NextResponse.json({ error: 'INTERNAL_PROCESSING_FAILURE' }, { status: 500 });
   }
-}
-
-async function getAuthenticatedUser(req: NextRequest) {
-  const token = req.headers.get('Authorization')?.replace('Bearer ', '');
-  if (!token) return null;
-
-  const session = await prisma.session.findUnique({
-    where: { token },
-    include: { user: true },
-  });
-
-  return session?.user || null;
 }
