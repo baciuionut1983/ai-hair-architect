@@ -36,6 +36,14 @@ AI Hair Architect is a professional AI platform for hairstylists, salon owners, 
 - The system should evolve without deleting legacy logic until parity is verified.
 - Before any implementation, future work must read and follow this document as the project constitution.
 
+### 1.4 Long-term platform ambition (non-MVP, aspirational)
+
+AI Hair Architect's current and near-term scope remains fully dedicated to professional hairstyling — every module, milestone, and roadmap item in this document through Version 6 (§9.6) is hair-only and unaffected by this section.
+
+Long-term, the underlying platform (client history, consultation engine, AI orchestration, marketplace, academy, billing) is intentionally architected to be vertical-extensible. Additional beauty verticals — nails, make-up, cosmetics/skincare — may be added in future, independently-approved platform phases without displacing or diluting the hair vertical.
+
+This ambition does not expand current scope. Its only immediate effect is architectural: where a small, low-cost naming or modeling decision today (e.g., avoiding hair-specific identifiers in shared/core data structures) would otherwise force a costly migration later, that decision should favor the vertical-extensible option, all else being equal. No vertical beyond hairstyling is in scope for any milestone unless and until this document is updated again with a dedicated blueprint, per §12.
+
 ## 2. Product Scope by Capability
 
 ### 2.1 Identity and access
@@ -867,6 +875,51 @@ Estimated effort:
 
 - Medium
 
+### 9.7 Version 7 - Marketplace and Brand Platform (Long-Term, Non-MVP)
+
+Scope:
+
+- Global marketplace: expand beyond local supplier/product discovery (§2.6) into a commerce-capable marketplace with vendor onboarding and real transactions
+- Brand pages: dedicated storefront pages for beauty brands and vendors, with their own catalog and content
+- Courses and education as a distinct commercial product line, built on top of (not replacing) the existing in-app Academy and Video Lesson modules (§2.5, §4.11)
+
+Goal:
+
+- Transform the marketplace and academy modules from in-product features into standalone revenue lines.
+
+Dependencies:
+
+- Mature billing and subscription system (delivered)
+- Vendor-facing auth/roles (new)
+- Marketplace data model expansion (new)
+- Content/course infrastructure (new)
+
+Estimated effort:
+
+- Large — multi-milestone program, requires its own dedicated blueprint before any implementation.
+
+### 9.8 Version 8 - Beauty Vertical Expansion (Long-Term, Non-MVP)
+
+Scope:
+
+- Extend the platform's client-history, consultation, analysis, and marketplace architecture to additional beauty verticals: nails, make-up, cosmetics/skincare
+- Each vertical scoped as an independent module (its own analysis logic, academy content, product categories) reusing the shared platform foundation established for hairstyling
+- Vertical-aware navigation so a user can select which vertical(s) they practice
+
+Goal:
+
+- Establish the platform underlying AI Hair Architect as a multi-vertical foundation, with hairstyling as the proven first vertical -- not a rename or a dilution of the current product.
+
+Dependencies:
+
+- §1.4 architectural guardrail followed through Versions 1-7
+- A separately-approved product blueprint per vertical before any implementation begins
+- Stable, vertical-agnostic core platform
+
+Estimated effort:
+
+- Large — treated as its own multi-milestone program, not a single milestone, and not started until explicitly approved per vertical.
+
 ## 10. Implementation Strategy
 
 ### 10.1 What to keep
@@ -904,6 +957,8 @@ Estimated effort:
 - Video content requires a separate content model and delivery strategy.
 - Legacy logic may overlap with Next.js migration and should be reconciled carefully.
 - Product scope is intentionally broad, so implementation must be staged to avoid partial, inconsistent UX.
+- Premature vertical or marketplace expansion could dilute the hairstyling MVP's focus and delay its own completion.
+  Mitigation: Versions 7-8 (§9.7-9.8) require their own dedicated, separately-approved blueprint before any implementation; no milestone may pull from them without that approval.
 
 ## 12. Documentation Governance
 
@@ -914,6 +969,7 @@ This section defines how future implementation work must use this document.
 - If a feature is not listed here, it must be treated as out of scope until approved.
 - Before implementation, update this document first, then derive the technical plan, then code.
 - Changes to architecture, data model, or AI agent behavior must be reflected here before implementation begins.
+- Adding §1.4 and §9.7-9.8 to this document records long-term ambition only. It does not authorize implementation of any item within them. Each still requires its own dedicated blueprint and explicit approval before code, exactly as this section already requires for any other feature.
 
 ## 13. Approval Decision Needed
 

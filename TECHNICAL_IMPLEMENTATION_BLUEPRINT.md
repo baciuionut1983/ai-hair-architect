@@ -513,6 +513,8 @@ Output envelope:
 
 ## 9. Milestones, Estimates, Dependencies
 
+Note: PRODUCT_ARCHITECTURE.md §9.7-9.8 records a long-term, non-MVP platform/vertical-expansion ambition (marketplace, brand pages, courses, nails/make-up/cosmetics). It is out of scope for this blueprint's milestone list, which remains hairstyling-only, until a dedicated blueprint for that ambition is written and approved.
+
 Estimation scale:
 
 - S: 2-4 dev days
