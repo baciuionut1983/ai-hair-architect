@@ -98,6 +98,7 @@ export default function Home() {
         </div>
         <nav className="nav-next" aria-label="navigation">
           <a href="#home">Acasa</a>
+          <a href="/preview">Try Free Preview</a>
           <a href="#milestone1">M1 Foundation</a>
           <a href="#milestone2">M2 Analysis</a>
           <a href="#milestone3">M3 History</a>
