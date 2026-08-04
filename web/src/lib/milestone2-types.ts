@@ -2,7 +2,9 @@ import type {
   AnalysisGoal,
   ColorPlan,
   DensityLevel,
+  DesiredColorResult,
   FaceShape,
+  GrayPercentage,
   GrowthPattern,
   HairCondition,
   HairLength,
@@ -10,8 +12,11 @@ import type {
   HairType,
   HeadShape,
   PorosityLevel,
+  ScalpCondition,
   TargetShape,
-  TechnicalCutPlan
+  TechnicalCutPlan,
+  TreatmentGoalDetail,
+  TreatmentPlan
 } from "./contracts";
 
 export interface AnalysisEngineInput {
@@ -26,6 +31,10 @@ export interface AnalysisEngineInput {
   hairCondition?: HairCondition;
   growthPattern?: GrowthPattern;
   targetShape?: TargetShape;
+  desiredColorResult?: DesiredColorResult;
+  grayPercentage?: GrayPercentage;
+  scalpCondition?: ScalpCondition;
+  treatmentGoalDetail?: TreatmentGoalDetail;
 }
 
 export interface AnalysisCreateRecordInput extends AnalysisEngineInput {
@@ -38,6 +47,7 @@ export interface AnalysisCreateRecordInput extends AnalysisEngineInput {
   clarificationRound: number;
   technicalCutPlan?: TechnicalCutPlan;
   colorPlan?: ColorPlan;
+  treatmentPlan?: TreatmentPlan;
 }
 
 export interface AnalysisClarifyRequest {

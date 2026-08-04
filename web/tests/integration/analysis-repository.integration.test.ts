@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ColorPlan, TechnicalCutPlan } from "@/lib/contracts";
+import type { ColorPlan, TechnicalCutPlan, TreatmentPlan } from "@/lib/contracts";
 import {
   AnalysisPersistenceError,
   clarifyAnalysisForOwner,
@@ -104,6 +104,53 @@ suite("Analysis durable repository", () => {
     expect(found).not.toBeNull();
     expect(found?.colorPlan).toBeUndefined();
     expect(found?.technicalCutPlan).toBeUndefined();
+    expect(found?.treatmentPlan).toBeUndefined();
+  });
+
+  it("persists and reads a treatmentPlan round-trip through PostgreSQL", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const plan = treatmentPlan();
+
+    const created = await createAnalysisForOwner(ownerUserId, clientId, {
+      ...readyInput(),
+      treatmentPlan: plan,
+    });
+
+    const freshClient = new PrismaClient();
+    try {
+      await expect(freshClient.analysis.findUnique({ where: { id: created.id } }))
+        .resolves.toMatchObject({ treatmentPlan: plan });
+    } finally {
+      await freshClient.$disconnect();
+    }
+
+    await expect(findAnalysisForOwner(ownerUserId, created.id)).resolves.toMatchObject({
+      treatmentPlan: plan,
+    });
+  });
+
+  it("carries colorPlan and treatmentPlan forward unchanged through a real clarify round", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const color = colorPlan();
+    const treatment = treatmentPlan();
+    const created = await createAnalysisForOwner(ownerUserId, clientId, {
+      ...pendingInput(),
+      colorPlan: color,
+      treatmentPlan: treatment,
+    });
+
+    const clarified = await clarifyAnalysisForOwner(ownerUserId, created.id, (current) => ({
+      ...current,
+      phase: "ready",
+      clarificationAnswers: [...current.clarificationAnswers, "confirmed healthy"],
+    }));
+
+    expect(clarified?.colorPlan).toEqual(color);
+    expect(clarified?.treatmentPlan).toEqual(treatment);
+
+    const refetched = await findAnalysisForOwner(ownerUserId, created.id);
+    expect(refetched?.colorPlan).toEqual(color);
+    expect(refetched?.treatmentPlan).toEqual(treatment);
   });
 
   it("rejects missing, cross-owner and soft-deleted Clients", async () => {
@@ -310,6 +357,31 @@ function colorPlan(): ColorPlan {
     missingData: [],
     confidence: 0.9,
     stylistValidationDisclaimer: "Validate the formula chair-side.",
+    version: "1.0.0-m27",
+  };
+}
+
+function treatmentPlan(): TreatmentPlan {
+  return {
+    treatmentCategory: "deep_hydration",
+    protocolSteps: [{
+      stepNumber: 1,
+      zone: "Application",
+      action: "Apply hydration mask.",
+      toolRequired: "applicator-brush",
+    }],
+    aftercareSteps: ["Repeat weekly for 4 weeks."],
+    recommendedFrequency: "weekly_for_4_weeks",
+    followUpReviewWeeks: 4,
+    stylistExplanation: "Explain the hydration protocol.",
+    clientExplanation: "Explain the expected result.",
+    professionalReason: "Address moisture deficit.",
+    warnings: [],
+    contraindications: [],
+    assumptions: [],
+    missingData: [],
+    confidence: 0.9,
+    stylistValidationDisclaimer: "Validate the protocol chair-side.",
     version: "1.0.0-m27",
   };
 }

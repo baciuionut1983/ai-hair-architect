@@ -4,16 +4,21 @@ import { analyzeInitial } from "@/lib/analysis-engine";
 import type { AnalysisPreviewRequest, AnalysisPreviewResponse } from "@/lib/contracts";
 import { checkRateLimit, getRequestClientIp } from "@/lib/hardening";
 
-// "reshape" is deliberately excluded: it is the one basic-field value that
-// alone (with zero advanced fields) makes analyzeInitial compute a
-// technicalCutPlan, whose prose then leaks into recommendations/safetyNotes
-// as professional-only cutting terminology ("structural technique",
-// "document the cutting map in the consultation record") even after the
-// technicalCutPlan object itself is stripped below. Discovered by directly
-// exercising this route with goal: "reshape" during verification, not
-// assumed. Excluding it here is the complete, minimal fix -- no change to
-// the engine itself.
-const VALID_GOALS = ["refresh", "cover", "lighten", "correct", "treat"] as const;
+// "reshape", "cover", "lighten", and "treat" are deliberately excluded: each
+// is a basic-field value that alone (with zero advanced fields) makes
+// analyzeInitial fire a professional domain engine -- technicalCutPlan for
+// "reshape", colorPlan for "cover"/"lighten" (M27), treatmentPlan for "treat"
+// (M27) -- whose prose then leaks into recommendations/safetyNotes as
+// professional-only terminology ("structural technique", "color direction",
+// "treatment category", "document the ... in the consultation record") even
+// after the plan objects themselves are stripped below. "reshape" was
+// discovered by live verification during M24; "cover"/"lighten"/"treat" were
+// discovered the same way, by directly exercising this route, when M27 added
+// the Color and Treatment engines to analyzeInitial. Excluding all four here
+// is the complete, minimal fix -- no change to any engine itself. Only
+// "refresh" and "correct" are provably safe: neither alone triggers any of
+// the three engines given just the 4 basic fields this route accepts.
+const VALID_GOALS = ["refresh", "correct"] as const;
 const VALID_HAIR_TYPES = ["fine", "medium", "coarse"] as const;
 const VALID_LEVELS = ["low", "medium", "high"] as const;
 
@@ -60,9 +65,10 @@ export async function POST(request: Request) {
     porosity: body.porosity
   });
 
-  // engineOutput.technicalCutPlan is deliberately never read here (defense
-  // in depth alongside excluding "reshape" above). confidenceScore, phase,
-  // and clarificationRound are engine-internal and never surfaced either:
+  // engineOutput.technicalCutPlan/colorPlan/treatmentPlan are deliberately
+  // never read here (defense in depth alongside excluding "reshape",
+  // "cover", "lighten", and "treat" above). confidenceScore, phase, and
+  // clarificationRound are engine-internal and never surfaced either:
   // nothing here is an invented precision number or an implied multi-step/
   // async process, and nothing is persisted.
   const response: AnalysisPreviewResponse = {

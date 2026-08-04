@@ -14,7 +14,9 @@ import type {
   CuttingStep,
   CuttingTechnique,
   DensityLevel,
+  DesiredColorResult,
   FaceShape,
+  GrayPercentage,
   GrowthPattern,
   HairCondition,
   HairLength,
@@ -22,6 +24,7 @@ import type {
   HairType,
   HeadShape,
   PorosityLevel,
+  ScalpCondition,
   StructuralTechnique,
   TargetShape,
   TechnicalCutDistribution,
@@ -30,6 +33,11 @@ import type {
   TechnicalCutPlan,
   TechnicalCutSectioning,
   TexturizingTechnique,
+  TreatmentCategory,
+  TreatmentFrequency,
+  TreatmentGoalDetail,
+  TreatmentPlan,
+  TreatmentStep,
 } from "@/lib/contracts";
 import type { AnalysisCreateRecordInput, AnalysisState } from "@/lib/milestone2-types";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
@@ -59,6 +67,12 @@ const COLOR_FORMULA_DIRECTIONS = ["single_process_gray_coverage", "gloss_demi_pe
 const COLOR_DEVELOPER_VOLUMES = ["10vol", "20vol", "30vol", "40vol"] as const;
 const COLOR_TONE_DIRECTIONS = ["cool_ash", "warm_gold", "neutral", "cool_violet", "warm_copper"] as const;
 const COLOR_APPLICATION_TECHNIQUES = ["global_application", "root_touch_up", "foils", "balayage_freehand", "color_melt"] as const;
+const DESIRED_COLOR_RESULTS = ["gray_coverage", "gloss_refresh", "root_shadow", "balayage_highlights", "full_lightening", "color_correction"] as const;
+const GRAY_PERCENTAGES = ["none", "low", "medium", "high"] as const;
+const SCALP_CONDITIONS = ["normal", "oily", "dry", "sensitive", "flaking"] as const;
+const TREATMENT_GOAL_DETAILS = ["hydration", "repair", "detox_scalp", "bonding_repair", "post_color_recovery"] as const;
+const TREATMENT_CATEGORIES = ["deep_hydration", "bond_repair", "scalp_therapy", "post_color_recovery", "protein_reconstruction"] as const;
+const TREATMENT_FREQUENCIES = ["weekly_for_4_weeks", "biweekly_for_6_weeks", "single_session_reassess", "monthly_maintenance"] as const;
 
 export class AnalysisPersistenceError extends Error {
   readonly code = ANALYSIS_PERSISTENCE_ERROR_CODE;
@@ -134,11 +148,18 @@ export async function createAnalysisForOwner(
         hairCondition: input.hairCondition ?? null,
         growthPattern: input.growthPattern ?? null,
         targetShape: input.targetShape ?? null,
+        desiredColorResult: input.desiredColorResult ?? null,
+        grayPercentage: input.grayPercentage ?? null,
+        scalpCondition: input.scalpCondition ?? null,
+        treatmentGoalDetail: input.treatmentGoalDetail ?? null,
         technicalCutPlan: input.technicalCutPlan
           ? (input.technicalCutPlan as unknown as Prisma.InputJsonValue)
           : Prisma.JsonNull,
         colorPlan: input.colorPlan
           ? (input.colorPlan as unknown as Prisma.InputJsonValue)
+          : Prisma.JsonNull,
+        treatmentPlan: input.treatmentPlan
+          ? (input.treatmentPlan as unknown as Prisma.InputJsonValue)
           : Prisma.JsonNull,
         clarificationAnswers: [],
       },
@@ -187,6 +208,12 @@ export async function clarifyAnalysisForOwner(
         safetyNotes: next.safetyNotes,
         technicalCutPlan: next.technicalCutPlan
           ? (next.technicalCutPlan as unknown as Prisma.InputJsonValue)
+          : Prisma.JsonNull,
+        colorPlan: next.colorPlan
+          ? (next.colorPlan as unknown as Prisma.InputJsonValue)
+          : Prisma.JsonNull,
+        treatmentPlan: next.treatmentPlan
+          ? (next.treatmentPlan as unknown as Prisma.InputJsonValue)
           : Prisma.JsonNull,
         clarificationAnswers: next.clarificationAnswers,
       },
@@ -274,6 +301,7 @@ function toAnalysisState(row: PrismaAnalysisRow): AnalysisState {
 
   const technicalCutPlan = parseTechnicalCutPlan(row.technicalCutPlan);
   const colorPlan = parseColorPlan(row.colorPlan);
+  const treatmentPlan = parseTreatmentPlan(row.treatmentPlan);
   return {
     id: row.id,
     clientId: row.clientId,
@@ -297,8 +325,13 @@ function toAnalysisState(row: PrismaAnalysisRow): AnalysisState {
     hairCondition: parseNullableEnum(row.hairCondition, HAIR_CONDITIONS),
     growthPattern: parseNullableEnum(row.growthPattern, GROWTH_PATTERNS),
     targetShape: parseNullableEnum(row.targetShape, TARGET_SHAPES),
+    desiredColorResult: parseNullableEnum(row.desiredColorResult, DESIRED_COLOR_RESULTS),
+    grayPercentage: parseNullableEnum(row.grayPercentage, GRAY_PERCENTAGES),
+    scalpCondition: parseNullableEnum(row.scalpCondition, SCALP_CONDITIONS),
+    treatmentGoalDetail: parseNullableEnum(row.treatmentGoalDetail, TREATMENT_GOAL_DETAILS),
     ...(technicalCutPlan ? { technicalCutPlan } : {}),
     ...(colorPlan ? { colorPlan } : {}),
+    ...(treatmentPlan ? { treatmentPlan } : {}),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -325,7 +358,13 @@ function assertTransitionResult(value: ReturnType<AnalysisTransition>): void {
     !isNullableEnum(value.hairCondition, HAIR_CONDITIONS) ||
     !isNullableEnum(value.growthPattern, GROWTH_PATTERNS) ||
     !isNullableEnum(value.targetShape, TARGET_SHAPES) ||
-    (value.technicalCutPlan !== undefined && !isTechnicalCutPlan(value.technicalCutPlan))
+    !isNullableEnum(value.desiredColorResult, DESIRED_COLOR_RESULTS) ||
+    !isNullableEnum(value.grayPercentage, GRAY_PERCENTAGES) ||
+    !isNullableEnum(value.scalpCondition, SCALP_CONDITIONS) ||
+    !isNullableEnum(value.treatmentGoalDetail, TREATMENT_GOAL_DETAILS) ||
+    (value.technicalCutPlan !== undefined && !isTechnicalCutPlan(value.technicalCutPlan)) ||
+    (value.colorPlan !== undefined && !isColorPlan(value.colorPlan)) ||
+    (value.treatmentPlan !== undefined && !isTreatmentPlan(value.treatmentPlan))
   ) {
     throw new AnalysisPersistenceError();
   }
@@ -433,6 +472,41 @@ function isColorStep(value: unknown): value is ColorStep {
     isNonEmptyString(value.toolRequired);
 }
 
+function parseTreatmentPlan(value: Prisma.JsonValue | null): TreatmentPlan | undefined {
+  if (value === null) return undefined;
+  if (!isTreatmentPlan(value)) throw new AnalysisPersistenceError();
+  return value;
+}
+
+function isTreatmentPlan(value: unknown): value is TreatmentPlan {
+  if (!isRecord(value)) return false;
+  return isOneOf(value.treatmentCategory, TREATMENT_CATEGORIES) &&
+    Array.isArray(value.protocolSteps) && value.protocolSteps.every(isTreatmentStep) &&
+    isStringArray(value.aftercareSteps) &&
+    isOneOf(value.recommendedFrequency, TREATMENT_FREQUENCIES) &&
+    Number.isFinite(value.followUpReviewWeeks) && (value.followUpReviewWeeks as number) > 0 &&
+    isNonEmptyString(value.stylistExplanation) &&
+    isNonEmptyString(value.clientExplanation) &&
+    isNonEmptyString(value.professionalReason) &&
+    isStringArray(value.warnings) &&
+    isStringArray(value.contraindications) &&
+    isStringArray(value.assumptions) &&
+    isStringArray(value.missingData) &&
+    typeof value.confidence === "number" && Number.isFinite(value.confidence) &&
+    value.confidence >= 0 && value.confidence <= 1 &&
+    (value.notes === undefined || isStringArray(value.notes)) &&
+    isNonEmptyString(value.stylistValidationDisclaimer) &&
+    isNonEmptyString(value.version);
+}
+
+function isTreatmentStep(value: unknown): value is TreatmentStep {
+  if (!isRecord(value)) return false;
+  return Number.isInteger(value.stepNumber) && (value.stepNumber as number) > 0 &&
+    isNonEmptyString(value.zone) &&
+    isNonEmptyString(value.action) &&
+    isNonEmptyString(value.toolRequired);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -469,4 +543,10 @@ type _ContractAssertions = [
   ColorDeveloperVolume,
   ColorToneDirection,
   ColorApplicationTechnique,
+  DesiredColorResult,
+  GrayPercentage,
+  ScalpCondition,
+  TreatmentGoalDetail,
+  TreatmentCategory,
+  TreatmentFrequency,
 ];

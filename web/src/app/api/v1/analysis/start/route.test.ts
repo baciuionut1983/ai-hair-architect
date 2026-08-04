@@ -88,9 +88,42 @@ describe("POST /api/v1/analysis/start", () => {
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({
-      error: "Advanced technical cutting analysis is restricted to professional or salon roles.",
+      error: "Advanced technical analysis (cutting, color, or treatment) is restricted to professional or salon roles.",
     });
     expect(repositoryMock.createAnalysisForOwner).not.toHaveBeenCalled();
+  });
+
+  it("restricts a consumer requesting a color plan the same way as a technical cut plan", async () => {
+    storeMock.getSession.mockReturnValue({ id: "owner-1", role: "consumer" });
+
+    const response = await POST(startRequest({ ...validPayload(), goal: "cover" }));
+
+    expect(response.status).toBe(403);
+    expect(repositoryMock.createAnalysisForOwner).not.toHaveBeenCalled();
+  });
+
+  it("restricts a consumer requesting a treatment plan the same way as a technical cut plan", async () => {
+    storeMock.getSession.mockReturnValue({ id: "owner-1", role: "consumer" });
+
+    const response = await POST(startRequest({ ...validPayload(), goal: "treat" }));
+
+    expect(response.status).toBe(403);
+    expect(repositoryMock.createAnalysisForOwner).not.toHaveBeenCalled();
+  });
+
+  it("passes colorPlan and treatmentPlan through to the response when the repository returns them", async () => {
+    repositoryMock.createAnalysisForOwner.mockResolvedValue({
+      ...analysisRecord(),
+      colorPlan: { version: "1.0.0-m27", formulaDirection: "single_process_gray_coverage" },
+      treatmentPlan: { version: "1.0.0-m27", treatmentCategory: "deep_hydration" },
+    });
+
+    const response = await POST(startRequest({ ...validPayload(), goal: "cover" }));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.colorPlan).toMatchObject({ formulaDirection: "single_process_gray_coverage" });
+    expect(body.treatmentPlan).toMatchObject({ treatmentCategory: "deep_hydration" });
   });
 
   it("creates once through the owner-scoped repository and preserves the success contract", async () => {

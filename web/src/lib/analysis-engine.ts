@@ -6,7 +6,10 @@ import type {
 } from "./milestone2-types";
 
 import { ANALYSIS_READY_THRESHOLD, MAX_CLARIFICATION_ROUNDS } from "./analysis-thresholds";
+import { generateColorPlan, shouldGenerateColorPlan } from "./color-plan-engine";
 import { generateTechnicalCutPlan, shouldGenerateTechnicalCutPlan } from "./cutting-plan-engine";
+import { readable } from "./recommendation-engine-shared";
+import { generateTreatmentPlan, shouldGenerateTreatmentPlan } from "./treatment-plan-engine";
 
 function isLikelyLowConfidence(input: AnalysisEngineInput): boolean {
   return input.goal === "lighten" || input.porosity === "high" || input.hairType === "fine";
@@ -18,6 +21,8 @@ export function analyzeInitial(input: AnalysisEngineInput): AnalysisCreateRecord
   const technicalCutPlan = shouldGenerateTechnicalCutPlan(input)
     ? generateTechnicalCutPlan(input)
     : undefined;
+  const colorPlan = shouldGenerateColorPlan(input) ? generateColorPlan(input) : undefined;
+  const treatmentPlan = shouldGenerateTreatmentPlan(input) ? generateTreatmentPlan(input) : undefined;
   const uncertaintyReasons = lowConfidence
     ? [
         "High-risk combination detected for target service.",
@@ -31,30 +36,65 @@ export function analyzeInitial(input: AnalysisEngineInput): AnalysisCreateRecord
       ]
     : [];
 
+  // M27: each domain engine that fires contributes its own summary lines to
+  // the flat recommendations/safetyNotes arrays (backward-compatible with
+  // every existing consumer), in addition to exposing its own full
+  // structured plan below. Haircut is checked first so recommendations[0]
+  // stays the haircut summary whenever technicalCutPlan fires, unchanged
+  // from pre-M27 behavior. The three engines are independently triggered --
+  // a Color plan's warnings may suggest a Treatment plan first, but nothing
+  // here ever auto-generates a plan the caller's input didn't itself
+  // request.
+  const recommendations: string[] = [];
+  const safetyNotes: string[] = [];
+
+  if (technicalCutPlan) {
+    recommendations.push(
+      `Structural technique: ${technicalCutPlan.structuralTechnique.replaceAll("_", " ")} with cutting technique ${technicalCutPlan.cuttingTechnique.replaceAll("_", " ")}${technicalCutPlan.texturizingTechnique ? ` and texturizing finish ${technicalCutPlan.texturizingTechnique.replaceAll("_", " ")}` : ""}.`,
+      technicalCutPlan.professionalReason,
+      "Document the cutting map in the consultation record for repeatable execution."
+    );
+    safetyNotes.push(...technicalCutPlan.warnings, technicalCutPlan.stylistValidationDisclaimer);
+  }
+
+  if (colorPlan) {
+    recommendations.push(
+      `Color direction: ${readable(colorPlan.formulaDirection)} with ${colorPlan.developerVolume} developer.`,
+      colorPlan.professionalReason,
+      "Document the formula direction in the consultation record for repeatable execution."
+    );
+    safetyNotes.push(...colorPlan.warnings, colorPlan.stylistValidationDisclaimer);
+  }
+
+  if (treatmentPlan) {
+    recommendations.push(
+      `Treatment category: ${readable(treatmentPlan.treatmentCategory)} at a ${readable(treatmentPlan.recommendedFrequency)} cadence.`,
+      treatmentPlan.professionalReason,
+      "Document the treatment protocol in the consultation record for repeatable execution."
+    );
+    safetyNotes.push(...treatmentPlan.warnings, treatmentPlan.stylistValidationDisclaimer);
+  }
+
+  if (!technicalCutPlan && !colorPlan && !treatmentPlan) {
+    recommendations.push(
+      "Use conservative formula strategy and document service context.",
+      "Save follow-up protocol in client timeline for safer next visit."
+    );
+    safetyNotes.push("Perform strand test before high-lift or correction services.");
+  }
+
   return {
     ...input,
     phase: confidenceScore >= ANALYSIS_READY_THRESHOLD ? "ready" : "pending_questions",
     confidenceScore,
     uncertaintyReasons,
     followUpQuestions,
-    recommendations: technicalCutPlan
-      ? [
-          `Structural technique: ${technicalCutPlan.structuralTechnique.replaceAll("_", " ")} with cutting technique ${technicalCutPlan.cuttingTechnique.replaceAll("_", " ")}${technicalCutPlan.texturizingTechnique ? ` and texturizing finish ${technicalCutPlan.texturizingTechnique.replaceAll("_", " ")}` : ""}.`,
-          technicalCutPlan.professionalReason,
-          "Document the cutting map in the consultation record for repeatable execution."
-        ]
-      : [
-          "Use conservative formula strategy and document service context.",
-          "Save follow-up protocol in client timeline for safer next visit."
-        ],
-    safetyNotes: technicalCutPlan
-      ? [
-          ...technicalCutPlan.warnings,
-          technicalCutPlan.stylistValidationDisclaimer
-        ]
-      : ["Perform strand test before high-lift or correction services."],
+    recommendations,
+    safetyNotes,
     clarificationRound: 0,
-    technicalCutPlan
+    technicalCutPlan,
+    colorPlan,
+    treatmentPlan
   };
 }
 
@@ -99,6 +139,10 @@ export function analyzeWithClarifications(
     hairCondition: current.hairCondition,
     growthPattern: current.growthPattern,
     targetShape: current.targetShape,
+    desiredColorResult: current.desiredColorResult,
+    grayPercentage: current.grayPercentage,
+    scalpCondition: current.scalpCondition,
+    treatmentGoalDetail: current.treatmentGoalDetail,
     phase,
     confidenceScore,
     uncertaintyReasons,
@@ -106,6 +150,8 @@ export function analyzeWithClarifications(
     recommendations: current.recommendations,
     safetyNotes: current.safetyNotes,
     technicalCutPlan: current.technicalCutPlan,
+    colorPlan: current.colorPlan,
+    treatmentPlan: current.treatmentPlan,
     clarificationAnswers: mergedAnswers,
     clarificationRound: nextRound
   };

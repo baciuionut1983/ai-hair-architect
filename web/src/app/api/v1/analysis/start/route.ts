@@ -4,13 +4,17 @@ import { NextResponse } from "next/server";
 import type {
   AnalysisRequest,
   AnalysisResponse,
+  DesiredColorResult,
   FaceShape,
+  GrayPercentage,
   GrowthPattern,
   HairCondition,
   HairLength,
   HairTexture,
   HeadShape,
-  TargetShape
+  ScalpCondition,
+  TargetShape,
+  TreatmentGoalDetail
 } from "@/lib/contracts";
 import { enrichTechnicalPlanExplanations } from "@/lib/ai-explainer";
 import { analyzeInitial } from "@/lib/analysis-engine";
@@ -21,7 +25,9 @@ import {
   createAnalysisForOwner,
   isAnalysisPersistenceError
 } from "@/lib/analysis-repository";
+import { shouldGenerateColorPlan } from "@/lib/color-plan-engine";
 import { getSession } from "@/lib/milestone1-store";
+import { shouldGenerateTreatmentPlan } from "@/lib/treatment-plan-engine";
 
 const FACE_SHAPES: FaceShape[] = ["oval", "round", "square", "heart", "diamond", "oblong"];
 const HEAD_SHAPES: HeadShape[] = [
@@ -55,6 +61,23 @@ const TARGET_SHAPES: TargetShape[] = [
   "face_framing_cascade",
   "blunt_perimeter_texturized"
 ];
+const DESIRED_COLOR_RESULTS: DesiredColorResult[] = [
+  "gray_coverage",
+  "gloss_refresh",
+  "root_shadow",
+  "balayage_highlights",
+  "full_lightening",
+  "color_correction"
+];
+const GRAY_PERCENTAGES: GrayPercentage[] = ["none", "low", "medium", "high"];
+const SCALP_CONDITIONS: ScalpCondition[] = ["normal", "oily", "dry", "sensitive", "flaking"];
+const TREATMENT_GOAL_DETAILS: TreatmentGoalDetail[] = [
+  "hydration",
+  "repair",
+  "detox_scalp",
+  "bonding_repair",
+  "post_color_recovery"
+];
 
 export async function POST(request: Request) {
   const cookieStore = await cookies();
@@ -78,7 +101,11 @@ export async function POST(request: Request) {
     !isOptionalEnumValue(body.hairTexture, HAIR_TEXTURES) ||
     !isOptionalEnumValue(body.hairCondition, HAIR_CONDITIONS) ||
     !isOptionalEnumValue(body.growthPattern, GROWTH_PATTERNS) ||
-    !isOptionalEnumValue(body.targetShape, TARGET_SHAPES)
+    !isOptionalEnumValue(body.targetShape, TARGET_SHAPES) ||
+    !isOptionalEnumValue(body.desiredColorResult, DESIRED_COLOR_RESULTS) ||
+    !isOptionalEnumValue(body.grayPercentage, GRAY_PERCENTAGES) ||
+    !isOptionalEnumValue(body.scalpCondition, SCALP_CONDITIONS) ||
+    !isOptionalEnumValue(body.treatmentGoalDetail, TREATMENT_GOAL_DETAILS)
   ) {
     return NextResponse.json({ error: "Invalid milestone8 analysis payload." }, { status: 400 });
   }
@@ -94,10 +121,16 @@ export async function POST(request: Request) {
       body.growthPattern ||
       body.targetShape
     );
+  // M27: the same professional/salon-only gate extends to color and
+  // treatment plans -- reusing each engine's own shouldGenerate check
+  // directly so the gate can never drift out of sync with what
+  // analyzeInitial will actually generate below.
+  const requestsColorPlan = shouldGenerateColorPlan(body as AnalysisRequest);
+  const requestsTreatmentPlan = shouldGenerateTreatmentPlan(body as AnalysisRequest);
 
-  if (requestsTechnicalPlan && sessionUser.role === "consumer") {
+  if ((requestsTechnicalPlan || requestsColorPlan || requestsTreatmentPlan) && sessionUser.role === "consumer") {
     return NextResponse.json(
-      { error: "Advanced technical cutting analysis is restricted to professional or salon roles." },
+      { error: "Advanced technical analysis (cutting, color, or treatment) is restricted to professional or salon roles." },
       { status: 403 }
     );
   }
@@ -113,7 +146,11 @@ export async function POST(request: Request) {
     hairTexture: body.hairTexture,
     hairCondition: body.hairCondition,
     growthPattern: body.growthPattern,
-    targetShape: body.targetShape
+    targetShape: body.targetShape,
+    desiredColorResult: body.desiredColorResult,
+    grayPercentage: body.grayPercentage,
+    scalpCondition: body.scalpCondition,
+    treatmentGoalDetail: body.treatmentGoalDetail
   });
 
   const technicalCutPlan = analysisSeed.technicalCutPlan
@@ -148,7 +185,9 @@ export async function POST(request: Request) {
     followUpQuestions: record.followUpQuestions,
     recommendations: record.recommendations,
     safetyNotes: record.safetyNotes,
-    technicalCutPlan: record.technicalCutPlan
+    technicalCutPlan: record.technicalCutPlan,
+    colorPlan: record.colorPlan,
+    treatmentPlan: record.treatmentPlan
   };
 
   return NextResponse.json(response, { status: 200 });

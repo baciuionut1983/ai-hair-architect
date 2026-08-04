@@ -61,7 +61,9 @@ export async function POST(
     followUpQuestions: updated.followUpQuestions,
     recommendations: updated.recommendations,
     safetyNotes: updated.safetyNotes,
-    technicalCutPlan: updated.technicalCutPlan
+    technicalCutPlan: updated.technicalCutPlan,
+    colorPlan: updated.colorPlan,
+    treatmentPlan: updated.treatmentPlan
   };
 
   return NextResponse.json(response, { status: 200 });

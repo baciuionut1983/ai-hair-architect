@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ColorPlan } from "@/lib/contracts";
+import type { ColorPlan, TreatmentPlan } from "@/lib/contracts";
 
 const prismaMocks = vi.hoisted(() => ({
   configured: true,
@@ -154,6 +154,52 @@ describe("analysis-repository", () => {
 
     await createAnalysisForOwner("owner-1", "client-1", createInput());
     expect(prismaMocks.analysisCreate.mock.calls[1][0].data.colorPlan).toBe(Prisma.JsonNull);
+  });
+
+  it("preserves a structurally valid treatment plan and rejects a malformed plan", async () => {
+    prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({ treatmentPlan: treatmentPlan() }));
+    await expect(findAnalysisForOwner("owner-1", "analysis-1")).resolves.toMatchObject({
+      treatmentPlan: { version: "1.0.0-m27", treatmentCategory: "deep_hydration" },
+    });
+
+    prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({
+      treatmentPlan: { ...treatmentPlan(), recommendedFrequency: "not-a-real-frequency" },
+    }));
+    await expect(findAnalysisForOwner("owner-1", "analysis-1")).rejects.toBeInstanceOf(
+      AnalysisPersistenceError,
+    );
+  });
+
+  it("persists a treatmentPlan on create exactly like colorPlan, and JsonNull when absent", async () => {
+    prismaMocks.clientFindFirst.mockResolvedValue({ id: "client-1" });
+    prismaMocks.analysisCreate.mockResolvedValue(analysisRow());
+
+    await createAnalysisForOwner("owner-1", "client-1", { ...createInput(), treatmentPlan: treatmentPlan() });
+    expect(prismaMocks.analysisCreate.mock.calls[0][0].data.treatmentPlan).toEqual(treatmentPlan());
+
+    await createAnalysisForOwner("owner-1", "client-1", createInput());
+    expect(prismaMocks.analysisCreate.mock.calls[1][0].data.treatmentPlan).toBe(Prisma.JsonNull);
+  });
+
+  it("carries colorPlan and treatmentPlan forward unchanged through a clarify update, unlike write-once profile fields", async () => {
+    prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({
+      colorPlan: colorPlan(),
+      treatmentPlan: treatmentPlan(),
+      phase: "pending_questions",
+    }));
+    prismaMocks.analysisUpdate.mockImplementation(async ({ data }) => analysisRow({
+      colorPlan: data.colorPlan === Prisma.JsonNull ? null : data.colorPlan,
+      treatmentPlan: data.treatmentPlan === Prisma.JsonNull ? null : data.treatmentPlan,
+      phase: data.phase,
+    }));
+
+    const transition = vi.fn((current) => ({ ...current, phase: "ready" as const }));
+    const result = await clarifyAnalysisForOwner("owner-1", "analysis-1", transition);
+
+    expect(prismaMocks.analysisUpdate.mock.calls[0][0].data.colorPlan).toEqual(colorPlan());
+    expect(prismaMocks.analysisUpdate.mock.calls[0][0].data.treatmentPlan).toEqual(treatmentPlan());
+    expect(result?.colorPlan).toEqual(colorPlan());
+    expect(result?.treatmentPlan).toEqual(treatmentPlan());
   });
 
   it("retries serialization conflicts and recomputes the transition from transactional state", async () => {
@@ -346,6 +392,31 @@ function colorPlan(): ColorPlan {
     missingData: [],
     confidence: 0.9,
     stylistValidationDisclaimer: "Validate the formula chair-side.",
+    version: "1.0.0-m27",
+  };
+}
+
+function treatmentPlan(): TreatmentPlan {
+  return {
+    treatmentCategory: "deep_hydration",
+    protocolSteps: [{
+      stepNumber: 1,
+      zone: "Application",
+      action: "Apply hydration mask.",
+      toolRequired: "applicator-brush",
+    }],
+    aftercareSteps: ["Repeat weekly for 4 weeks."],
+    recommendedFrequency: "weekly_for_4_weeks",
+    followUpReviewWeeks: 4,
+    stylistExplanation: "Explain the hydration protocol.",
+    clientExplanation: "Explain the expected result.",
+    professionalReason: "Address moisture deficit.",
+    warnings: [],
+    contraindications: [],
+    assumptions: [],
+    missingData: [],
+    confidence: 0.9,
+    stylistValidationDisclaimer: "Validate the protocol chair-side.",
     version: "1.0.0-m27",
   };
 }

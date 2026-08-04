@@ -45,7 +45,7 @@ describe("POST /api/v1/analysis/preview", () => {
 
   it("never includes a fabricated confidence score", async () => {
     const response = await invoke(
-      { goal: "lighten", hairType: "fine", density: "low", porosity: "high" },
+      { goal: "refresh", hairType: "fine", density: "low", porosity: "high" },
       freshIp()
     );
     const body = await response.json();
@@ -71,6 +71,16 @@ describe("POST /api/v1/analysis/preview", () => {
     expect(response.status).toBe(400);
   });
 
+  it("rejects goal: cover, lighten, and treat entirely with 400 -- each alone now (M27) makes the engine produce professional color/treatment prose", async () => {
+    for (const goal of ["cover", "lighten", "treat"]) {
+      const response = await invoke(
+        { goal, hairType: "medium", density: "medium", porosity: "medium" },
+        freshIp()
+      );
+      expect(response.status).toBe(400);
+    }
+  });
+
   it("never includes a technicalCutPlan for any accepted goal", async () => {
     const response = await invoke(
       { goal: "correct", hairType: "medium", density: "medium", porosity: "medium" },
@@ -82,8 +92,8 @@ describe("POST /api/v1/analysis/preview", () => {
     expect(body).not.toHaveProperty("technicalCutPlan");
   });
 
-  it("never surfaces professional cutting-plan terminology in recommendations or safetyNotes for any accepted goal", async () => {
-    const goals = ["refresh", "cover", "lighten", "correct", "treat"];
+  it("never surfaces professional cutting/color/treatment terminology in recommendations or safetyNotes for any accepted goal", async () => {
+    const goals = ["refresh", "correct"];
     for (const goal of goals) {
       const response = await invoke(
         { goal, hairType: "medium", density: "medium", porosity: "medium" },
@@ -93,6 +103,9 @@ describe("POST /api/v1/analysis/preview", () => {
       const text = [...body.recommendations, ...body.safetyNotes].join(" ").toLowerCase();
       expect(text).not.toContain("structural technique");
       expect(text).not.toContain("cutting technique");
+      expect(text).not.toContain("color direction");
+      expect(text).not.toContain("developer");
+      expect(text).not.toContain("treatment category");
       expect(text).not.toContain("consultation record");
     }
   });
@@ -117,19 +130,22 @@ describe("POST /api/v1/analysis/preview", () => {
     expect(body).not.toHaveProperty("clientId");
   });
 
-  // recommendations/safetyNotes only vary with technicalCutPlan, which is
-  // never generated for any of the 5 accepted guest goals (that branch is
-  // exactly what excluding "reshape" closes off) -- they are honestly
-  // identical, static advisory text for every guest, by construction of the
-  // real engine, not a shortcut taken here. followUpQuestions is the one
-  // field that does vary, driven by the engine's own confidence heuristic.
+  // recommendations/safetyNotes only vary with technicalCutPlan/colorPlan/
+  // treatmentPlan, none of which is ever generated for either of the 2
+  // accepted guest goals (that's exactly what excluding "reshape"/"cover"/
+  // "lighten"/"treat" closes off) -- they are honestly identical, static
+  // advisory text for every guest, by construction of the real engine, not a
+  // shortcut taken here. followUpQuestions is the one field that does vary,
+  // driven by the engine's own confidence heuristic (goal: "lighten" is
+  // deliberately not used to trigger it here, since that goal is no longer
+  // accepted -- porosity/hairType alone already drive the same heuristic).
   it("calls the real deterministic engine: a low-confidence-heuristic input produces follow-up questions, a high-confidence one doesn't", async () => {
     const highConfidence = await invoke(
       { goal: "refresh", hairType: "medium", density: "medium", porosity: "medium" },
       freshIp()
     );
     const lowConfidence = await invoke(
-      { goal: "lighten", hairType: "fine", density: "low", porosity: "high" },
+      { goal: "refresh", hairType: "fine", density: "low", porosity: "high" },
       freshIp()
     );
 

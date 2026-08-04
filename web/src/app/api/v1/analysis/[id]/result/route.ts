@@ -6,7 +6,9 @@ import type {
   AnalysisPhase,
   AnalysisResultResponse,
   DensityLevel,
+  DesiredColorResult,
   FaceShape,
+  GrayPercentage,
   GrowthPattern,
   HairCondition,
   HairLength,
@@ -14,7 +16,9 @@ import type {
   HairType,
   HeadShape,
   PorosityLevel,
-  TargetShape
+  ScalpCondition,
+  TargetShape,
+  TreatmentGoalDetail
 } from "@/lib/contracts";
 import {
   analysisPersistenceUnavailableResponse,
@@ -64,6 +68,10 @@ export async function GET(
     hairCondition: (analysis.hairCondition ?? undefined) as HairCondition | undefined,
     growthPattern: (analysis.growthPattern ?? undefined) as GrowthPattern | undefined,
     targetShape: (analysis.targetShape ?? undefined) as TargetShape | undefined,
+    desiredColorResult: (analysis.desiredColorResult ?? undefined) as DesiredColorResult | undefined,
+    grayPercentage: (analysis.grayPercentage ?? undefined) as GrayPercentage | undefined,
+    scalpCondition: (analysis.scalpCondition ?? undefined) as ScalpCondition | undefined,
+    treatmentGoalDetail: (analysis.treatmentGoalDetail ?? undefined) as TreatmentGoalDetail | undefined,
     phase: analysis.phase as AnalysisPhase,
     clarificationRound: analysis.clarificationRound,
     confidenceScore: analysis.confidenceScore,
@@ -72,6 +80,8 @@ export async function GET(
     recommendations: analysis.recommendations,
     safetyNotes: analysis.safetyNotes,
     technicalCutPlan: analysis.technicalCutPlan ?? undefined,
+    colorPlan: analysis.colorPlan ?? undefined,
+    treatmentPlan: analysis.treatmentPlan ?? undefined,
     clarificationAnswers: analysis.clarificationAnswers,
     createdAt: analysis.createdAt,
     updatedAt: analysis.updatedAt

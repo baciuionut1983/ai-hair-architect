@@ -203,6 +203,39 @@ export interface ColorPlan extends BaseRecommendationPlan {
   strandTestRequired: boolean;
 }
 
+// M27 GO-3: Treatment Recommendation Engine. Additive only.
+export type ScalpCondition = "normal" | "oily" | "dry" | "sensitive" | "flaking";
+
+export type TreatmentGoalDetail = "hydration" | "repair" | "detox_scalp" | "bonding_repair" | "post_color_recovery";
+
+export type TreatmentCategory =
+  | "deep_hydration"
+  | "bond_repair"
+  | "scalp_therapy"
+  | "post_color_recovery"
+  | "protein_reconstruction";
+
+export type TreatmentFrequency =
+  | "weekly_for_4_weeks"
+  | "biweekly_for_6_weeks"
+  | "single_session_reassess"
+  | "monthly_maintenance";
+
+export interface TreatmentStep {
+  stepNumber: number;
+  zone: string;
+  action: string;
+  toolRequired: string;
+}
+
+export interface TreatmentPlan extends BaseRecommendationPlan {
+  treatmentCategory: TreatmentCategory;
+  protocolSteps: TreatmentStep[];
+  aftercareSteps: string[];
+  recommendedFrequency: TreatmentFrequency;
+  followUpReviewWeeks: number;
+}
+
 export interface AnalysisRequest {
   clientId: string;
   goal: AnalysisGoal;
@@ -216,6 +249,10 @@ export interface AnalysisRequest {
   hairCondition?: HairCondition;
   growthPattern?: GrowthPattern;
   targetShape?: TargetShape;
+  desiredColorResult?: DesiredColorResult;
+  grayPercentage?: GrayPercentage;
+  scalpCondition?: ScalpCondition;
+  treatmentGoalDetail?: TreatmentGoalDetail;
 }
 
 export interface AnalysisResponse {
@@ -228,6 +265,8 @@ export interface AnalysisResponse {
   recommendations: string[];
   safetyNotes: string[];
   technicalCutPlan?: TechnicalCutPlan;
+  colorPlan?: ColorPlan;
+  treatmentPlan?: TreatmentPlan;
 }
 
 export interface AnalysisClarifyRequest {
@@ -267,6 +306,10 @@ export interface AnalysisResultResponse extends AnalysisResponse {
   hairCondition?: HairCondition;
   growthPattern?: GrowthPattern;
   targetShape?: TargetShape;
+  desiredColorResult?: DesiredColorResult;
+  grayPercentage?: GrayPercentage;
+  scalpCondition?: ScalpCondition;
+  treatmentGoalDetail?: TreatmentGoalDetail;
   clarificationAnswers: string[];
   createdAt: string;
   updatedAt: string;

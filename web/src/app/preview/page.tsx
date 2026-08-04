@@ -88,11 +88,13 @@ export default function GuestPreviewPage() {
                   value={form.goal}
                   onChange={(event) => setForm((prev) => ({ ...prev, goal: event.target.value as AnalysisGoal }))}
                 >
+                  {/* M27: only "refresh"/"correct" are accepted by the guest
+                      preview backend -- "cover"/"lighten"/"treat" now trigger
+                      the Color/Treatment engines and are rejected with 400 to
+                      avoid leaking professional-only plan content to an
+                      unauthenticated guest (see analysis/preview/route.ts). */}
                   <option value="refresh">refresh</option>
-                  <option value="cover">cover gray</option>
-                  <option value="lighten">lighten</option>
                   <option value="correct">correct</option>
-                  <option value="treat">treat</option>
                 </select>
               </label>
               <label>
