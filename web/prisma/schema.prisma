@@ -143,6 +143,7 @@ model User {
   billingSubscriptions          BillingSubscription[]
   billingPayments               BillingPayment[]
   imageAnalysisProviderAttempts ImageAnalysisProviderAttempt[]
+  videoLessons                  VideoLesson[]
 }
 
 model Session {
@@ -357,6 +358,24 @@ model ImageAnalysisProviderAttempt {
   @@unique([imageAnalysisId, attemptNumber])
   @@index([ownerUserId, createdAt])
   @@index([imageAnalysisId])
+}
+
+model VideoLesson {
+  id                   String   @id @default(uuid())
+  ownerUserId          String
+  topic                String   @db.VarChar(200)
+  level                String   @db.VarChar(20)
+  locale               String   @db.VarChar(5)
+  status               String   @default("not_generated") @db.VarChar(20)
+  recommendedLessonIds Json     @default("[]")
+  script               String?  @db.VarChar(4000)
+  videoUrl             String?  @db.VarChar(2048)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  owner User @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([ownerUserId])
 }
 
 model ImageAnalysisReview {
