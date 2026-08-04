@@ -27,6 +27,46 @@ export interface AuthSessionResponse {
   };
 }
 
+// M26: register no longer returns a session for newly-created accounts --
+// they must verify their email, then sign in separately. Deliberately a
+// distinct shape from AuthSessionResponse rather than a nullable/optional
+// variant of it, so no consumer can mistake this for a working session.
+export interface AuthRegisterResponse {
+  message: string;
+  email: string;
+  emailVerificationRequired: true;
+}
+
+export interface VerifyEmailRequest {
+  token: string;
+}
+
+export interface VerifyEmailResponse {
+  verified: true;
+  message: string;
+}
+
+export interface ResendVerificationEmailRequest {
+  email: string;
+}
+
+export interface RequestPasswordResetRequest {
+  email: string;
+}
+
+export interface ResetPasswordRequest {
+  token: string;
+  newPassword: string;
+}
+
+// Shared by resend-verification-email and request-password-reset: both
+// return this exact shape regardless of whether the account exists (or,
+// for resend, whether it's already verified) -- never confirm or deny
+// account existence to an unauthenticated caller.
+export interface AuthGenericAckResponse {
+  message: string;
+}
+
 export interface ClientCreateRequest {
   fullName: string;
   email?: string;

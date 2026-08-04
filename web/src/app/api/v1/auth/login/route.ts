@@ -3,7 +3,9 @@ import { NextResponse } from "next/server";
 import type { AuthLoginRequest, AuthSessionResponse } from "@/lib/contracts";
 import {
   createPersistenceSession,
+  findEmailVerifiedAtForUser,
   findPersistenceUserByEmail,
+  isAuthPersistenceUnavailableError,
   updatePersistencePasswordHash
 } from "@/lib/auth-persistence";
 import { hashPassword, isBcryptHash, verifyPassword } from "@/lib/auth-security";
@@ -60,6 +62,26 @@ export async function POST(request: Request) {
 
   if (!isValid) {
     return NextResponse.json({ error: "Invalid email or password." }, { status: 401 });
+  }
+
+  // M26: checked only after credentials are confirmed valid, so an
+  // unverified-account response never leaks anything to a caller who
+  // hasn't already proven they know the password. "Unable to confirm" is
+  // never treated the same as "genuinely verified" -- it fails closed with
+  // its own distinct 503, not a silent login.
+  try {
+    const emailVerifiedAt = await findEmailVerifiedAtForUser(user.id);
+    if (!emailVerifiedAt) {
+      return NextResponse.json(
+        { error: "EMAIL_NOT_VERIFIED", message: "Please verify your email before signing in." },
+        { status: 403 }
+      );
+    }
+  } catch (error) {
+    if (isAuthPersistenceUnavailableError(error)) {
+      return NextResponse.json({ error: "Account data is temporarily unavailable." }, { status: 503 });
+    }
+    throw error;
   }
 
   const token = createSession(user.id);

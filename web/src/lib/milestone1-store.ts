@@ -730,6 +730,20 @@ export function revokeSessionToken(token: string | null): boolean {
   return store.sessions.delete(token);
 }
 
+// M26: password reset must invalidate every session this user has, not
+// just the one token a caller happens to know about. Mirrors
+// revokeSessionToken's single-token revocation, scoped by userId instead.
+export function revokeAllSessionsForUser(userId: string): number {
+  let revoked = 0;
+  for (const [token, sessionUserId] of store.sessions) {
+    if (sessionUserId === userId) {
+      store.sessions.delete(token);
+      revoked += 1;
+    }
+  }
+  return revoked;
+}
+
 export function getSession(token: string | null): AuthSessionResponse["user"] | null {
   if (!token) {
     return null;

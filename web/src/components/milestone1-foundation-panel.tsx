@@ -2,7 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import Link from "next/link";
+
 import type {
+  AuthRegisterResponse,
   AuthSessionResponse,
   ClientCreateRequest,
   ClientRecord,
@@ -105,15 +108,16 @@ export function Milestone1FoundationPanel() {
         body: JSON.stringify({ ...authForm, locale })
       });
 
-      const payload = (await response.json()) as AuthSessionResponse | { error: string };
+      const payload = (await response.json()) as AuthRegisterResponse | { error: string };
       if (!response.ok) {
         setStatusMessage((payload as { error: string }).error || "Register failed");
         return;
       }
 
-      setSession(payload as AuthSessionResponse);
-      setStatusMessage("Registered and signed in.");
-      await loadClients();
+      // M26: registration no longer creates a session -- the account stays
+      // unverified until the owner clicks the emailed link, then signs in
+      // separately through signIn() below.
+      setStatusMessage((payload as AuthRegisterResponse).message);
     } finally {
       setIsBusy(false);
     }
@@ -264,6 +268,9 @@ export function Milestone1FoundationPanel() {
           </div>
           <p className="helper-text">
             Session: {session ? `signed in as ${session.user.email}` : "not authenticated"}
+          </p>
+          <p className="helper-text">
+            <Link href="/forgot-password">Forgot password?</Link>
           </p>
         </article>
 
