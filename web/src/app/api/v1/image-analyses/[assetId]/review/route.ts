@@ -24,9 +24,14 @@ export async function POST(
     const asset = await prisma.imageAsset.findUnique({
       where: { id: assetId },
       include: {
+        // No take: 1 -- deliberately fetches every draft row so a leftover
+        // historical duplicate (pre-M21) is detected and rejected explicitly
+        // rather than silently resolved by picking an arbitrary one.
+        // orderBy is the canonical ordering (most recent first) for the
+        // single-row case; it does not paper over an actual duplicate.
         analyses: {
           where: { status: 'draft' },
-          take: 1,
+          orderBy: { createdAt: 'desc' },
         },
       },
     });
@@ -41,6 +46,10 @@ export async function POST(
 
     if (!asset.analyses.length) {
       return NextResponse.json({ error: 'No draft analysis' }, { status: 400 });
+    }
+
+    if (asset.analyses.length > 1) {
+      return NextResponse.json({ error: 'ANALYSIS_STATE_INTEGRITY_ERROR' }, { status: 409 });
     }
 
     const analysis = asset.analyses[0];

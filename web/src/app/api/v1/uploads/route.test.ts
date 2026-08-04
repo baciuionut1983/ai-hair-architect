@@ -78,11 +78,11 @@ describe("POST /api/v1/uploads", () => {
     expect(serviceMock.uploadAndAnalyzeImages).not.toHaveBeenCalled();
   });
 
-  it("preserves existing behavior for a valid session: uploads and returns the unchanged response shape", async () => {
+  it("preserves existing behavior for a valid session: uploads and returns the response shape with a real analysisId (M21 fix)", async () => {
     const userId = randomUUID();
     prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
     serviceMock.uploadAndAnalyzeImages.mockResolvedValue([
-      { asset: { id: "asset-1", fileName: "photo-0.jpg" }, analysis: { status: "draft" } },
+      { asset: { id: "asset-1", fileName: "photo-0.jpg" }, analysis: { id: "analysis-1", status: "draft" } },
     ]);
 
     const response = await invoke("token", "client-1");
@@ -91,9 +91,23 @@ describe("POST /api/v1/uploads", () => {
     const body = await response.json();
     expect(body).toEqual({
       success: true,
-      assets: [{ assetId: "asset-1", analysisId: "draft", fileName: "photo-0.jpg", status: "draft" }],
+      assets: [{ assetId: "asset-1", analysisId: "analysis-1", fileName: "photo-0.jpg", status: "draft" }],
     });
     expect(serviceMock.uploadAndAnalyzeImages).toHaveBeenCalledWith(userId, "client-1", expect.any(Array));
+  });
+
+  it("returns the analysis's real id, not its status string, as analysisId (pre-M21 this field held the status)", async () => {
+    const userId = randomUUID();
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
+    serviceMock.uploadAndAnalyzeImages.mockResolvedValue([
+      { asset: { id: "asset-1", fileName: "photo-0.jpg" }, analysis: { id: "distinct-analysis-id", status: "draft" } },
+    ]);
+
+    const response = await invoke("token", "client-1");
+    const body = await response.json();
+
+    expect(body.assets[0].analysisId).toBe("distinct-analysis-id");
+    expect(body.assets[0].analysisId).not.toBe(body.assets[0].status);
   });
 
   it("returns 400 when clientId or files are missing, never reaching the upload service", async () => {

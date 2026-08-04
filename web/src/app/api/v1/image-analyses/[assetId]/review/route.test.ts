@@ -115,4 +115,45 @@ describe("POST /api/v1/image-analyses/[assetId]/review", () => {
     expect(response.status).toBe(403);
     expect(serviceMock.reviewAnalysis).not.toHaveBeenCalled();
   });
+
+  it("selects the draft analysis using canonical ordering (most recent createdAt first, no take limit)", async () => {
+    const userId = randomUUID();
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId }));
+    prismaMock.imageAssetFindUnique.mockResolvedValue({
+      id: "asset-1",
+      ownerUserId: userId,
+      clientId: "client-1",
+      analyses: [{ id: "analysis-1" }],
+    });
+    serviceMock.reviewAnalysis.mockResolvedValue({ id: "analysis-1", status: "reviewed" });
+
+    await invoke("asset-1", "token", { corrections: {}, finalizeToM8: false });
+
+    expect(prismaMock.imageAssetFindUnique).toHaveBeenCalledWith({
+      where: { id: "asset-1" },
+      include: {
+        analyses: {
+          where: { status: "draft" },
+          orderBy: { createdAt: "desc" },
+        },
+      },
+    });
+  });
+
+  it("fails closed with an integrity error when more than one draft row exists for the asset (M21 -- never picks one arbitrarily)", async () => {
+    const userId = randomUUID();
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId }));
+    prismaMock.imageAssetFindUnique.mockResolvedValue({
+      id: "asset-1",
+      ownerUserId: userId,
+      clientId: "client-1",
+      analyses: [{ id: "analysis-newer" }, { id: "analysis-older" }],
+    });
+
+    const response = await invoke("asset-1", "token", { corrections: {}, finalizeToM8: false });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "ANALYSIS_STATE_INTEGRITY_ERROR" });
+    expect(serviceMock.reviewAnalysis).not.toHaveBeenCalled();
+  });
 });

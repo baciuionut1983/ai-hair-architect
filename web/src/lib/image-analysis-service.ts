@@ -9,7 +9,7 @@ import {
 } from '@/lib/image-upload-validation';
 import { saveImageFile } from '@/lib/image-storage';
 import { processImageForStorage } from '@/lib/image-normalizer';
-import { getProvider, ImageAnalysisResult } from '@/lib/image-analysis-provider';
+import { ManualOnlyProvider, ImageAnalysisResult } from '@/lib/image-analysis-provider';
 import { buildImageAssetObjectKey, type ObjectStorage } from '@/lib/object-storage';
 import { createObjectStorageAliasResolver } from '@/lib/object-storage-alias-resolver';
 import {
@@ -167,27 +167,31 @@ export async function uploadAndAnalyzeImages(
       });
     }
 
-    const provider = getProvider('mock-deterministic');
-    const analysisResult = await provider.analyze({
-      imageBuffer: processed.buffer,
-      mimeType: file.type,
-      userId,
-      clientId,
-    });
+    // Upload never invokes an AI provider -- it only creates the canonical
+    // "not yet analyzed" placeholder (M21). processImageAnalysis (invoked
+    // later, only after explicit consent via request-ai-analysis) remains
+    // the sole place that ever calls a real AI provider. providerName stays
+    // PLACEHOLDER_PROVIDER_NAME ("manual-only", matching
+    // image-analysis-job-repository.ts's own constant) and consent stays
+    // unset, so queueAnalysisForExternalProvider can later recognize this
+    // exact row as a fresh, reusable placeholder rather than creating a
+    // second one.
+    const placeholder = new ManualOnlyProvider();
+    const placeholderResult = await placeholder.analyze();
 
     const analysis = await prisma.imageAnalysis.create({
       data: {
         assetId: asset.id,
         status: 'draft',
-        providerName: provider.name,
-        modelVersion: provider.modelVersion,
-        analysisPayload: analysisResult.result as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-        confidences: analysisResult.confidences as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-        unknownFields: Object.entries(analysisResult.result)
+        providerName: placeholder.name,
+        modelVersion: placeholder.modelVersion,
+        analysisPayload: placeholderResult.result as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        confidences: placeholderResult.confidences as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        unknownFields: Object.entries(placeholderResult.result)
           .filter(([, v]) => v === 'unknown' || v === null)
           .map(([k]) => k),
-        warnings: analysisResult.warnings,
-        limitations: analysisResult.limitations,
+        warnings: placeholderResult.warnings,
+        limitations: placeholderResult.limitations,
       },
     });
 
@@ -235,20 +239,4 @@ export async function reviewAnalysis(
   });
 
   return updatedAnalysis;
-}
-
-export async function getAnalysisForAsset(
-  assetId: string,
-  userId: string
-): Promise<ImageAnalysis | null> {
-  const analysis = await prisma.imageAnalysis.findFirst({
-    where: {
-      asset: {
-        id: assetId,
-        ownerUserId: userId,
-      },
-    },
-  });
-
-  return analysis || null;
 }

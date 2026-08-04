@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
         success: true,
         assets: results.map((r) => ({
           assetId: r.asset.id,
-          analysisId: r.analysis.status,
+          analysisId: r.analysis.id,
           fileName: r.asset.fileName,
           status: r.analysis.status,
         })),

@@ -36,19 +36,6 @@ vi.mock('@/lib/image-normalizer', () => ({
   })),
 }));
 
-vi.mock('@/lib/image-analysis-provider', () => ({
-  getProvider: vi.fn(() => ({
-    name: 'mock-deterministic',
-    modelVersion: 'mock-1.0',
-    analyze: vi.fn(async () => ({
-      result: { hairType: 'wavy', density: 'medium', porosity: 'medium', faceShape: null, headShape: null, hairLength: null, hairTexture: null, hairCondition: null, growthPattern: null, targetShape: null },
-      confidences: {},
-      warnings: [],
-      limitations: [],
-    })),
-  })),
-}));
-
 vi.mock('@/lib/object-storage-alias-resolver', () => ({
   createObjectStorageAliasResolver: vi.fn(() => RESOLVE_STORAGE_MOCK),
 }));
@@ -139,7 +126,10 @@ describe('uploadAndAnalyzeImages', () => {
     }));
     PRISMA_MOCK.imageAsset.update.mockResolvedValue(undefined);
     PRISMA_MOCK.imageAsset.findUniqueOrThrow.mockImplementation(async () => ({ id: ASSET_ID }));
-    PRISMA_MOCK.imageAnalysis.create.mockResolvedValue({ id: 'analysis-1', status: 'draft' });
+    PRISMA_MOCK.imageAnalysis.create.mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
+      id: 'analysis-1',
+      ...data,
+    }));
     vi.mocked(validateObjectStorageWriteMode).mockReturnValue({ mode: 'disabled', issues: [] });
   });
 
@@ -294,5 +284,40 @@ describe('uploadAndAnalyzeImages', () => {
     await uploadAndAnalyzeImages(OWNER_ID, CLIENT_ID, [fakeFile('photo.jpg', 'image/jpeg', 'hello')]);
 
     expect(storage.put).toHaveBeenCalledWith(expect.objectContaining({ contentSha256: expectedHash }));
+  });
+
+  it('10. creates a manual-only draft placeholder, never a fabricated AI result (M21)', async () => {
+    await uploadAndAnalyzeImages(OWNER_ID, CLIENT_ID, [fakeFile('photo.jpg', 'image/jpeg', 'hello')]);
+
+    expect(PRISMA_MOCK.imageAnalysis.create).toHaveBeenCalledWith({
+      data: {
+        assetId: ASSET_ID,
+        status: 'draft',
+        providerName: 'manual-only',
+        modelVersion: 'manual-1.0',
+        analysisPayload: {
+          hairType: 'unknown', density: 'unknown', porosity: 'unknown',
+          faceShape: null, headShape: null, hairLength: null,
+          hairTexture: null, hairCondition: null, growthPattern: null, targetShape: null,
+        },
+        confidences: {
+          hairType: 0, density: 0, porosity: 0, faceShape: 0, headShape: 0,
+          hairLength: 0, hairTexture: 0, hairCondition: 0, growthPattern: 0, targetShape: 0,
+        },
+        unknownFields: [
+          'hairType', 'density', 'porosity', 'faceShape', 'headShape',
+          'hairLength', 'hairTexture', 'hairCondition', 'growthPattern', 'targetShape',
+        ],
+        warnings: ['Manual review required for all fields'],
+        limitations: ['No automated analysis available; awaiting human input'],
+      },
+    });
+  });
+
+  it('11. never produces a confident hairType/density/porosity guess for an unanalyzed upload', async () => {
+    const result = await uploadAndAnalyzeImages(OWNER_ID, CLIENT_ID, [fakeFile('photo.jpg', 'image/jpeg', 'hello')]);
+
+    expect(result[0].analysis.providerName).toBe('manual-only');
+    expect((result[0].analysis.analysisPayload as { hairType: string }).hairType).toBe('unknown');
   });
 });
