@@ -148,9 +148,15 @@ export function Milestone5HardeningPanel() {
         return;
       }
 
+      const allStepsSkipped = payload.steps.every((step) => step.status === "skipped");
+
       setOrchestrateResult(payload);
       setLastRequestId(payload.requestId);
-      setStatus({ tone: "ok", message: "Agent orchestration completed." });
+      setStatus(
+        allStepsSkipped
+          ? { tone: "info", message: "Request acknowledged. Real agent orchestration is not available yet." }
+          : { tone: "ok", message: "Agent orchestration completed." }
+      );
     } finally {
       setBusy(false);
     }
@@ -235,7 +241,8 @@ export function Milestone5HardeningPanel() {
                   </li>
                 ))}
               </ul>
-              <p><strong>Output confidence:</strong> {String(orchestrateResult.output.confidence ?? "n/a")}</p>
+              <p><strong>Status:</strong> {String(orchestrateResult.output.status ?? "unknown")}</p>
+              <p>{String(orchestrateResult.output.message ?? "")}</p>
             </div>
           ) : null}
         </article>
