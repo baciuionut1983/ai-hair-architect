@@ -142,6 +142,26 @@ export interface AnalysisClarifyRequest {
   answers: string[];
 }
 
+// M24: guest/anonymous preview. Deliberately minimal and disjoint from
+// AnalysisRequest/AnalysisResponse -- no clientId (no guest owns a client),
+// no analysisId (nothing is persisted), no confidenceScore (never invented
+// for a guest), no technicalCutPlan (professional-only, never exposed to an
+// unauthenticated visitor).
+export interface AnalysisPreviewRequest {
+  goal: AnalysisGoal;
+  hairType: HairType;
+  density: DensityLevel;
+  porosity: PorosityLevel;
+}
+
+export interface AnalysisPreviewResponse {
+  preview: true;
+  recommendations: string[];
+  safetyNotes: string[];
+  followUpQuestions: string[];
+  disclaimer: string;
+}
+
 export interface AnalysisResultResponse extends AnalysisResponse {
   clientId: string;
   goal: AnalysisGoal;
