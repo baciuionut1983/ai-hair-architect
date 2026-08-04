@@ -144,6 +144,7 @@ model User {
   billingPayments               BillingPayment[]
   imageAnalysisProviderAttempts ImageAnalysisProviderAttempt[]
   videoLessons                  VideoLesson[]
+  emailNotifications            EmailNotification[]
 }
 
 model Session {
@@ -376,6 +377,55 @@ model VideoLesson {
   owner User @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   @@index([ownerUserId])
+}
+
+enum EmailCategory {
+  transactional
+  security
+  onboarding
+  product
+  billing
+  administrative
+}
+
+enum EmailDeliveryStatus {
+  pending
+  sent
+  failed
+  skipped
+}
+
+// M25: metadata-only delivery ledger. The rendered email body is
+// deliberately never stored (see subject-only below) -- it is
+// regenerable from the same template + input data, and persisting full
+// bodies indefinitely would be an unproven retention/privacy liability.
+// A notification must never stay "pending" once its synchronous send
+// attempt has completed -- it always resolves to sent/failed/skipped.
+model EmailNotification {
+  id                 String              @id @default(cuid())
+  ownerUserId        String
+  category           EmailCategory
+  eventType          String              @db.VarChar(120)
+  recipientEmail     String              @db.VarChar(320)
+  subject            String              @db.VarChar(255)
+  status             EmailDeliveryStatus @default(pending)
+  idempotencyKey     String              @db.VarChar(200)
+  providerMessageId  String?             @db.VarChar(255)
+  failureCode        String?             @db.VarChar(80)
+  failureMessageSafe String?             @db.VarChar(500)
+  attemptCount       Int                 @default(0)
+  relatedEntityType  String?             @db.VarChar(40)
+  relatedEntityId    String?
+  createdAt          DateTime            @default(now()) @db.Timestamp(6)
+  sentAt             DateTime?           @db.Timestamp(6)
+  updatedAt          DateTime            @updatedAt @db.Timestamp(6)
+
+  owner User @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([idempotencyKey])
+  @@index([ownerUserId, createdAt])
+  @@index([status, createdAt])
+  @@index([category])
 }
 
 model ImageAnalysisReview {
