@@ -63,9 +63,17 @@ describe("POST /api/v1/analysis/preview", () => {
     expect(body).not.toHaveProperty("clarificationRound");
   });
 
-  it("never leaks a professional technicalCutPlan, even when goal alone (reshape) would trigger one in the engine", async () => {
+  it("rejects goal: reshape entirely with 400 -- it alone makes the engine produce professional cutting-plan prose in recommendations/safetyNotes, discovered by live verification, not just an object field to strip", async () => {
     const response = await invoke(
       { goal: "reshape", hairType: "medium", density: "medium", porosity: "medium" },
+      freshIp()
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("never includes a technicalCutPlan for any accepted goal", async () => {
+    const response = await invoke(
+      { goal: "correct", hairType: "medium", density: "medium", porosity: "medium" },
       freshIp()
     );
 
@@ -74,10 +82,25 @@ describe("POST /api/v1/analysis/preview", () => {
     expect(body).not.toHaveProperty("technicalCutPlan");
   });
 
+  it("never surfaces professional cutting-plan terminology in recommendations or safetyNotes for any accepted goal", async () => {
+    const goals = ["refresh", "cover", "lighten", "correct", "treat"];
+    for (const goal of goals) {
+      const response = await invoke(
+        { goal, hairType: "medium", density: "medium", porosity: "medium" },
+        freshIp()
+      );
+      const body = await response.json();
+      const text = [...body.recommendations, ...body.safetyNotes].join(" ").toLowerCase();
+      expect(text).not.toContain("structural technique");
+      expect(text).not.toContain("cutting technique");
+      expect(text).not.toContain("consultation record");
+    }
+  });
+
   it("ignores any advanced professional field smuggled into the request body", async () => {
     const response = await invoke(
       {
-        goal: "reshape",
+        goal: "refresh",
         hairType: "medium",
         density: "medium",
         porosity: "medium",
@@ -94,19 +117,26 @@ describe("POST /api/v1/analysis/preview", () => {
     expect(body).not.toHaveProperty("clientId");
   });
 
-  it("calls the real deterministic engine: different inputs produce different recommendations, proving this is not a canned response", async () => {
-    const first = await invoke(
+  // recommendations/safetyNotes only vary with technicalCutPlan, which is
+  // never generated for any of the 5 accepted guest goals (that branch is
+  // exactly what excluding "reshape" closes off) -- they are honestly
+  // identical, static advisory text for every guest, by construction of the
+  // real engine, not a shortcut taken here. followUpQuestions is the one
+  // field that does vary, driven by the engine's own confidence heuristic.
+  it("calls the real deterministic engine: a low-confidence-heuristic input produces follow-up questions, a high-confidence one doesn't", async () => {
+    const highConfidence = await invoke(
       { goal: "refresh", hairType: "medium", density: "medium", porosity: "medium" },
       freshIp()
     );
-    const second = await invoke(
-      { goal: "reshape", hairType: "medium", density: "medium", porosity: "medium" },
+    const lowConfidence = await invoke(
+      { goal: "lighten", hairType: "fine", density: "low", porosity: "high" },
       freshIp()
     );
 
-    const firstBody = await first.json();
-    const secondBody = await second.json();
-    expect(firstBody.recommendations).not.toEqual(secondBody.recommendations);
+    const highConfidenceBody = await highConfidence.json();
+    const lowConfidenceBody = await lowConfidence.json();
+    expect(highConfidenceBody.followUpQuestions).toEqual([]);
+    expect(lowConfidenceBody.followUpQuestions.length).toBeGreaterThan(0);
   });
 
   it("returns 400 when goal is missing", async () => {

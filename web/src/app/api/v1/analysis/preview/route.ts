@@ -4,7 +4,16 @@ import { analyzeInitial } from "@/lib/analysis-engine";
 import type { AnalysisPreviewRequest, AnalysisPreviewResponse } from "@/lib/contracts";
 import { checkRateLimit, getRequestClientIp } from "@/lib/hardening";
 
-const VALID_GOALS = ["refresh", "cover", "lighten", "correct", "reshape", "treat"] as const;
+// "reshape" is deliberately excluded: it is the one basic-field value that
+// alone (with zero advanced fields) makes analyzeInitial compute a
+// technicalCutPlan, whose prose then leaks into recommendations/safetyNotes
+// as professional-only cutting terminology ("structural technique",
+// "document the cutting map in the consultation record") even after the
+// technicalCutPlan object itself is stripped below. Discovered by directly
+// exercising this route with goal: "reshape" during verification, not
+// assumed. Excluding it here is the complete, minimal fix -- no change to
+// the engine itself.
+const VALID_GOALS = ["refresh", "cover", "lighten", "correct", "treat"] as const;
 const VALID_HAIR_TYPES = ["fine", "medium", "coarse"] as const;
 const VALID_LEVELS = ["low", "medium", "high"] as const;
 
@@ -51,13 +60,11 @@ export async function POST(request: Request) {
     porosity: body.porosity
   });
 
-  // Defense in depth, not just input filtering: goal "reshape" alone (with
-  // no advanced field at all) can still make analyzeInitial compute a
-  // technicalCutPlan -- see shouldGenerateTechnicalCutPlan in
-  // cutting-plan-engine.ts. It is deliberately never read below.
-  // confidenceScore, phase, and clarificationRound are engine-internal and
-  // never surfaced either: nothing here is an invented precision number or
-  // an implied multi-step/async process, and nothing is persisted.
+  // engineOutput.technicalCutPlan is deliberately never read here (defense
+  // in depth alongside excluding "reshape" above). confidenceScore, phase,
+  // and clarificationRound are engine-internal and never surfaced either:
+  // nothing here is an invented precision number or an implied multi-step/
+  // async process, and nothing is persisted.
   const response: AnalysisPreviewResponse = {
     preview: true,
     recommendations: engineOutput.recommendations,
