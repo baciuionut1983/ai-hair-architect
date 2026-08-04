@@ -1,38 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  createVideoLessonJob,
-  createUser,
-  findRecommendedLessonIds,
-  getVideoLessonByIdOwned,
-  processVideoLessonJob
-} from "./milestone1-store";
+import { findRecommendedLessonIds } from "./milestone1-store";
 
-describe("milestone4 video pipeline", () => {
-  it("queues and completes video lesson generation", () => {
-    const user = createUser({
-      email: `m4-video-${Date.now()}@example.com`,
-      password: "password123",
-      role: "professional",
-      locale: "en"
-    });
-
+describe("findRecommendedLessonIds", () => {
+  it("returns academy lessons matching the topic keyword", () => {
     const recommendedLessonIds = findRecommendedLessonIds("color");
-    const queued = createVideoLessonJob({
-      ownerUserId: user.id,
-      topic: "Color correction",
-      level: "intermediate",
-      locale: "en",
-      recommendedLessonIds
-    });
+    expect(Array.isArray(recommendedLessonIds)).toBe(true);
+  });
 
-    expect(queued.status).toBe("queued");
-
-    const processed = processVideoLessonJob(queued.id);
-    expect(processed?.status).toBe("completed");
-    expect(processed?.videoUrl).toContain(queued.id);
-
-    const loaded = getVideoLessonByIdOwned(queued.id, user.id);
-    expect(loaded?.id).toBe(queued.id);
+  it("returns at most 3 lesson ids", () => {
+    const recommendedLessonIds = findRecommendedLessonIds("a");
+    expect(recommendedLessonIds.length).toBeLessThanOrEqual(3);
   });
 });

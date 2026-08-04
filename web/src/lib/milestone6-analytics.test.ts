@@ -17,10 +17,11 @@ describe("milestone6 analytics snapshot", () => {
 
     updateSubscriptionForUser({ userId: user.id, plan: "pro", status: "active" });
 
-    const snapshot = getAnalyticsSnapshotForUser(user.id, 1, 1, 1);
+    const snapshot = getAnalyticsSnapshotForUser(user.id, 1, 1, 1, 2);
     expect(snapshot.consultationsCount).toBeGreaterThanOrEqual(1);
     expect(snapshot.appointmentsCount).toBeGreaterThanOrEqual(1);
     expect(snapshot.remindersSentCount).toBeGreaterThanOrEqual(1);
     expect(snapshot.activeSubscriptionCount).toBe(1);
+    expect(snapshot.generatedVideoLessonsCount).toBe(2);
   });
 });

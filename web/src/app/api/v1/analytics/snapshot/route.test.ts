@@ -18,12 +18,17 @@ const consultationRepositoryMock = vi.hoisted(() => ({
   isConsultationPersistenceError: vi.fn(),
   consultationPersistenceUnavailableResponse: vi.fn(),
 }));
+const videoLessonRepositoryMock = vi.hoisted(() => ({
+  countVideoLessonsForOwner: vi.fn(),
+  isVideoLessonPersistenceError: vi.fn(),
+}));
 
 vi.mock("next/headers", () => cookiesMock);
 vi.mock("@/lib/milestone1-store", () => storeMock);
 vi.mock("@/lib/appointment-repository", () => appointmentRepositoryMock);
 vi.mock("@/lib/client-repository", () => clientRepositoryMock);
 vi.mock("@/lib/consultation-repository", () => consultationRepositoryMock);
+vi.mock("@/lib/video-lesson-repository", () => videoLessonRepositoryMock);
 
 import { GET } from "./route";
 
@@ -38,7 +43,9 @@ beforeEach(() => {
   clientRepositoryMock.isClientPersistenceError.mockReturnValue(false);
   consultationRepositoryMock.isConsultationPersistenceError.mockReturnValue(false);
   appointmentRepositoryMock.isAppointmentPersistenceError.mockReturnValue(false);
-  storeMock.getAnalyticsSnapshotForUser.mockReturnValue({ appointmentsCount: 3, remindersSentCount: 1 });
+  videoLessonRepositoryMock.countVideoLessonsForOwner.mockResolvedValue(4);
+  videoLessonRepositoryMock.isVideoLessonPersistenceError.mockReturnValue(false);
+  storeMock.getAnalyticsSnapshotForUser.mockReturnValue({ appointmentsCount: 3, remindersSentCount: 1, generatedVideoLessonsCount: 4 });
 });
 
 describe("analytics snapshot route", () => {
@@ -48,8 +55,22 @@ describe("analytics snapshot route", () => {
     expect(response.status).toBe(200);
     expect(appointmentRepositoryMock.countAppointmentsForOwner).toHaveBeenCalledWith("owner-1");
     expect(appointmentRepositoryMock.countSentRemindersForOwner).toHaveBeenCalledWith("owner-1");
-    expect(storeMock.getAnalyticsSnapshotForUser).toHaveBeenCalledWith("owner-1", 2, 3, 1);
-    await expect(response.json()).resolves.toEqual({ snapshot: { appointmentsCount: 3, remindersSentCount: 1 } });
+    expect(videoLessonRepositoryMock.countVideoLessonsForOwner).toHaveBeenCalledWith("owner-1");
+    expect(storeMock.getAnalyticsSnapshotForUser).toHaveBeenCalledWith("owner-1", 2, 3, 1, 4);
+    await expect(response.json()).resolves.toEqual({
+      snapshot: { appointmentsCount: 3, remindersSentCount: 1, generatedVideoLessonsCount: 4 },
+    });
+  });
+
+  it("fails closed when the video lesson count is unavailable", async () => {
+    const error = new Error("unavailable");
+    videoLessonRepositoryMock.countVideoLessonsForOwner.mockRejectedValue(error);
+    videoLessonRepositoryMock.isVideoLessonPersistenceError.mockImplementation((value) => value === error);
+
+    const response = await GET();
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "VIDEO_LESSON_PERSISTENCE_UNAVAILABLE" });
   });
 
   it("fails closed when Appointment counts are unavailable", async () => {

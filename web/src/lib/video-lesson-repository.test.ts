@@ -8,6 +8,7 @@ const prismaMocks = vi.hoisted(() => ({
   configured: true,
   videoLessonCreate: vi.fn(),
   videoLessonFindUnique: vi.fn(),
+  videoLessonCount: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", async (importOriginal) => {
@@ -20,6 +21,7 @@ vi.mock("@/lib/prisma", async (importOriginal) => {
       videoLesson: {
         create: prismaMocks.videoLessonCreate,
         findUnique: prismaMocks.videoLessonFindUnique,
+        count: prismaMocks.videoLessonCount,
       },
     },
   };
@@ -28,6 +30,7 @@ vi.mock("@/lib/prisma", async (importOriginal) => {
 import {
   VIDEO_LESSON_STATUS_NOT_GENERATED,
   VideoLessonPersistenceError,
+  countVideoLessonsForOwner,
   createVideoLessonRecord,
   getVideoLessonRecordById,
   isVideoLessonPersistenceError,
@@ -41,6 +44,7 @@ unitSuite("video-lesson-repository (mocked)", () => {
     prismaMocks.configured = true;
     prismaMocks.videoLessonCreate.mockReset();
     prismaMocks.videoLessonFindUnique.mockReset();
+    prismaMocks.videoLessonCount.mockReset();
   });
 
   it("keeps the honest no-generation status constant exactly as frozen", () => {
@@ -161,6 +165,20 @@ unitSuite("video-lesson-repository (mocked)", () => {
     expect(isVideoLessonPersistenceError(new Error("other"))).toBe(false);
     expect(isVideoLessonPersistenceError("not an error")).toBe(false);
   });
+
+  it("counts rows scoped to the given owner", async () => {
+    prismaMocks.videoLessonCount.mockResolvedValue(3);
+
+    await expect(countVideoLessonsForOwner("owner-1")).resolves.toBe(3);
+    expect(prismaMocks.videoLessonCount).toHaveBeenCalledWith({ where: { ownerUserId: "owner-1" } });
+  });
+
+  it("throws VideoLessonPersistenceError on count when the database is not configured", async () => {
+    prismaMocks.configured = false;
+
+    await expect(countVideoLessonsForOwner("owner-1")).rejects.toBeInstanceOf(VideoLessonPersistenceError);
+    expect(prismaMocks.videoLessonCount).not.toHaveBeenCalled();
+  });
 });
 
 integrationSuite("video-lesson-repository (real Postgres)", () => {
@@ -241,6 +259,22 @@ integrationSuite("video-lesson-repository (real Postgres)", () => {
     const { prisma } = await import("@/lib/prisma");
     const count = await prisma.videoLesson.count({ where: { ownerUserId, topic: "Repeat topic" } });
     expect(count).toBe(2);
+  });
+
+  it("counts only the requesting owner's rows, ignoring other owners", async () => {
+    const ownerA = await createOwner(owners);
+    const ownerB = await createOwner(owners);
+    await createVideoLessonRecord({ ownerUserId: ownerA, topic: "A1", level: "beginner", locale: "en", recommendedLessonIds: [] });
+    await createVideoLessonRecord({ ownerUserId: ownerA, topic: "A2", level: "beginner", locale: "en", recommendedLessonIds: [] });
+    await createVideoLessonRecord({ ownerUserId: ownerB, topic: "B1", level: "beginner", locale: "en", recommendedLessonIds: [] });
+
+    await expect(countVideoLessonsForOwner(ownerA)).resolves.toBe(2);
+    await expect(countVideoLessonsForOwner(ownerB)).resolves.toBe(1);
+  });
+
+  it("returns 0 for an owner with no video lessons", async () => {
+    const ownerUserId = await createOwner(owners);
+    await expect(countVideoLessonsForOwner(ownerUserId)).resolves.toBe(0);
   });
 
   it("fails closed with VideoLessonPersistenceError when ownerUserId references no real user (FK enforced)", async () => {

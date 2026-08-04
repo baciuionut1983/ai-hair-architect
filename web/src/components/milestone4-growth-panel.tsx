@@ -113,7 +113,11 @@ export function Milestone4GrowthPanel() {
       }
 
       setVideoLesson(payload.videoLesson);
-      setStatus({ tone: "ok", message: "Video lesson generated." });
+      setStatus(
+        payload.videoLesson.status === "not_generated"
+          ? { tone: "info", message: "Request recorded. Real video generation is not available yet." }
+          : { tone: "ok", message: "Video lesson generated." }
+      );
     } finally {
       setBusy(false);
     }
@@ -283,9 +287,9 @@ export function Milestone4GrowthPanel() {
           {videoLesson ? (
             <div className="analysis-result-box">
               <p><strong>Status:</strong> {videoLesson.status}</p>
-              <p><strong>Video URL:</strong> {videoLesson.videoUrl || "pending"}</p>
+              <p><strong>Video URL:</strong> {videoLesson.videoUrl || "Video generation not available"}</p>
               <p><strong>Recommended lessons:</strong> {videoLesson.recommendedLessonIds.join(", ") || "none"}</p>
-              <pre className="script-preview">{videoLesson.script}</pre>
+              <pre className="script-preview">{videoLesson.script || "No script generated."}</pre>
             </div>
           ) : null}
         </article>

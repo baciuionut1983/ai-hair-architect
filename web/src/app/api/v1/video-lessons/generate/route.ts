@@ -1,14 +1,9 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
-import type { VideoLessonGenerateRequest } from "@/lib/contracts";
-import {
-  createVideoLessonJob,
-  findRecommendedLessonIds,
-  getSession,
-  processVideoLessonJob,
-  sanitize
-} from "@/lib/milestone1-store";
+import type { VideoLessonGenerateRequest, VideoLessonRecord } from "@/lib/contracts";
+import { findRecommendedLessonIds, getSession, sanitize } from "@/lib/milestone1-store";
+import { createVideoLessonRecord, isVideoLessonPersistenceError } from "@/lib/video-lesson-repository";
 
 export async function POST(request: Request) {
   const cookieStore = await cookies();
@@ -30,18 +25,38 @@ export async function POST(request: Request) {
   const locale = body.locale === "ro" ? "ro" : "en";
 
   const recommendedLessonIds = findRecommendedLessonIds(topic);
-  const queued = createVideoLessonJob({
-    ownerUserId: sessionUser.id,
-    topic,
-    level,
-    locale,
-    recommendedLessonIds
-  });
 
-  const processed = processVideoLessonJob(queued.id);
-  if (!processed) {
-    return NextResponse.json({ error: "Video generation failed." }, { status: 500 });
+  try {
+    const created = await createVideoLessonRecord({
+      ownerUserId: sessionUser.id,
+      topic,
+      level,
+      locale,
+      recommendedLessonIds,
+    });
+
+    // Honest by construction: createVideoLessonRecord never fabricates a
+    // script or videoUrl, and always persists status "not_generated" -- no
+    // real video generation capability exists yet (M22).
+    const videoLesson: VideoLessonRecord = {
+      id: created.id,
+      ownerUserId: created.ownerUserId,
+      topic: created.topic,
+      level,
+      locale,
+      status: created.status as VideoLessonRecord["status"],
+      recommendedLessonIds: created.recommendedLessonIds as string[],
+      script: created.script,
+      videoUrl: created.videoUrl,
+      createdAt: created.createdAt.toISOString(),
+      completedAt: null,
+    };
+
+    return NextResponse.json({ videoLesson }, { status: 201 });
+  } catch (error) {
+    if (isVideoLessonPersistenceError(error)) {
+      return NextResponse.json({ error: error.code }, { status: error.httpStatus });
+    }
+    throw error;
   }
-
-  return NextResponse.json({ videoLesson: processed }, { status: 201 });
 }

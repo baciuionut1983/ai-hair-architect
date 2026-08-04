@@ -308,7 +308,11 @@ export interface VideoLessonGenerateRequest {
   locale?: Locale;
 }
 
-export type VideoLessonStatus = "queued" | "processing" | "completed" | "failed";
+// "not_generated" is the only status M22 ever emits: no real generation
+// capability exists yet, so a row never reaches queued/processing/completed
+// through honest code. Those three values stay part of the contract,
+// unemitted, for a future milestone that adds real generation.
+export type VideoLessonStatus = "queued" | "processing" | "completed" | "failed" | "not_generated";
 
 export interface VideoLessonRecord {
   id: string;
@@ -318,8 +322,8 @@ export interface VideoLessonRecord {
   locale: Locale;
   status: VideoLessonStatus;
   recommendedLessonIds: string[];
-  script: string;
-  videoUrl: string;
+  script: string | null;
+  videoUrl: string | null;
   createdAt: string;
   completedAt: string | null;
 }

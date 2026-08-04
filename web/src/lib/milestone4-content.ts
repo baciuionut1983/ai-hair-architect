@@ -4,11 +4,9 @@ import type {
   AcademyCategory,
   AcademyLesson,
   AnalysisGoal,
-  Locale,
   ProductRecord,
   ShortlistRecord,
-  SupplierRecord,
-  VideoLessonRecord
+  SupplierRecord
 } from "@/lib/contracts";
 import { sanitize, store } from "@/lib/milestone1-store";
 
@@ -200,68 +198,6 @@ export function getAcademyLessonById(lessonId: string): AcademyLesson | null {
   ensureMilestone4SeedData();
   const normalizedId = sanitize(lessonId);
   return store.academyLessons.find((lesson) => lesson.id === normalizedId) ?? null;
-}
-
-function recommendLessons(topic: string): string[] {
-  const normalized = topic.toLowerCase();
-  const lessons = listAcademyLessons();
-  const directMatches = lessons.filter((lesson) => {
-    return (
-      lesson.title.toLowerCase().includes(normalized) ||
-      lesson.summary.toLowerCase().includes(normalized)
-    );
-  });
-
-  if (directMatches.length > 0) {
-    return directMatches.slice(0, 3).map((lesson) => lesson.id);
-  }
-
-  return lessons.slice(0, 2).map((lesson) => lesson.id);
-}
-
-export function generateVideoLesson(input: {
-  ownerUserId: string;
-  topic: string;
-  level: "beginner" | "intermediate" | "advanced";
-  locale: Locale;
-}): VideoLessonRecord {
-  ensureMilestone4SeedData();
-
-  const topic = sanitize(input.topic);
-  const recommendations = recommendLessons(topic);
-
-  const script = [
-    `Topic: ${topic}`,
-    `Level: ${input.level}`,
-    "Step 1: Analyze baseline and desired outcome.",
-    "Step 2: Explain tools, products, and safety constraints.",
-    "Step 3: Demonstrate execution path and checkpoints.",
-    "Step 4: Provide aftercare and follow-up plan."
-  ].join("\n");
-
-  const record: VideoLessonRecord = {
-    id: randomUUID(),
-    ownerUserId: input.ownerUserId,
-    topic,
-    level: input.level,
-    locale: input.locale,
-    status: "completed",
-    recommendedLessonIds: recommendations,
-    script,
-    videoUrl: `https://videos.ai-hair-architect.local/${encodeURIComponent(topic)}.mp4`,
-    createdAt: new Date().toISOString(),
-    completedAt: new Date().toISOString()
-  };
-
-  store.videoLessons.push(record);
-  return record;
-}
-
-export function getVideoLessonById(videoLessonId: string, ownerUserId: string): VideoLessonRecord | null {
-  const normalizedId = sanitize(videoLessonId);
-  return (
-    store.videoLessons.find((entry) => entry.id === normalizedId && entry.ownerUserId === ownerUserId) ?? null
-  );
 }
 
 export function listProducts(filter?: { countryCode?: string; city?: string; goal?: AnalysisGoal }) {

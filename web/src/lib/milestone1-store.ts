@@ -43,7 +43,6 @@ interface Store {
   treatments: TreatmentRecord[];
   academyCategories: AcademyCategory[];
   academyLessons: AcademyLesson[];
-  videoLessons: VideoLessonRecord[];
   products: ProductRecord[];
   suppliers: SupplierRecord[];
   shortlists: ShortlistRecord[];
@@ -61,20 +60,6 @@ interface Store {
 const activeRetentionExecutionScopes = new Set<string>();
 const backupSnapshotInsertionOrder = new Map<string, number>();
 let backupSnapshotSequence = 0;
-
-interface VideoLessonRecord {
-  id: string;
-  ownerUserId: string;
-  topic: string;
-  level: "beginner" | "intermediate" | "advanced";
-  locale: Locale;
-  status: "queued" | "processing" | "completed" | "failed";
-  recommendedLessonIds: string[];
-  script: string;
-  videoUrl: string;
-  createdAt: string;
-  completedAt: string | null;
-}
 
 interface AuditEventRecord {
   id: string;
@@ -98,7 +83,6 @@ function createStore(): Store {
     treatments: [],
     academyCategories: [],
     academyLessons: [],
-    videoLessons: [],
     products: [],
     suppliers: [],
     shortlists: [],
@@ -132,10 +116,6 @@ if (!store.academyCategories) {
 
 if (!store.academyLessons) {
   store.academyLessons = [];
-}
-
-if (!store.videoLessons) {
-  store.videoLessons = [];
 }
 
 if (!store.products) {
@@ -296,56 +276,6 @@ export function getAcademyLessons(categoryId?: string): AcademyLesson[] {
 
 export function getAcademyLessonById(lessonId: string): AcademyLesson | null {
   return store.academyLessons.find((entry) => entry.id === lessonId) ?? null;
-}
-
-export function createVideoLessonJob(input: {
-  ownerUserId: string;
-  topic: string;
-  level: "beginner" | "intermediate" | "advanced";
-  locale: Locale;
-  recommendedLessonIds: string[];
-}): VideoLessonRecord {
-  const now = new Date().toISOString();
-  const record: VideoLessonRecord = {
-    id: randomUUID(),
-    ownerUserId: input.ownerUserId,
-    topic: input.topic,
-    level: input.level,
-    locale: input.locale,
-    status: "queued",
-    recommendedLessonIds: input.recommendedLessonIds,
-    script: "",
-    videoUrl: "",
-    createdAt: now,
-    completedAt: null
-  };
-
-  store.videoLessons.push(record);
-  return record;
-}
-
-export function processVideoLessonJob(videoLessonId: string): VideoLessonRecord | null {
-  const job = store.videoLessons.find((entry) => entry.id === videoLessonId) ?? null;
-  if (!job) {
-    return null;
-  }
-
-  job.status = "processing";
-  job.script = [
-    `Topic: ${job.topic}`,
-    `Level: ${job.level}`,
-    "Step 1: diagnose baseline and goal.",
-    "Step 2: choose technical approach.",
-    "Step 3: define safety checks and aftercare."
-  ].join("\n");
-  job.videoUrl = `https://cdn.ai-hair-architect.local/video-lessons/${job.id}.mp4`;
-  job.status = "completed";
-  job.completedAt = new Date().toISOString();
-  return job;
-}
-
-export function getVideoLessonByIdOwned(videoLessonId: string, userId: string): VideoLessonRecord | null {
-  return store.videoLessons.find((entry) => entry.id === videoLessonId && entry.ownerUserId === userId) ?? null;
 }
 
 export function findRecommendedLessonIds(topic: string): string[] {
@@ -575,11 +505,16 @@ export function addWorkspaceMember(input: {
   return membership;
 }
 
-export function getAnalyticsSnapshotForUser(userId: string, consultationsCount: number, appointmentsCount: number, remindersSentCount: number): AnalyticsSnapshot {
+export function getAnalyticsSnapshotForUser(
+  userId: string,
+  consultationsCount: number,
+  appointmentsCount: number,
+  remindersSentCount: number,
+  generatedVideoLessonsCount: number
+): AnalyticsSnapshot {
   const activeSubscriptionCount = store.subscriptions.filter(
     (entry) => entry.ownerUserId === userId && (entry.status === "active" || entry.status === "trialing")
   ).length;
-  const generatedVideoLessonsCount = store.videoLessons.filter((entry) => entry.ownerUserId === userId).length;
 
   return {
     consultationsCount,

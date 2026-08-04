@@ -64,6 +64,16 @@ export async function getVideoLessonRecordById(id: string): Promise<VideoLesson 
   return runVideoLessonQuery(() => prisma.videoLesson.findUnique({ where: { id } }));
 }
 
+/**
+ * Matches the countXForOwner convention already used by the analytics
+ * snapshot route (countConsultationsForOwner, countAppointmentsForOwner,
+ * countSentRemindersForOwner) so the video lesson count can join the same
+ * Promise.all instead of being read from the in-memory store.
+ */
+export async function countVideoLessonsForOwner(ownerUserId: string): Promise<number> {
+  return runVideoLessonQuery(() => prisma.videoLesson.count({ where: { ownerUserId } }));
+}
+
 export function isVideoLessonPersistenceError(error: unknown): error is VideoLessonPersistenceError {
   return error instanceof VideoLessonPersistenceError;
 }
