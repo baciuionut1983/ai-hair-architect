@@ -10,6 +10,8 @@ import {
   upsertSubscriptionWithOrderingGuard,
   type BillingTransaction,
 } from "@/lib/billing-repository";
+import { findRecipientEmailForOwner } from "@/lib/email-repository";
+import { sendTransactionalEmail } from "@/lib/email-service";
 import type { BillingSubscriptionStatus } from "@prisma/client";
 
 export type BillingProcessingMode = "disabled" | "webhook_only" | "enabled";
@@ -29,6 +31,22 @@ export type BillingWebhookResultCode =
 export interface BillingWebhookProcessResult {
   httpStatus: 200 | 400 | 500 | 503;
   code: BillingWebhookResultCode;
+}
+
+// M25: an internal-only side channel from inside the DB transaction back
+// out to processVerifiedEvent, which sends the email strictly after the
+// transaction has committed (an external network call must never happen
+// while a DB transaction is open). Never part of the public
+// BillingWebhookProcessResult returned by processBillingWebhookRequest --
+// stripped before returning, so the route's contract is unchanged.
+interface PendingBillingEmail {
+  ownerUserId: string;
+  kind: "payment_failed" | "subscription_deleted";
+  providerEventId: string;
+}
+
+interface BillingWebhookProcessResultInternal extends BillingWebhookProcessResult {
+  pendingEmail?: PendingBillingEmail;
 }
 
 export const BILLING_WEBHOOK_RESULT_MESSAGES: Record<BillingWebhookResultCode, string> = {
@@ -124,7 +142,7 @@ function verifyStripeEvent(
 
 async function processVerifiedEvent(event: Stripe.Event, now: Date): Promise<BillingWebhookProcessResult> {
   try {
-    return await runBillingWebhookTransaction(async (tx) => {
+    const result = await runBillingWebhookTransaction(async (tx): Promise<BillingWebhookProcessResultInternal> => {
       const claim = await recordWebhookEventIdempotently(
         {
           provider: "stripe",
@@ -137,13 +155,64 @@ async function processVerifiedEvent(event: Stripe.Event, now: Date): Promise<Bil
       );
 
       if (claim.outcome === "duplicate" && TERMINAL_EVENT_STATUSES.has(claim.event.status)) {
+        // A retried Stripe event never reaches routeVerifiedEvent, so it
+        // never sets pendingEmail either -- this is the sole guard against
+        // sending the same billing email twice for a retried webhook.
         return { httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_DUPLICATE" };
       }
 
       return routeVerifiedEvent(event, claim.event.id, tx, now);
     });
+
+    if (result.pendingEmail) {
+      await sendBillingEmail(result.pendingEmail);
+    }
+
+    return { httpStatus: result.httpStatus, code: result.code };
   } catch {
     return { httpStatus: 500, code: "BILLING_WEBHOOK_INTERNAL_ERROR" };
+  }
+}
+
+// Deliberately never throws. It runs after the billing transaction has
+// already committed -- the subscription/payment state change is durable
+// by this point. If this were allowed to throw, processVerifiedEvent's
+// catch block would report 500 BILLING_WEBHOOK_INTERNAL_ERROR to Stripe
+// for a webhook that actually succeeded, causing an unnecessary retry
+// purely because of an email-side problem. sendTransactionalEmail already
+// guarantees it won't throw; findRecipientEmailForOwner does not (it
+// follows this codebase's normal repository convention of throwing a
+// typed persistence error), so this wrapper is what closes that gap.
+async function sendBillingEmail(pending: PendingBillingEmail): Promise<void> {
+  try {
+    const recipientEmail = await findRecipientEmailForOwner(pending.ownerUserId);
+    if (!recipientEmail) return;
+
+    const content =
+      pending.kind === "payment_failed"
+        ? {
+            eventType: "billing.invoice.payment_failed",
+            subject: "Payment failed for your subscription",
+            text: "We were unable to process your latest payment. Please update your payment method to keep your subscription active.",
+            idempotencyKey: `billing.payment_failed:${pending.providerEventId}`,
+          }
+        : {
+            eventType: "billing.subscription.deleted",
+            subject: "Your subscription has ended",
+            text: "Your subscription has been canceled or has ended. You can resubscribe anytime from your account.",
+            idempotencyKey: `billing.subscription_deleted:${pending.providerEventId}`,
+          };
+
+    await sendTransactionalEmail({
+      ownerUserId: pending.ownerUserId,
+      category: "billing",
+      recipientEmail,
+      relatedEntityType: "BillingWebhookEvent",
+      relatedEntityId: pending.providerEventId,
+      ...content,
+    });
+  } catch {
+    // See the function-level comment above.
   }
 }
 
@@ -152,7 +221,7 @@ async function routeVerifiedEvent(
   eventId: string,
   tx: BillingTransaction,
   now: Date,
-): Promise<BillingWebhookProcessResult> {
+): Promise<BillingWebhookProcessResultInternal> {
   if (SUPPORTED_SUBSCRIPTION_EVENT_TYPES.has(event.type)) {
     return processSubscriptionEvent(event, eventId, tx, now);
   }
@@ -172,7 +241,7 @@ async function processSubscriptionEvent(
   eventId: string,
   tx: BillingTransaction,
   now: Date,
-): Promise<BillingWebhookProcessResult> {
+): Promise<BillingWebhookProcessResultInternal> {
   const subscription = event.data.object as Stripe.Subscription;
   const providerCustomerId = extractStripeId(subscription.customer);
   const status = isKnownSubscriptionStatus(subscription.status) ? subscription.status : null;
@@ -228,7 +297,13 @@ async function processSubscriptionEvent(
     { status: "processed", processedAt: now, ownerUserId: owner.ownerUserId },
     tx,
   );
-  return { httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" };
+
+  const pendingEmail: PendingBillingEmail | undefined =
+    event.type === "customer.subscription.deleted"
+      ? { ownerUserId: owner.ownerUserId, kind: "subscription_deleted", providerEventId: event.id }
+      : undefined;
+
+  return { httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED", pendingEmail };
 }
 
 async function processInvoiceEvent(
@@ -236,7 +311,7 @@ async function processInvoiceEvent(
   eventId: string,
   tx: BillingTransaction,
   now: Date,
-): Promise<BillingWebhookProcessResult> {
+): Promise<BillingWebhookProcessResultInternal> {
   const invoice = event.data.object as Stripe.Invoice;
   const providerCustomerId = extractStripeId(invoice.customer);
 
@@ -282,7 +357,12 @@ async function processInvoiceEvent(
     { status: "processed", processedAt: now, ownerUserId: owner.ownerUserId },
     tx,
   );
-  return { httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" };
+
+  const pendingEmail: PendingBillingEmail | undefined = isPaid
+    ? undefined
+    : { ownerUserId: owner.ownerUserId, kind: "payment_failed", providerEventId: event.id };
+
+  return { httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED", pendingEmail };
 }
 
 async function processCheckoutSessionCompletedEvent(

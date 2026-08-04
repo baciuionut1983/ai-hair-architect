@@ -16,6 +16,9 @@ const owners = new Set<string>();
 suite("Appointment durable persistence", () => {
   afterEach(async () => {
     await prisma.notification.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
+    // M25: a due reminder now also creates an EmailNotification row (status
+    // "skipped" in this test environment).
+    await prisma.emailNotification.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
     await prisma.appointment.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
     await prisma.client.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
     await prisma.user.deleteMany({ where: { id: { in: [...owners] } } });

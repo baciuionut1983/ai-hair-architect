@@ -5,6 +5,8 @@ import {
 } from "@prisma/client";
 
 import type { AppointmentRecord, ReminderType } from "@/lib/contracts";
+import { findRecipientEmailForOwner } from "@/lib/email-repository";
+import { sendTransactionalEmail } from "@/lib/email-service";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 
 export const APPOINTMENT_PERSISTENCE_ERROR_CODE = "APPOINTMENT_PERSISTENCE_UNAVAILABLE";
@@ -152,10 +154,47 @@ export async function executeDueAppointmentRemindersForOwner(
     let remindersCreated = 0;
     for (const candidate of candidates) {
       assertDueAppointmentCandidate(candidate, ownerUserId);
-      remindersCreated += await createReminderForCandidate(candidate, now);
+      const created = await createReminderForCandidate(candidate, now);
+      remindersCreated += created;
+      // Only when this call actually won the claim on a new reminder --
+      // never for a race lost to a concurrent call or an already-sent
+      // reminder. Runs after the transaction has committed: an external
+      // network call must never happen while a DB transaction is open.
+      if (created > 0) {
+        await sendAppointmentReminderEmail(candidate);
+      }
     }
     return { remindersCreated };
   });
+}
+
+// Deliberately never throws, unlike every other function in this file.
+// sendTransactionalEmail already guarantees that on its own, but
+// findRecipientEmailForOwner does not (it follows this codebase's normal
+// repository convention of throwing a typed persistence error) -- so this
+// wrapper is the one place that must swallow it, or a transient email-side
+// database hiccup would incorrectly surface as a failed appointment
+// reminder run.
+async function sendAppointmentReminderEmail(candidate: DueAppointmentCandidate): Promise<void> {
+  try {
+    const recipientEmail = await findRecipientEmailForOwner(candidate.ownerUserId);
+    if (!recipientEmail) return;
+
+    await sendTransactionalEmail({
+      ownerUserId: candidate.ownerUserId,
+      category: "transactional",
+      eventType: "appointment.reminder_due",
+      recipientEmail,
+      subject: `Reminder: ${candidate.title}`,
+      text: `You have an upcoming ${candidate.reminderType.replace("_", " ")}: ${candidate.title} at ${candidate.startsAt.toISOString()}.`,
+      idempotencyKey: `transactional.appointment_reminder:${candidate.id}`,
+      relatedEntityType: "Appointment",
+      relatedEntityId: candidate.id,
+    });
+  } catch {
+    // See the function-level comment above -- never let an email-side
+    // failure surface as a failed reminder run.
+  }
 }
 
 export function isAppointmentPersistenceError(error: unknown): error is AppointmentPersistenceError {

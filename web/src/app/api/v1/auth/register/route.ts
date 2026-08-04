@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import type { AuthRegisterRequest, AuthSessionResponse, UserRole } from "@/lib/contracts";
 import { upsertPersistenceUser, createPersistenceSession } from "@/lib/auth-persistence";
 import { hashPassword } from "@/lib/auth-security";
+import { sendTransactionalEmail } from "@/lib/email-service";
 import { checkRateLimit, getRequestClientIp } from "@/lib/hardening";
 import { createSession, createUser, findUserByEmail, sanitize } from "@/lib/milestone1-store";
 import { resolveLocale } from "@/lib/i18n";
@@ -44,6 +45,27 @@ export async function POST(request: Request) {
 
   const token = createSession(user.id);
   await createPersistenceSession(token, user.id);
+
+  // sendTransactionalEmail is contractually guaranteed to never throw, but
+  // this call is still wrapped defensively (matching the same discipline
+  // applied at every other M25 trigger point) so a successful registration
+  // can never be blocked by anything on the email side, even a future
+  // regression of that contract.
+  try {
+    await sendTransactionalEmail({
+      ownerUserId: user.id,
+      category: "onboarding",
+      eventType: "user.registered",
+      recipientEmail: user.email,
+      subject: "Welcome to AI Hair Architect",
+      text: "Hi, your account has been created. You can now sign in and start using AI Hair Architect.",
+      idempotencyKey: `onboarding.welcome:${user.id}`,
+      relatedEntityType: "User",
+      relatedEntityId: user.id,
+    });
+  } catch {
+    // See comment above -- registration must succeed regardless.
+  }
 
   const responsePayload: AuthSessionResponse = {
     token,

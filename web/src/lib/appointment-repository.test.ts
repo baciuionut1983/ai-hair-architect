@@ -25,6 +25,17 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
+const emailMocks = vi.hoisted(() => ({
+  findRecipientEmailForOwner: vi.fn(),
+  sendTransactionalEmail: vi.fn(),
+}));
+vi.mock("@/lib/email-repository", () => ({
+  findRecipientEmailForOwner: emailMocks.findRecipientEmailForOwner,
+}));
+vi.mock("@/lib/email-service", () => ({
+  sendTransactionalEmail: emailMocks.sendTransactionalEmail,
+}));
+
 import {
   AppointmentDependencyError,
   AppointmentPersistenceError,
@@ -58,6 +69,8 @@ beforeEach(() => {
   prismaMocks.appointmentUpdateMany.mockReset();
   prismaMocks.notificationCreate.mockReset();
   prismaMocks.transaction.mockImplementation(async (operation) => operation(tx));
+  emailMocks.findRecipientEmailForOwner.mockReset().mockResolvedValue("owner@example.com");
+  emailMocks.sendTransactionalEmail.mockReset().mockResolvedValue({ status: "sent", notificationId: "email-1", providerMessageId: "re_1" });
 });
 
 describe("appointment-repository", () => {
@@ -157,9 +170,21 @@ describe("appointment-repository", () => {
       relatedAppointmentId: "appointment-1",
       createdAt: now,
     });
+    expect(emailMocks.sendTransactionalEmail).toHaveBeenCalledTimes(2);
+    expect(emailMocks.sendTransactionalEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerUserId: "owner-1",
+        category: "transactional",
+        eventType: "appointment.reminder_due",
+        recipientEmail: "owner@example.com",
+        idempotencyKey: "transactional.appointment_reminder:appointment-1",
+        relatedEntityType: "Appointment",
+        relatedEntityId: "appointment-1",
+      }),
+    );
   });
 
-  it("creates no Notification when the conditional claim loses a race", async () => {
+  it("creates no Notification and sends no email when the conditional claim loses a race", async () => {
     prismaMocks.queryRaw.mockResolvedValue([dueCandidate()]);
     prismaMocks.appointmentUpdateMany.mockResolvedValue({ count: 0 });
 
@@ -167,6 +192,42 @@ describe("appointment-repository", () => {
       remindersCreated: 0,
     });
     expect(prismaMocks.notificationCreate).not.toHaveBeenCalled();
+    expect(emailMocks.sendTransactionalEmail).not.toHaveBeenCalled();
+  });
+
+  it("still reports the reminder as created when resolving the recipient email throws", async () => {
+    prismaMocks.queryRaw.mockResolvedValue([dueCandidate()]);
+    prismaMocks.appointmentUpdateMany.mockResolvedValue({ count: 1 });
+    prismaMocks.notificationCreate.mockResolvedValue({});
+    emailMocks.findRecipientEmailForOwner.mockRejectedValue(new Error("email db down"));
+
+    await expect(executeDueAppointmentRemindersForOwner("owner-1")).resolves.toEqual({
+      remindersCreated: 1,
+    });
+    expect(emailMocks.sendTransactionalEmail).not.toHaveBeenCalled();
+  });
+
+  it("still reports the reminder as created when sendTransactionalEmail itself rejects unexpectedly", async () => {
+    prismaMocks.queryRaw.mockResolvedValue([dueCandidate()]);
+    prismaMocks.appointmentUpdateMany.mockResolvedValue({ count: 1 });
+    prismaMocks.notificationCreate.mockResolvedValue({});
+    emailMocks.sendTransactionalEmail.mockRejectedValue(new Error("unexpected"));
+
+    await expect(executeDueAppointmentRemindersForOwner("owner-1")).resolves.toEqual({
+      remindersCreated: 1,
+    });
+  });
+
+  it("sends no email when the owner has no resolvable recipient address", async () => {
+    prismaMocks.queryRaw.mockResolvedValue([dueCandidate()]);
+    prismaMocks.appointmentUpdateMany.mockResolvedValue({ count: 1 });
+    prismaMocks.notificationCreate.mockResolvedValue({});
+    emailMocks.findRecipientEmailForOwner.mockResolvedValue(null);
+
+    await expect(executeDueAppointmentRemindersForOwner("owner-1")).resolves.toEqual({
+      remindersCreated: 1,
+    });
+    expect(emailMocks.sendTransactionalEmail).not.toHaveBeenCalled();
   });
 
   it("retries one candidate transaction on serialization conflicts", async () => {

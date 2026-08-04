@@ -121,6 +121,22 @@ export async function listEmailNotificationsForOwner(ownerUserId: string): Promi
   );
 }
 
+/**
+ * Resolves the real recipient address for a trigger that only has an
+ * ownerUserId in hand (the appointment reminder flow, the billing webhook
+ * processor). Kept here rather than duplicated as a raw prisma.user call
+ * in each caller, matching this codebase's one-repository-per-concern
+ * convention. Returns null if the user no longer exists (defensive only --
+ * onDelete: Restrict on every owned model makes this practically
+ * unreachable today).
+ */
+export async function findRecipientEmailForOwner(ownerUserId: string): Promise<string | null> {
+  return runEmailQuery(async () => {
+    const user = await prisma.user.findUnique({ where: { id: ownerUserId }, select: { email: true } });
+    return user?.email ?? null;
+  });
+}
+
 export function isEmailPersistenceError(error: unknown): error is EmailPersistenceError {
   return error instanceof EmailPersistenceError;
 }

@@ -279,6 +279,11 @@ suite("billing-webhook-processor (real Postgres)", () => {
     await prisma.billingPayment.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
     await prisma.billingSubscription.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
     await prisma.billingCustomer.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
+    // M25: invoice.payment_failed / customer.subscription.deleted now also
+    // create an EmailNotification row (status "skipped" in this test
+    // environment, since EMAIL_PROCESSING_MODE is never enabled here) --
+    // it must be cleared before the owning User can be deleted.
+    await prisma.emailNotification.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
     await prisma.user.deleteMany({ where: { id: { in: [...owners] } } });
     owners.clear();
     webhookEventIds.clear();
@@ -355,6 +360,20 @@ suite("billing-webhook-processor (real Postgres)", () => {
         where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: subscriptionId } },
       }),
     ).resolves.toMatchObject({ status: "canceled" });
+
+    const emails = await prisma.emailNotification.findMany({ where: { idempotencyKey: `billing.subscription_deleted:${deleted.id}` } });
+    expect(emails).toHaveLength(1);
+    expect(emails[0]).toMatchObject({ category: "billing", status: "skipped" });
+
+    // Redelivering the same Stripe event must never queue a second email --
+    // it hits the existing BillingWebhookEvent dedup path before
+    // routeVerifiedEvent (and therefore pendingEmail) is ever reached.
+    const { rawBody: rawBody3, signatureHeader: sig3 } = signedRequest(deleted);
+    const retried = await processBillingWebhookRequest({ rawBody: rawBody3, signatureHeader: sig3, env: testEnv() });
+    expect(retried).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_DUPLICATE" });
+    await expect(
+      prisma.emailNotification.findMany({ where: { idempotencyKey: `billing.subscription_deleted:${deleted.id}` } }),
+    ).resolves.toHaveLength(1);
   });
 
   it("processes invoice.paid", async () => {
@@ -371,6 +390,12 @@ suite("billing-webhook-processor (real Postgres)", () => {
         where: { provider_providerInvoiceId: { provider: "stripe", providerInvoiceId: event.data.object.id } },
       }),
     ).resolves.toMatchObject({ ownerUserId, status: "succeeded", amountCents: 4900 });
+
+    // invoice.paid is deliberately not one of the two email-triggering
+    // events approved for M25.
+    await expect(
+      prisma.emailNotification.findMany({ where: { idempotencyKey: `billing.payment_failed:${event.id}` } }),
+    ).resolves.toHaveLength(0);
   });
 
   it("processes invoice.payment_failed with a sanitized structural failure code", async () => {
@@ -391,6 +416,10 @@ suite("billing-webhook-processor (real Postgres)", () => {
         where: { provider_providerInvoiceId: { provider: "stripe", providerInvoiceId: event.data.object.id } },
       }),
     ).resolves.toMatchObject({ ownerUserId, status: "failed", failureCode: "card_declined" });
+
+    const emails = await prisma.emailNotification.findMany({ where: { idempotencyKey: `billing.payment_failed:${event.id}` } });
+    expect(emails).toHaveLength(1);
+    expect(emails[0]).toMatchObject({ ownerUserId, category: "billing", status: "skipped", recipientEmail: expect.stringContaining("@billing-webhook.test") });
   });
 
   it("records an unrecognized event type as ignored_unsupported with no mutation", async () => {
