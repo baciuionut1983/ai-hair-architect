@@ -5,6 +5,12 @@ import { Prisma, type Analysis as PrismaAnalysisRow } from "@prisma/client";
 import type {
   AnalysisGoal,
   AnalysisPhase,
+  ColorApplicationTechnique,
+  ColorDeveloperVolume,
+  ColorFormulaDirection,
+  ColorPlan,
+  ColorStep,
+  ColorToneDirection,
   CuttingStep,
   CuttingTechnique,
   DensityLevel,
@@ -49,6 +55,10 @@ const SECTIONING_OPTIONS = ["4_quadrant_profile_radial", "horseshoe_crown", "dia
 const ELEVATION_OPTIONS = ["0_deg_blunt", "45_deg_graduation", "90_deg_uniform_layer", "135_deg_long_layer", "180_deg_overdirection"] as const;
 const DISTRIBUTION_OPTIONS = ["natural_fall", "perpendicular", "overdirected_back", "overdirected_forward", "shifting_line"] as const;
 const GUIDELINE_OPTIONS = ["stationary", "traveling", "visual_perimeter", "multiple_reference"] as const;
+const COLOR_FORMULA_DIRECTIONS = ["single_process_gray_coverage", "gloss_demi_permanent", "root_shadow_melt", "balayage_freehand", "double_process_lightening", "color_correction_neutralize"] as const;
+const COLOR_DEVELOPER_VOLUMES = ["10vol", "20vol", "30vol", "40vol"] as const;
+const COLOR_TONE_DIRECTIONS = ["cool_ash", "warm_gold", "neutral", "cool_violet", "warm_copper"] as const;
+const COLOR_APPLICATION_TECHNIQUES = ["global_application", "root_touch_up", "foils", "balayage_freehand", "color_melt"] as const;
 
 export class AnalysisPersistenceError extends Error {
   readonly code = ANALYSIS_PERSISTENCE_ERROR_CODE;
@@ -126,6 +136,9 @@ export async function createAnalysisForOwner(
         targetShape: input.targetShape ?? null,
         technicalCutPlan: input.technicalCutPlan
           ? (input.technicalCutPlan as unknown as Prisma.InputJsonValue)
+          : Prisma.JsonNull,
+        colorPlan: input.colorPlan
+          ? (input.colorPlan as unknown as Prisma.InputJsonValue)
           : Prisma.JsonNull,
         clarificationAnswers: [],
       },
@@ -260,6 +273,7 @@ function toAnalysisState(row: PrismaAnalysisRow): AnalysisState {
   }
 
   const technicalCutPlan = parseTechnicalCutPlan(row.technicalCutPlan);
+  const colorPlan = parseColorPlan(row.colorPlan);
   return {
     id: row.id,
     clientId: row.clientId,
@@ -284,6 +298,7 @@ function toAnalysisState(row: PrismaAnalysisRow): AnalysisState {
     growthPattern: parseNullableEnum(row.growthPattern, GROWTH_PATTERNS),
     targetShape: parseNullableEnum(row.targetShape, TARGET_SHAPES),
     ...(technicalCutPlan ? { technicalCutPlan } : {}),
+    ...(colorPlan ? { colorPlan } : {}),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -378,6 +393,46 @@ function isCuttingStep(value: unknown): value is CuttingStep {
     isNonEmptyString(value.toolRequired);
 }
 
+function parseColorPlan(value: Prisma.JsonValue | null): ColorPlan | undefined {
+  if (value === null) return undefined;
+  if (!isColorPlan(value)) throw new AnalysisPersistenceError();
+  return value;
+}
+
+function isColorPlan(value: unknown): value is ColorPlan {
+  if (!isRecord(value)) return false;
+  return isOneOf(value.formulaDirection, COLOR_FORMULA_DIRECTIONS) &&
+    isOneOf(value.developerVolume, COLOR_DEVELOPER_VOLUMES) &&
+    Number.isFinite(value.liftLevels) && (value.liftLevels as number) >= 0 &&
+    isOneOf(value.toneDirection, COLOR_TONE_DIRECTIONS) &&
+    isOneOf(value.applicationTechnique, COLOR_APPLICATION_TECHNIQUES) &&
+    Array.isArray(value.processingSteps) && value.processingSteps.every(isColorStep) &&
+    isStringArray(value.maintenancePlan) &&
+    typeof value.strandTestRequired === "boolean" &&
+    isNonEmptyString(value.stylistExplanation) &&
+    isNonEmptyString(value.clientExplanation) &&
+    isNonEmptyString(value.professionalReason) &&
+    isStringArray(value.warnings) &&
+    isStringArray(value.contraindications) &&
+    isStringArray(value.assumptions) &&
+    isStringArray(value.missingData) &&
+    typeof value.confidence === "number" && Number.isFinite(value.confidence) &&
+    value.confidence >= 0 && value.confidence <= 1 &&
+    (value.notes === undefined || isStringArray(value.notes)) &&
+    isNonEmptyString(value.stylistValidationDisclaimer) &&
+    isNonEmptyString(value.version);
+}
+
+function isColorStep(value: unknown): value is ColorStep {
+  if (!isRecord(value)) return false;
+  return Number.isInteger(value.stepNumber) && (value.stepNumber as number) > 0 &&
+    isNonEmptyString(value.zone) &&
+    isNonEmptyString(value.action) &&
+    (value.processingTimeMinutes === undefined ||
+      (typeof value.processingTimeMinutes === "number" && Number.isFinite(value.processingTimeMinutes))) &&
+    isNonEmptyString(value.toolRequired);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -410,4 +465,8 @@ type _ContractAssertions = [
   TechnicalCutElevation,
   TechnicalCutDistribution,
   TechnicalCutGuideline,
+  ColorFormulaDirection,
+  ColorDeveloperVolume,
+  ColorToneDirection,
+  ColorApplicationTechnique,
 ];

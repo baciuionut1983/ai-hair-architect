@@ -17,6 +17,7 @@ import type {
   TexturizingTechnique
 } from "./contracts";
 import type { AnalysisEngineInput } from "./milestone2-types";
+import { calculateRecommendationConfidence, dedupe, readable } from "./recommendation-engine-shared";
 
 const TECHNICAL_PLAN_VERSION = "1.0.0-m8";
 const STYLIST_VALIDATION_DISCLAIMER =
@@ -183,7 +184,7 @@ export function generateTechnicalCutPlan(input: AnalysisEngineInput): TechnicalC
       ? professionalReasonParts.join(" ")
       : "Balanced technical architecture selected from neutral face/head assumptions.";
 
-  const confidence = calculateConfidence(missingData, warnings, contraindications);
+  const confidence = calculateRecommendationConfidence(missingData, warnings, contraindications);
 
   const cuttingSteps = [
     {
@@ -323,18 +324,6 @@ function buildAssumptions(profile: TechnicalProfile): string[] {
   return assumptions;
 }
 
-function calculateConfidence(missingData: string[], warnings: string[], contraindications: string[]): number {
-  const missingPenalty = missingData.length * 0.03;
-  const warningPenalty = warnings.length * 0.015;
-  const contraindicationPenalty = contraindications.length * 0.01;
-  const value = 0.95 - missingPenalty - warningPenalty - contraindicationPenalty;
-  return Math.max(0.58, Math.min(0.96, Number(value.toFixed(2))));
-}
-
-function readable(value: string): string {
-  return value.replaceAll("_", " ");
-}
-
-function dedupe(values: string[]): string[] {
-  return [...new Set(values)];
-}
+// calculateConfidence/readable/dedupe moved to recommendation-engine-shared.ts
+// (M27) -- imported above as calculateRecommendationConfidence/readable/dedupe.
+// Identical formula/behavior, extracted verbatim, zero logic change.

@@ -232,6 +232,12 @@ model Analysis {
   growthPattern        String?
   targetShape          String?
   technicalCutPlan     Json?
+  colorPlan            Json?
+  desiredColorResult   String?
+  grayPercentage       String?
+  treatmentPlan        Json?
+  scalpCondition       String?
+  treatmentGoalDetail  String?
   clarificationAnswers Json
   imageAssetId         String?
   imageAnalysisId      String?

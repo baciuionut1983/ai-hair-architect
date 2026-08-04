@@ -1,6 +1,8 @@
 import { Prisma } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { ColorPlan } from "@/lib/contracts";
+
 const prismaMocks = vi.hoisted(() => ({
   configured: true,
   transaction: vi.fn(),
@@ -129,6 +131,31 @@ describe("analysis-repository", () => {
     );
   });
 
+  it("preserves a structurally valid color plan and rejects a malformed plan", async () => {
+    prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({ colorPlan: colorPlan() }));
+    await expect(findAnalysisForOwner("owner-1", "analysis-1")).resolves.toMatchObject({
+      colorPlan: { version: "1.0.0-m27", formulaDirection: "single_process_gray_coverage" },
+    });
+
+    prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({
+      colorPlan: { ...colorPlan(), developerVolume: "not-a-real-volume" },
+    }));
+    await expect(findAnalysisForOwner("owner-1", "analysis-1")).rejects.toBeInstanceOf(
+      AnalysisPersistenceError,
+    );
+  });
+
+  it("persists a colorPlan on create exactly like technicalCutPlan, and JsonNull when absent", async () => {
+    prismaMocks.clientFindFirst.mockResolvedValue({ id: "client-1" });
+    prismaMocks.analysisCreate.mockResolvedValue(analysisRow());
+
+    await createAnalysisForOwner("owner-1", "client-1", { ...createInput(), colorPlan: colorPlan() });
+    expect(prismaMocks.analysisCreate.mock.calls[0][0].data.colorPlan).toEqual(colorPlan());
+
+    await createAnalysisForOwner("owner-1", "client-1", createInput());
+    expect(prismaMocks.analysisCreate.mock.calls[1][0].data.colorPlan).toBe(Prisma.JsonNull);
+  });
+
   it("retries serialization conflicts and recomputes the transition from transactional state", async () => {
     const conflict = new Prisma.PrismaClientKnownRequestError("serialization conflict", {
       code: "P2034",
@@ -249,6 +276,12 @@ function analysisRow(overrides: Record<string, unknown> = {}) {
     growthPattern: null,
     targetShape: null,
     technicalCutPlan: null,
+    colorPlan: null,
+    desiredColorResult: null,
+    grayPercentage: null,
+    treatmentPlan: null,
+    scalpCondition: null,
+    treatmentGoalDetail: null,
     clarificationAnswers: [],
     imageAssetId: null,
     imageAnalysisId: null,
@@ -286,5 +319,33 @@ function technicalCutPlan() {
     confidence: 0.9,
     stylistValidationDisclaimer: "Validate before cutting.",
     version: "1.0.0-m8",
+  };
+}
+
+function colorPlan(): ColorPlan {
+  return {
+    formulaDirection: "single_process_gray_coverage",
+    developerVolume: "20vol",
+    liftLevels: 0,
+    toneDirection: "neutral",
+    applicationTechnique: "global_application",
+    processingSteps: [{
+      stepNumber: 1,
+      zone: "Application",
+      action: "Apply global formula.",
+      toolRequired: "tint-brush",
+    }],
+    maintenancePlan: ["Refresh tone every 4-6 weeks."],
+    strandTestRequired: true,
+    stylistExplanation: "Explain the formula direction.",
+    clientExplanation: "Explain the expected result.",
+    professionalReason: "Cover gray uniformly.",
+    warnings: [],
+    contraindications: [],
+    assumptions: [],
+    missingData: [],
+    confidence: 0.9,
+    stylistValidationDisclaimer: "Validate the formula chair-side.",
+    version: "1.0.0-m27",
   };
 }

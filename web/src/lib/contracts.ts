@@ -1,4 +1,5 @@
 import type { M15V1ObjectReference } from "./object-storage-runtime";
+import type { BaseRecommendationPlan } from "./recommendation-engine-shared";
 
 export type UserRole = "professional" | "salon" | "consumer";
 
@@ -149,6 +150,57 @@ export interface TechnicalCutPlan {
   notes?: string[];
   stylistValidationDisclaimer: string;
   version: string;
+}
+
+// M27: Color Recommendation Engine (GO-2). Additive only -- built independently
+// of and neutral to TechnicalCutPlan above, which is unchanged. Not yet wired
+// into AnalysisRequest/AnalysisEngineInput/analyzeInitial (GO-3).
+export type DesiredColorResult =
+  | "gray_coverage"
+  | "gloss_refresh"
+  | "root_shadow"
+  | "balayage_highlights"
+  | "full_lightening"
+  | "color_correction";
+
+export type GrayPercentage = "none" | "low" | "medium" | "high";
+
+export type ColorFormulaDirection =
+  | "single_process_gray_coverage"
+  | "gloss_demi_permanent"
+  | "root_shadow_melt"
+  | "balayage_freehand"
+  | "double_process_lightening"
+  | "color_correction_neutralize";
+
+export type ColorDeveloperVolume = "10vol" | "20vol" | "30vol" | "40vol";
+
+export type ColorToneDirection = "cool_ash" | "warm_gold" | "neutral" | "cool_violet" | "warm_copper";
+
+export type ColorApplicationTechnique =
+  | "global_application"
+  | "root_touch_up"
+  | "foils"
+  | "balayage_freehand"
+  | "color_melt";
+
+export interface ColorStep {
+  stepNumber: number;
+  zone: string;
+  action: string;
+  processingTimeMinutes?: number;
+  toolRequired: string;
+}
+
+export interface ColorPlan extends BaseRecommendationPlan {
+  formulaDirection: ColorFormulaDirection;
+  developerVolume: ColorDeveloperVolume;
+  liftLevels: number;
+  toneDirection: ColorToneDirection;
+  applicationTechnique: ColorApplicationTechnique;
+  processingSteps: ColorStep[];
+  maintenancePlan: string[];
+  strandTestRequired: boolean;
 }
 
 export interface AnalysisRequest {

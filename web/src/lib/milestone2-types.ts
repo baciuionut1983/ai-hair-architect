@@ -1,5 +1,6 @@
 import type {
   AnalysisGoal,
+  ColorPlan,
   DensityLevel,
   FaceShape,
   GrowthPattern,
@@ -36,6 +37,7 @@ export interface AnalysisCreateRecordInput extends AnalysisEngineInput {
   safetyNotes: string[];
   clarificationRound: number;
   technicalCutPlan?: TechnicalCutPlan;
+  colorPlan?: ColorPlan;
 }
 
 export interface AnalysisClarifyRequest {

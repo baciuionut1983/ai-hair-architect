@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { PrismaClient } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { TechnicalCutPlan } from "@/lib/contracts";
+import type { ColorPlan, TechnicalCutPlan } from "@/lib/contracts";
 import {
   AnalysisPersistenceError,
   clarifyAnalysisForOwner,
@@ -72,6 +72,38 @@ suite("Analysis durable repository", () => {
     await expect(findAnalysisForOwner(ownerUserId, created.id)).resolves.toMatchObject({
       technicalCutPlan: plan,
     });
+  });
+
+  it("persists and reads a colorPlan round-trip through PostgreSQL", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const plan = colorPlan();
+
+    const created = await createAnalysisForOwner(ownerUserId, clientId, {
+      ...readyInput(),
+      colorPlan: plan,
+    });
+
+    const freshClient = new PrismaClient();
+    try {
+      await expect(freshClient.analysis.findUnique({ where: { id: created.id } }))
+        .resolves.toMatchObject({ colorPlan: plan });
+    } finally {
+      await freshClient.$disconnect();
+    }
+
+    await expect(findAnalysisForOwner(ownerUserId, created.id)).resolves.toMatchObject({
+      colorPlan: plan,
+    });
+  });
+
+  it("treats historical Analysis rows with no colorPlan exactly like rows with no technicalCutPlan", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const created = await createAnalysisForOwner(ownerUserId, clientId, readyInput());
+
+    const found = await findAnalysisForOwner(ownerUserId, created.id);
+    expect(found).not.toBeNull();
+    expect(found?.colorPlan).toBeUndefined();
+    expect(found?.technicalCutPlan).toBeUndefined();
   });
 
   it("rejects missing, cross-owner and soft-deleted Clients", async () => {
@@ -251,5 +283,33 @@ function technicalCutPlan(): TechnicalCutPlan {
     confidence: 0.9,
     stylistValidationDisclaimer: "Validate before cutting.",
     version: "1.0.0-m8",
+  };
+}
+
+function colorPlan(): ColorPlan {
+  return {
+    formulaDirection: "single_process_gray_coverage",
+    developerVolume: "20vol",
+    liftLevels: 0,
+    toneDirection: "neutral",
+    applicationTechnique: "global_application",
+    processingSteps: [{
+      stepNumber: 1,
+      zone: "Application",
+      action: "Apply global formula.",
+      toolRequired: "tint-brush",
+    }],
+    maintenancePlan: ["Refresh tone every 4-6 weeks."],
+    strandTestRequired: true,
+    stylistExplanation: "Explain the formula direction.",
+    clientExplanation: "Explain the expected result.",
+    professionalReason: "Cover gray uniformly.",
+    warnings: [],
+    contraindications: [],
+    assumptions: [],
+    missingData: [],
+    confidence: 0.9,
+    stylistValidationDisclaimer: "Validate the formula chair-side.",
+    version: "1.0.0-m27",
   };
 }
