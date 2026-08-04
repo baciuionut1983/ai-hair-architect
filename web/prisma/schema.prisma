@@ -131,6 +131,12 @@ model User {
   passwordHash                  String
   role                          String
   locale                        String
+  // M26: null means unverified. No @default here on purpose -- every row
+  // that exists before the M26 migration is explicitly backfilled to a
+  // real, non-null timestamp by that migration itself; every row created
+  // afterward starts genuinely null until the owner completes email
+  // verification. A column default would blur that distinction.
+  emailVerifiedAt               DateTime?
   createdAt                     DateTime                       @default(now())
   sessions                      Session[]
   clients                       Client[]
@@ -145,6 +151,7 @@ model User {
   imageAnalysisProviderAttempts ImageAnalysisProviderAttempt[]
   videoLessons                  VideoLesson[]
   emailNotifications            EmailNotification[]
+  authTokens                    AuthToken[]
 }
 
 model Session {
@@ -155,6 +162,31 @@ model Session {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([expiresAt])
+}
+
+enum AuthTokenPurpose {
+  email_verification
+  password_reset
+}
+
+// M26: the raw token is never persisted, only its SHA-256 hash. At most one
+// unused row may exist per (userId, purpose) at a time -- issuing a new
+// token for the same user+purpose deletes any prior unused one first, so
+// there is never more than one active token to guess against.
+model AuthToken {
+  id        String            @id @default(cuid())
+  userId    String
+  purpose   AuthTokenPurpose
+  tokenHash String            @db.VarChar(64)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime          @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tokenHash])
+  @@index([userId, purpose, createdAt])
   @@index([expiresAt])
 }
 
