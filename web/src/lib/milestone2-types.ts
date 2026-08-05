@@ -48,6 +48,12 @@ export interface AnalysisCreateRecordInput extends AnalysisEngineInput {
   technicalCutPlan?: TechnicalCutPlan;
   colorPlan?: ColorPlan;
   treatmentPlan?: TreatmentPlan;
+  // M31 GO-4: set together, only for an Analysis row derived from the photo
+  // pipeline -- links it back to the source asset/draft and records when
+  // that draft was promoted, so a photo-derived and a manual Analysis row
+  // remain distinguishable. Both undefined for the manual flow (GO-3).
+  imageAssetId?: string;
+  imageAnalysisId?: string;
 }
 
 export interface AnalysisClarifyRequest {

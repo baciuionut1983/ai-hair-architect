@@ -162,6 +162,9 @@ export async function createAnalysisForOwner(
           ? (input.treatmentPlan as unknown as Prisma.InputJsonValue)
           : Prisma.JsonNull,
         clarificationAnswers: [],
+        imageAssetId: input.imageAssetId ?? null,
+        imageAnalysisId: input.imageAnalysisId ?? null,
+        m8DraftCreatedAt: input.imageAssetId ? new Date() : null,
       },
     });
 

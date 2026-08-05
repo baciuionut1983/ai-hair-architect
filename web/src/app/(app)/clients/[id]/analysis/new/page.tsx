@@ -1,12 +1,12 @@
 "use client";
 
-import { ArrowLeft, Users } from "lucide-react";
+import { ArrowLeft, Upload, Users } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useState } from "react";
 
 import { ColorPlanView, TechnicalCutPlanView, TreatmentPlanView } from "@/components/analysis";
-import { Alert, Button, Card, ErrorState, Input, LoadingState, Select, Textarea } from "@/components/ui";
+import { Alert, Button, Card, ErrorState, Input, LoadingState, Select, Tabs, Textarea } from "@/components/ui";
 import {
   DENSITY_OPTIONS,
   DESIRED_COLOR_RESULT_OPTIONS,
@@ -24,7 +24,14 @@ import {
   TARGET_SHAPE_OPTIONS,
   TREATMENT_GOAL_DETAIL_OPTIONS
 } from "@/lib/analysis-field-options";
-import type { AnalysisGoal, AnalysisResponse, ConsultationCreateRequest } from "@/lib/contracts";
+import type {
+  AnalysisGoal,
+  AnalysisResponse,
+  ConsultationCreateRequest,
+  DensityLevel,
+  HairType,
+  PorosityLevel
+} from "@/lib/contracts";
 
 import {
   type AnalysisFormValues,
@@ -37,6 +44,26 @@ import {
 import { useClientProfile } from "../../use-client-profile";
 
 type WizardPhase = "form" | "submitted";
+type EntryMode = "manual" | "photo";
+type PhotoStep = "pick" | "consent" | "review";
+
+const ENTRY_MODE_TABS = [
+  { value: "manual", label: "Manual" },
+  { value: "photo", label: "From a photo" }
+];
+
+interface PhotoAnalysisPayload {
+  hairType?: string | null;
+  density?: string | null;
+  porosity?: string | null;
+  faceShape?: string | null;
+  headShape?: string | null;
+  hairLength?: string | null;
+  hairTexture?: string | null;
+  hairCondition?: string | null;
+  growthPattern?: string | null;
+  targetShape?: string | null;
+}
 
 export default function NewAnalysisPage() {
   const params = useParams<{ id: string }>();
@@ -44,6 +71,7 @@ export default function NewAnalysisPage() {
   const clientState = useClientProfile(clientId);
 
   const [wizardPhase, setWizardPhase] = useState<WizardPhase>("form");
+  const [entryMode, setEntryMode] = useState<EntryMode>("manual");
   const [form, setForm] = useState<AnalysisFormValues>(DEFAULT_ANALYSIS_FORM);
   const [startError, setStartError] = useState<string | null>(null);
   const [startBusy, setStartBusy] = useState(false);
@@ -58,6 +86,128 @@ export default function NewAnalysisPage() {
   const [consultationError, setConsultationError] = useState<string | null>(null);
   const [consultationBusy, setConsultationBusy] = useState(false);
   const [consultationSaved, setConsultationSaved] = useState(false);
+
+  const [photoStep, setPhotoStep] = useState<PhotoStep>("pick");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [assetId, setAssetId] = useState<string | null>(null);
+
+  const [consentChecked, setConsentChecked] = useState(false);
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const [requestBusy, setRequestBusy] = useState(false);
+  const [photoPayload, setPhotoPayload] = useState<PhotoAnalysisPayload | null>(null);
+
+  const [photoGoal, setPhotoGoal] = useState<AnalysisGoal | "">("");
+  const [photoHairType, setPhotoHairType] = useState<HairType | "">("");
+  const [photoDensity, setPhotoDensity] = useState<DensityLevel | "">("");
+  const [photoPorosity, setPhotoPorosity] = useState<PorosityLevel | "">("");
+  const [finalizeError, setFinalizeError] = useState<string | null>(null);
+  const [finalizeBusy, setFinalizeBusy] = useState(false);
+
+  async function handleUploadPhoto() {
+    if (!selectedFile) {
+      setUploadError("Choose a photo first.");
+      return;
+    }
+
+    setUploadBusy(true);
+    setUploadError(null);
+    try {
+      const formData = new FormData();
+      formData.set("clientId", clientId);
+      formData.append("files", selectedFile);
+
+      const response = await fetch("/api/v1/uploads", { method: "POST", body: formData });
+      const data = (await response.json()) as { assets?: { assetId: string }[]; error?: string };
+
+      if (!response.ok || !data.assets?.[0]) {
+        setUploadError(data.error || "Could not upload the photo. Please try again.");
+        return;
+      }
+
+      setAssetId(data.assets[0].assetId);
+      setPhotoStep("consent");
+    } catch {
+      setUploadError("Could not upload the photo. Please try again.");
+    } finally {
+      setUploadBusy(false);
+    }
+  }
+
+  async function handleRequestAiAnalysis() {
+    if (!assetId || !consentChecked) return;
+
+    setRequestBusy(true);
+    setRequestError(null);
+    try {
+      const response = await fetch(`/api/v1/image-analyses/${assetId}/request-ai-analysis`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ consent: true })
+      });
+      const data = (await response.json()) as {
+        analysis?: { analysisPayload?: PhotoAnalysisPayload };
+        error?: string;
+      };
+
+      if (!response.ok || !data.analysis) {
+        setRequestError(data.error || "Could not request the AI analysis. Please try again.");
+        return;
+      }
+
+      const payload = data.analysis.analysisPayload ?? {};
+      setPhotoPayload(payload);
+      setPhotoDensity(isDensity(payload.density) ? payload.density : "");
+      setPhotoPorosity(isPorosity(payload.porosity) ? payload.porosity : "");
+      setPhotoStep("review");
+    } catch {
+      setRequestError("Could not request the AI analysis. Please try again.");
+    } finally {
+      setRequestBusy(false);
+    }
+  }
+
+  async function handleFinalizePhotoAnalysis() {
+    if (!assetId || !photoGoal || !photoHairType) {
+      setFinalizeError("Select a goal and a hair type before continuing.");
+      return;
+    }
+
+    setFinalizeBusy(true);
+    setFinalizeError(null);
+    try {
+      const body: Record<string, unknown> = {
+        corrections: {},
+        finalizeToM8: true,
+        goal: photoGoal,
+        hairType: photoHairType
+      };
+      if (photoDensity) body.density = photoDensity;
+      if (photoPorosity) body.porosity = photoPorosity;
+
+      const response = await fetch(`/api/v1/image-analyses/${assetId}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const data = (await response.json()) as { result?: AnalysisResponse; error?: string; message?: string };
+
+      if (!response.ok || !data.result) {
+        setFinalizeError(data.message || data.error || "Could not finalize the analysis. Please try again.");
+        return;
+      }
+
+      setAnalysisResult(data.result);
+      setClarificationInputs(data.result.followUpQuestions.map(() => ""));
+      setConsultationSummary(data.result.recommendations.join(" "));
+      setWizardPhase("submitted");
+    } catch {
+      setFinalizeError("Could not finalize the analysis. Please try again.");
+    } finally {
+      setFinalizeBusy(false);
+    }
+  }
 
   function handleGoalChange(goal: AnalysisGoal | "") {
     setForm({
@@ -179,6 +329,7 @@ export default function NewAnalysisPage() {
 
   function handleStartNewAnalysis() {
     setWizardPhase("form");
+    setEntryMode("manual");
     setForm(DEFAULT_ANALYSIS_FORM);
     setStartError(null);
     setAnalysisResult(null);
@@ -188,6 +339,19 @@ export default function NewAnalysisPage() {
     setConsultationSteps("");
     setConsultationError(null);
     setConsultationSaved(false);
+
+    setPhotoStep("pick");
+    setSelectedFile(null);
+    setUploadError(null);
+    setAssetId(null);
+    setConsentChecked(false);
+    setRequestError(null);
+    setPhotoPayload(null);
+    setPhotoGoal("");
+    setPhotoHairType("");
+    setPhotoDensity("");
+    setPhotoPorosity("");
+    setFinalizeError(null);
   }
 
   if (clientState.status === "loading") {
@@ -247,6 +411,10 @@ export default function NewAnalysisPage() {
       </div>
 
       {wizardPhase === "form" ? (
+        <Tabs items={ENTRY_MODE_TABS} value={entryMode} onChange={(value) => setEntryMode(value as EntryMode)} />
+      ) : null}
+
+      {wizardPhase === "form" && entryMode === "manual" ? (
         <Card className="flex flex-col gap-4">
           <Select
             label="Goal"
@@ -362,6 +530,128 @@ export default function NewAnalysisPage() {
         </Card>
       ) : null}
 
+      {wizardPhase === "form" && entryMode === "photo" ? (
+        <Card className="flex flex-col gap-4">
+          {photoStep === "pick" ? (
+            <>
+              <p className="text-sm text-muted">
+                Choose a photo of the client&apos;s hair. It will be analyzed by AI once you confirm consent on the
+                next step.
+              </p>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
+                className="text-sm text-foreground"
+              />
+              {uploadError ? <Alert variant="error">{uploadError}</Alert> : null}
+              <Button type="button" onClick={handleUploadPhoto} loading={uploadBusy} disabled={!selectedFile}>
+                <Upload className="mr-2 h-4 w-4" aria-hidden="true" />
+                Upload photo
+              </Button>
+            </>
+          ) : null}
+
+          {photoStep === "consent" ? (
+            <>
+              <p className="text-sm text-foreground">Photo uploaded. AI analysis requires explicit consent.</p>
+              <label className="flex items-start gap-2 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  checked={consentChecked}
+                  onChange={(event) => setConsentChecked(event.target.checked)}
+                  className="mt-1"
+                />
+                I have the client&apos;s consent to send this photo to an external AI provider for analysis.
+              </label>
+              {requestError ? <Alert variant="error">{requestError}</Alert> : null}
+              <Button type="button" onClick={handleRequestAiAnalysis} loading={requestBusy} disabled={!consentChecked}>
+                Request AI analysis
+              </Button>
+            </>
+          ) : null}
+
+          {photoStep === "review" && photoPayload ? (
+            <>
+              <h2 className="text-sm font-semibold text-foreground">What the AI detected</h2>
+              <ul className="list-inside list-disc text-sm text-muted">
+                {photoPayload.hairType ? <li>Hair texture: {photoPayload.hairType}</li> : null}
+                {photoPayload.faceShape ? <li>Face shape: {photoPayload.faceShape}</li> : null}
+                {photoPayload.headShape ? <li>Head shape: {photoPayload.headShape}</li> : null}
+                {photoPayload.hairLength ? <li>Hair length: {photoPayload.hairLength}</li> : null}
+                {photoPayload.hairCondition ? <li>Hair condition: {photoPayload.hairCondition}</li> : null}
+                {photoPayload.growthPattern ? <li>Growth pattern: {photoPayload.growthPattern}</li> : null}
+                {photoPayload.targetShape ? <li>Target shape: {photoPayload.targetShape}</li> : null}
+              </ul>
+
+              <p className="text-xs text-muted">
+                A few details the AI can&apos;t determine from a photo alone -- confirm them to continue.
+              </p>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <Select
+                  label="Goal"
+                  value={photoGoal}
+                  onChange={(event) => setPhotoGoal(event.target.value as AnalysisGoal | "")}
+                >
+                  <option value="">Select a goal...</option>
+                  {GOAL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+                <Select
+                  label="Hair type"
+                  value={photoHairType}
+                  onChange={(event) => setPhotoHairType(event.target.value as HairType | "")}
+                >
+                  <option value="">Select a hair type...</option>
+                  {HAIR_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+                <Select
+                  label="Density"
+                  value={photoDensity}
+                  onChange={(event) => setPhotoDensity(event.target.value as DensityLevel | "")}
+                >
+                  <option value="">Select density...</option>
+                  {DENSITY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+                <Select
+                  label="Porosity"
+                  value={photoPorosity}
+                  onChange={(event) => setPhotoPorosity(event.target.value as PorosityLevel | "")}
+                >
+                  <option value="">Select porosity...</option>
+                  {POROSITY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              {finalizeError ? <Alert variant="error">{finalizeError}</Alert> : null}
+              <Button
+                type="button"
+                onClick={handleFinalizePhotoAnalysis}
+                loading={finalizeBusy}
+                disabled={!photoGoal || !photoHairType || !photoDensity || !photoPorosity}
+              >
+                Continue to recommendations
+              </Button>
+            </>
+          ) : null}
+        </Card>
+      ) : null}
+
       {wizardPhase === "submitted" && analysisResult ? (
         <div className="flex flex-col gap-6">
           <Alert variant={analysisResult.phase === "ready" ? "success" : "info"}>
@@ -447,6 +737,14 @@ export default function NewAnalysisPage() {
       ) : null}
     </div>
   );
+}
+
+function isDensity(value: string | null | undefined): value is DensityLevel {
+  return DENSITY_OPTIONS.some((option) => option.value === value);
+}
+
+function isPorosity(value: string | null | undefined): value is PorosityLevel {
+  return POROSITY_OPTIONS.some((option) => option.value === value);
 }
 
 function OptionalSelect<T extends string>({

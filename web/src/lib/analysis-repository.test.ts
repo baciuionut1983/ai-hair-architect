@@ -79,6 +79,35 @@ describe("analysis-repository", () => {
     });
   });
 
+  it("persists null imageAssetId/imageAnalysisId/m8DraftCreatedAt for the manual flow (no photo provenance)", async () => {
+    prismaMocks.clientFindFirst.mockResolvedValue({ id: "client-1" });
+    prismaMocks.analysisCreate.mockResolvedValue(analysisRow());
+
+    await createAnalysisForOwner("owner-1", "client-1", createInput());
+
+    expect(prismaMocks.analysisCreate.mock.calls[0][0].data).toMatchObject({
+      imageAssetId: null,
+      imageAnalysisId: null,
+      m8DraftCreatedAt: null,
+    });
+  });
+
+  it("persists imageAssetId/imageAnalysisId and stamps m8DraftCreatedAt for a photo-derived Analysis (M31 GO-4)", async () => {
+    prismaMocks.clientFindFirst.mockResolvedValue({ id: "client-1" });
+    prismaMocks.analysisCreate.mockResolvedValue(analysisRow());
+
+    await createAnalysisForOwner("owner-1", "client-1", {
+      ...createInput(),
+      imageAssetId: "asset-1",
+      imageAnalysisId: "image-analysis-1",
+    });
+
+    const data = prismaMocks.analysisCreate.mock.calls[0][0].data;
+    expect(data.imageAssetId).toBe("asset-1");
+    expect(data.imageAnalysisId).toBe("image-analysis-1");
+    expect(data.m8DraftCreatedAt).toBeInstanceOf(Date);
+  });
+
   it("rejects missing or soft-deleted Clients without creating an Analysis", async () => {
     prismaMocks.clientFindFirst.mockResolvedValue(null);
 
