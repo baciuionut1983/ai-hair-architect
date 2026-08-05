@@ -152,6 +152,9 @@ model User {
   videoLessons                  VideoLesson[]
   emailNotifications            EmailNotification[]
   authTokens                    AuthToken[]
+  clientPhotos                  ClientPhoto[]
+  clientFormulas                ClientFormula[]
+  clientTreatments              ClientTreatment[]
 }
 
 model Session {
@@ -175,13 +178,13 @@ enum AuthTokenPurpose {
 // token for the same user+purpose deletes any prior unused one first, so
 // there is never more than one active token to guess against.
 model AuthToken {
-  id        String            @id @default(cuid())
+  id        String           @id @default(cuid())
   userId    String
   purpose   AuthTokenPurpose
-  tokenHash String            @db.VarChar(64)
+  tokenHash String           @db.VarChar(64)
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime          @default(now())
+  createdAt DateTime         @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -191,26 +194,29 @@ model AuthToken {
 }
 
 model Client {
-  id            String         @id @default(uuid())
-  ownerUserId   String
-  fullName      String         @db.VarChar(200)
-  email         String?        @db.VarChar(320)
-  phone         String?        @db.VarChar(40)
-  notes         String?        @db.VarChar(4000)
-  deletedAt     DateTime?      @db.Timestamp(6)
-  createdAt     DateTime       @default(now()) @db.Timestamp(6)
-  updatedAt     DateTime       @updatedAt @db.Timestamp(6)
-  owner         User           @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
-  analyses      Analysis[]
-  consultations Consultation[]
-  appointments  Appointment[]
+  id               String            @id @default(uuid())
+  ownerUserId      String
+  fullName         String            @db.VarChar(200)
+  email            String?           @db.VarChar(320)
+  phone            String?           @db.VarChar(40)
+  notes            String?           @db.VarChar(4000)
+  deletedAt        DateTime?         @db.Timestamp(6)
+  createdAt        DateTime          @default(now()) @db.Timestamp(6)
+  updatedAt        DateTime          @updatedAt @db.Timestamp(6)
+  owner            User              @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  analyses         Analysis[]
+  consultations    Consultation[]
+  appointments     Appointment[]
+  clientPhotos     ClientPhoto[]
+  clientFormulas   ClientFormula[]
+  clientTreatments ClientTreatment[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
 }
 
 model Analysis {
-  id                   String         @id
+  id                   String            @id
   clientId             String
   ownerUserId          String
   goal                 String
@@ -243,13 +249,15 @@ model Analysis {
   imageAnalysisId      String?
   m8DraftCreatedAt     DateTime?
   m8FinalizedAt        DateTime?
-  createdAt            DateTime       @default(now())
-  updatedAt            DateTime       @updatedAt
-  owner                User           @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  client               Client         @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
-  imageAsset           ImageAsset?    @relation(fields: [imageAssetId], references: [id], onDelete: SetNull)
-  imageAnalysis        ImageAnalysis? @relation(fields: [imageAnalysisId], references: [id], onDelete: SetNull)
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+  owner                User              @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client               Client            @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  imageAsset           ImageAsset?       @relation(fields: [imageAssetId], references: [id], onDelete: SetNull)
+  imageAnalysis        ImageAnalysis?    @relation(fields: [imageAnalysisId], references: [id], onDelete: SetNull)
   consultations        Consultation[]
+  sourcedFormulas      ClientFormula[]
+  sourcedTreatments    ClientTreatment[]
 
   @@unique([id, ownerUserId, clientId])
   @@index([ownerUserId])
@@ -257,6 +265,76 @@ model Analysis {
   @@index([ownerUserId, clientId])
   @@index([imageAssetId])
   @@index([imageAnalysisId])
+}
+
+// M28: real Postgres persistence for the client CRM history that had been
+// in-memory only (milestone1-store.ts) since the M2/M3 era. ClientPhoto is
+// the CRM gallery entry (caption + URL), deliberately distinct from
+// ImageAsset (the real object-storage-backed photo used by the M15/M18
+// Gemini vision pipeline) -- the two are not unified in M28.
+model ClientPhoto {
+  id          String   @id @default(uuid())
+  clientId    String
+  ownerUserId String
+  imageUrl    String
+  caption     String?
+  createdAt   DateTime @default(now()) @db.Timestamp(6)
+
+  owner  User   @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client Client @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([clientId, ownerUserId, createdAt, id])
+}
+
+// M28: sourceAnalysisId is a nullable, purely-traceability link to the
+// Analysis (M8/M27) whose TechnicalCutPlan/ColorPlan/TreatmentPlan may have
+// informed this real, professional-logged service. It is never populated
+// automatically and never required -- a formula logged with no AI
+// involvement at all remains fully valid. The composite FK (with
+// ownerUserId+clientId) makes it impossible at the database level to link
+// an Analysis belonging to a different owner or a different client.
+model ClientFormula {
+  id               String   @id @default(uuid())
+  clientId         String
+  ownerUserId      String
+  formulaName      String
+  formulaDetails   String
+  sourceAnalysisId String?
+  createdAt        DateTime @default(now()) @db.Timestamp(6)
+
+  owner          User      @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client         Client    @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  // Restrict, not SetNull: a composite SetNull would need to null out
+  // ownerUserId/clientId too (same relation), but those are required --
+  // Prisma warns this is unsafe. Restrict also matches the project's
+  // dominant convention for owner/client FKs. Analysis has no delete route
+  // today, so this is theoretical protection: an Analysis referenced by
+  // CRM history cannot be deleted until the link is explicitly removed in
+  // a future milestone -- accepted and intended, for traceability.
+  sourceAnalysis Analysis? @relation(fields: [sourceAnalysisId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([clientId, ownerUserId, createdAt, id])
+  @@index([sourceAnalysisId])
+}
+
+// M28: same shape and same sourceAnalysisId semantics as ClientFormula,
+// for treatments actually performed rather than color formulas applied.
+model ClientTreatment {
+  id               String   @id @default(uuid())
+  clientId         String
+  ownerUserId      String
+  treatmentName    String
+  treatmentDetails String
+  sourceAnalysisId String?
+  createdAt        DateTime @default(now()) @db.Timestamp(6)
+
+  owner          User      @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client         Client    @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  // See ClientFormula.sourceAnalysis for why Restrict (not SetNull) is used.
+  sourceAnalysis Analysis? @relation(fields: [sourceAnalysisId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([clientId, ownerUserId, createdAt, id])
+  @@index([sourceAnalysisId])
 }
 
 model Consultation {
@@ -317,7 +395,7 @@ model Notification {
 }
 
 model ImageAsset {
-  id                    String          @id @default(uuid())
+  id                    String                  @id @default(uuid())
   fileName              String
   mimeType              String
   sizeBytes             Int
@@ -334,21 +412,21 @@ model ImageAsset {
   storageMigratedAt     DateTime?               @db.Timestamp(6)
   objectDeletedAt       DateTime?               @db.Timestamp(6)
   lastStorageErrorCode  String?                 @db.VarChar(80)
-  exifStripped          Boolean         @default(false)
-  normalizedOrientation Int             @default(0)
-  uploadedAt            DateTime        @default(now())
+  exifStripped          Boolean                 @default(false)
+  normalizedOrientation Int                     @default(0)
+  uploadedAt            DateTime                @default(now())
   deletedAt             DateTime?
   retentionDeletesAt    DateTime?
-  createdAt             DateTime        @default(now())
-  updatedAt             DateTime        @updatedAt
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
   analyses              ImageAnalysis[]
   analysisResults       Analysis[]
 
+  @@unique([storageBucketAlias, storageKey])
   @@index([ownerUserId])
   @@index([clientId])
   @@index([ownerUserId, clientId])
   @@index([deletedAt])
-  @@unique([storageBucketAlias, storageKey])
   @@index([ownerUserId, storageState, id])
   @@index([storageState, retentionDeletesAt, id])
 }
