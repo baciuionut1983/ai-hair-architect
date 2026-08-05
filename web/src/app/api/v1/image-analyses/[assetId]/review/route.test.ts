@@ -10,6 +10,7 @@ const prismaMock = vi.hoisted(() => ({
 const serviceMock = vi.hoisted(() => ({ reviewAnalysis: vi.fn() }));
 
 vi.mock("@/lib/prisma", () => ({
+  isDatabaseConfigured: () => true,
   prisma: {
     session: { findUnique: prismaMock.sessionFindUnique },
     imageAsset: { findUnique: prismaMock.imageAssetFindUnique },
@@ -23,7 +24,7 @@ vi.mock("@/lib/image-analysis-service", () => ({
 
 import { POST } from "./route";
 
-function invoke(assetId: string, token?: string, body?: unknown): Promise<Response> {
+function invoke(assetId: string, token?: string, body?: unknown, cookie?: string): Promise<Response> {
   const request = new Request(`http://localhost/api/v1/image-analyses/${assetId}/review`, {
     method: "POST",
     headers: {
@@ -32,7 +33,14 @@ function invoke(assetId: string, token?: string, body?: unknown): Promise<Respon
     },
     body: JSON.stringify(body ?? { corrections: {}, finalizeToM8: false }),
   });
+  attachCookies(request, cookie);
   return POST(request as never, { params: Promise.resolve({ assetId }) });
+}
+
+function attachCookies(request: Request, cookie: string | undefined): void {
+  Object.defineProperty(request, "cookies", {
+    value: { get: (name: string) => (cookie && name === "aha_session" ? { name, value: cookie } : undefined) },
+  });
 }
 
 function activeSession(user: { id: string }) {
@@ -41,6 +49,18 @@ function activeSession(user: { id: string }) {
 
 function expiredSession(user: { id: string }) {
   return { user, expiresAt: new Date(Date.now() - 1000) };
+}
+
+function fullUser(id: string) {
+  return {
+    id,
+    email: `${id}@example.com`,
+    role: "professional",
+    locale: "en",
+    passwordHash: "hashed",
+    createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    emailVerifiedAt: new Date("2026-08-01T00:00:00.000Z"),
+  };
 }
 
 describe("POST /api/v1/image-analyses/[assetId]/review", () => {
@@ -154,6 +174,32 @@ describe("POST /api/v1/image-analyses/[assetId]/review", () => {
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({ error: "ANALYSIS_STATE_INTEGRITY_ERROR" });
+    expect(serviceMock.reviewAnalysis).not.toHaveBeenCalled();
+  });
+
+  it("accepts a valid Postgres-backed cookie session (M31 GO-4 dual resolver)", async () => {
+    const userId = randomUUID();
+    const assetId = "asset-1";
+    prismaMock.sessionFindUnique.mockResolvedValue({ expiresAt: new Date(Date.now() + 60_000), user: fullUser(userId) });
+    prismaMock.imageAssetFindUnique.mockResolvedValue({
+      id: assetId,
+      ownerUserId: userId,
+      clientId: "client-1",
+      analyses: [{ id: "analysis-1" }],
+    });
+    serviceMock.reviewAnalysis.mockResolvedValue({ id: "analysis-1", status: "reviewed" });
+
+    const response = await invoke(assetId, undefined, { corrections: {}, finalizeToM8: false }, "cookie-token");
+
+    expect(response.status).toBe(200);
+  });
+
+  it("rejects an expired cookie session with no fallback to the in-memory session store", async () => {
+    prismaMock.sessionFindUnique.mockResolvedValue({ expiresAt: new Date(Date.now() - 1000), user: fullUser(randomUUID()) });
+
+    const response = await invoke("asset-1", undefined, { corrections: {}, finalizeToM8: false }, "expired-cookie-token");
+
+    expect(response.status).toBe(401);
     expect(serviceMock.reviewAnalysis).not.toHaveBeenCalled();
   });
 });

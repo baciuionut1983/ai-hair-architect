@@ -10,6 +10,7 @@ const repositoryMock = vi.hoisted(() => ({
 const serviceMock = vi.hoisted(() => ({ processImageAnalysis: vi.fn() }));
 
 vi.mock("@/lib/prisma", () => ({
+  isDatabaseConfigured: () => true,
   prisma: { session: { findUnique: prismaMock.sessionFindUnique } },
 }));
 
@@ -32,7 +33,7 @@ import { PROCESSING_RESULT_HTTP_STATUS } from "@/lib/image-analysis-processing-s
 
 import { POST } from "./route";
 
-function invoke(assetId: string, token?: string, body?: unknown): Promise<Response> {
+function invoke(assetId: string, token?: string, body?: unknown, cookie?: string): Promise<Response> {
   const request = new Request(`http://localhost/api/v1/image-analyses/${assetId}/request-ai-analysis`, {
     method: "POST",
     headers: {
@@ -41,7 +42,26 @@ function invoke(assetId: string, token?: string, body?: unknown): Promise<Respon
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
+  attachCookies(request, cookie);
   return POST(request as never, { params: Promise.resolve({ assetId }) });
+}
+
+function attachCookies(request: Request, cookie: string | undefined): void {
+  Object.defineProperty(request, "cookies", {
+    value: { get: (name: string) => (cookie && name === "aha_session" ? { name, value: cookie } : undefined) },
+  });
+}
+
+function fullUser(id: string, role: string) {
+  return {
+    id,
+    email: `${id}@example.com`,
+    role,
+    locale: "en",
+    passwordHash: "hashed",
+    createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    emailVerifiedAt: new Date("2026-08-01T00:00:00.000Z"),
+  };
 }
 
 function sanitizedFixture() {
@@ -259,5 +279,26 @@ describe("POST /api/v1/image-analyses/[assetId]/request-ai-analysis", () => {
     }
     expect(lastResponse?.status).toBe(429);
     expect(serviceMock.processImageAnalysis).toHaveBeenCalledTimes(20);
+  });
+
+  it("accepts a valid Postgres-backed cookie session (M31 GO-4 dual resolver)", async () => {
+    const userId = randomUUID();
+    prismaMock.sessionFindUnique.mockResolvedValue({ expiresAt: new Date(Date.now() + 60_000), user: fullUser(userId, "professional") });
+    repositoryMock.queueAnalysisForExternalProvider.mockResolvedValue({ analysisId: "analysis-1", created: true });
+    repositoryMock.recordExternalAiConsent.mockResolvedValue(undefined);
+    serviceMock.processImageAnalysis.mockResolvedValue({ outcome: "succeeded", analysis: sanitizedFixture() });
+
+    const response = await invoke(randomUUID(), undefined, { consent: true }, "cookie-token");
+
+    expect(response.status).toBe(200);
+  });
+
+  it("rejects an expired cookie session with no fallback to the in-memory session store", async () => {
+    prismaMock.sessionFindUnique.mockResolvedValue({ expiresAt: new Date(Date.now() - 1000), user: fullUser(randomUUID(), "professional") });
+
+    const response = await invoke(randomUUID(), undefined, { consent: true }, "expired-cookie-token");
+
+    expect(response.status).toBe(401);
+    expect(repositoryMock.queueAnalysisForExternalProvider).not.toHaveBeenCalled();
   });
 });

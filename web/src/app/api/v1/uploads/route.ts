@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { uploadAndAnalyzeImages } from '@/lib/image-analysis-service';
 import { checkRateLimit, getRateLimitStatus } from '@/lib/rate-limiter';
 import { checkRole } from '@/lib/auth-role';
-import { authenticateSessionUser } from '@/lib/session-auth';
+import { resolvePipelineAuth } from '@/lib/image-pipeline-auth';
 
 export async function POST(req: NextRequest) {
   try {
-    const user = await authenticateSessionUser(req);
+    const user = await resolvePipelineAuth(req);
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }

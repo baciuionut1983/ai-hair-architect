@@ -14,7 +14,7 @@ const { PRISMA_MOCK, REPOSITORY_FIND_MOCK, RESOLVE_STORAGE_MOCK } = vi.hoisted((
   RESOLVE_STORAGE_MOCK: vi.fn(),
 }));
 
-vi.mock('@/lib/prisma', () => ({ prisma: PRISMA_MOCK }));
+vi.mock('@/lib/prisma', () => ({ isDatabaseConfigured: () => true, prisma: PRISMA_MOCK }));
 
 vi.mock('@/lib/image-storage', async () => {
   const actual = await vi.importActual<typeof import('@/lib/image-storage')>('@/lib/image-storage');
@@ -41,10 +41,23 @@ import { ObjectStorageError } from '@/lib/object-storage-errors';
 const OWNER_ID = '11111111-1111-4111-8111-111111111111';
 const ASSET_ID = '33333333-3333-4333-8333-333333333333';
 
-function request(token: string | null): Request {
+function request(token: string | null, cookie?: string): Request {
   const headers = new Headers();
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  return { headers } as unknown as Request;
+  const cookies = { get: (name: string) => (cookie && name === 'aha_session' ? { name, value: cookie } : undefined) };
+  return { headers, cookies } as unknown as Request;
+}
+
+function fullUser(id: string) {
+  return {
+    id,
+    email: `${id}@example.com`,
+    role: 'professional',
+    locale: 'en',
+    passwordHash: 'hashed',
+    createdAt: new Date('2026-08-01T00:00:00.000Z'),
+    emailVerifiedAt: new Date('2026-08-01T00:00:00.000Z'),
+  };
 }
 
 function ctx(id: string = ASSET_ID) {
@@ -352,6 +365,31 @@ describe('GET /api/v1/image-assets/[id]/content', () => {
 
     expect(response.headers.get('Content-Disposition')).not.toContain('"evil"');
     expect(response.headers.get('Content-Disposition')).toBe('inline; filename="evil.jpg"');
+  });
+
+  it('23. accepts a valid Postgres-backed cookie session (M31 GO-4 dual resolver)', async () => {
+    PRISMA_MOCK.session.findUnique.mockResolvedValue({
+      user: fullUser(OWNER_ID),
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    PRISMA_MOCK.imageAsset.findFirst.mockResolvedValue({ ...BASE_ASSET, storagePath: '/storage/x/photo.jpg' });
+    vi.mocked(createConfinedImageReadStream).mockResolvedValue({ stream: nodeReadable('hello') as never, sizeBytes: 5 });
+
+    const response = await GET(request(null, 'cookie-token') as never, ctx());
+
+    expect(response.status).toBe(200);
+  });
+
+  it('24. rejects an expired cookie session with no fallback to the in-memory session store', async () => {
+    PRISMA_MOCK.session.findUnique.mockResolvedValue({
+      user: fullUser(OWNER_ID),
+      expiresAt: new Date(Date.now() - 1000),
+    });
+
+    const response = await GET(request(null, 'expired-cookie-token') as never, ctx());
+
+    expect(response.status).toBe(401);
+    expect(PRISMA_MOCK.imageAsset.findFirst).not.toHaveBeenCalled();
   });
 });
 

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { deleteImageFile } from '@/lib/image-storage';
-import { authenticateSessionUser } from '@/lib/session-auth';
+import { resolvePipelineAuth } from '@/lib/image-pipeline-auth';
 
 export async function GET(
   req: NextRequest,
@@ -9,7 +9,7 @@ export async function GET(
 ) {
   try {
     const { assetId } = await params;
-    const user = await authenticateSessionUser(req);
+    const user = await resolvePipelineAuth(req);
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
@@ -50,7 +50,7 @@ export async function DELETE(
 ) {
   try {
     const { assetId } = await params;
-    const user = await authenticateSessionUser(req);
+    const user = await resolvePipelineAuth(req);
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }

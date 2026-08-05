@@ -8,7 +8,7 @@ import { createObjectStorageAliasResolver } from '@/lib/object-storage-alias-res
 import { ObjectStorageError } from '@/lib/object-storage-errors';
 import { toExactObjectReference } from '@/lib/object-storage';
 import { prisma } from '@/lib/prisma';
-import { authenticateSessionUser } from '@/lib/session-auth';
+import { resolvePipelineAuth } from '@/lib/image-pipeline-auth';
 
 const SERVABLE_OBJECT_STATES = new Set(['available', 'delete_pending']);
 
@@ -22,7 +22,7 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  const user = await authenticateSessionUser(req);
+  const user = await resolvePipelineAuth(req);
   if (!user) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }

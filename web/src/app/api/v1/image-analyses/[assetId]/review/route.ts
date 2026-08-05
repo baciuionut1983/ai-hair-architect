@@ -3,7 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { reviewAnalysis } from '@/lib/image-analysis-service';
 import { mapAnalysisToM8Draft } from '@/lib/image-analysis-m8-mapper';
 import { ImageAnalysisResult } from '@/lib/image-analysis-provider';
-import { authenticateSessionUser } from '@/lib/session-auth';
+import { resolvePipelineAuth } from '@/lib/image-pipeline-auth';
 
 export async function POST(
   req: NextRequest,
@@ -11,7 +11,7 @@ export async function POST(
 ) {
   try {
     const { assetId } = await params;
-    const user = await authenticateSessionUser(req);
+    const user = await resolvePipelineAuth(req);
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }

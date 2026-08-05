@@ -1,13 +1,161 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getImagePipelineAuthToken, ImagePipelineAuthNotConfiguredError } from "./image-pipeline-auth";
+const authPersistenceMock = vi.hoisted(() => ({
+  findPersistenceUserBySessionToken: vi.fn(),
+}));
+const sessionAuthMock = vi.hoisted(() => ({
+  authenticateSessionUser: vi.fn(),
+}));
 
-describe("getImagePipelineAuthToken", () => {
-  it("always throws ImagePipelineAuthNotConfiguredError, never silently returns a token", () => {
-    expect(() => getImagePipelineAuthToken()).toThrow(ImagePipelineAuthNotConfiguredError);
+vi.mock("@/lib/auth-persistence", () => authPersistenceMock);
+vi.mock("@/lib/session-auth", () => sessionAuthMock);
+
+import { resolvePipelineAuth } from "./image-pipeline-auth";
+import type { NextRequest } from "next/server";
+
+const COOKIE_USER = { id: "user-cookie", email: "cookie@example.com", role: "professional", locale: "en" };
+const BEARER_USER = { id: "user-bearer", email: "bearer@example.com", role: "professional", locale: "en" };
+
+function request(options: { cookie?: string; bearer?: string }): NextRequest {
+  const headers = new Headers();
+  if (options.bearer !== undefined) {
+    headers.set("Authorization", `Bearer ${options.bearer}`);
+  }
+
+  return {
+    headers,
+    cookies: {
+      get: (name: string) =>
+        name === "aha_session" && options.cookie !== undefined ? { name, value: options.cookie } : undefined,
+    },
+  } as unknown as NextRequest;
+}
+
+describe("resolvePipelineAuth", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
   });
 
-  it("throws a message pointing at the unresolved decision, not a generic error", () => {
-    expect(() => getImagePipelineAuthToken()).toThrow(/authentication strategy is not yet decided/);
+  it("returns null when no credentials are presented", async () => {
+    const result = await resolvePipelineAuth(request({}));
+
+    expect(result).toBeNull();
+    expect(authPersistenceMock.findPersistenceUserBySessionToken).not.toHaveBeenCalled();
+    expect(sessionAuthMock.authenticateSessionUser).not.toHaveBeenCalled();
+  });
+
+  it("resolves a valid, unexpired cookie session (Postgres-backed)", async () => {
+    authPersistenceMock.findPersistenceUserBySessionToken.mockResolvedValue({
+      id: "user-cookie",
+      email: "cookie@example.com",
+      role: "professional",
+      locale: "en",
+      passwordHash: "hashed",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      emailVerifiedAt: "2026-08-01T00:00:00.000Z",
+    });
+
+    const result = await resolvePipelineAuth(request({ cookie: "cookie-token" }));
+
+    expect(result).toEqual(COOKIE_USER);
+    expect(authPersistenceMock.findPersistenceUserBySessionToken).toHaveBeenCalledWith("cookie-token");
+    expect(sessionAuthMock.authenticateSessionUser).not.toHaveBeenCalled();
+  });
+
+  it("never leaks passwordHash/createdAt/emailVerifiedAt from the persisted user", async () => {
+    authPersistenceMock.findPersistenceUserBySessionToken.mockResolvedValue({
+      id: "user-cookie",
+      email: "cookie@example.com",
+      role: "professional",
+      locale: "en",
+      passwordHash: "hashed",
+      createdAt: "2026-08-01T00:00:00.000Z",
+      emailVerifiedAt: "2026-08-01T00:00:00.000Z",
+    });
+
+    const result = await resolvePipelineAuth(request({ cookie: "cookie-token" }));
+
+    expect(result).not.toHaveProperty("passwordHash");
+    expect(result).not.toHaveProperty("createdAt");
+    expect(result).not.toHaveProperty("emailVerifiedAt");
+  });
+
+  it("returns null for an expired cookie session (no fallback)", async () => {
+    authPersistenceMock.findPersistenceUserBySessionToken.mockResolvedValue(null);
+
+    const result = await resolvePipelineAuth(request({ cookie: "expired-token" }));
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null for a cookie token with no matching session", async () => {
+    authPersistenceMock.findPersistenceUserBySessionToken.mockResolvedValue(null);
+
+    const result = await resolvePipelineAuth(request({ cookie: "unknown-token" }));
+
+    expect(result).toBeNull();
+  });
+
+  it("resolves a valid Bearer token via the existing hardened check", async () => {
+    sessionAuthMock.authenticateSessionUser.mockResolvedValue(BEARER_USER);
+
+    const result = await resolvePipelineAuth(request({ bearer: "bearer-token" }));
+
+    expect(result).toEqual(BEARER_USER);
+    expect(sessionAuthMock.authenticateSessionUser).toHaveBeenCalledOnce();
+    expect(authPersistenceMock.findPersistenceUserBySessionToken).not.toHaveBeenCalled();
+  });
+
+  it("returns null for an expired Bearer token", async () => {
+    sessionAuthMock.authenticateSessionUser.mockResolvedValue(null);
+
+    const result = await resolvePipelineAuth(request({ bearer: "expired-bearer" }));
+
+    expect(result).toBeNull();
+  });
+
+  it("accepts both credentials when they resolve to the same user", async () => {
+    authPersistenceMock.findPersistenceUserBySessionToken.mockResolvedValue({ ...COOKIE_USER, id: "user-1" });
+    sessionAuthMock.authenticateSessionUser.mockResolvedValue({ ...BEARER_USER, id: "user-1" });
+
+    const result = await resolvePipelineAuth(request({ cookie: "cookie-token", bearer: "bearer-token" }));
+
+    expect(result?.id).toBe("user-1");
+  });
+
+  it("fails closed (does not disclose identities) when both credentials resolve to different users", async () => {
+    authPersistenceMock.findPersistenceUserBySessionToken.mockResolvedValue(COOKIE_USER);
+    sessionAuthMock.authenticateSessionUser.mockResolvedValue(BEARER_USER);
+
+    const result = await resolvePipelineAuth(request({ cookie: "cookie-token", bearer: "bearer-token" }));
+
+    expect(result).toBeNull();
+  });
+
+  it("rejects when the cookie is valid but the presented Bearer token is invalid (no silent fallback)", async () => {
+    authPersistenceMock.findPersistenceUserBySessionToken.mockResolvedValue(COOKIE_USER);
+    sessionAuthMock.authenticateSessionUser.mockResolvedValue(null);
+
+    const result = await resolvePipelineAuth(request({ cookie: "cookie-token", bearer: "expired-bearer" }));
+
+    expect(result).toBeNull();
+  });
+
+  it("rejects when the Bearer token is valid but the presented cookie is invalid (no silent fallback)", async () => {
+    authPersistenceMock.findPersistenceUserBySessionToken.mockResolvedValue(null);
+    sessionAuthMock.authenticateSessionUser.mockResolvedValue(BEARER_USER);
+
+    const result = await resolvePipelineAuth(request({ cookie: "expired-token", bearer: "bearer-token" }));
+
+    expect(result).toBeNull();
+  });
+
+  it("rejects when both presented credentials are invalid", async () => {
+    authPersistenceMock.findPersistenceUserBySessionToken.mockResolvedValue(null);
+    sessionAuthMock.authenticateSessionUser.mockResolvedValue(null);
+
+    const result = await resolvePipelineAuth(request({ cookie: "expired-token", bearer: "expired-bearer" }));
+
+    expect(result).toBeNull();
   });
 });
