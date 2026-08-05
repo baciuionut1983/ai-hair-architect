@@ -1,12 +1,12 @@
 "use client";
 
-import { ArrowLeft, Camera, CalendarDays, FlaskConical, Sparkles, Users } from "lucide-react";
+import { ArrowLeft, Camera, CalendarDays, FlaskConical, Sparkles, Users, Wand2 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
-import { Alert, Card, EmptyState, ErrorState, LoadingState, Tabs } from "@/components/ui";
+import { Alert, Button, Card, EmptyState, ErrorState, LoadingState, Tabs } from "@/components/ui";
 import type { TabItem } from "@/components/ui";
 import type {
   AppointmentRecord,
@@ -17,11 +17,7 @@ import type {
   TreatmentRecord
 } from "@/lib/contracts";
 
-type ClientState =
-  | { status: "loading" }
-  | { status: "not-found" }
-  | { status: "error" }
-  | { status: "ready"; client: ClientRecord };
+import { useClientProfile } from "./use-client-profile";
 
 type HistoryState =
   | { status: "loading" }
@@ -36,7 +32,8 @@ type AppointmentsState =
 const TAB_ITEMS: TabItem[] = [
   { value: "overview", label: "Overview" },
   { value: "history", label: "History" },
-  { value: "appointments", label: "Appointments" }
+  { value: "appointments", label: "Appointments" },
+  { value: "ai-analysis", label: "AI Analysis" }
 ];
 
 function formatDate(iso: string): string {
@@ -52,41 +49,9 @@ export default function ClientDetailPage() {
   const clientId = params.id;
 
   const [activeTab, setActiveTab] = useState("overview");
-  const [clientState, setClientState] = useState<ClientState>({ status: "loading" });
+  const clientState = useClientProfile(clientId);
   const [historyState, setHistoryState] = useState<HistoryState>({ status: "loading" });
   const [appointmentsState, setAppointmentsState] = useState<AppointmentsState>({ status: "loading" });
-
-  useEffect(() => {
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const response = await fetch(`/api/v1/clients/${clientId}`, { method: "GET" });
-        if (cancelled) return;
-
-        if (response.status === 404) {
-          setClientState({ status: "not-found" });
-          return;
-        }
-
-        if (!response.ok) {
-          setClientState({ status: "error" });
-          return;
-        }
-
-        const payload = (await response.json()) as { client: ClientRecord };
-        setClientState({ status: "ready", client: payload.client });
-      } catch {
-        if (!cancelled) {
-          setClientState({ status: "error" });
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [clientId]);
 
   useEffect(() => {
     if (clientState.status !== "ready") {
@@ -205,7 +170,29 @@ export default function ClientDetailPage() {
       {activeTab === "overview" ? <OverviewTab client={client} /> : null}
       {activeTab === "history" ? <HistoryTab state={historyState} /> : null}
       {activeTab === "appointments" ? <AppointmentsTab state={appointmentsState} /> : null}
+      {activeTab === "ai-analysis" ? <AiAnalysisTab clientId={clientId} /> : null}
     </div>
+  );
+}
+
+// M31 GO-3: deliberately minimal -- a short explanation and a CTA into the
+// dedicated wizard at /clients/[id]/analysis/new. Not an analysis history
+// list; that's explicitly out of scope for M31.
+function AiAnalysisTab({ clientId }: { clientId: string }) {
+  return (
+    <Card className="flex flex-col items-start gap-3">
+      <Wand2 className="h-6 w-6 text-accent" aria-hidden="true" />
+      <div>
+        <p className="font-medium text-foreground">Run an AI hair analysis</p>
+        <p className="mt-1 text-sm text-muted">
+          Answer a few questions about this client&apos;s hair and goal to get a structured haircut, color, and/or
+          treatment plan.
+        </p>
+      </div>
+      <Link href={`/clients/${clientId}/analysis/new`}>
+        <Button type="button">Start a new analysis</Button>
+      </Link>
+    </Card>
   );
 }
 
