@@ -12,6 +12,9 @@ export type { CardProps, CardVariant } from "./card";
 
 export { cn } from "./cn";
 
+export { Dialog, DIALOG_BACKDROP_CLASSES, DIALOG_PANEL_CLASSES } from "./dialog";
+export type { DialogProps } from "./dialog";
+
 export { DEFAULT_LOADING_LABEL, LoadingState, LOADING_STATE_BASE_CLASSES } from "./loading-state";
 export type { LoadingStateProps } from "./loading-state";
 
@@ -29,6 +32,9 @@ export type { SelectProps } from "./select";
 
 export { getSidebarItemClasses, Sidebar } from "./sidebar";
 export type { SidebarNavItem, SidebarProps } from "./sidebar";
+
+export { getTabTriggerClasses, Tabs } from "./tabs";
+export type { TabItem, TabsProps } from "./tabs";
 
 export { getTextareaClasses, Textarea } from "./textarea";
 export type { TextareaProps } from "./textarea";

@@ -5,6 +5,7 @@ import { guardBusinessPersistence } from "@/lib/business-persistence-guards";
 import {
   clientPersistenceUnavailableResponse,
   isClientPersistenceError,
+  resolveOwnedClient,
   softDeleteClientForOwner,
   updateClientForOwner,
 } from "@/lib/client-repository";
@@ -15,6 +16,31 @@ async function requireSession() {
   const cookieStore = await cookies();
   const token = cookieStore.get("aha_session")?.value ?? null;
   return getSession(token);
+}
+
+// M30 GO-2: single-client fetch, needed by the client detail page (M30
+// GO-4). Reuses the same resolveOwnedClient helper every other
+// client-scoped route already relies on -- no new repository logic.
+export async function GET(
+  request: Request,
+  context: { params: Promise<{ id: string }> }
+) {
+  const blockedResponse = guardBusinessPersistence("clients", request);
+  if (blockedResponse) return blockedResponse;
+
+  const user = await requireSession();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { id } = await context.params;
+  const client = await resolveOwnedClient(user.id, id);
+  if (client instanceof Response) return client;
+  if (!client) {
+    return NextResponse.json({ error: "Client not found." }, { status: 404 });
+  }
+
+  return NextResponse.json({ client }, { status: 200 });
 }
 
 export async function PATCH(
