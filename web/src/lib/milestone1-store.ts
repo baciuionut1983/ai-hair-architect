@@ -7,8 +7,6 @@ import type {
   AnalyticsSnapshot,
   BackupSnapshotRecord,
   AuthSessionResponse,
-  ClientPhotoRecord,
-  FormulaRecord,
   Locale,
   OpsHealthSnapshot,
   PushPreferenceRecord,
@@ -20,7 +18,6 @@ import type {
   SubscriptionRecord,
   SubscriptionStatus,
   SupplierRecord,
-  TreatmentRecord,
   UserRole,
   WorkspaceMemberRecord,
   WorkspaceRecord
@@ -38,9 +35,6 @@ interface UserRecord {
 interface Store {
   users: UserRecord[];
   sessions: Map<string, string>;
-  photos: ClientPhotoRecord[];
-  formulas: FormulaRecord[];
-  treatments: TreatmentRecord[];
   academyCategories: AcademyCategory[];
   academyLessons: AcademyLesson[];
   products: ProductRecord[];
@@ -78,9 +72,6 @@ function createStore(): Store {
   return {
     users: [],
     sessions: new Map<string, string>(),
-    photos: [],
-    formulas: [],
-    treatments: [],
     academyCategories: [],
     academyLessons: [],
     products: [],
@@ -97,18 +88,6 @@ function createStore(): Store {
 }
 
 export const store = globalRef[globalKey] ?? (globalRef[globalKey] = createStore());
-
-if (!store.photos) {
-  store.photos = [];
-}
-
-if (!store.formulas) {
-  store.formulas = [];
-}
-
-if (!store.treatments) {
-  store.treatments = [];
-}
 
 if (!store.academyCategories) {
   store.academyCategories = [];
@@ -838,73 +817,4 @@ export function createUser(input: {
 
   store.users.push(user);
   return user;
-}
-
-export function createClientPhoto(input: {
-  clientId: string;
-  imageUrl: string;
-  caption: string;
-}): ClientPhotoRecord {
-  const record: ClientPhotoRecord = {
-    id: randomUUID(),
-    clientId: input.clientId,
-    imageUrl: input.imageUrl,
-    caption: input.caption,
-    createdAt: new Date().toISOString()
-  };
-
-  store.photos.push(record);
-  return record;
-}
-
-export function getPhotosForClientByUser(clientId: string, _userId: string): ClientPhotoRecord[] {
-  return store.photos
-    .filter((entry) => entry.clientId === clientId)
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-}
-
-export function createFormulaRecord(input: {
-  clientId: string;
-  formulaName: string;
-  formulaDetails: string;
-}): FormulaRecord {
-  const record: FormulaRecord = {
-    id: randomUUID(),
-    clientId: input.clientId,
-    formulaName: input.formulaName,
-    formulaDetails: input.formulaDetails,
-    createdAt: new Date().toISOString()
-  };
-
-  store.formulas.push(record);
-  return record;
-}
-
-export function getFormulasForClientByUser(clientId: string, _userId: string): FormulaRecord[] {
-  return store.formulas
-    .filter((entry) => entry.clientId === clientId)
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-}
-
-export function createTreatmentRecord(input: {
-  clientId: string;
-  treatmentName: string;
-  treatmentDetails: string;
-}): TreatmentRecord {
-  const record: TreatmentRecord = {
-    id: randomUUID(),
-    clientId: input.clientId,
-    treatmentName: input.treatmentName,
-    treatmentDetails: input.treatmentDetails,
-    createdAt: new Date().toISOString()
-  };
-
-  store.treatments.push(record);
-  return record;
-}
-
-export function getTreatmentsForClientByUser(clientId: string, _userId: string): TreatmentRecord[] {
-  return store.treatments
-    .filter((entry) => entry.clientId === clientId)
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }

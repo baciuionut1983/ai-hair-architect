@@ -1,14 +1,16 @@
 import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
+import {
+  ClientFormulaDependencyError,
+  clientFormulaPersistenceUnavailableResponse,
+  createClientFormulaForOwner,
+  isClientFormulaPersistenceError,
+  listClientFormulasForOwner,
+} from "@/lib/client-formula-repository";
 import { resolveOwnedClient } from "@/lib/client-repository";
 import type { FormulaCreateRequest } from "@/lib/contracts";
-import {
-  createFormulaRecord,
-  getFormulasForClientByUser,
-  getSession,
-  sanitize
-} from "@/lib/milestone1-store";
+import { getSession, sanitize } from "@/lib/milestone1-store";
 
 export async function GET(
   _request: Request,
@@ -29,7 +31,15 @@ export async function GET(
     return NextResponse.json({ error: "Client not found." }, { status: 404 });
   }
 
-  return NextResponse.json({ formulas: getFormulasForClientByUser(id, sessionUser.id) }, { status: 200 });
+  try {
+    const formulas = await listClientFormulasForOwner(sessionUser.id, id);
+    return NextResponse.json({ formulas }, { status: 200 });
+  } catch (error) {
+    if (isClientFormulaPersistenceError(error)) {
+      return clientFormulaPersistenceUnavailableResponse();
+    }
+    throw error;
+  }
 }
 
 export async function POST(
@@ -61,6 +71,26 @@ export async function POST(
     );
   }
 
-  const formula = createFormulaRecord({ clientId: client.id, formulaName, formulaDetails });
+  let formula;
+  try {
+    // M28 GO-3: sourceAnalysisId is deliberately never read from the
+    // request body here -- it is not part of the public FormulaCreateRequest
+    // contract, and wiring it up is explicitly out of scope for this package.
+    formula = await createClientFormulaForOwner({
+      clientId: client.id,
+      ownerUserId: sessionUser.id,
+      formulaName,
+      formulaDetails,
+    });
+  } catch (error) {
+    if (error instanceof ClientFormulaDependencyError) {
+      return NextResponse.json({ error: "Client not found." }, { status: 404 });
+    }
+    if (isClientFormulaPersistenceError(error)) {
+      return clientFormulaPersistenceUnavailableResponse();
+    }
+    throw error;
+  }
+
   return NextResponse.json({ formula }, { status: 201 });
 }

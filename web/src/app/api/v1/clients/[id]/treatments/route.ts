@@ -2,13 +2,15 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { resolveOwnedClient } from "@/lib/client-repository";
-import type { TreatmentCreateRequest } from "@/lib/contracts";
 import {
-  createTreatmentRecord,
-  getSession,
-  getTreatmentsForClientByUser,
-  sanitize
-} from "@/lib/milestone1-store";
+  ClientTreatmentDependencyError,
+  clientTreatmentPersistenceUnavailableResponse,
+  createClientTreatmentForOwner,
+  isClientTreatmentPersistenceError,
+  listClientTreatmentsForOwner,
+} from "@/lib/client-treatment-repository";
+import type { TreatmentCreateRequest } from "@/lib/contracts";
+import { getSession, sanitize } from "@/lib/milestone1-store";
 
 export async function GET(
   _request: Request,
@@ -29,7 +31,15 @@ export async function GET(
     return NextResponse.json({ error: "Client not found." }, { status: 404 });
   }
 
-  return NextResponse.json({ treatments: getTreatmentsForClientByUser(id, sessionUser.id) }, { status: 200 });
+  try {
+    const treatments = await listClientTreatmentsForOwner(sessionUser.id, id);
+    return NextResponse.json({ treatments }, { status: 200 });
+  } catch (error) {
+    if (isClientTreatmentPersistenceError(error)) {
+      return clientTreatmentPersistenceUnavailableResponse();
+    }
+    throw error;
+  }
 }
 
 export async function POST(
@@ -61,6 +71,27 @@ export async function POST(
     );
   }
 
-  const treatment = createTreatmentRecord({ clientId: client.id, treatmentName, treatmentDetails });
+  let treatment;
+  try {
+    // M28 GO-3: sourceAnalysisId is deliberately never read from the
+    // request body here -- it is not part of the public
+    // TreatmentCreateRequest contract, and wiring it up is explicitly out
+    // of scope for this package.
+    treatment = await createClientTreatmentForOwner({
+      clientId: client.id,
+      ownerUserId: sessionUser.id,
+      treatmentName,
+      treatmentDetails,
+    });
+  } catch (error) {
+    if (error instanceof ClientTreatmentDependencyError) {
+      return NextResponse.json({ error: "Client not found." }, { status: 404 });
+    }
+    if (isClientTreatmentPersistenceError(error)) {
+      return clientTreatmentPersistenceUnavailableResponse();
+    }
+    throw error;
+  }
+
   return NextResponse.json({ treatment }, { status: 201 });
 }

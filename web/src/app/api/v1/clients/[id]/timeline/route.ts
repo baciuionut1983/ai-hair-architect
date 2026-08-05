@@ -8,17 +8,27 @@ import {
 } from "@/lib/appointment-repository";
 import { resolveOwnedClient } from "@/lib/client-repository";
 import {
+  clientFormulaPersistenceUnavailableResponse,
+  isClientFormulaPersistenceError,
+  listClientFormulasForOwner,
+} from "@/lib/client-formula-repository";
+import {
+  clientPhotoPersistenceUnavailableResponse,
+  isClientPhotoPersistenceError,
+  listClientPhotosForOwner,
+} from "@/lib/client-photo-repository";
+import {
+  clientTreatmentPersistenceUnavailableResponse,
+  isClientTreatmentPersistenceError,
+  listClientTreatmentsForOwner,
+} from "@/lib/client-treatment-repository";
+import {
   consultationPersistenceUnavailableResponse,
   isConsultationPersistenceError,
   listConsultationsForClient,
 } from "@/lib/consultation-repository";
 import type { ClientTimelineResponse, TimelineEntry } from "@/lib/contracts";
-import {
-  getFormulasForClientByUser,
-  getPhotosForClientByUser,
-  getSession,
-  getTreatmentsForClientByUser
-} from "@/lib/milestone1-store";
+import { getSession } from "@/lib/milestone1-store";
 
 export async function GET(
   _request: Request,
@@ -40,13 +50,13 @@ export async function GET(
       return NextResponse.json({ error: "Client not found." }, { status: 404 });
     }
 
-    const [consultations, appointments] = await Promise.all([
+    const [consultations, appointments, photos, formulas, treatments] = await Promise.all([
       listConsultationsForClient(sessionUser.id, id),
       listAppointmentsForOwner(sessionUser.id, id),
+      listClientPhotosForOwner(sessionUser.id, id),
+      listClientFormulasForOwner(sessionUser.id, id),
+      listClientTreatmentsForOwner(sessionUser.id, id),
     ]);
-    const photos = getPhotosForClientByUser(id, sessionUser.id);
-    const formulas = getFormulasForClientByUser(id, sessionUser.id);
-    const treatments = getTreatmentsForClientByUser(id, sessionUser.id);
     const legacyTimeline: TimelineEntry[] = [
       ...photos.map((item) => ({
         id: item.id,
@@ -102,6 +112,9 @@ export async function GET(
   } catch (error) {
     if (isAppointmentPersistenceError(error)) return appointmentPersistenceUnavailableResponse();
     if (isConsultationPersistenceError(error)) return consultationPersistenceUnavailableResponse();
+    if (isClientPhotoPersistenceError(error)) return clientPhotoPersistenceUnavailableResponse();
+    if (isClientFormulaPersistenceError(error)) return clientFormulaPersistenceUnavailableResponse();
+    if (isClientTreatmentPersistenceError(error)) return clientTreatmentPersistenceUnavailableResponse();
     throw error;
   }
 }
