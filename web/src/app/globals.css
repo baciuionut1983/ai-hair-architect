@@ -1,3 +1,28 @@
+@import "tailwindcss";
+
+/* M29 GO-3: Tailwind design tokens. These are additive -- the legacy
+   --bg/--panel/--text/... variables and every -next/milestone-* class
+   below are untouched and still power all existing pages. Nothing here
+   is consumed by legacy CSS; nothing legacy is consumed by these. */
+@theme {
+  --color-background: #07111f;
+  --color-surface: rgba(10, 24, 43, 0.9);
+  --color-surface-alt: #13243d;
+  --color-foreground: #f3f7ff;
+  --color-muted: #8da0c1;
+  --color-accent: #ff7a59;
+  --color-accent-secondary: #66d9ef;
+  --color-border: rgba(255, 255, 255, 0.12);
+  --color-success: #4ade80;
+  --color-warning: #fbbf24;
+  --color-danger: #f87171;
+
+  --shadow-panel: 0 12px 36px rgba(0, 0, 0, 0.2);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
 :root {
   --bg: #07111f;
   --panel: rgba(10, 24, 43, 0.9);
