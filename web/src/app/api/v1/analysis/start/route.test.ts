@@ -73,6 +73,38 @@ describe("POST /api/v1/analysis/start", () => {
     expect(repositoryMock.createAnalysisForOwner).not.toHaveBeenCalled();
   });
 
+  it("rejects an invalid goal before touching persistence", async () => {
+    const response = await POST(startRequest({ ...validPayload(), goal: "not-a-real-goal" }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "Invalid analysis payload." });
+    expect(repositoryMock.createAnalysisForOwner).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid hairType before touching persistence", async () => {
+    const response = await POST(startRequest({ ...validPayload(), hairType: "straight" }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "Invalid analysis payload." });
+    expect(repositoryMock.createAnalysisForOwner).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid density before touching persistence", async () => {
+    const response = await POST(startRequest({ ...validPayload(), density: "extreme" }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "Invalid analysis payload." });
+    expect(repositoryMock.createAnalysisForOwner).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid porosity before touching persistence", async () => {
+    const response = await POST(startRequest({ ...validPayload(), porosity: "extreme" }));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "Invalid analysis payload." });
+    expect(repositoryMock.createAnalysisForOwner).not.toHaveBeenCalled();
+  });
+
   it("preserves milestone8 enum validation", async () => {
     const response = await POST(startRequest({ ...validPayload(), faceShape: "triangle" }));
 

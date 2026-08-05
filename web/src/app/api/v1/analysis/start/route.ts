@@ -19,6 +19,12 @@ import type {
 import { enrichTechnicalPlanExplanations } from "@/lib/ai-explainer";
 import { analyzeInitial } from "@/lib/analysis-engine";
 import {
+  DENSITY_OPTIONS,
+  GOAL_OPTIONS,
+  HAIR_TYPE_OPTIONS,
+  POROSITY_OPTIONS
+} from "@/lib/analysis-field-options";
+import {
   AnalysisConcurrencyError,
   AnalysisDependencyError,
   analysisPersistenceUnavailableResponse,
@@ -28,6 +34,13 @@ import {
 import { shouldGenerateColorPlan } from "@/lib/color-plan-engine";
 import { getSession } from "@/lib/milestone1-store";
 import { shouldGenerateTreatmentPlan } from "@/lib/treatment-plan-engine";
+
+// GO-3A: reuse the GO-2 field-option lists (already verified to match this
+// route's accepted values) instead of declaring a fifth independent copy.
+const VALID_GOALS = GOAL_OPTIONS.map((option) => option.value);
+const VALID_HAIR_TYPES = HAIR_TYPE_OPTIONS.map((option) => option.value);
+const VALID_DENSITIES = DENSITY_OPTIONS.map((option) => option.value);
+const VALID_POROSITIES = POROSITY_OPTIONS.map((option) => option.value);
 
 const FACE_SHAPES: FaceShape[] = ["oval", "round", "square", "heart", "diamond", "oblong"];
 const HEAD_SHAPES: HeadShape[] = [
@@ -91,6 +104,15 @@ export async function POST(request: Request) {
   const body = (await request.json()) as Partial<AnalysisRequest>;
 
   if (!body.clientId || !body.goal || !body.hairType || !body.density || !body.porosity) {
+    return NextResponse.json({ error: "Invalid analysis payload." }, { status: 400 });
+  }
+
+  if (
+    !isOptionalEnumValue(body.goal, VALID_GOALS) ||
+    !isOptionalEnumValue(body.hairType, VALID_HAIR_TYPES) ||
+    !isOptionalEnumValue(body.density, VALID_DENSITIES) ||
+    !isOptionalEnumValue(body.porosity, VALID_POROSITIES)
+  ) {
     return NextResponse.json({ error: "Invalid analysis payload." }, { status: 400 });
   }
 
