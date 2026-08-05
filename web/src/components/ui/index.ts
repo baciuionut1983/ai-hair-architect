@@ -18,11 +18,20 @@ export type { LoadingStateProps } from "./loading-state";
 export { EmptyState, EMPTY_STATE_BASE_CLASSES } from "./empty-state";
 export type { EmptyStateProps } from "./empty-state";
 
+export { ErrorState, ERROR_STATE_BASE_CLASSES } from "./error-state";
+export type { ErrorStateProps } from "./error-state";
+
 export { getInputClasses, Input } from "./input";
 export type { InputProps } from "./input";
 
 export { getSelectClasses, Select } from "./select";
 export type { SelectProps } from "./select";
 
+export { getSidebarItemClasses, Sidebar } from "./sidebar";
+export type { SidebarNavItem, SidebarProps } from "./sidebar";
+
 export { getTextareaClasses, Textarea } from "./textarea";
 export type { TextareaProps } from "./textarea";
+
+export { Topbar, TOPBAR_BASE_CLASSES } from "./topbar";
+export type { TopbarProps } from "./topbar";

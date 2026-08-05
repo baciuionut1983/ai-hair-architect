@@ -4,18 +4,19 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 
+import { Alert, Button, Card, ErrorState, LoadingState } from "@/components/ui";
 import type { VerifyEmailRequest, VerifyEmailResponse } from "@/lib/contracts";
 
-type StatusTone = "ok" | "error" | "info";
+type VerifyState =
+  | { status: "missing-token" }
+  | { status: "verifying" }
+  | { status: "ok"; message: string }
+  | { status: "error"; message: string };
 
 function VerifyEmailContent() {
   const searchParams = useSearchParams();
   const token = searchParams.get("token") ?? "";
-  const [status, setStatus] = useState<{ tone: StatusTone; message: string }>(
-    token
-      ? { tone: "info", message: "Verifying your email..." }
-      : { tone: "error", message: "Missing verification token." }
-  );
+  const [state, setState] = useState<VerifyState>(token ? { status: "verifying" } : { status: "missing-token" });
 
   useEffect(() => {
     if (!token) {
@@ -33,53 +34,64 @@ function VerifyEmailContent() {
         });
 
         const payload = (await response.json()) as VerifyEmailResponse & { error?: string };
-        if (cancelled) {
-          return;
-        }
+        if (cancelled) return;
 
         if (!response.ok) {
-          setStatus({ tone: "error", message: payload.error || "Verification failed." });
+          setState({ status: "error", message: payload.error || "Verification failed." });
           return;
         }
 
-        setStatus({ tone: "ok", message: payload.message });
+        setState({ status: "ok", message: payload.message });
       } catch {
         if (!cancelled) {
-          setStatus({ tone: "error", message: "Verification failed." });
+          setState({ status: "error", message: "Verification failed." });
         }
       }
     }
 
     void verify();
-
     return () => {
       cancelled = true;
     };
   }, [token]);
 
+  if (state.status === "missing-token") {
+    return (
+      <Card className="w-full max-w-sm">
+        <ErrorState title="Missing verification token" description="This link is incomplete or has already been used." />
+      </Card>
+    );
+  }
+
+  if (state.status === "verifying") {
+    return (
+      <Card className="w-full max-w-sm">
+        <LoadingState label="Verifying your email..." />
+      </Card>
+    );
+  }
+
   return (
-    <article className="milestone-card milestone-card-wide">
-      <p className={`status-line status-${status.tone}`}>{status.message}</p>
-      <div className="inline-actions">
-        <Link href="/#milestone1">
-          <button type="button">Go to sign in</button>
+    <Card className="w-full max-w-sm">
+      <h1 className="text-xl font-semibold text-foreground">Email verification</h1>
+      <div className="mt-6 flex flex-col gap-4">
+        <Alert variant={state.status === "ok" ? "success" : "error"}>{state.message}</Alert>
+        <Link href="/login">
+          <Button type="button" className="w-full">
+            Go to sign in
+          </Button>
         </Link>
       </div>
-    </article>
+    </Card>
   );
 }
 
 export default function VerifyEmailPage() {
   return (
-    <div className="app-shell-next">
-      <section className="section-next" id="verify-email">
-        <div className="section-header-next">
-          <h3>Email verification</h3>
-        </div>
-        <Suspense fallback={<p className="helper-text">Loading...</p>}>
-          <VerifyEmailContent />
-        </Suspense>
-      </section>
+    <div className="flex min-h-screen items-center justify-center bg-background p-4">
+      <Suspense fallback={<LoadingState />}>
+        <VerifyEmailContent />
+      </Suspense>
     </div>
   );
 }

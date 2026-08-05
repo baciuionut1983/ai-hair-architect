@@ -1,10 +1,6 @@
-import { Milestone1FoundationPanel } from "@/components/milestone1-foundation-panel";
-import { Milestone2AnalysisPanel } from "@/components/milestone2-analysis-panel";
-import { Milestone3HistoryPanel } from "@/components/milestone3-history-panel";
-import { Milestone4GrowthPanel } from "@/components/milestone4-growth-panel";
-import { Milestone5HardeningPanel } from "@/components/milestone5-hardening-panel";
-import { Milestone6OpsPanel } from "@/components/milestone6-ops-panel";
-import { Milestone7OpsGovernancePanel } from "@/components/milestone7-ops-governance-panel";
+import Link from "next/link";
+
+import { Button, Card } from "@/components/ui";
 
 const academySections = [
   {
@@ -89,100 +85,64 @@ const academySections = [
 
 export default function Home() {
   return (
-    <div className="app-shell-next">
-      <header className="topbar-next">
+    <div className="mx-auto flex min-h-screen max-w-5xl flex-col gap-10 bg-background p-4 text-foreground md:p-8">
+      <header className="flex flex-col items-start justify-between gap-4 md:flex-row md:items-center">
         <div>
-          <p className="eyebrow-next">Asistent AI pentru hairstyling profesional</p>
-          <h1>AI Hair Architect</h1>
-          <span className="preview-pill-next">Etapa Next.js + TypeScript</span>
+          <p className="text-xs font-semibold uppercase tracking-widest text-accent-secondary">
+            Asistent AI pentru hairstyling profesional
+          </p>
+          <h1 className="mt-1 text-2xl font-semibold md:text-3xl">AI Hair Architect</h1>
         </div>
-        <nav className="nav-next" aria-label="navigation">
-          <a href="#home">Acasa</a>
-          <a href="/preview">Try Free Preview</a>
-          <a href="#milestone1">M1 Foundation</a>
-          <a href="#milestone2">M2 Analysis</a>
-          <a href="#milestone3">M3 History</a>
-          <a href="#milestone4">M4 Growth</a>
-          <a href="#milestone5">M5 Scale</a>
-          <a href="#milestone6">M6 Ops</a>
-          <a href="#milestone7">M7 Governance</a>
-          <a href="#analysis">Analiza</a>
-          <a href="#academy">Academie</a>
-        </nav>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/preview">
+            <Button type="button" variant="ghost">
+              Try free preview
+            </Button>
+          </Link>
+          <Link href="/login">
+            <Button type="button" variant="secondary">
+              Sign in
+            </Button>
+          </Link>
+          <Link href="/register">
+            <Button type="button">Create free account</Button>
+          </Link>
+        </div>
       </header>
 
-      <Milestone1FoundationPanel />
-      <Milestone2AnalysisPanel />
-      <Milestone3HistoryPanel />
-      <Milestone4GrowthPanel />
-      <Milestone5HardeningPanel />
-      <Milestone6OpsPanel />
-      <Milestone7OpsGovernancePanel />
-
-      <section className="hero-next" id="home">
+      <Card className="grid grid-cols-1 gap-6 p-6 md:grid-cols-[1.3fr_0.9fr] md:p-8">
         <div>
-          <h2>Baza noua este live in Next.js</h2>
-          <p>
-            Am pornit migrarea intr-o arhitectura moderna. Urmatorii pasi sunt
-            sa mutam gradual datele, autentificarea si tutorialele in formatul
-            pe care il doresti.
+          <h2 className="text-xl font-semibold md:text-2xl">AI-assisted consultations for hair professionals</h2>
+          <p className="mt-3 text-sm leading-relaxed text-muted">
+            Analyze a client&apos;s hair, get structured cut, color, and treatment recommendations, and keep a real
+            history of every service -- all in one place.
           </p>
         </div>
-        <div className="status-card-next">
-          <h3>Status etapa 1</h3>
-          <ul>
-            <li>Next.js + TypeScript configurat</li>
-            <li>Structura principala migrata</li>
-            <li>Academie organizata pe rubrici</li>
+        <div className="flex flex-col gap-2 rounded-xl border border-border bg-surface-alt p-4">
+          <h3 className="text-sm font-semibold">Getting started</h3>
+          <ul className="list-inside list-disc text-sm text-muted">
+            <li>Create a free account</li>
+            <li>Verify your email</li>
+            <li>Sign in and explore the dashboard</li>
           </ul>
         </div>
-      </section>
+      </Card>
 
-      <section className="section-next" id="analysis">
-        <h3>Analiza rapida par</h3>
-        <div className="analysis-grid-next">
-          <label>
-            Tipul parului
-            <select defaultValue="coarse">
-              <option value="coarse">Par gros</option>
-              <option value="medium">Par normal</option>
-              <option value="fine">Par subtire</option>
-            </select>
-          </label>
-          <label>
-            Densitate
-            <select defaultValue="low">
-              <option value="low">Par rar</option>
-              <option value="medium">Par normal</option>
-              <option value="high">Par des</option>
-            </select>
-          </label>
-          <label>
-            Porozitate
-            <select defaultValue="high">
-              <option value="high">Par aspru / poros</option>
-              <option value="low">Par fin</option>
-              <option value="medium">Par normal</option>
-            </select>
-          </label>
+      <section>
+        <div className="mb-4 flex items-center justify-between">
+          <h3 className="text-lg font-semibold">Biblioteca profesionala</h3>
+          <span className="rounded-full bg-surface-alt px-3 py-1 text-xs text-muted">Structura salon</span>
         </div>
-      </section>
-
-      <section className="section-next" id="academy">
-        <div className="section-header-next">
-          <h3>Biblioteca profesionala</h3>
-          <span>Structura salon</span>
-        </div>
-        <div className="academy-grid-next">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           {academySections.map((section) => (
-            <article key={section.title} className="academy-card-next">
-              <h4>{section.title}</h4>
-              <ul>
+            <Card key={section.title} className="bg-surface-alt">
+              <h4 className="font-semibold text-foreground">{section.title}</h4>
+              <ul className="mt-2 list-inside list-disc space-y-1 text-sm text-muted">
                 {section.items.map((item) => (
                   <li key={item}>{item}</li>
                 ))}
               </ul>
-            </article>
+            </Card>
           ))}
         </div>
       </section>

@@ -4,21 +4,20 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
+import { Alert, Button, Card, ErrorState, Input, LoadingState } from "@/components/ui";
 import type { AuthGenericAckResponse, ResetPasswordRequest } from "@/lib/contracts";
-
-type StatusTone = "ok" | "error" | "info";
 
 function ResetPasswordContent() {
   const searchParams = useSearchParams();
   const token = searchParams.get("token") ?? "";
   const [newPassword, setNewPassword] = useState("");
-  const [status, setStatus] = useState<{ tone: StatusTone; message: string } | null>(null);
+  const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
 
   async function submit() {
     setBusy(true);
-    setStatus(null);
+    setMessage(null);
     try {
       const response = await fetch("/api/v1/auth/reset-password", {
         method: "POST",
@@ -28,11 +27,11 @@ function ResetPasswordContent() {
 
       const payload = (await response.json()) as AuthGenericAckResponse & { error?: string };
       if (!response.ok) {
-        setStatus({ tone: "error", message: payload.error || "Reset failed." });
+        setMessage({ tone: "error", text: payload.error || "Reset failed." });
         return;
       }
 
-      setStatus({ tone: "ok", message: payload.message });
+      setMessage({ tone: "ok", text: payload.message });
       setDone(true);
     } finally {
       setBusy(false);
@@ -41,51 +40,61 @@ function ResetPasswordContent() {
 
   if (!token) {
     return (
-      <article className="milestone-card milestone-card-wide">
-        <p className="status-line status-error">Missing or invalid reset link.</p>
-        <Link href="/forgot-password">Request a new link</Link>
-      </article>
+      <Card className="w-full max-w-sm">
+        <ErrorState
+          title="Missing or invalid reset link"
+          description="Request a new password reset link to continue."
+          action={
+            <Link href="/forgot-password">
+              <Button type="button" variant="secondary">
+                Request a new link
+              </Button>
+            </Link>
+          }
+        />
+      </Card>
     );
   }
 
   return (
-    <article className="milestone-card milestone-card-wide">
+    <Card className="w-full max-w-sm">
+      <h1 className="text-xl font-semibold text-foreground">Reset password</h1>
+
       {done ? (
-        <>
-          <p className={`status-line status-${status?.tone ?? "ok"}`}>{status?.message}</p>
-          <Link href="/#milestone1">Go to sign in</Link>
-        </>
+        <div className="mt-6 flex flex-col gap-4">
+          {message ? <Alert variant="success">{message.text}</Alert> : null}
+          <Link href="/login">
+            <Button type="button" className="w-full">
+              Go to sign in
+            </Button>
+          </Link>
+        </div>
       ) : (
-        <div className="field-grid">
-          <input
-            placeholder="New password (min 8)"
+        <div className="mt-6 flex flex-col gap-4">
+          <Input
+            label="New password"
             type="password"
             value={newPassword}
             onChange={(event) => setNewPassword(event.target.value)}
+            autoComplete="new-password"
           />
-          <div className="inline-actions">
-            <button type="button" onClick={submit} disabled={busy || newPassword.length < 8}>
-              Reset password
-            </button>
-          </div>
-          {status ? <p className={`status-line status-${status.tone}`}>{status.message}</p> : null}
+          <p className="text-xs text-muted">Password must be at least 8 characters.</p>
+          <Button type="button" onClick={submit} loading={busy} disabled={newPassword.length < 8}>
+            Reset password
+          </Button>
+          {message ? <Alert variant={message.tone === "ok" ? "success" : "error"}>{message.text}</Alert> : null}
         </div>
       )}
-    </article>
+    </Card>
   );
 }
 
 export default function ResetPasswordPage() {
   return (
-    <div className="app-shell-next">
-      <section className="section-next" id="reset-password">
-        <div className="section-header-next">
-          <h3>Reset password</h3>
-        </div>
-        <Suspense fallback={<p className="helper-text">Loading...</p>}>
-          <ResetPasswordContent />
-        </Suspense>
-      </section>
+    <div className="flex min-h-screen items-center justify-center bg-background p-4">
+      <Suspense fallback={<LoadingState />}>
+        <ResetPasswordContent />
+      </Suspense>
     </div>
   );
 }

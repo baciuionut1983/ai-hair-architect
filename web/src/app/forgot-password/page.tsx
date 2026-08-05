@@ -3,18 +3,17 @@
 import Link from "next/link";
 import { useState } from "react";
 
+import { Alert, Button, Card, Input } from "@/components/ui";
 import type { AuthGenericAckResponse, RequestPasswordResetRequest } from "@/lib/contracts";
-
-type StatusTone = "ok" | "error" | "info";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
-  const [status, setStatus] = useState<{ tone: StatusTone; message: string } | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function submit() {
     setBusy(true);
-    setStatus(null);
+    setMessage(null);
     try {
       const response = await fetch("/api/v1/auth/request-password-reset", {
         method: "POST",
@@ -23,44 +22,38 @@ export default function ForgotPasswordPage() {
       });
 
       const payload = (await response.json()) as AuthGenericAckResponse & { error?: string };
-      setStatus({
-        tone: response.ok ? "ok" : "error",
-        message: payload.message || payload.error || "Request failed."
-      });
+      setMessage(payload.message || payload.error || "Request failed.");
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <div className="app-shell-next">
-      <section className="section-next" id="forgot-password">
-        <div className="section-header-next">
-          <h3>Forgot password</h3>
+    <div className="flex min-h-screen items-center justify-center bg-background p-4">
+      <Card className="w-full max-w-sm">
+        <h1 className="text-xl font-semibold text-foreground">Forgot password</h1>
+        <p className="mt-1 text-sm text-muted">We&apos;ll email you a link to reset it.</p>
+
+        <div className="mt-6 flex flex-col gap-4">
+          <Input
+            label="Email"
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            autoComplete="email"
+          />
+          <Button type="button" onClick={submit} loading={busy} disabled={!email}>
+            Send reset link
+          </Button>
+          {message ? <Alert variant="info">{message}</Alert> : null}
         </div>
 
-        <article className="milestone-card milestone-card-wide">
-          <div className="field-grid">
-            <input
-              placeholder="Email"
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-            />
-            <div className="inline-actions">
-              <button type="button" onClick={submit} disabled={busy || !email}>
-                Send reset link
-              </button>
-            </div>
-          </div>
-
-          {status ? <p className={`status-line status-${status.tone}`}>{status.message}</p> : null}
-
-          <p className="helper-text">
-            <Link href="/#milestone1">Back to sign in</Link>
-          </p>
-        </article>
-      </section>
+        <p className="mt-6 text-sm text-muted">
+          <Link href="/login" className="text-accent hover:underline">
+            Back to sign in
+          </Link>
+        </p>
+      </Card>
     </div>
   );
 }
