@@ -1,27 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
-const storeMock = vi.hoisted(() => ({ getSession: vi.fn() }));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const repositoryMock = vi.hoisted(() => ({
   listNotificationsForOwner: vi.fn(),
   isNotificationPersistenceError: vi.fn(),
   notificationPersistenceUnavailableResponse: vi.fn(),
 }));
 
-vi.mock("next/headers", () => cookiesMock);
-vi.mock("@/lib/milestone1-store", () => storeMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 vi.mock("@/lib/notification-repository", () => repositoryMock);
 
 import { GET } from "./route";
 
+const OWNER_A = { id: "owner-1", email: "owner-a@example.com", role: "professional", locale: "en" };
 const mutableEnv = process.env as Record<string, string | undefined>;
 const originalNodeEnv = process.env.NODE_ENV;
 
 beforeEach(() => {
   vi.clearAllMocks();
   mutableEnv.NODE_ENV = "test";
-  cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
-  storeMock.getSession.mockReturnValue({ id: "owner-1" });
+  authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
   repositoryMock.isNotificationPersistenceError.mockReturnValue(false);
 });
 
@@ -30,13 +28,36 @@ afterEach(() => {
 });
 
 describe("notifications route", () => {
-  it("returns 401 without a session", async () => {
-    storeMock.getSession.mockReturnValue(null);
+  it("returns 401 without a cookie, never reading notifications", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await GET(request());
 
     expect(response.status).toBe(401);
     expect(repositoryMock.listNotificationsForOwner).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await GET(request());
+
+    expect(response.status).toBe(401);
+  });
+
+  it("scopes the notification list strictly to the authenticated owner (cross-user isolation)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue({
+      id: "owner-2",
+      email: "owner-b@example.com",
+      role: "professional",
+      locale: "en",
+    });
+    repositoryMock.listNotificationsForOwner.mockResolvedValue([]);
+
+    await GET(request());
+
+    expect(repositoryMock.listNotificationsForOwner).toHaveBeenCalledWith("owner-2");
+    expect(repositoryMock.listNotificationsForOwner).not.toHaveBeenCalledWith("owner-1");
   });
 
   it("returns the existing payload from the owner-scoped repository", async () => {
@@ -68,23 +89,22 @@ describe("notifications route", () => {
 
   it("allows production through the persistence guard", async () => {
     mutableEnv.NODE_ENV = "production";
-    storeMock.getSession.mockReturnValue(null);
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await GET(request());
 
     expect(response.status).toBe(401);
-    expect(cookiesMock.cookies).toHaveBeenCalledOnce();
-    expect(storeMock.getSession).toHaveBeenCalledOnce();
+    expect(authMock.authenticateSessionRequest).toHaveBeenCalledOnce();
     expect(repositoryMock.listNotificationsForOwner).not.toHaveBeenCalled();
   });
 
   it("bypasses the guard in test and continues the existing flow", async () => {
-    storeMock.getSession.mockReturnValue(null);
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await GET(request());
 
     expect(response.status).toBe(401);
-    expect(storeMock.getSession).toHaveBeenCalledOnce();
+    expect(authMock.authenticateSessionRequest).toHaveBeenCalledOnce();
   });
 });
 

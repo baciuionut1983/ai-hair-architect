@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const storeMock = vi.hoisted(() => ({
   createAuditEvent: vi.fn(),
-  getSession: vi.fn(),
 }));
 const hardeningMock = vi.hoisted(() => ({
   checkRateLimit: vi.fn(),
@@ -13,12 +12,14 @@ const orchestratorMock = vi.hoisted(() => ({
   runAgentOrchestration: vi.fn(),
 }));
 
-vi.mock("next/headers", () => cookiesMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 vi.mock("@/lib/milestone1-store", () => storeMock);
 vi.mock("@/lib/hardening", () => hardeningMock);
 vi.mock("@/lib/milestone5-agent-orchestrator", () => orchestratorMock);
 
 import { POST } from "./route";
+
+const OWNER_A = { id: "owner-1", email: "owner-a@example.com", role: "professional", locale: "en" };
 
 function invoke(body: unknown, headers: Record<string, string> = {}): Promise<Response> {
   const request = new Request("http://localhost/api/v1/agents/orchestrate", {
@@ -42,22 +43,29 @@ const HONEST_RESULT = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
-  storeMock.getSession.mockReturnValue({ id: "owner-1" });
+  authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
   hardeningMock.checkRateLimit.mockReturnValue({ allowed: true, remaining: 39 });
   hardeningMock.ensureRequestId.mockReturnValue("req-fixed");
   orchestratorMock.runAgentOrchestration.mockReturnValue(HONEST_RESULT);
 });
 
 describe("POST /api/v1/agents/orchestrate", () => {
-  it("returns 401 without a session, never touching the orchestrator or the rate limiter", async () => {
-    storeMock.getSession.mockReturnValue(null);
+  it("returns 401 without a cookie, never touching the orchestrator or the rate limiter", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await invoke({ taskType: "consultation", payload: {} });
 
     expect(response.status).toBe(401);
     expect(hardeningMock.checkRateLimit).not.toHaveBeenCalled();
     expect(orchestratorMock.runAgentOrchestration).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await invoke({ taskType: "consultation", payload: {} });
+
+    expect(response.status).toBe(401);
   });
 
   it("returns 429 when the rate limit is exceeded, never touching the orchestrator", async () => {
@@ -102,5 +110,21 @@ describe("POST /api/v1/agents/orchestrate", () => {
       action: "orchestration_executed",
       metadata: { taskType: "consultation", steps: 4 },
     });
+  });
+
+  it("scopes the audit event and rate limit strictly to the authenticated owner (cross-user isolation)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue({
+      id: "owner-2",
+      email: "owner-b@example.com",
+      role: "professional",
+      locale: "en",
+    });
+
+    await invoke({ taskType: "consultation", payload: { goal: "refresh" } });
+
+    expect(hardeningMock.checkRateLimit).toHaveBeenCalledWith("agents-orchestrate:owner-2", 40, 60_000);
+    expect(storeMock.createAuditEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerUserId: "owner-2" }),
+    );
   });
 });

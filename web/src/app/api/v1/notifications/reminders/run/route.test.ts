@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
-const storeMock = vi.hoisted(() => ({ getSession: vi.fn() }));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const repositoryMock = vi.hoisted(() => ({
   AppointmentConcurrencyError: class AppointmentConcurrencyError extends Error {
     readonly code = "APPOINTMENT_CONCURRENCY_CONFLICT";
@@ -12,20 +11,19 @@ const repositoryMock = vi.hoisted(() => ({
   appointmentPersistenceUnavailableResponse: vi.fn(),
 }));
 
-vi.mock("next/headers", () => cookiesMock);
-vi.mock("@/lib/milestone1-store", () => storeMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 vi.mock("@/lib/appointment-repository", () => repositoryMock);
 
 import { POST } from "./route";
 
+const OWNER_A = { id: "owner-1", email: "owner-a@example.com", role: "professional", locale: "en" };
 const mutableEnv = process.env as Record<string, string | undefined>;
 const originalNodeEnv = process.env.NODE_ENV;
 
 beforeEach(() => {
   vi.clearAllMocks();
   mutableEnv.NODE_ENV = "test";
-  cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
-  storeMock.getSession.mockReturnValue({ id: "owner-1" });
+  authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
   repositoryMock.isAppointmentPersistenceError.mockReturnValue(false);
 });
 
@@ -34,13 +32,36 @@ afterEach(() => {
 });
 
 describe("reminder run route", () => {
-  it("returns 401 without a session", async () => {
-    storeMock.getSession.mockReturnValue(null);
+  it("returns 401 without a cookie, never executing reminders", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await POST(request());
 
     expect(response.status).toBe(401);
     expect(repositoryMock.executeDueAppointmentRemindersForOwner).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(401);
+  });
+
+  it("scopes reminder execution strictly to the authenticated owner (cross-user isolation)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue({
+      id: "owner-2",
+      email: "owner-b@example.com",
+      role: "professional",
+      locale: "en",
+    });
+    repositoryMock.executeDueAppointmentRemindersForOwner.mockResolvedValue({ remindersCreated: 0 });
+
+    await POST(request());
+
+    expect(repositoryMock.executeDueAppointmentRemindersForOwner).toHaveBeenCalledWith("owner-2");
+    expect(repositoryMock.executeDueAppointmentRemindersForOwner).not.toHaveBeenCalledWith("owner-1");
   });
 
   it("preserves the reminder result from the owner-scoped repository", async () => {
@@ -83,23 +104,22 @@ describe("reminder run route", () => {
 
   it("allows production through the persistence guard", async () => {
     mutableEnv.NODE_ENV = "production";
-    storeMock.getSession.mockReturnValue(null);
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await POST(request());
 
     expect(response.status).toBe(401);
-    expect(cookiesMock.cookies).toHaveBeenCalledOnce();
-    expect(storeMock.getSession).toHaveBeenCalledOnce();
+    expect(authMock.authenticateSessionRequest).toHaveBeenCalledOnce();
     expect(repositoryMock.executeDueAppointmentRemindersForOwner).not.toHaveBeenCalled();
   });
 
   it("bypasses the guard in test and continues the existing flow", async () => {
-    storeMock.getSession.mockReturnValue(null);
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await POST(request());
 
     expect(response.status).toBe(401);
-    expect(storeMock.getSession).toHaveBeenCalledOnce();
+    expect(authMock.authenticateSessionRequest).toHaveBeenCalledOnce();
   });
 });
 

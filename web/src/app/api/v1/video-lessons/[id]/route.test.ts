@@ -1,17 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
-const storeMock = vi.hoisted(() => ({ getSession: vi.fn() }));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const repositoryMock = vi.hoisted(() => ({
   getVideoLessonRecordById: vi.fn(),
   isVideoLessonPersistenceError: vi.fn(),
 }));
 
-vi.mock("next/headers", () => cookiesMock);
-vi.mock("@/lib/milestone1-store", () => storeMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 vi.mock("@/lib/video-lesson-repository", () => repositoryMock);
 
 import { GET } from "./route";
+
+const OWNER_A = { id: "owner-1", email: "owner-a@example.com", role: "professional", locale: "en" };
 
 function invoke(id: string): Promise<Response> {
   const request = new Request(`http://localhost/api/v1/video-lessons/${id}`, { method: "GET" });
@@ -20,13 +20,13 @@ function invoke(id: string): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
+  authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
   repositoryMock.isVideoLessonPersistenceError.mockReturnValue(false);
 });
 
 describe("GET /api/v1/video-lessons/[id]", () => {
-  it("returns 401 without a session, never touching the repository", async () => {
-    storeMock.getSession.mockReturnValue(null);
+  it("returns 401 without a cookie, never touching the repository", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await invoke("video-1");
 
@@ -34,8 +34,15 @@ describe("GET /api/v1/video-lessons/[id]", () => {
     expect(repositoryMock.getVideoLessonRecordById).not.toHaveBeenCalled();
   });
 
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await invoke("video-1");
+
+    expect(response.status).toBe(401);
+  });
+
   it("returns 404 when no record exists for the id", async () => {
-    storeMock.getSession.mockReturnValue({ id: "owner-1" });
     repositoryMock.getVideoLessonRecordById.mockResolvedValue(null);
 
     const response = await invoke("missing");
@@ -44,7 +51,6 @@ describe("GET /api/v1/video-lessons/[id]", () => {
   });
 
   it("returns the same 404 (not 403) when the record belongs to another owner", async () => {
-    storeMock.getSession.mockReturnValue({ id: "owner-1" });
     repositoryMock.getVideoLessonRecordById.mockResolvedValue({
       id: "video-1",
       ownerUserId: "someone-else",
@@ -66,7 +72,6 @@ describe("GET /api/v1/video-lessons/[id]", () => {
   });
 
   it("returns 200 with the honest record shape when owned by the caller", async () => {
-    storeMock.getSession.mockReturnValue({ id: "owner-1" });
     const createdAt = new Date("2026-08-04T10:00:00.000Z");
     repositoryMock.getVideoLessonRecordById.mockResolvedValue({
       id: "video-1",
@@ -103,7 +108,6 @@ describe("GET /api/v1/video-lessons/[id]", () => {
   });
 
   it("returns the persistence error's own status when the repository is unavailable", async () => {
-    storeMock.getSession.mockReturnValue({ id: "owner-1" });
     const error = Object.assign(new Error("unavailable"), { code: "VIDEO_LESSON_PERSISTENCE_UNAVAILABLE", httpStatus: 503 });
     repositoryMock.getVideoLessonRecordById.mockRejectedValue(error);
     repositoryMock.isVideoLessonPersistenceError.mockImplementation((value: unknown) => value === error);

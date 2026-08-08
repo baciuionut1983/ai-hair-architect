@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
-const storeMock = vi.hoisted(() => ({ getSession: vi.fn(), getOpsHealthSnapshot: vi.fn() }));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
+const storeMock = vi.hoisted(() => ({ getOpsHealthSnapshot: vi.fn() }));
 const appointmentRepositoryMock = vi.hoisted(() => ({
   countAllAppointments: vi.fn(),
   isAppointmentPersistenceError: vi.fn(),
@@ -23,7 +23,7 @@ const consultationRepositoryMock = vi.hoisted(() => ({
   consultationPersistenceUnavailableResponse: vi.fn(),
 }));
 
-vi.mock("next/headers", () => cookiesMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 vi.mock("@/lib/milestone1-store", () => storeMock);
 vi.mock("@/lib/appointment-repository", () => appointmentRepositoryMock);
 vi.mock("@/lib/notification-repository", () => notificationRepositoryMock);
@@ -32,10 +32,11 @@ vi.mock("@/lib/consultation-repository", () => consultationRepositoryMock);
 
 import { GET } from "./route";
 
+const OWNER_A = { id: "owner-1", email: "owner-a@example.com", role: "professional", locale: "en" };
+
 beforeEach(() => {
   vi.clearAllMocks();
-  cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
-  storeMock.getSession.mockReturnValue({ id: "owner-1" });
+  authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
   clientRepositoryMock.countActiveClients.mockResolvedValue(2);
   consultationRepositoryMock.countAllConsultations.mockResolvedValue(3);
   appointmentRepositoryMock.countAllAppointments.mockResolvedValue(4);
@@ -48,6 +49,23 @@ beforeEach(() => {
 });
 
 describe("ops health route", () => {
+  it("returns 401 without a cookie, never reading any repository", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await GET();
+
+    expect(response.status).toBe(401);
+    expect(clientRepositoryMock.countActiveClients).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await GET();
+
+    expect(response.status).toBe(401);
+  });
+
   it("builds the existing health payload from global PostgreSQL counts", async () => {
     const response = await GET();
 
