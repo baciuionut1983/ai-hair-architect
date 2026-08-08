@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const cookiesMock = vi.hoisted(() => ({
   cookies: vi.fn(),
@@ -9,11 +9,32 @@ vi.mock("next/headers", () => cookiesMock);
 import { POST as enqueuePushRoute } from "@/app/api/v1/push/queue/route";
 import { POST as processPushRoute } from "@/app/api/v1/push/queue/process/route";
 import { GET as getPushQueueRoute } from "@/app/api/v1/push/queue/route";
+import { createPersistenceSession } from "@/lib/auth-persistence";
 import { __testUtils, runPersistentRetention } from "@/lib/ops-persistence";
 import { prisma } from "@/lib/prisma";
-import { createSession, createUser, store } from "@/lib/milestone1-store";
+import { store } from "@/lib/milestone1-store";
+
+// authenticateSessionRequest() (M32 GO-4B) is Postgres-only: both the User
+// and the Session row must be real Postgres rows, unlike the legacy
+// resolveOpsSessionUser() this test previously exercised via an in-memory-only
+// createUser()/createSession() pair.
+async function createPersistedOwner(emailPrefix: string): Promise<{ id: string; token: string }> {
+  const user = await prisma.user.create({
+    data: {
+      email: `${emailPrefix}-${Date.now()}-${Math.random().toString(36).slice(2)}@example.com`,
+      passwordHash: "hash",
+      role: "professional",
+      locale: "en",
+    },
+  });
+  const token = `m12-push-token-${user.id}`;
+  await createPersistenceSession(token, user.id);
+  return { id: user.id, token };
+}
 
 describe("M12 push runtime persistence", () => {
+  const createdUserIds: string[] = [];
+
   beforeEach(async () => {
     vi.clearAllMocks();
     __testUtils.resetHooks();
@@ -22,25 +43,24 @@ describe("M12 push runtime persistence", () => {
 
     store.sessions.clear();
     store.pushQueue = [];
+    createdUserIds.length = 0;
+  });
+
+  afterEach(async () => {
+    if (createdUserIds.length === 0) {
+      return;
+    }
+    await prisma.session.deleteMany({ where: { userId: { in: createdUserIds } } });
+    await prisma.user.deleteMany({ where: { id: { in: createdUserIds } } });
   });
 
   it("persists enqueue and process through real push routes, and retention removes only old owner-scoped entries", async () => {
-    const owner = createUser({
-      email: `m12-push-owner-${Date.now()}@example.com`,
-      password: "password123",
-      role: "professional",
-      locale: "en",
-    });
+    const owner = await createPersistedOwner("m12-push-owner");
+    const otherOwner = await createPersistedOwner("m12-push-other");
+    createdUserIds.push(owner.id, otherOwner.id);
 
-    const otherOwner = createUser({
-      email: `m12-push-other-${Date.now()}@example.com`,
-      password: "password123",
-      role: "professional",
-      locale: "en",
-    });
-
-    const ownerToken = createSession(owner.id);
-    const otherToken = createSession(otherOwner.id);
+    const ownerToken = owner.token;
+    const otherToken = otherOwner.token;
 
     vi.mocked(cookiesMock.cookies).mockResolvedValue({
       get: () => ({ value: ownerToken }),
@@ -134,14 +154,10 @@ describe("M12 push runtime persistence", () => {
   });
 
   it("keeps store and DB queued when process DB update fails before commit", async () => {
-    const owner = createUser({
-      email: `m12-push-error-${Date.now()}@example.com`,
-      password: "password123",
-      role: "professional",
-      locale: "en",
-    });
+    const owner = await createPersistedOwner("m12-push-error");
+    createdUserIds.push(owner.id);
 
-    const ownerToken = createSession(owner.id);
+    const ownerToken = owner.token;
 
     vi.mocked(cookiesMock.cookies).mockResolvedValue({
       get: () => ({ value: ownerToken }),

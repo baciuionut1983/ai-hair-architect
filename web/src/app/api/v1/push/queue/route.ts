@@ -1,13 +1,11 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { getPushQueueForUser, sanitize } from "@/lib/milestone1-store";
-import { enqueuePersistentPushNotification, resolveOpsSessionUser } from "@/lib/ops-persistence";
+import { enqueuePersistentPushNotification } from "@/lib/ops-persistence";
+import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
 export async function GET() {
-  const cookieStore = await cookies();
-  const token = cookieStore.get("aha_session")?.value ?? null;
-  const sessionUser = await resolveOpsSessionUser(token);
+  const sessionUser = await authenticateSessionRequest();
 
   if (!sessionUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -18,9 +16,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  const cookieStore = await cookies();
-  const token = cookieStore.get("aha_session")?.value ?? null;
-  const sessionUser = await resolveOpsSessionUser(token);
+  const sessionUser = await authenticateSessionRequest();
 
   if (!sessionUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
