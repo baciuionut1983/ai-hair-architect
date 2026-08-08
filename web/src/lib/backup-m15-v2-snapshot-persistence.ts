@@ -78,6 +78,10 @@ interface CountableDelegate {
   findMany(args: unknown): Promise<Array<Record<string, unknown>>>;
 }
 
+interface CountOnlyDelegate {
+  count(args: unknown): Promise<number>;
+}
+
 interface SnapshotDelegate {
   findFirst(args: unknown): Promise<PersistedBackupM15V2SnapshotRow | null>;
   create(args: unknown): Promise<PersistedBackupM15V2SnapshotRow>;
@@ -91,6 +95,11 @@ export interface BackupM15V2SnapshotPersistenceTransaction {
   imageAsset: CountableDelegate;
   imageAnalysis: CountableDelegate;
   imageAnalysisReview: CountableDelegate;
+  // Summary-only counts, mirroring the m13.v3 creator: appointments and
+  // notifications are reported in summarySnapshot but are not (and have
+  // never been) backed up as restorable sections.
+  appointment: CountOnlyDelegate;
+  notification: CountOnlyDelegate;
 }
 
 export interface BackupM15V2SnapshotPersistenceDatabase extends BackupM15V2SnapshotPersistenceTransaction {
@@ -98,6 +107,14 @@ export interface BackupM15V2SnapshotPersistenceDatabase extends BackupM15V2Snaps
     callback: (transaction: BackupM15V2SnapshotPersistenceTransaction) => Promise<T>,
     options?: { isolationLevel?: "RepeatableRead" },
   ): Promise<T>;
+}
+
+export interface BackupM15V2SnapshotSummary {
+  readonly clientsCount: number;
+  readonly consultationsCount: number;
+  readonly appointmentsCount: number;
+  readonly notificationsCount: number;
+  readonly workspacesCount: number;
 }
 
 export interface BackupM15V2SnapshotRecord {
@@ -109,6 +126,7 @@ export interface BackupM15V2SnapshotRecord {
   readonly checksum: string;
   readonly checksumAlgorithm: string;
   readonly createdAt: string;
+  readonly snapshot: BackupM15V2SnapshotSummary;
 }
 
 export interface CreateBackupM15V2SnapshotInput {
@@ -133,7 +151,25 @@ export async function createBackupM15V2Snapshot(
       const counts = await countSections(transaction, input.ownerUserId);
       assertRowLimits(counts);
 
+      const [appointmentsCount, notificationsCount] = await Promise.all([
+        transaction.appointment.count({ where: { ownerUserId: input.ownerUserId } }),
+        transaction.notification.count({ where: { ownerUserId: input.ownerUserId } }),
+      ]);
+
       const sections = await fetchSections(transaction, input.ownerUserId);
+
+      const summarySnapshot: BackupM15V2SnapshotSummary = {
+        clientsCount: counts.clients,
+        consultationsCount: counts.consultations,
+        appointmentsCount,
+        notificationsCount,
+        // Workspaces have no Postgres persistence (in-memory only, see M32/M33
+        // audits): this matches the m13.v3 creator's own established behavior
+        // exactly, not a gap introduced here. Computing a real count would
+        // require reaching into the in-memory store from this otherwise pure,
+        // Postgres-transaction-scoped module.
+        workspacesCount: 0,
+      };
 
       const artifactInput: BackupM15V2ArtifactInput = {
         schemaVersion: "m15.v2",
@@ -145,13 +181,7 @@ export async function createBackupM15V2Snapshot(
         createdByUserId: input.createdByUserId,
         label: input.label,
         createdAt,
-        summarySnapshot: {
-          clientsCount: counts.clients,
-          consultationsCount: counts.consultations,
-          appointmentsCount: 0,
-          notificationsCount: 0,
-          workspacesCount: 0,
-        },
+        summarySnapshot,
         counts,
         limits: {
           maxArtifactBytes: M15_V2_MAX_ARTIFACT_BYTES,
@@ -196,6 +226,7 @@ export async function createBackupM15V2Snapshot(
         checksum: row.checksum,
         checksumAlgorithm: row.checksumAlgorithm,
         createdAt: normalizeTimestamp(row.createdAt),
+        snapshot: summarySnapshot,
       };
     },
     { isolationLevel: "RepeatableRead" },

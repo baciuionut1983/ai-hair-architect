@@ -98,7 +98,7 @@ interface FakeDbConfig {
   imageAssets?: Array<Record<string, unknown>>;
   imageAnalyses?: Array<Record<string, unknown>>;
   imageAnalysisReviews?: Array<Record<string, unknown>>;
-  countOverrides?: Partial<Record<"clients" | "analyses" | "consultations" | "imageAssets" | "imageAnalyses" | "imageAnalysisReviews", number>>;
+  countOverrides?: Partial<Record<"clients" | "analyses" | "consultations" | "imageAssets" | "imageAnalyses" | "imageAnalysisReviews" | "appointments" | "notifications", number>>;
   createImpl?: (args: { data: Record<string, unknown> }) => Promise<PersistedBackupM15V2SnapshotRow>;
   snapshotRow?: PersistedBackupM15V2SnapshotRow | null;
 }
@@ -131,6 +131,8 @@ function fakeDatabase(config: FakeDbConfig = {}): BackupM15V2SnapshotPersistence
     imageAssets: config.countOverrides?.imageAssets ?? (config.imageAssets ?? []).length,
     imageAnalyses: config.countOverrides?.imageAnalyses ?? (config.imageAnalyses ?? []).length,
     imageAnalysisReviews: config.countOverrides?.imageAnalysisReviews ?? (config.imageAnalysisReviews ?? []).length,
+    appointments: config.countOverrides?.appointments ?? 0,
+    notifications: config.countOverrides?.notifications ?? 0,
   };
 
   const view: BackupM15V2SnapshotPersistenceTransaction = {
@@ -147,6 +149,8 @@ function fakeDatabase(config: FakeDbConfig = {}): BackupM15V2SnapshotPersistence
       count: vi.fn(async () => counts.imageAnalysisReviews),
       findMany: vi.fn(async () => config.imageAnalysisReviews ?? []),
     },
+    appointment: { count: vi.fn(async () => counts.appointments) },
+    notification: { count: vi.fn(async () => counts.notifications) },
   };
 
   return {
@@ -177,6 +181,32 @@ describe("createBackupM15V2Snapshot", () => {
     const database = fakeDatabase({ clients: [clientRow(CLIENT_ID)] });
     const result = await createBackupM15V2Snapshot(baseCreateInput({ database }));
     expect(result).toMatchObject({ id: BACKUP_ID, ownerUserId: OWNER_ID, schemaVersion: "m15.v2" });
+  });
+
+  it("1a. reports real appointments and notifications counts, not hardcoded zeros (M33 GO-2)", async () => {
+    const database = fakeDatabase({
+      clients: [clientRow(CLIENT_ID)],
+      countOverrides: { appointments: 3, notifications: 5 },
+    });
+    const result = await createBackupM15V2Snapshot(baseCreateInput({ database }));
+    expect(result.snapshot).toMatchObject({ appointmentsCount: 3, notificationsCount: 5 });
+    expect(database.appointment.count).toHaveBeenCalledWith({ where: { ownerUserId: OWNER_ID } });
+    expect(database.notification.count).toHaveBeenCalledWith({ where: { ownerUserId: OWNER_ID } });
+  });
+
+  it("1b. reports workspacesCount as 0, matching the existing m13.v3 production contract exactly (no in-memory dependency introduced)", async () => {
+    const database = fakeDatabase({ clients: [clientRow(CLIENT_ID)] });
+    const result = await createBackupM15V2Snapshot(baseCreateInput({ database }));
+    expect(result.snapshot.workspacesCount).toBe(0);
+  });
+
+  it("1c. includes clientsCount and consultationsCount in the returned snapshot summary", async () => {
+    const database = fakeDatabase({
+      clients: [clientRow(CLIENT_ID), clientRow("client-2")],
+      consultations: [consultationRow("consultation-1")],
+    });
+    const result = await createBackupM15V2Snapshot(baseCreateInput({ database }));
+    expect(result.snapshot).toMatchObject({ clientsCount: 2, consultationsCount: 1 });
   });
 
   it("2. creates a valid snapshot with a legacy-local image asset", async () => {

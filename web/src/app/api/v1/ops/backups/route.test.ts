@@ -1,16 +1,38 @@
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
+const createRuntimeMock = vi.hoisted(() => ({ createBackupM15V2SnapshotForUser: vi.fn() }));
 
 vi.mock("@/lib/session-request-auth", () => authMock);
 
 vi.mock("@/lib/ops-persistence", () => ({
   listBackupSnapshotsForUser: vi.fn(),
-  createPersistentBackupSnapshot: vi.fn(),
+}));
+
+vi.mock("@/lib/backup-m15-v2-snapshot-persistence-runtime", () => createRuntimeMock);
+
+const { FakeBackupM15V2SnapshotPersistenceError } = vi.hoisted(() => {
+  class FakeBackupM15V2SnapshotPersistenceError extends Error {
+    code: string;
+    constructor(code: string) {
+      super(`fake-${code}`);
+      this.name = "BackupM15V2SnapshotPersistenceError";
+      this.code = code;
+    }
+  }
+  return { FakeBackupM15V2SnapshotPersistenceError };
+});
+
+vi.mock("@/lib/backup-m15-v2-snapshot-persistence", () => ({
+  BackupM15V2SnapshotPersistenceError: FakeBackupM15V2SnapshotPersistenceError,
 }));
 
 import { GET, POST } from "./route";
-import { createPersistentBackupSnapshot, listBackupSnapshotsForUser } from "@/lib/ops-persistence";
+import { listBackupSnapshotsForUser } from "@/lib/ops-persistence";
 
 describe("ops backups route", () => {
   beforeEach(() => {
@@ -57,15 +79,15 @@ describe("ops backups route", () => {
     });
   });
 
-  it("creates a persistent backup snapshot with sanitized label", async () => {
-    vi.mocked(createPersistentBackupSnapshot).mockResolvedValue({
+  it("creates a backup snapshot on the m15.v2 schema with sanitized label (M33 GO-2)", async () => {
+    createRuntimeMock.createBackupM15V2SnapshotForUser.mockResolvedValue({
       id: "backup-2",
       ownerUserId: "user-1",
       label: "release-checkpoint",
       createdAt: "2026-07-21T10:00:00.000Z",
       checksum: "b".repeat(64),
       checksumAlgorithm: "sha256",
-      schemaVersion: "m13.v1",
+      schemaVersion: "m15.v2",
       createdByUserId: "user-1",
       snapshot: {
         clientsCount: 2,
@@ -79,11 +101,37 @@ describe("ops backups route", () => {
     const response = await POST({ json: async () => ({ label: "  release-checkpoint  " }) } as never);
 
     expect(response.status).toBe(201);
-    expect(vi.mocked(createPersistentBackupSnapshot)).toHaveBeenCalledWith({
-      ownerUserId: "user-1",
-      createdByUserId: "user-1",
-      label: "release-checkpoint",
-    });
+    await expect(response.json()).resolves.toMatchObject({ backup: { schemaVersion: "m15.v2" } });
+    expect(createRuntimeMock.createBackupM15V2SnapshotForUser).toHaveBeenCalledWith(
+      "user-1",
+      "user-1",
+      "release-checkpoint",
+      { now: expect.any(Function) },
+    );
+  });
+
+  it("never references the legacy m13.v3 creator (m15.v2 is the only schema emitted for new backups)", () => {
+    expect(readRouteSource()).not.toMatch(/createPersistentBackupSnapshot/);
+  });
+
+  it("maps a BackupM15V2SnapshotPersistenceError to a sanitized error response", async () => {
+    createRuntimeMock.createBackupM15V2SnapshotForUser.mockRejectedValue(
+      new FakeBackupM15V2SnapshotPersistenceError("ROW_LIMIT_EXCEEDED"),
+    );
+
+    const response = await POST({ json: async () => ({ label: "checkpoint" }) } as never);
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toMatchObject({ error: "ROW_LIMIT_EXCEEDED" });
+  });
+
+  it("maps an unexpected creation failure to a sanitized 500", async () => {
+    createRuntimeMock.createBackupM15V2SnapshotForUser.mockRejectedValue(new Error("boom"));
+
+    const response = await POST({ json: async () => ({ label: "checkpoint" }) } as never);
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toMatchObject({ error: "INTERNAL_ERROR" });
   });
 
   it("returns 401 without a cookie, never reading persistence", async () => {
@@ -140,3 +188,7 @@ describe("ops backups route", () => {
     await expect(response.json()).resolves.toMatchObject({ error: "BACKUP_LABEL_TOO_LONG" });
   });
 });
+
+function readRouteSource(): string {
+  return fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "route.ts"), "utf8");
+}

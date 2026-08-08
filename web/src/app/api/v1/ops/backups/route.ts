@@ -1,9 +1,22 @@
 import { NextResponse } from "next/server";
 
-import { BackupArtifactError } from "@/lib/backup-v13-artifact";
-import { createPersistentBackupSnapshot, listBackupSnapshotsForUser } from "@/lib/ops-persistence";
+import {
+  BackupM15V2SnapshotPersistenceError,
+  type BackupM15V2SnapshotPersistenceErrorCode,
+} from "@/lib/backup-m15-v2-snapshot-persistence";
+import { createBackupM15V2SnapshotForUser } from "@/lib/backup-m15-v2-snapshot-persistence-runtime";
 import { sanitize } from "@/lib/milestone1-store";
+import { listBackupSnapshotsForUser } from "@/lib/ops-persistence";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
+
+function mapM15V2CreationErrorStatus(code: BackupM15V2SnapshotPersistenceErrorCode): number {
+  switch (code) {
+    case "ROW_LIMIT_EXCEEDED":
+      return 413;
+    default:
+      return 500;
+  }
+}
 
 export async function GET() {
   const sessionUser = await authenticateSessionRequest();
@@ -76,21 +89,21 @@ export async function POST(request: Request) {
   }
 
   try {
-    const backup = await createPersistentBackupSnapshot({
-      ownerUserId: sessionUser.id,
-      createdByUserId: sessionUser.id,
-      label: normalizedLabel,
-    });
+    const backup = await createBackupM15V2SnapshotForUser(
+      sessionUser.id,
+      sessionUser.id,
+      normalizedLabel,
+      { now: () => new Date() },
+    );
     return NextResponse.json({ backup }, { status: 201 });
   } catch (error) {
-    if (error instanceof BackupArtifactError) {
+    if (error instanceof BackupM15V2SnapshotPersistenceError) {
       return NextResponse.json(
         {
           error: error.code,
           message: error.message,
-          details: error.details,
         },
-        { status: error.httpStatus },
+        { status: mapM15V2CreationErrorStatus(error.code) },
       );
     }
 

@@ -528,6 +528,25 @@ function assertBackupArtifactExecutable(artifact: BackupV13Artifact, row: { id: 
   if (artifact.checksum !== checksum || row.checksum !== checksum) {
     throw new BackupArtifactError("BACKUP_RESTORE_CHECKSUM_MISMATCH", 422, "Backup checksum does not match canonical content.");
   }
+
+  // M33 GO-2: "pending" is the sentinel this codebase writes into storagePath
+  // at upload time whenever S3/object storage is configured, and it is never
+  // overwritten afterward -- this schema line (m13.x) never captured the real
+  // S3 identity fields (storageBackend/storageKey/etc.) at all. Restoring such
+  // a row would recreate an ImageAsset whose content can never be resolved
+  // again through the app, while reporting a normal 200 success. Fail closed
+  // here, before any delete/insert has happened in this transaction, instead
+  // of silently producing an orphaned row.
+  for (const asset of artifact.sections.imageAssets) {
+    if (asset.storagePath === "pending") {
+      throw new BackupArtifactError(
+        "BACKUP_RESTORE_STORAGE_METADATA_MISSING",
+        422,
+        "Backup contains an image asset without safely restorable storage metadata.",
+        { imageAssetId: asset.id },
+      );
+    }
+  }
 }
 
 async function assertNoCrossOwnerCollisions(tx: RestoreTransactionalClient, ownerUserId: string, artifact: BackupV13Artifact): Promise<void> {
@@ -927,4 +946,5 @@ export const __testUtils = {
   },
   countOwnerScopedRows,
   mapClientRowsForRestore,
+  assertBackupArtifactExecutable,
 };
