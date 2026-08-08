@@ -187,3 +187,35 @@ export async function findPersistenceUserBySessionToken(token: string): Promise<
     return null;
   }
 }
+
+/**
+ * M32 GO-2: the minimal, non-sensitive user shape production API routes
+ * should authenticate against -- no passwordHash, no timestamps, nothing a
+ * route has no business reading just to know who's calling.
+ */
+export interface AuthenticatedUser {
+  id: string;
+  email: string;
+  role: UserRole;
+  locale: Locale;
+}
+
+/**
+ * Postgres-only session resolution: wraps findPersistenceUserBySessionToken
+ * (real expiresAt enforced there) and strips it down to AuthenticatedUser.
+ * No in-memory fallback, no second/parallel validation -- this is the one
+ * place a session token is turned into "who is this," reused by both
+ * image-pipeline-auth.ts and session-request-auth.ts so neither keeps its
+ * own copy of this logic.
+ */
+export async function resolveAuthenticatedUserFromToken(token: string): Promise<AuthenticatedUser | null> {
+  const persisted = await findPersistenceUserBySessionToken(token);
+  if (!persisted) return null;
+
+  return {
+    id: persisted.id,
+    email: persisted.email,
+    role: persisted.role,
+    locale: persisted.locale
+  };
+}

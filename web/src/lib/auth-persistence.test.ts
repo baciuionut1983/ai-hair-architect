@@ -24,6 +24,7 @@ import {
   findPersistenceUserByEmail,
   findPersistenceUserBySessionToken,
   isAuthPersistenceUnavailableError,
+  resolveAuthenticatedUserFromToken,
 } from "./auth-persistence";
 
 beforeEach(() => {
@@ -180,6 +181,83 @@ describe("findPersistenceUserBySessionToken", () => {
     prismaMocks.sessionFindUnique.mockRejectedValue(new Error("connection reset"));
 
     const result = await findPersistenceUserBySessionToken("any-token");
+
+    expect(result).toBeNull();
+  });
+});
+
+describe("resolveAuthenticatedUserFromToken", () => {
+  const USER_ROW = {
+    id: "user-1",
+    email: "user@example.com",
+    passwordHash: "hashed",
+    role: "professional",
+    locale: "en",
+    createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    emailVerifiedAt: new Date("2026-08-02T00:00:00.000Z"),
+  };
+
+  it("resolves a minimal AuthenticatedUser for a valid, unexpired token", async () => {
+    prismaMocks.sessionFindUnique.mockResolvedValue({
+      expiresAt: new Date(Date.now() + 60_000),
+      user: USER_ROW,
+    });
+
+    const result = await resolveAuthenticatedUserFromToken("valid-token");
+
+    expect(result).toEqual({
+      id: "user-1",
+      email: "user@example.com",
+      role: "professional",
+      locale: "en",
+    });
+  });
+
+  it("never exposes passwordHash, createdAt, or emailVerifiedAt", async () => {
+    prismaMocks.sessionFindUnique.mockResolvedValue({
+      expiresAt: new Date(Date.now() + 60_000),
+      user: USER_ROW,
+    });
+
+    const result = await resolveAuthenticatedUserFromToken("valid-token");
+
+    expect(result).not.toHaveProperty("passwordHash");
+    expect(result).not.toHaveProperty("createdAt");
+    expect(result).not.toHaveProperty("emailVerifiedAt");
+  });
+
+  it("returns null for an unknown token", async () => {
+    prismaMocks.sessionFindUnique.mockResolvedValue(null);
+
+    const result = await resolveAuthenticatedUserFromToken("unknown-token");
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null for an expired token", async () => {
+    prismaMocks.sessionFindUnique.mockResolvedValue({
+      expiresAt: new Date(Date.now() - 1000),
+      user: USER_ROW,
+    });
+
+    const result = await resolveAuthenticatedUserFromToken("expired-token");
+
+    expect(result).toBeNull();
+  });
+
+  it("returns null when the database is not configured (fail-closed, no fallback)", async () => {
+    prismaMocks.configured = false;
+
+    const result = await resolveAuthenticatedUserFromToken("any-token");
+
+    expect(result).toBeNull();
+    expect(prismaMocks.sessionFindUnique).not.toHaveBeenCalled();
+  });
+
+  it("returns null (not a throw) when the persistence lookup fails", async () => {
+    prismaMocks.sessionFindUnique.mockRejectedValue(new Error("connection reset"));
+
+    const result = await resolveAuthenticatedUserFromToken("any-token");
 
     expect(result).toBeNull();
   });
