@@ -1,4 +1,3 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import type {
@@ -32,7 +31,7 @@ import {
   isAnalysisPersistenceError
 } from "@/lib/analysis-repository";
 import { shouldGenerateColorPlan } from "@/lib/color-plan-engine";
-import { getSession } from "@/lib/milestone1-store";
+import { authenticateSessionRequest } from "@/lib/session-request-auth";
 import { shouldGenerateTreatmentPlan } from "@/lib/treatment-plan-engine";
 
 // GO-3A: reuse the GO-2 field-option lists (already verified to match this
@@ -93,9 +92,7 @@ const TREATMENT_GOAL_DETAILS: TreatmentGoalDetail[] = [
 ];
 
 export async function POST(request: Request) {
-  const cookieStore = await cookies();
-  const token = cookieStore.get("aha_session")?.value ?? null;
-  const sessionUser = getSession(token);
+  const sessionUser = await authenticateSessionRequest();
 
   if (!sessionUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

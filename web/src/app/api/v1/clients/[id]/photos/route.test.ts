@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const storeMock = vi.hoisted(() => ({
-  getSession: vi.fn(),
   sanitize: vi.fn((value: unknown) => (typeof value === "string" ? value.trim() : "")),
 }));
 const clientRepositoryMock = vi.hoisted(() => ({ resolveOwnedClient: vi.fn() }));
@@ -19,10 +18,10 @@ const clientPhotoRepositoryMock = vi.hoisted(() => {
   };
 });
 
-vi.mock("next/headers", () => cookiesMock);
 vi.mock("@/lib/milestone1-store", () => storeMock);
 vi.mock("@/lib/client-repository", () => clientRepositoryMock);
 vi.mock("@/lib/client-photo-repository", () => clientPhotoRepositoryMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 import { POST } from "./route";
 
@@ -37,8 +36,7 @@ function invoke(body: unknown): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
-  storeMock.getSession.mockReturnValue({ id: "owner-1" });
+  authMock.authenticateSessionRequest.mockResolvedValue({ id: "owner-1", email: "owner-a@example.com", role: "professional", locale: "en" });
   storeMock.sanitize.mockImplementation((value: unknown) => (typeof value === "string" ? value.trim() : ""));
   clientRepositoryMock.resolveOwnedClient.mockResolvedValue({ id: "client-1" });
   clientPhotoRepositoryMock.createClientPhotoForOwner.mockResolvedValue({
@@ -58,7 +56,7 @@ describe("POST /api/v1/clients/:id/photos", () => {
   });
 
   it("returns 401 without a session", async () => {
-    storeMock.getSession.mockReturnValue(null);
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
     const response = await invoke({ imageUrl: "https://example.com/a.jpg", caption: "Before" });
     expect(response.status).toBe(401);
     expect(clientPhotoRepositoryMock.createClientPhotoForOwner).not.toHaveBeenCalled();

@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const storeMock = vi.hoisted(() => ({
-  getSession: vi.fn(),
   sanitize: vi.fn(),
 }));
 const clientRepositoryMock = vi.hoisted(() => ({ resolveOwnedClient: vi.fn() }));
@@ -18,15 +17,16 @@ const appointmentRepositoryMock = vi.hoisted(() => ({
   appointmentPersistenceUnavailableResponse: vi.fn(),
 }));
 
-vi.mock("next/headers", () => cookiesMock);
 vi.mock("@/lib/milestone1-store", () => storeMock);
 vi.mock("@/lib/client-repository", () => clientRepositoryMock);
 vi.mock("@/lib/appointment-repository", () => appointmentRepositoryMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 import { GET, POST } from "./route";
 
 const mutableEnv = process.env as Record<string, string | undefined>;
 const originalNodeEnv = process.env.NODE_ENV;
+const OWNER_A = { id: "owner-1", email: "owner-a@example.com", role: "professional", locale: "en" };
 
 describe("appointments business persistence guard", () => {
   beforeEach(() => {
@@ -43,30 +43,48 @@ describe("appointments business persistence guard", () => {
     ["POST", () => POST(new Request("http://localhost/api/v1/appointments", { method: "POST" }))],
   ])("allows %s through the persistence guard in production", async (_method, invoke) => {
     mutableEnv.NODE_ENV = "production";
-    cookiesMock.cookies.mockResolvedValue({ get: () => undefined });
-    storeMock.getSession.mockReturnValue(null);
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await invoke();
 
     expect(response.status).toBe(401);
-    expect(storeMock.getSession).toHaveBeenCalledOnce();
+    expect(authMock.authenticateSessionRequest).toHaveBeenCalledOnce();
   });
 
   it("bypasses the guard in test and continues the existing flow", async () => {
     mutableEnv.NODE_ENV = "test";
-    cookiesMock.cookies.mockResolvedValue({ get: () => undefined });
-    storeMock.getSession.mockReturnValue(null);
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await GET(new Request("http://localhost/api/v1/appointments"));
 
     expect(response.status).toBe(401);
-    expect(storeMock.getSession).toHaveBeenCalledOnce();
+    expect(authMock.authenticateSessionRequest).toHaveBeenCalledOnce();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    mutableEnv.NODE_ENV = "test";
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await GET(new Request("http://localhost/api/v1/appointments"));
+
+    expect(response.status).toBe(401);
+    expect(appointmentRepositoryMock.listAppointmentsForOwner).not.toHaveBeenCalled();
+  });
+
+  it("scopes the list strictly to the authenticated owner (cross-user isolation)", async () => {
+    mutableEnv.NODE_ENV = "test";
+    authMock.authenticateSessionRequest.mockResolvedValue({ ...OWNER_A, id: "owner-2" });
+    appointmentRepositoryMock.listAppointmentsForOwner.mockResolvedValue([]);
+
+    await GET(new Request("http://localhost/api/v1/appointments?clientId=client-1"));
+
+    expect(appointmentRepositoryMock.listAppointmentsForOwner).toHaveBeenCalledWith("owner-2", "client-1");
+    expect(appointmentRepositoryMock.listAppointmentsForOwner).not.toHaveBeenCalledWith("owner-1", "client-1");
   });
 
   it("lists Appointments through the owner-scoped repository", async () => {
     mutableEnv.NODE_ENV = "test";
-    cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
-    storeMock.getSession.mockReturnValue({ id: "owner-1" });
+    authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
     appointmentRepositoryMock.listAppointmentsForOwner.mockResolvedValue([{ id: "appointment-1" }]);
 
     const response = await GET(new Request("http://localhost/api/v1/appointments?clientId=client-1"));
@@ -78,8 +96,7 @@ describe("appointments business persistence guard", () => {
 
   it("creates through the repository while preserving the existing payload", async () => {
     mutableEnv.NODE_ENV = "test";
-    cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
-    storeMock.getSession.mockReturnValue({ id: "owner-1" });
+    authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
     storeMock.sanitize.mockImplementation((value) => typeof value === "string" ? value.trim() : "");
     clientRepositoryMock.resolveOwnedClient.mockResolvedValue({ id: "client-1" });
     appointmentRepositoryMock.createAppointmentForOwner.mockResolvedValue({ id: "appointment-1" });
@@ -111,8 +128,7 @@ describe("appointments business persistence guard", () => {
 
   it("maps dependency conflicts and persistence failures", async () => {
     mutableEnv.NODE_ENV = "test";
-    cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
-    storeMock.getSession.mockReturnValue({ id: "owner-1" });
+    authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
     storeMock.sanitize.mockImplementation((value) => typeof value === "string" ? value.trim() : "");
     clientRepositoryMock.resolveOwnedClient.mockResolvedValue({ id: "client-1" });
     appointmentRepositoryMock.createAppointmentForOwner.mockRejectedValue(

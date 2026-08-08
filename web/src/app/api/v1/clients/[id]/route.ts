@@ -1,4 +1,3 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { guardBusinessPersistence } from "@/lib/business-persistence-guards";
@@ -10,12 +9,11 @@ import {
   updateClientForOwner,
 } from "@/lib/client-repository";
 import type { ClientUpdateRequest } from "@/lib/contracts";
-import { getSession, sanitize } from "@/lib/milestone1-store";
+import { sanitize } from "@/lib/milestone1-store";
+import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
 async function requireSession() {
-  const cookieStore = await cookies();
-  const token = cookieStore.get("aha_session")?.value ?? null;
-  return getSession(token);
+  return authenticateSessionRequest();
 }
 
 // M30 GO-2: single-client fetch, needed by the client detail page (M30

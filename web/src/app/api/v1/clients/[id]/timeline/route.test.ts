@@ -1,9 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
-const storeMock = vi.hoisted(() => ({
-  getSession: vi.fn(),
-}));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const clientRepositoryMock = vi.hoisted(() => ({ resolveOwnedClient: vi.fn() }));
 const consultationRepositoryMock = vi.hoisted(() => ({
   listConsultationsForClient: vi.fn(),
@@ -31,8 +28,7 @@ const clientTreatmentRepositoryMock = vi.hoisted(() => ({
   clientTreatmentPersistenceUnavailableResponse: vi.fn(),
 }));
 
-vi.mock("next/headers", () => cookiesMock);
-vi.mock("@/lib/milestone1-store", () => storeMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 vi.mock("@/lib/client-repository", () => clientRepositoryMock);
 vi.mock("@/lib/consultation-repository", () => consultationRepositoryMock);
 vi.mock("@/lib/appointment-repository", () => appointmentRepositoryMock);
@@ -44,8 +40,7 @@ import { GET } from "./route";
 
 beforeEach(() => {
   vi.clearAllMocks();
-  cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
-  storeMock.getSession.mockReturnValue({ id: "owner-1" });
+  authMock.authenticateSessionRequest.mockResolvedValue({ id: "owner-1", email: "owner-a@example.com", role: "professional", locale: "en" });
   clientRepositoryMock.resolveOwnedClient.mockResolvedValue({ id: "client-1" });
   consultationRepositoryMock.listConsultationsForClient.mockResolvedValue([]);
   consultationRepositoryMock.isConsultationPersistenceError.mockReturnValue(false);
@@ -199,6 +194,27 @@ describe("client timeline route", () => {
 
     expect(response.status).toBe(503);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("returns 401 without a cookie, never reading any repository", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await GET(new Request("http://localhost"), {
+      params: Promise.resolve({ id: "client-1" }),
+    });
+
+    expect(response.status).toBe(401);
+    expect(clientRepositoryMock.resolveOwnedClient).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await GET(new Request("http://localhost"), {
+      params: Promise.resolve({ id: "client-1" }),
+    });
+
+    expect(response.status).toBe(401);
   });
 
   it("returns 404 for a nonexistent or another owner's client without reading any list repository", async () => {

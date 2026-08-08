@@ -1,4 +1,3 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { guardBusinessPersistence } from "@/lib/business-persistence-guards";
@@ -12,7 +11,7 @@ import {
   normalizeConsultationNextSteps,
   normalizeConsultationSummary,
 } from "@/lib/consultation-repository";
-import { getSession } from "@/lib/milestone1-store";
+import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
 export async function POST(request: Request) {
   const blockedResponse = guardBusinessPersistence("consultations", request);
@@ -20,9 +19,7 @@ export async function POST(request: Request) {
     return blockedResponse;
   }
 
-  const cookieStore = await cookies();
-  const token = cookieStore.get("aha_session")?.value ?? null;
-  const sessionUser = getSession(token);
+  const sessionUser = await authenticateSessionRequest();
 
   if (!sessionUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

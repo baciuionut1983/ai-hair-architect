@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const legacyPersistenceMock = vi.hoisted(() => ({ upsertPersistedAnalysis: vi.fn() }));
 const repositoryMock = vi.hoisted(() => {
   class AnalysisConcurrencyError extends Error {
@@ -36,33 +36,43 @@ const repositoryMock = vi.hoisted(() => {
     isAnalysisPersistenceError: vi.fn(),
   };
 });
-const storeMock = vi.hoisted(() => ({
-  getSession: vi.fn(),
-}));
-
-vi.mock("next/headers", () => cookiesMock);
 vi.mock("@/lib/analysis-persistence", () => legacyPersistenceMock);
 vi.mock("@/lib/analysis-repository", () => repositoryMock);
-vi.mock("@/lib/milestone1-store", () => storeMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 import { POST } from "./route";
 
 describe("POST /api/v1/analysis/start", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
-    storeMock.getSession.mockReturnValue({ id: "owner-1", role: "professional" });
+    authMock.authenticateSessionRequest.mockResolvedValue({ id: "owner-1", email: "owner@example.com", role: "professional", locale: "en" });
     repositoryMock.createAnalysisForOwner.mockResolvedValue(analysisRecord());
   });
 
-  it("preserves the unauthorized response without accessing persistence", async () => {
-    storeMock.getSession.mockReturnValue(null);
+  it("returns 401 when no cookie is presented (authenticateSessionRequest resolves null)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await POST(startRequest(validPayload()));
 
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: "Unauthorized" });
     expect(repositoryMock.createAnalysisForOwner).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (authenticateSessionRequest resolves null -- both cases are indistinguishable at this layer by design; the distinction is covered by session-request-auth's and auth-persistence's own tests)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await POST(startRequest(validPayload()));
+
+    expect(response.status).toBe(401);
+    expect(repositoryMock.createAnalysisForOwner).not.toHaveBeenCalled();
+  });
+
+  it("proceeds normally for a valid session", async () => {
+    const response = await POST(startRequest(validPayload()));
+
+    expect(response.status).toBe(200);
+    expect(repositoryMock.createAnalysisForOwner).toHaveBeenCalledWith("owner-1", "client-1", expect.any(Object));
   });
 
   it("preserves required payload validation", async () => {
@@ -114,7 +124,7 @@ describe("POST /api/v1/analysis/start", () => {
   });
 
   it("preserves the consumer restriction for technical plans", async () => {
-    storeMock.getSession.mockReturnValue({ id: "owner-1", role: "consumer" });
+    authMock.authenticateSessionRequest.mockResolvedValue({ id: "owner-1", role: "consumer" });
 
     const response = await POST(startRequest({ ...validPayload(), goal: "reshape" }));
 
@@ -126,7 +136,7 @@ describe("POST /api/v1/analysis/start", () => {
   });
 
   it("restricts a consumer requesting a color plan the same way as a technical cut plan", async () => {
-    storeMock.getSession.mockReturnValue({ id: "owner-1", role: "consumer" });
+    authMock.authenticateSessionRequest.mockResolvedValue({ id: "owner-1", role: "consumer" });
 
     const response = await POST(startRequest({ ...validPayload(), goal: "cover" }));
 
@@ -135,7 +145,7 @@ describe("POST /api/v1/analysis/start", () => {
   });
 
   it("restricts a consumer requesting a treatment plan the same way as a technical cut plan", async () => {
-    storeMock.getSession.mockReturnValue({ id: "owner-1", role: "consumer" });
+    authMock.authenticateSessionRequest.mockResolvedValue({ id: "owner-1", role: "consumer" });
 
     const response = await POST(startRequest({ ...validPayload(), goal: "treat" }));
 

@@ -6,7 +6,7 @@ type AnalysisTransition = (current: AnalysisFixture) => Omit<
   "id" | "clientId" | "createdByUserId" | "createdAt" | "updatedAt"
 >;
 
-const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const legacyPersistenceMock = vi.hoisted(() => ({ upsertPersistedAnalysis: vi.fn() }));
 const repositoryMock = vi.hoisted(() => {
   class AnalysisConcurrencyError extends Error {
@@ -32,22 +32,20 @@ const repositoryMock = vi.hoisted(() => {
   };
 });
 const storeMock = vi.hoisted(() => ({
-  getSession: vi.fn(),
   sanitize: vi.fn(),
 }));
 
-vi.mock("next/headers", () => cookiesMock);
 vi.mock("@/lib/analysis-persistence", () => legacyPersistenceMock);
 vi.mock("@/lib/analysis-repository", () => repositoryMock);
 vi.mock("@/lib/milestone1-store", () => storeMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 import { POST } from "./route";
 
 describe("POST /api/v1/analysis/[id]/clarify", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
-    storeMock.getSession.mockReturnValue({ id: "owner-1", role: "professional" });
+    authMock.authenticateSessionRequest.mockResolvedValue({ id: "owner-1", email: "owner@example.com", role: "professional", locale: "en" });
     storeMock.sanitize.mockImplementation((value: unknown) => String(value ?? "").trim());
     repositoryMock.isAnalysisPersistenceError.mockReturnValue(false);
     repositoryMock.clarifyAnalysisForOwner.mockImplementation(async (
@@ -61,13 +59,22 @@ describe("POST /api/v1/analysis/[id]/clarify", () => {
     }));
   });
 
-  it("preserves the unauthorized response without updating persistence", async () => {
-    storeMock.getSession.mockReturnValue(null);
+  it("returns 401 without a cookie, never updating persistence", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await invoke("analysis-1", { answers: ["no"] });
 
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: "Unauthorized" });
+    expect(repositoryMock.clarifyAnalysisForOwner).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await invoke("analysis-1", { answers: ["no"] });
+
+    expect(response.status).toBe(401);
     expect(repositoryMock.clarifyAnalysisForOwner).not.toHaveBeenCalled();
   });
 

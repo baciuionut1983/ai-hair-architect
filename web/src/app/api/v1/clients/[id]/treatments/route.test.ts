@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const storeMock = vi.hoisted(() => ({
-  getSession: vi.fn(),
   sanitize: vi.fn((value: unknown) => (typeof value === "string" ? value.trim() : "")),
 }));
 const clientRepositoryMock = vi.hoisted(() => ({ resolveOwnedClient: vi.fn() }));
@@ -20,10 +19,10 @@ const clientTreatmentRepositoryMock = vi.hoisted(() => {
   };
 });
 
-vi.mock("next/headers", () => cookiesMock);
 vi.mock("@/lib/milestone1-store", () => storeMock);
 vi.mock("@/lib/client-repository", () => clientRepositoryMock);
 vi.mock("@/lib/client-treatment-repository", () => clientTreatmentRepositoryMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 import { GET, POST } from "./route";
 
@@ -43,8 +42,7 @@ const params = { params: Promise.resolve({ id: "client-1" }) };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
-  storeMock.getSession.mockReturnValue({ id: "owner-1" });
+  authMock.authenticateSessionRequest.mockResolvedValue({ id: "owner-1", email: "owner-a@example.com", role: "professional", locale: "en" });
   storeMock.sanitize.mockImplementation((value: unknown) => (typeof value === "string" ? value.trim() : ""));
   clientRepositoryMock.resolveOwnedClient.mockResolvedValue({ id: "client-1" });
   clientTreatmentRepositoryMock.listClientTreatmentsForOwner.mockResolvedValue([]);
@@ -60,7 +58,7 @@ beforeEach(() => {
 
 describe("GET /api/v1/clients/:id/treatments", () => {
   it("returns 401 without a session", async () => {
-    storeMock.getSession.mockReturnValue(null);
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
     const response = await GET(getRequest(), params);
     expect(response.status).toBe(401);
   });
@@ -117,7 +115,7 @@ describe("GET /api/v1/clients/:id/treatments", () => {
 
 describe("POST /api/v1/clients/:id/treatments", () => {
   it("returns 401 without a session", async () => {
-    storeMock.getSession.mockReturnValue(null);
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
     const response = await POST(postRequest({ treatmentName: "n", treatmentDetails: "d" }), params);
     expect(response.status).toBe(401);
     expect(clientTreatmentRepositoryMock.createClientTreatmentForOwner).not.toHaveBeenCalled();

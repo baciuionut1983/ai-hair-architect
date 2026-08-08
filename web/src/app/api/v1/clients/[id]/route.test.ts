@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({ cookies: vi.fn() }));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const storeMock = vi.hoisted(() => ({
-  getSession: vi.fn(),
   sanitize: vi.fn((value: unknown) => (typeof value === "string" ? value.trim() : ""))
 }));
 const repositoryMock = vi.hoisted(() => ({
@@ -13,9 +12,9 @@ const repositoryMock = vi.hoisted(() => ({
   updateClientForOwner: vi.fn()
 }));
 
-vi.mock("next/headers", () => cookiesMock);
 vi.mock("@/lib/milestone1-store", () => storeMock);
 vi.mock("@/lib/client-repository", () => repositoryMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 import { DELETE, GET, PATCH } from "./route";
 
@@ -39,8 +38,7 @@ function deleteRequest(): Request {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  cookiesMock.cookies.mockResolvedValue({ get: () => ({ value: "session-token" }) });
-  storeMock.getSession.mockReturnValue({ id: "owner-1" });
+  authMock.authenticateSessionRequest.mockResolvedValue({ id: "owner-1", email: "owner-a@example.com", role: "professional", locale: "en" });
   storeMock.sanitize.mockImplementation((value: unknown) => (typeof value === "string" ? value.trim() : ""));
   repositoryMock.isClientPersistenceError.mockReturnValue(false);
   repositoryMock.clientPersistenceUnavailableResponse.mockReturnValue(
@@ -50,7 +48,7 @@ beforeEach(() => {
 
 describe("GET /api/v1/clients/:id", () => {
   it("returns 401 without a session", async () => {
-    storeMock.getSession.mockReturnValue(null);
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
     const response = await GET(getRequest(), params);
     expect(response.status).toBe(401);
     expect(repositoryMock.resolveOwnedClient).not.toHaveBeenCalled();
@@ -93,7 +91,7 @@ describe("GET /api/v1/clients/:id", () => {
 
 describe("PATCH /api/v1/clients/:id", () => {
   it("returns 401 without a session", async () => {
-    storeMock.getSession.mockReturnValue(null);
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
     const response = await PATCH(patchRequest({ fullName: "New name" }), params);
     expect(response.status).toBe(401);
     expect(repositoryMock.updateClientForOwner).not.toHaveBeenCalled();
@@ -143,7 +141,7 @@ describe("PATCH /api/v1/clients/:id", () => {
 
 describe("DELETE /api/v1/clients/:id", () => {
   it("returns 401 without a session", async () => {
-    storeMock.getSession.mockReturnValue(null);
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
     const response = await DELETE(deleteRequest(), params);
     expect(response.status).toBe(401);
     expect(repositoryMock.softDeleteClientForOwner).not.toHaveBeenCalled();
