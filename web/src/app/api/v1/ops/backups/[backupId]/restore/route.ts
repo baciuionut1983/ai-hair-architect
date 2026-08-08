@@ -1,4 +1,3 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 
@@ -13,8 +12,8 @@ import {
 } from "@/lib/backup-m15-v2-restore-execution-runtime";
 import { executeBackupRestoreWithHistory } from "@/lib/backup-v13-restore-run-history";
 import { ensureRequestId } from "@/lib/hardening";
-import { resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
 import { prisma } from "@/lib/prisma";
+import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -51,9 +50,7 @@ function mapM15V2RestoreExecutionErrorStatus(code: BackupM15V2RestoreExecutionEr
 export async function POST(request: Request, context: { params: Promise<{ backupId: string }> }) {
   const { backupId } = await context.params;
 
-  const cookieStore = await cookies();
-  const token = cookieStore.get("aha_session")?.value ?? null;
-  const sessionUser = await resolveOpsSessionUserReadOnly(token);
+  const sessionUser = await authenticateSessionRequest();
 
   if (!sessionUser) {
     return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401, headers: { "Cache-Control": "no-store" } });

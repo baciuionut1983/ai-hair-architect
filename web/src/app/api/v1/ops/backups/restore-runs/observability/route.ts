@@ -1,6 +1,5 @@
 import { randomUUID } from "crypto";
 
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import {
@@ -10,7 +9,7 @@ import {
   parseObservabilityQuery,
 } from "@/lib/backup-v13-restore-observability";
 import { ensureRequestId } from "@/lib/hardening";
-import { resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
+import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -21,9 +20,7 @@ export async function GET(request: Request) {
   const requestId = resolveRequestId(request.headers?.get?.("x-request-id") ?? null);
 
   try {
-    const cookieStore = await cookies();
-    const token = cookieStore.get("aha_session")?.value ?? null;
-    const sessionUser = await resolveOpsSessionUserReadOnly(token);
+    const sessionUser = await authenticateSessionRequest();
 
     if (!sessionUser) {
       return NextResponse.json(

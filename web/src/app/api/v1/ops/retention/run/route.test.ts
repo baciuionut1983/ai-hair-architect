@@ -1,34 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({
-  cookies: vi.fn(),
-}));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 
-vi.mock("next/headers", () => cookiesMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 vi.mock("@/lib/ops-persistence", () => {
   return {
-    resolveOpsSessionUser: vi.fn(),
     runPersistentRetention: vi.fn(),
   };
 });
 
 import { POST } from "./route";
-import { resolveOpsSessionUser, runPersistentRetention } from "@/lib/ops-persistence";
+import { runPersistentRetention } from "@/lib/ops-persistence";
+
+const OWNER_A = { id: "user-1", email: "user@example.com", role: "professional", locale: "en" };
 
 describe("ops retention run route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(cookiesMock.cookies).mockResolvedValue({
-      get: () => ({ value: "session-token" }),
-    } as never);
-    vi.mocked(resolveOpsSessionUser).mockResolvedValue({
-      id: "user-1",
-      email: "user@example.com",
-      role: "professional",
-      locale: "en",
-      createdAt: new Date().toISOString(),
-    } as never);
+    authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
   });
 
   it("rejects execution without explicit confirmation", async () => {
@@ -131,12 +121,21 @@ describe("ops retention run route", () => {
     });
   });
 
-  it("returns 401 when the caller is not authenticated", async () => {
-    vi.mocked(resolveOpsSessionUser).mockResolvedValue(null);
+  it("returns 401 without a cookie, never reading persistence", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await POST({ json: async () => ({ dryRun: true }) } as never);
 
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toMatchObject({ error: "Unauthorized" });
+    expect(runPersistentRetention).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await POST({ json: async () => ({ dryRun: true }) } as never);
+
+    expect(response.status).toBe(401);
   });
 });

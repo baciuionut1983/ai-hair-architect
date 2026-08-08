@@ -2,15 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BackupArtifactError } from "@/lib/backup-v13-artifact";
 
-const cookiesMock = vi.hoisted(() => ({
-  cookies: vi.fn(),
-}));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 
-vi.mock("next/headers", () => cookiesMock);
-
-vi.mock("@/lib/ops-persistence", () => ({
-  resolveOpsSessionUserReadOnly: vi.fn(),
-}));
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 vi.mock("@/lib/backup-v13-restore-execution", () => ({
   executeBackupRestoreForUser: vi.fn(),
@@ -50,33 +44,24 @@ import {
   runBackupM15V2RestoreForUser,
 } from "@/lib/backup-m15-v2-restore-execution-runtime";
 import { executeBackupRestoreWithHistory } from "@/lib/backup-v13-restore-run-history";
-import { resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
 import { prisma } from "@/lib/prisma";
 
 const VALID_PREVIEW_FINGERPRINT = "a".repeat(64);
 const VALID_CURRENT_STATE_FINGERPRINT = "b".repeat(64);
 const OWNER_ID = "user-1";
+const OWNER_A = { id: OWNER_ID, email: "user@example.com", role: "professional", locale: "en" };
 
 describe("restore route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(cookiesMock.cookies).mockResolvedValue({
-      get: () => ({ value: "session-token" }),
-    } as never);
-    vi.mocked(resolveOpsSessionUserReadOnly).mockResolvedValue({
-      id: OWNER_ID,
-      email: "user@example.com",
-      role: "professional",
-      locale: "en",
-      createdAt: new Date().toISOString(),
-    } as never);
+    authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
     // Default: every pre-existing M13 test below falls through the m15.v2 dispatch
     // branch exactly as it did before WP2H8 introduced the peek.
     vi.mocked(prisma.opsBackupSnapshot.findFirst).mockResolvedValue({ schemaVersion: "m13.v1" } as never);
   });
 
-  it("returns 401 when unauthenticated", async () => {
-    vi.mocked(resolveOpsSessionUserReadOnly).mockResolvedValue(null);
+  it("returns 401 without a cookie, never reading persistence", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await POST({ json: async () => ({}) } as never, { params: Promise.resolve({ backupId: "backup-1" }) });
 
@@ -84,6 +69,14 @@ describe("restore route", () => {
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(prisma.opsBackupSnapshot.findFirst).not.toHaveBeenCalled();
     expect(runBackupM15V2RestoreForUser).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await POST({ json: async () => ({}) } as never, { params: Promise.resolve({ backupId: "backup-1" }) });
+
+    expect(response.status).toBe(401);
   });
 
   it("rejects unknown fields", async () => {

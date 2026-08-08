@@ -1,4 +1,3 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { BackupArtifactError } from "@/lib/backup-v13-artifact";
@@ -7,8 +6,9 @@ import {
   type BackupM15V2SnapshotPersistenceErrorCode,
 } from "@/lib/backup-m15-v2-snapshot-persistence";
 import { verifyBackupM15V2SnapshotForUser } from "@/lib/backup-m15-v2-snapshot-persistence-runtime";
-import { resolveOpsSessionUser, verifyBackupSnapshotForUser } from "@/lib/ops-persistence";
+import { verifyBackupSnapshotForUser } from "@/lib/ops-persistence";
 import { prisma } from "@/lib/prisma";
+import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -29,9 +29,7 @@ function mapM15V2SnapshotErrorStatus(code: BackupM15V2SnapshotPersistenceErrorCo
 export async function GET(_request: Request, context: { params: Promise<{ backupId: string }> }) {
   const { backupId } = await context.params;
 
-  const cookieStore = await cookies();
-  const token = cookieStore.get("aha_session")?.value ?? null;
-  const sessionUser = await resolveOpsSessionUser(token);
+  const sessionUser = await authenticateSessionRequest();
 
   if (!sessionUser) {
     return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401, headers: { "Cache-Control": "no-store" } });

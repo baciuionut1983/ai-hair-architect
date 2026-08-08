@@ -3,15 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BackupArtifactError } from "@/lib/backup-v13-artifact";
 import { BackupM15V2RestorePreviewRuntimeError } from "@/lib/backup-m15-v2-restore-preview-runtime";
 
-const cookiesMock = vi.hoisted(() => ({
-  cookies: vi.fn(),
-}));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 
-vi.mock("next/headers", () => cookiesMock);
-
-vi.mock("@/lib/ops-persistence", () => ({
-  resolveOpsSessionUserReadOnly: vi.fn(),
-}));
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 vi.mock("@/lib/backup-restore-preview-runtime", () => ({
   getRuntimeBackupRestorePreviewForUser: vi.fn(),
@@ -34,35 +28,34 @@ vi.mock("@/lib/backup-m15-v2-restore-preview-runtime", async () => {
 import { POST } from "./route";
 import { getBackupM15V2RestorePreviewForUser } from "@/lib/backup-m15-v2-restore-preview-runtime";
 import { getRuntimeBackupRestorePreviewForUser } from "@/lib/backup-restore-preview-runtime";
-import { resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
 import { prisma } from "@/lib/prisma";
 
 const OWNER_ID = "user-1";
+const OWNER_A = { id: OWNER_ID, email: "user@example.com", role: "professional", locale: "en" };
 
 describe("restore-preview route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(cookiesMock.cookies).mockResolvedValue({
-      get: () => ({ value: "session-token" }),
-    } as never);
-    vi.mocked(resolveOpsSessionUserReadOnly).mockResolvedValue({
-      id: OWNER_ID,
-      email: "user@example.com",
-      role: "professional",
-      locale: "en",
-      createdAt: new Date().toISOString(),
-    } as never);
+    authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
     vi.mocked(prisma.opsBackupSnapshot.findFirst).mockResolvedValue({ schemaVersion: "m13.v1" } as never);
   });
 
-  it("returns 401 when unauthenticated", async () => {
-    vi.mocked(resolveOpsSessionUserReadOnly).mockResolvedValue(null);
+  it("returns 401 without a cookie, never reading persistence", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await POST({ json: async () => ({}) } as never, { params: Promise.resolve({ backupId: "backup-1" }) });
 
     expect(response.status).toBe(401);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(prisma.opsBackupSnapshot.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await POST({ json: async () => ({}) } as never, { params: Promise.resolve({ backupId: "backup-1" }) });
+
+    expect(response.status).toBe(401);
   });
 
   it("rejects non-empty request bodies", async () => {

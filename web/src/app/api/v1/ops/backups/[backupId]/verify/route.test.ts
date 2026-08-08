@@ -3,14 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BackupArtifactError } from "@/lib/backup-v13-artifact";
 import { BackupM15V2SnapshotPersistenceError } from "@/lib/backup-m15-v2-snapshot-persistence";
 
-const cookiesMock = vi.hoisted(() => ({
-  cookies: vi.fn(),
-}));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 
-vi.mock("next/headers", () => cookiesMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 vi.mock("@/lib/ops-persistence", () => ({
-  resolveOpsSessionUser: vi.fn(),
   verifyBackupSnapshotForUser: vi.fn(),
 }));
 
@@ -24,22 +21,20 @@ vi.mock("@/lib/backup-m15-v2-snapshot-persistence-runtime", () => ({
 
 import { GET } from "./route";
 import { verifyBackupM15V2SnapshotForUser } from "@/lib/backup-m15-v2-snapshot-persistence-runtime";
-import { resolveOpsSessionUser, verifyBackupSnapshotForUser } from "@/lib/ops-persistence";
+import { verifyBackupSnapshotForUser } from "@/lib/ops-persistence";
 import { prisma } from "@/lib/prisma";
 
 const OWNER_ID = "user-1";
+const OWNER_A = { id: OWNER_ID, email: "u@example.com", role: "professional", locale: "en" };
 
 describe("ops backup verify route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(cookiesMock.cookies).mockResolvedValue({
-      get: () => ({ value: "session-token" }),
-    } as never);
     vi.mocked(prisma.opsBackupSnapshot.findFirst).mockResolvedValue({ schemaVersion: "m13.v1" } as never);
   });
 
-  it("returns 401 when unauthenticated", async () => {
-    vi.mocked(resolveOpsSessionUser).mockResolvedValue(null);
+  it("returns 401 without a cookie, never reading persistence", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await GET({} as Request, { params: Promise.resolve({ backupId: "backup-1" }) });
 
@@ -48,14 +43,16 @@ describe("ops backup verify route", () => {
     expect(prisma.opsBackupSnapshot.findFirst).not.toHaveBeenCalled();
   });
 
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await GET({} as Request, { params: Promise.resolve({ backupId: "backup-1" }) });
+
+    expect(response.status).toBe(401);
+  });
+
   it("returns verification payload on success", async () => {
-    vi.mocked(resolveOpsSessionUser).mockResolvedValue({
-      id: OWNER_ID,
-      email: "u@example.com",
-      role: "professional",
-      locale: "en",
-      createdAt: new Date().toISOString(),
-    } as never);
+    authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
 
     vi.mocked(verifyBackupSnapshotForUser).mockResolvedValue({
       backupId: "backup-1",
@@ -79,13 +76,7 @@ describe("ops backup verify route", () => {
   });
 
   it("maps backup artifact errors to status code", async () => {
-    vi.mocked(resolveOpsSessionUser).mockResolvedValue({
-      id: OWNER_ID,
-      email: "u@example.com",
-      role: "professional",
-      locale: "en",
-      createdAt: new Date().toISOString(),
-    } as never);
+    authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
 
     vi.mocked(verifyBackupSnapshotForUser).mockRejectedValue(
       new BackupArtifactError("BACKUP_NOT_FOUND", 404, "Backup snapshot not found."),
@@ -100,13 +91,7 @@ describe("ops backup verify route", () => {
 
   describe("m15.v2 dispatch", () => {
     beforeEach(() => {
-      vi.mocked(resolveOpsSessionUser).mockResolvedValue({
-        id: OWNER_ID,
-        email: "u@example.com",
-        role: "professional",
-        locale: "en",
-        createdAt: new Date().toISOString(),
-      } as never);
+      authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
     });
 
     it("dispatches to the WP2H5 runtime and returns its native result when schemaVersion is m15.v2", async () => {

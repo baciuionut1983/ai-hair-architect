@@ -1,12 +1,10 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
-import { listOpsAuditEventsForUser, resolveOpsSessionUser } from "@/lib/ops-persistence";
+import { listOpsAuditEventsForUser } from "@/lib/ops-persistence";
+import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
 export async function GET() {
-  const cookieStore = await cookies();
-  const token = cookieStore.get("aha_session")?.value ?? null;
-  const sessionUser = await resolveOpsSessionUser(token);
+  const sessionUser = await authenticateSessionRequest();
 
   if (!sessionUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

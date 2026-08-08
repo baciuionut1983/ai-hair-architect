@@ -1,35 +1,25 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({
-  cookies: vi.fn(),
-}));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 
-vi.mock("next/headers", () => cookiesMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 vi.mock("@/lib/ops-persistence", () => ({
-  resolveOpsSessionUser: vi.fn(),
   listOpsAuditEventsForUser: vi.fn(),
 }));
 
 import { GET } from "./route";
-import { listOpsAuditEventsForUser, resolveOpsSessionUser } from "@/lib/ops-persistence";
+import { listOpsAuditEventsForUser } from "@/lib/ops-persistence";
+
+const OWNER_A = { id: "user-1", email: "user@example.com", role: "professional", locale: "en" };
 
 describe("ops audit events route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(cookiesMock.cookies).mockResolvedValue({
-      get: () => ({ value: "session-token" }),
-    } as never);
   });
 
   it("returns owner-scoped ops audit events", async () => {
-    vi.mocked(resolveOpsSessionUser).mockResolvedValue({
-      id: "user-1",
-      email: "user@example.com",
-      role: "professional",
-      locale: "en",
-      createdAt: new Date().toISOString(),
-    } as never);
+    authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
     vi.mocked(listOpsAuditEventsForUser).mockResolvedValue([
       {
         id: "audit-1",
@@ -50,12 +40,36 @@ describe("ops audit events route", () => {
     });
   });
 
-  it("returns 401 when unauthenticated", async () => {
-    vi.mocked(resolveOpsSessionUser).mockResolvedValue(null);
+  it("returns 401 without a cookie, never reading persistence", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await GET();
 
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toMatchObject({ error: "Unauthorized" });
+    expect(listOpsAuditEventsForUser).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await GET();
+
+    expect(response.status).toBe(401);
+  });
+
+  it("scopes the audit event list strictly to the authenticated owner (cross-user isolation)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue({
+      id: "user-2",
+      email: "user2@example.com",
+      role: "professional",
+      locale: "en",
+    });
+    vi.mocked(listOpsAuditEventsForUser).mockResolvedValue([]);
+
+    await GET();
+
+    expect(listOpsAuditEventsForUser).toHaveBeenCalledWith("user-2");
+    expect(listOpsAuditEventsForUser).not.toHaveBeenCalledWith("user-1");
   });
 });

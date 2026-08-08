@@ -1,14 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({
-  cookies: vi.fn(),
-}));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 
-vi.mock("next/headers", () => cookiesMock);
-
-vi.mock("@/lib/ops-persistence", () => ({
-  resolveOpsSessionUserReadOnly: vi.fn(),
-}));
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 vi.mock("@/lib/backup-v13-restore-observability", () => ({
   buildRestoreGovernanceHealth: vi.fn(),
@@ -16,31 +10,32 @@ vi.mock("@/lib/backup-v13-restore-observability", () => ({
 
 import { GET } from "./route";
 import { buildRestoreGovernanceHealth } from "@/lib/backup-v13-restore-observability";
-import { resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
+
+const OWNER_A = { id: "owner-1", email: "owner@example.com", role: "professional", locale: "en" };
 
 describe("restore-runs health route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(cookiesMock.cookies).mockResolvedValue({
-      get: () => ({ value: "session-token" }),
-    } as never);
-    vi.mocked(resolveOpsSessionUserReadOnly).mockResolvedValue({
-      id: "owner-1",
-      email: "owner@example.com",
-      role: "professional",
-      locale: "en",
-      createdAt: new Date().toISOString(),
-    } as never);
+    authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
   });
 
-  it("returns 401 when unauthenticated", async () => {
-    vi.mocked(resolveOpsSessionUserReadOnly).mockResolvedValue(null);
+  it("returns 401 without a cookie, never reading persistence", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await GET(new Request("http://localhost/api/v1/ops/backups/restore-runs/health"));
 
     expect(response.status).toBe(401);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     await expect(response.json()).resolves.toMatchObject({ error: "UNAUTHORIZED" });
+    expect(buildRestoreGovernanceHealth).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await GET(new Request("http://localhost/api/v1/ops/backups/restore-runs/health"));
+
+    expect(response.status).toBe(401);
   });
 
   it("returns 200 on success", async () => {

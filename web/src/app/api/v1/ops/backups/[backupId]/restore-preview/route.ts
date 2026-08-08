@@ -1,4 +1,3 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { BackupArtifactError } from "@/lib/backup-v13-artifact";
@@ -7,17 +6,15 @@ import {
   BackupM15V2RestorePreviewRuntimeError,
   getBackupM15V2RestorePreviewForUser,
 } from "@/lib/backup-m15-v2-restore-preview-runtime";
-import { resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
 import { prisma } from "@/lib/prisma";
+import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request, context: { params: Promise<{ backupId: string }> }) {
   const { backupId } = await context.params;
 
-  const cookieStore = await cookies();
-  const token = cookieStore.get("aha_session")?.value ?? null;
-  const sessionUser = await resolveOpsSessionUserReadOnly(token);
+  const sessionUser = await authenticateSessionRequest();
 
   if (!sessionUser) {
     return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401, headers: { "Cache-Control": "no-store" } });

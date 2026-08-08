@@ -1,18 +1,15 @@
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { BackupArtifactError } from "@/lib/backup-v13-artifact";
 import { listBackupRestoreRunsForUser } from "@/lib/backup-v13-restore-run-history";
 import type { BackupRestoreRunStatus } from "@/lib/contracts";
-import { resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
+import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
 export const dynamic = "force-dynamic";
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" } as const;
 
 export async function GET(request: Request) {
-  const cookieStore = await cookies();
-  const token = cookieStore.get("aha_session")?.value ?? null;
-  const sessionUser = await resolveOpsSessionUserReadOnly(token);
+  const sessionUser = await authenticateSessionRequest();
 
   if (!sessionUser) {
     return NextResponse.json(

@@ -1,33 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const cookiesMock = vi.hoisted(() => ({
-  cookies: vi.fn(),
-}));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 
-vi.mock("next/headers", () => cookiesMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 vi.mock("@/lib/ops-persistence", () => ({
-  resolveOpsSessionUser: vi.fn(),
   listBackupSnapshotsForUser: vi.fn(),
   createPersistentBackupSnapshot: vi.fn(),
 }));
 
 import { GET, POST } from "./route";
-import { createPersistentBackupSnapshot, listBackupSnapshotsForUser, resolveOpsSessionUser } from "@/lib/ops-persistence";
+import { createPersistentBackupSnapshot, listBackupSnapshotsForUser } from "@/lib/ops-persistence";
 
 describe("ops backups route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(cookiesMock.cookies).mockResolvedValue({
-      get: () => ({ value: "session-token" }),
-    } as never);
-    vi.mocked(resolveOpsSessionUser).mockResolvedValue({
+    authMock.authenticateSessionRequest.mockResolvedValue({
       id: "user-1",
       email: "user@example.com",
       role: "professional",
       locale: "en",
-      createdAt: new Date().toISOString(),
-    } as never);
+    });
   });
 
   it("lists owner-scoped persistent backups", async () => {
@@ -93,13 +86,37 @@ describe("ops backups route", () => {
     });
   });
 
-  it("returns 401 when unauthenticated", async () => {
-    vi.mocked(resolveOpsSessionUser).mockResolvedValue(null);
+  it("returns 401 without a cookie, never reading persistence", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await GET();
 
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toMatchObject({ error: "Unauthorized" });
+    expect(listBackupSnapshotsForUser).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback -- previously resolveOpsSessionUser could return a cached in-memory user even when the Postgres session had expired; that path no longer exists)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await GET();
+
+    expect(response.status).toBe(401);
+  });
+
+  it("scopes the list strictly to the authenticated owner (cross-user isolation)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue({
+      id: "user-2",
+      email: "user2@example.com",
+      role: "professional",
+      locale: "en",
+    });
+    vi.mocked(listBackupSnapshotsForUser).mockResolvedValue([]);
+
+    await GET();
+
+    expect(listBackupSnapshotsForUser).toHaveBeenCalledWith("user-2");
+    expect(listBackupSnapshotsForUser).not.toHaveBeenCalledWith("user-1");
   });
 
   it("rejects unexpected request fields", async () => {

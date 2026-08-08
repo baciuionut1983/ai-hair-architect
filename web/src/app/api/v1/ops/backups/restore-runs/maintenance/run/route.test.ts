@@ -2,15 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BackupArtifactError } from "@/lib/backup-v13-artifact";
 
-const cookiesMock = vi.hoisted(() => ({
-  cookies: vi.fn(),
-}));
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 
-vi.mock("next/headers", () => cookiesMock);
-
-vi.mock("@/lib/ops-persistence", () => ({
-  resolveOpsSessionUserReadOnly: vi.fn(),
-}));
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 vi.mock("@/lib/backup-v13-restore-run-maintenance", () => ({
   runBackupRestoreRunMaintenance: vi.fn(),
@@ -18,25 +12,17 @@ vi.mock("@/lib/backup-v13-restore-run-maintenance", () => ({
 
 import { POST } from "./route";
 import { runBackupRestoreRunMaintenance } from "@/lib/backup-v13-restore-run-maintenance";
-import { resolveOpsSessionUserReadOnly } from "@/lib/ops-persistence";
+
+const OWNER_A = { id: "owner-1", email: "owner@example.com", role: "professional", locale: "en" };
 
 describe("restore-runs maintenance route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(cookiesMock.cookies).mockResolvedValue({
-      get: () => ({ value: "session-token" }),
-    } as never);
-    vi.mocked(resolveOpsSessionUserReadOnly).mockResolvedValue({
-      id: "owner-1",
-      email: "owner@example.com",
-      role: "professional",
-      locale: "en",
-      createdAt: new Date().toISOString(),
-    } as never);
+    authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
   });
 
-  it("returns 401 when unauthenticated", async () => {
-    vi.mocked(resolveOpsSessionUserReadOnly).mockResolvedValue(null);
+  it("returns 401 without a cookie, never reading persistence", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await POST(new Request("http://localhost/api/v1/ops/backups/restore-runs/maintenance/run", {
       method: "POST",
@@ -45,6 +31,18 @@ describe("restore-runs maintenance route", () => {
 
     expect(response.status).toBe(401);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(runBackupRestoreRunMaintenance).not.toHaveBeenCalled();
+  });
+
+  it("returns 401 for an unknown or expired session (no in-memory fallback)", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await POST(new Request("http://localhost/api/v1/ops/backups/restore-runs/maintenance/run", {
+      method: "POST",
+      body: JSON.stringify({ mode: "dry_run", staleThresholdMinutes: 30 }),
+    }));
+
+    expect(response.status).toBe(401);
   });
 
   it("returns dry-run response", async () => {
