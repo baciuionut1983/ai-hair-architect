@@ -4,7 +4,7 @@ import path from 'path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ConfinedImageStorageError, createConfinedImageReadStream } from './image-storage';
+import { ConfinedImageStorageError, createConfinedImageReadStream, deleteConfinedImageFileForRetention } from './image-storage';
 
 const STORAGE_DIR = path.join(process.cwd(), '.storage', 'images');
 
@@ -90,6 +90,87 @@ describe('createConfinedImageReadStream', () => {
     } catch (error) {
       expect((error as Error).message).not.toContain(missing);
       expect((error as Error).message).not.toContain(STORAGE_DIR);
+    }
+  });
+});
+
+describe('deleteConfinedImageFileForRetention (M36)', () => {
+  it('1. deletes a real file confined within the storage root and reports "deleted"', async () => {
+    const dir = trackedPath(uniqueId());
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'photo.jpg');
+    fs.writeFileSync(filePath, 'bytes');
+
+    const outcome = await deleteConfinedImageFileForRetention(filePath);
+
+    expect(outcome).toBe('deleted');
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  it('2. cleans up the parent directory once it is left empty', async () => {
+    const dir = trackedPath(uniqueId());
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'photo.jpg');
+    fs.writeFileSync(filePath, 'bytes');
+
+    await deleteConfinedImageFileForRetention(filePath);
+
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it('3. does not remove the parent directory while a sibling file remains', async () => {
+    const dir = trackedPath(uniqueId());
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'photo.jpg');
+    const siblingPath = path.join(dir, 'sibling.jpg');
+    fs.writeFileSync(filePath, 'bytes');
+    fs.writeFileSync(siblingPath, 'sibling-bytes');
+
+    await deleteConfinedImageFileForRetention(filePath);
+
+    expect(fs.existsSync(dir)).toBe(true);
+    expect(fs.existsSync(siblingPath)).toBe(true);
+  });
+
+  it('4. is idempotent: reports "already_absent" for a file that does not exist, rather than throwing', async () => {
+    const missing = trackedPath(uniqueId(), 'missing.jpg');
+    await expect(deleteConfinedImageFileForRetention(missing)).resolves.toBe('already_absent');
+  });
+
+  it('5. is idempotent across repeated calls for the same real file (first deletes, second finds it already gone)', async () => {
+    const dir = trackedPath(uniqueId());
+    fs.mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, 'photo.jpg');
+    fs.writeFileSync(filePath, 'bytes');
+
+    await expect(deleteConfinedImageFileForRetention(filePath)).resolves.toBe('deleted');
+    await expect(deleteConfinedImageFileForRetention(filePath)).resolves.toBe('already_absent');
+  });
+
+  it('6. rejects a path that lexically escapes the storage root via .., never touching the real filesystem outside it', async () => {
+    const traversal = path.join(STORAGE_DIR, '..', '..', 'outside-retention.jpg');
+    await expect(deleteConfinedImageFileForRetention(traversal)).rejects.toBeInstanceOf(ConfinedImageStorageError);
+  });
+
+  it('7. rejects a symlink that escapes the storage root, if the environment permits creating symlinks', async () => {
+    const outsideTarget = path.join(os.tmpdir(), `retention-symlink-target-${uniqueId()}.jpg`);
+    fs.writeFileSync(outsideTarget, 'escaped-bytes');
+    const dir = trackedPath(uniqueId());
+    fs.mkdirSync(dir, { recursive: true });
+    const linkPath = path.join(dir, 'link.jpg');
+
+    try {
+      fs.symlinkSync(outsideTarget, linkPath);
+    } catch {
+      fs.rmSync(outsideTarget, { force: true });
+      return;
+    }
+
+    try {
+      await expect(deleteConfinedImageFileForRetention(linkPath)).rejects.toBeInstanceOf(ConfinedImageStorageError);
+      expect(fs.existsSync(outsideTarget)).toBe(true);
+    } finally {
+      fs.rmSync(outsideTarget, { force: true });
     }
   });
 });

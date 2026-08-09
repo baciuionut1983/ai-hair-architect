@@ -111,5 +111,20 @@ The following remain reserved for later approved phases:
 - endpoint or service cutover;
 - object-backed upload and private download;
 - `m15.v1` backup/restore changes;
-- dual-read, object-only writes, backfill, retention execution, and reconciliation;
+- dual-read, object-only writes, backfill, and reconciliation;
 - production storage readiness transition from `FAIL`.
+
+**Retention execution (M36):** no longer reserved -- implemented. A real,
+manually-triggered, dry-run/execute purge exists for `ImageAsset` rows past
+their `retentionDeletesAt` grace period: `POST
+/api/v1/ops/image-assets/retention/run`
+(`src/lib/image-asset-retention.ts`/`-runtime.ts`). It clears the real
+external object first (S3 delete, version-pinned, confirmed via a follow-up
+`head()`; or the real local file) and only then hard-deletes the DB row --
+never the reverse, so a storage-clear failure never orphans a row-less
+object and a DB failure never orphans an object-less row. Idempotent
+(replays a given `executionIdempotencyKey`) and owner-scoped, mirroring
+`OpsRetentionRun`'s existing dry-run/confirmation-token pattern. There is
+still no automatic scheduler (no cron, no queue worker) invoking this route
+-- it requires either a manual call or an external trigger (platform cron,
+an operator script, etc.) configured outside this repository.

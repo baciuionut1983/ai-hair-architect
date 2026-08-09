@@ -703,6 +703,35 @@ model OpsRetentionRun {
   @@index([ownerUserId, startedAt])
 }
 
+// M36: distinct from OpsRetentionRun (which purges push-queue/audit-log rows
+// on a relative "olderThanDays" window). This purge operates on an absolute
+// per-row expiry (ImageAsset.retentionDeletesAt) and must clear a real
+// external object (S3 or local file) before the DB row is ever removed, so
+// it gets its own outcome shape (eligible/purged/failed) instead of reusing
+// OpsRetentionRun's push/audit-specific counters.
+model OpsImageAssetRetentionRun {
+  id                      String    @id @default(cuid())
+  ownerUserId             String    @db.Uuid
+  mode                    String    @db.VarChar(16)
+  status                  String    @db.VarChar(32)
+  reasonAuditSafe         String?   @db.VarChar(200)
+  executionIdempotencyKey String?   @db.VarChar(190)
+  idempotencyFingerprint  String?   @db.VarChar(64)
+  advisoryLockKey         String    @db.VarChar(32)
+  startedAt               DateTime  @db.Timestamp(6)
+  finishedAt              DateTime? @db.Timestamp(6)
+  eligibleCount           Int
+  purgedCount             Int
+  failedCount             Int
+  errorCode               String?   @db.VarChar(80)
+  errorMessageSafe        String?   @db.VarChar(500)
+  createdAt               DateTime  @default(now()) @db.Timestamp(6)
+
+  @@unique([ownerUserId, executionIdempotencyKey])
+  @@index([ownerUserId, createdAt])
+  @@index([ownerUserId, startedAt])
+}
+
 model OpsPushQueueEntry {
   id          String    @id @default(cuid())
   ownerUserId String    @db.Uuid

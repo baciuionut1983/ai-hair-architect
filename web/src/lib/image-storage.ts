@@ -51,6 +51,62 @@ export async function deleteImageFile(filePath: string): Promise<void> {
   }
 }
 
+export type LocalImageDeleteOutcome = 'deleted' | 'already_absent';
+
+// M36: confined, honest local-file delete for the retention purge job.
+// Unlike deleteImageFile above (which silently swallows every error,
+// including real ones like a permissions failure), this distinguishes
+// "already gone" -- idempotent success, since the purge must be safely
+// retryable -- from any other failure, which the caller must NOT treat as
+// success (a purge must never hard-delete the DB row unless the real file
+// was actually cleared or was already absent). Confined the same way
+// createConfinedImageReadStream is: both a lexical prefix check and a
+// realpath check, defeating a symlink pointing outside STORAGE_DIR.
+export async function deleteConfinedImageFileForRetention(storagePath: string): Promise<LocalImageDeleteOutcome> {
+  const resolvedRoot = path.resolve(STORAGE_DIR);
+  const resolvedPath = path.resolve(storagePath);
+  if (resolvedPath !== resolvedRoot && !resolvedPath.startsWith(resolvedRoot + path.sep)) {
+    throw new ConfinedImageStorageError();
+  }
+
+  let realPath: string;
+  try {
+    realPath = await fs.promises.realpath(resolvedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return 'already_absent';
+    }
+    throw new ConfinedImageStorageError();
+  }
+
+  const realRoot = await fs.promises.realpath(resolvedRoot);
+  if (realPath !== realRoot && !realPath.startsWith(realRoot + path.sep)) {
+    throw new ConfinedImageStorageError();
+  }
+
+  try {
+    await fs.promises.unlink(realPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return 'already_absent';
+    }
+    throw error;
+  }
+
+  try {
+    const dir = path.dirname(realPath);
+    const files = await fs.promises.readdir(dir);
+    if (files.length === 0) {
+      await fs.promises.rmdir(dir);
+    }
+  } catch {
+    // Best-effort empty-directory cleanup only -- the file itself was
+    // already successfully deleted, so this never affects the outcome.
+  }
+
+  return 'deleted';
+}
+
 export function getPrivateImageUrl(userId: string, assetId: string): string {
   return `/api/v1/image-assets/${assetId}/download`;
 }

@@ -7,7 +7,6 @@ const prismaMock = vi.hoisted(() => ({
   imageAssetFindUnique: vi.fn(),
   imageAssetUpdate: vi.fn(),
 }));
-const storageMock = vi.hoisted(() => ({ deleteImageFile: vi.fn() }));
 
 vi.mock("@/lib/prisma", () => ({
   isDatabaseConfigured: () => true,
@@ -15,10 +14,6 @@ vi.mock("@/lib/prisma", () => ({
     session: { findUnique: prismaMock.sessionFindUnique },
     imageAsset: { findUnique: prismaMock.imageAssetFindUnique, update: prismaMock.imageAssetUpdate },
   },
-}));
-
-vi.mock("@/lib/image-storage", () => ({
-  deleteImageFile: storageMock.deleteImageFile,
 }));
 
 import { GET, DELETE } from "./route";
@@ -160,14 +155,12 @@ describe("DELETE /api/v1/image-analyses/[assetId]", () => {
     prismaMock.sessionFindUnique.mockReset();
     prismaMock.imageAssetFindUnique.mockReset();
     prismaMock.imageAssetUpdate.mockReset();
-    storageMock.deleteImageFile.mockReset();
   });
 
-  it("returns 401 without a bearer token, never touching the asset lookup or file deletion", async () => {
+  it("returns 401 without a bearer token, never touching the asset lookup", async () => {
     const response = await invoke(DELETE, randomUUID());
     expect(response.status).toBe(401);
     expect(prismaMock.imageAssetFindUnique).not.toHaveBeenCalled();
-    expect(storageMock.deleteImageFile).not.toHaveBeenCalled();
   });
 
   it("returns 401 for an unknown session token", async () => {
@@ -176,7 +169,7 @@ describe("DELETE /api/v1/image-analyses/[assetId]", () => {
     expect(response.status).toBe(401);
   });
 
-  it("returns 401 for an expired session and never reaches the asset lookup, file deletion, or update", async () => {
+  it("returns 401 for an expired session and never reaches the asset lookup or update", async () => {
     const userId = randomUUID();
     prismaMock.sessionFindUnique.mockResolvedValue(expiredSession({ id: userId }));
 
@@ -185,42 +178,68 @@ describe("DELETE /api/v1/image-analyses/[assetId]", () => {
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: "Unauthorized" });
     expect(prismaMock.imageAssetFindUnique).not.toHaveBeenCalled();
-    expect(storageMock.deleteImageFile).not.toHaveBeenCalled();
     expect(prismaMock.imageAssetUpdate).not.toHaveBeenCalled();
   });
 
-  it("preserves existing behavior for a valid session: soft-deletes the asset", async () => {
+  it("M36: soft-deletes a legacy-local asset without touching the real file or storageState", async () => {
     const userId = randomUUID();
     const assetId = "asset-1";
     prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId }));
-    prismaMock.imageAssetFindUnique.mockResolvedValue({ id: assetId, ownerUserId: userId, storagePath: "/x/photo.jpg" });
-    storageMock.deleteImageFile.mockResolvedValue(undefined);
+    prismaMock.imageAssetFindUnique.mockResolvedValue({
+      id: assetId,
+      ownerUserId: userId,
+      storagePath: "/x/photo.jpg",
+      storageBackend: null,
+    });
     prismaMock.imageAssetUpdate.mockResolvedValue({});
 
     const response = await invoke(DELETE, assetId, "token");
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ success: true });
-    expect(storageMock.deleteImageFile).toHaveBeenCalledWith("/x/photo.jpg");
+    const updateArgs = prismaMock.imageAssetUpdate.mock.calls[0][0];
+    expect(updateArgs.data.deletedAt).toBeInstanceOf(Date);
+    expect(updateArgs.data.retentionDeletesAt).toBeInstanceOf(Date);
+    expect(updateArgs.data.storageState).toBeUndefined();
   });
 
-  it("returns 403 when the asset does not belong to the authenticated owner, never deleting the file", async () => {
+  it("M36: soft-deletes an S3-backed asset and transitions storageState to delete_pending, keeping it consistent with the M15.v2 backup contract", async () => {
+    const userId = randomUUID();
+    const assetId = "asset-2";
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId }));
+    prismaMock.imageAssetFindUnique.mockResolvedValue({
+      id: assetId,
+      ownerUserId: userId,
+      storagePath: "pending",
+      storageBackend: "s3",
+    });
+    prismaMock.imageAssetUpdate.mockResolvedValue({});
+
+    const response = await invoke(DELETE, assetId, "token");
+
+    expect(response.status).toBe(200);
+    const updateArgs = prismaMock.imageAssetUpdate.mock.calls[0][0];
+    expect(updateArgs.data.storageState).toBe("delete_pending");
+    expect(updateArgs.data.deletedAt).toBeInstanceOf(Date);
+    expect(updateArgs.data.retentionDeletesAt).toBeInstanceOf(Date);
+  });
+
+  it("returns 403 when the asset does not belong to the authenticated owner, never updating it", async () => {
     const userId = randomUUID();
     prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId }));
-    prismaMock.imageAssetFindUnique.mockResolvedValue({ id: "asset-1", ownerUserId: "someone-else", storagePath: "/x/photo.jpg" });
+    prismaMock.imageAssetFindUnique.mockResolvedValue({ id: "asset-1", ownerUserId: "someone-else", storagePath: "/x/photo.jpg", storageBackend: null });
 
     const response = await invoke(DELETE, "asset-1", "token");
 
     expect(response.status).toBe(403);
-    expect(storageMock.deleteImageFile).not.toHaveBeenCalled();
+    expect(prismaMock.imageAssetUpdate).not.toHaveBeenCalled();
   });
 
   it("accepts a valid Postgres-backed cookie session (M31 GO-4 dual resolver)", async () => {
     const userId = randomUUID();
     const assetId = "asset-1";
     prismaMock.sessionFindUnique.mockResolvedValue({ expiresAt: new Date(Date.now() + 60_000), user: fullUser(userId) });
-    prismaMock.imageAssetFindUnique.mockResolvedValue({ id: assetId, ownerUserId: userId, storagePath: "/x/photo.jpg" });
-    storageMock.deleteImageFile.mockResolvedValue(undefined);
+    prismaMock.imageAssetFindUnique.mockResolvedValue({ id: assetId, ownerUserId: userId, storagePath: "/x/photo.jpg", storageBackend: null });
     prismaMock.imageAssetUpdate.mockResolvedValue({});
 
     const response = await invoke(DELETE, assetId, undefined, "cookie-token");
@@ -234,6 +253,6 @@ describe("DELETE /api/v1/image-analyses/[assetId]", () => {
     const response = await invoke(DELETE, "asset-1", undefined, "expired-cookie-token");
 
     expect(response.status).toBe(401);
-    expect(storageMock.deleteImageFile).not.toHaveBeenCalled();
+    expect(prismaMock.imageAssetUpdate).not.toHaveBeenCalled();
   });
 });
