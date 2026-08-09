@@ -36,9 +36,29 @@ describe("milestone6 push baseline", () => {
     });
 
     const result = processPushQueueForUser(user.id);
-    expect(result.sent).toBeGreaterThanOrEqual(1);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
 
     const queue = getPushQueueForUser(user.id);
-    expect(queue[0].status).toBe("sent");
+    expect(queue[0].status).toBe("skipped");
+  });
+
+  it("never marks an entry sent -- no delivery provider is configured for any channel", () => {
+    const user = createUser({
+      email: `m6-push-honesty-${Date.now()}@example.com`,
+      password: "password123",
+      role: "professional",
+      locale: "en"
+    });
+
+    enqueuePushNotification({ userId: user.id, channel: "push", title: "Push", body: "Push body" });
+    enqueuePushNotification({ userId: user.id, channel: "email", title: "Email", body: "Email body" });
+    enqueuePushNotification({ userId: user.id, channel: "in_app", title: "In-app", body: "In-app body" });
+
+    const result = processPushQueueForUser(user.id);
+    expect(result).toEqual({ sent: 0, skipped: 3 });
+
+    const queue = getPushQueueForUser(user.id);
+    expect(queue.every((entry) => entry.status === "skipped")).toBe(true);
+    expect(queue.some((entry) => entry.status === "sent")).toBe(false);
   });
 });

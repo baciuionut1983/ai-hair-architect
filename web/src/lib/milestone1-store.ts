@@ -565,17 +565,22 @@ export function enqueuePushNotification(input: {
   return item;
 }
 
-export function processPushQueueForUser(userId: string): { sent: number } {
-  let sent = 0;
+// M35: no real push/email delivery provider is wired up for any channel, so
+// processing never claims "sent" -- that would be a false delivery claim.
+// Entries are marked "skipped" instead, honestly reflecting that nothing was
+// actually delivered. `sent` is kept (always 0 today) so a future real
+// provider integration can populate it without a response-shape change.
+export function processPushQueueForUser(userId: string): { sent: number; skipped: number } {
+  let skipped = 0;
   for (const item of store.pushQueue) {
     if (item.userId === userId && item.status === "queued") {
-      item.status = "sent";
+      item.status = "skipped";
       item.processedAt = new Date().toISOString();
-      sent += 1;
+      skipped += 1;
     }
   }
 
-  return { sent };
+  return { sent: 0, skipped };
 }
 
 export function getPushQueueForUser(userId: string): PushQueueRecord[] {

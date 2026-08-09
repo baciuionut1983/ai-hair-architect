@@ -164,14 +164,17 @@ export function Milestone6OpsPanel() {
     setStatus(null);
     try {
       const response = await fetch("/api/v1/push/queue/process", { method: "POST" });
-      const payload = (await response.json()) as { sent?: number; error?: string };
+      const payload = (await response.json()) as { sent?: number; skipped?: number; error?: string };
       if (!response.ok) {
         setStatus({ tone: "error", message: payload.error || "Push queue process failed." });
         return;
       }
 
       await loadPushQueue();
-      setStatus({ tone: "ok", message: `Push queue processed. Sent: ${payload.sent ?? 0}` });
+      setStatus({
+        tone: "ok",
+        message: `Push queue processed. Sent: ${payload.sent ?? 0}, skipped (no delivery provider configured): ${payload.skipped ?? 0}`
+      });
     } finally {
       setBusy(false);
     }

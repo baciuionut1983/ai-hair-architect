@@ -13,7 +13,7 @@ const OWNER_A = { id: "owner-1", email: "owner-a@example.com", role: "profession
 beforeEach(() => {
   vi.clearAllMocks();
   authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
-  opsPersistenceMock.processPersistentPushQueueForUser.mockResolvedValue({ sent: 0 });
+  opsPersistenceMock.processPersistentPushQueueForUser.mockResolvedValue({ sent: 0, skipped: 0 });
 });
 
 describe("POST /api/v1/push/queue/process", () => {
@@ -36,12 +36,12 @@ describe("POST /api/v1/push/queue/process", () => {
   });
 
   it("processes the owner-scoped queue for a valid session", async () => {
-    opsPersistenceMock.processPersistentPushQueueForUser.mockResolvedValue({ sent: 2 });
+    opsPersistenceMock.processPersistentPushQueueForUser.mockResolvedValue({ sent: 0, skipped: 2 });
 
     const response = await POST();
 
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ sent: 2 });
+    await expect(response.json()).resolves.toMatchObject({ sent: 0, skipped: 2 });
     expect(opsPersistenceMock.processPersistentPushQueueForUser).toHaveBeenCalledWith("owner-1");
   });
 

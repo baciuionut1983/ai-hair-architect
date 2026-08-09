@@ -82,7 +82,7 @@ describe("M12 push runtime persistence", () => {
     expect(processResponse.status).toBe(200);
 
     const persistedProcessed = await prisma.opsPushQueueEntry.findUnique({ where: { id: ownerQueueId } });
-    expect(persistedProcessed?.status).toBe("sent");
+    expect(persistedProcessed?.status).toBe("skipped");
     expect(persistedProcessed?.processedAt).not.toBeNull();
 
     vi.mocked(cookiesMock.cookies).mockResolvedValue({
@@ -140,8 +140,9 @@ describe("M12 push runtime persistence", () => {
 
     const postRetentionProcessResponse = await processPushRoute();
     expect(postRetentionProcessResponse.status).toBe(200);
-    const postRetentionProcessPayload = (await postRetentionProcessResponse.json()) as { sent: number };
+    const postRetentionProcessPayload = (await postRetentionProcessResponse.json()) as { sent: number; skipped: number };
     expect(postRetentionProcessPayload.sent).toBe(0);
+    expect(postRetentionProcessPayload.skipped).toBe(0);
 
     vi.mocked(cookiesMock.cookies).mockResolvedValue({
       get: () => ({ value: otherToken }),

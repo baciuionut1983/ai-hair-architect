@@ -629,7 +629,10 @@ export interface PushQueueRecord {
   channel: "in_app" | "email" | "push";
   title: string;
   body: string;
-  status: "queued" | "sent" | "failed";
+  // "sent" is reserved for a real, provider-confirmed delivery. No delivery
+  // provider is wired up for any channel today (M35), so processing an entry
+  // marks it "skipped" rather than claiming it was sent.
+  status: "queued" | "sent" | "failed" | "skipped";
   createdAt: string;
   processedAt: string | null;
 }

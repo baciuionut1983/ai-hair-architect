@@ -126,14 +126,17 @@ export async function enqueuePersistentPushNotification(input: {
   }
 }
 
-export async function processPersistentPushQueueForUser(userId: string): Promise<{ sent: number }> {
+// M35: mirrors processPushQueueForUser's honesty fix for the Postgres-backed
+// path -- no delivery provider exists, so processing marks entries "skipped"
+// rather than falsely claiming "sent". See that function's comment for why.
+export async function processPersistentPushQueueForUser(userId: string): Promise<{ sent: number; skipped: number }> {
   if (!isDatabaseConfigured()) {
     return processPushQueueForUser(userId);
   }
 
   const queuedEntries = store.pushQueue.filter((entry) => entry.userId === userId && entry.status === "queued");
   if (queuedEntries.length === 0) {
-    return { sent: 0 };
+    return { sent: 0, skipped: 0 };
   }
 
   const queuedIds = queuedEntries.map((entry) => entry.id);
@@ -147,7 +150,7 @@ export async function processPersistentPushQueueForUser(userId: string): Promise
         status: "queued",
       },
       data: {
-        status: "sent",
+        status: "skipped",
         processedAt,
       },
     });
@@ -165,12 +168,12 @@ export async function processPersistentPushQueueForUser(userId: string): Promise
   const processedAtIso = processedAt.toISOString();
   for (const entry of store.pushQueue) {
     if (entry.userId === userId && queuedIdSet.has(entry.id) && entry.status === "queued") {
-      entry.status = "sent";
+      entry.status = "skipped";
       entry.processedAt = processedAtIso;
     }
   }
 
-  return { sent: queuedIds.length };
+  return { sent: 0, skipped: queuedIds.length };
 }
 
 export async function resolveOpsSessionUser(token: string | null): Promise<AuthSessionResponse["user"] | null> {
