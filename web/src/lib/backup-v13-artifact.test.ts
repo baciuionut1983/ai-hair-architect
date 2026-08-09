@@ -17,6 +17,7 @@ import {
   isRecognizedLegacyM12Summary,
   resolveSafeStoragePath,
   utf8ByteLength,
+  verifyExternalReferences,
 } from "@/lib/backup-v13-artifact";
 import type { BackupV13Artifact } from "@/lib/contracts";
 
@@ -281,5 +282,94 @@ describe("backup-v13-artifact", () => {
     await fs.promises.writeFile(filePath, "x");
 
     expect(resolveSafeStoragePath(filePath)).toBe(path.resolve(filePath));
+  });
+
+  describe("verifyExternalReferences (M33 GO-3: legacy S3 storage metadata diagnostic)", () => {
+    function withImageAssets(imageAssets: Array<Record<string, unknown>>): BackupV13Artifact {
+      const artifact = structuredClone(createArtifact()) as unknown as Record<string, unknown>;
+      (artifact.sections as Record<string, unknown>).imageAssets = imageAssets;
+      return artifact as unknown as BackupV13Artifact;
+    }
+
+    it("returns not_applicable for an empty imageAssets section, without touching the filesystem", async () => {
+      const result = await verifyExternalReferences(withImageAssets([]));
+      expect(result).toEqual({ status: "not_applicable", reason: null });
+    });
+
+    it("verifies successfully for a genuine, existing local storagePath", async () => {
+      const storageRoot = path.join(process.cwd(), ".storage", "images", "owner-1", "asset-local");
+      await fs.promises.mkdir(storageRoot, { recursive: true });
+      const filePath = path.join(storageRoot, "photo.jpg");
+      await fs.promises.writeFile(filePath, "x");
+
+      const result = await verifyExternalReferences(
+        withImageAssets([{ ...createArtifact().sections.imageAssets[0], id: "asset-local", storagePath: filePath }]),
+      );
+
+      expect(result).toEqual({ status: "all_exist_integrity_unverified", reason: "external_binary_integrity_unavailable" });
+    });
+
+    it("throws a dedicated BACKUP_EXTERNAL_STORAGE_METADATA_MISSING diagnostic for storagePath \"pending\" (S3-backed, never captured), not the generic unsafe-path code", async () => {
+      const artifact = withImageAssets([
+        { ...createArtifact().sections.imageAssets[0], id: "asset-s3", storagePath: "pending" },
+      ]);
+
+      await expect(verifyExternalReferences(artifact)).rejects.toMatchObject({
+        code: "BACKUP_EXTERNAL_STORAGE_METADATA_MISSING",
+        httpStatus: 422,
+      });
+    });
+
+    it("includes the offending image asset id in the pending-sentinel error details", async () => {
+      const artifact = withImageAssets([
+        { ...createArtifact().sections.imageAssets[0], id: "asset-s3-specific", storagePath: "pending" },
+      ]);
+
+      try {
+        await verifyExternalReferences(artifact);
+        expect.unreachable("expected verifyExternalReferences to throw");
+      } catch (error) {
+        expect(error).toBeInstanceOf(BackupArtifactError);
+        expect((error as BackupArtifactError).details).toMatchObject({ imageAssetId: "asset-s3-specific" });
+      }
+    });
+
+    it("still throws BACKUP_EXTERNAL_REFERENCE_UNSAFE, not the pending diagnostic, for a genuinely unsafe non-\"pending\" path", async () => {
+      const artifact = withImageAssets([
+        { ...createArtifact().sections.imageAssets[0], id: "asset-traversal", storagePath: "../outside/file.jpg" },
+      ]);
+
+      await expect(verifyExternalReferences(artifact)).rejects.toMatchObject({
+        code: "BACKUP_EXTERNAL_REFERENCE_UNSAFE",
+      });
+    });
+
+    it("throws BACKUP_EXTERNAL_OBJECT_MISSING for a real absolute path whose file does not exist", async () => {
+      const missingPath = path.join(process.cwd(), ".storage", "images", "owner-1", "asset-missing", "photo.jpg");
+      const artifact = withImageAssets([
+        { ...createArtifact().sections.imageAssets[0], id: "asset-missing", storagePath: missingPath },
+      ]);
+
+      await expect(verifyExternalReferences(artifact)).rejects.toMatchObject({
+        code: "BACKUP_EXTERNAL_OBJECT_MISSING",
+      });
+    });
+
+    it("fails closed on the first pending asset in a mixed backup, even when a valid local asset precedes it", async () => {
+      const storageRoot = path.join(process.cwd(), ".storage", "images", "owner-1", "asset-mixed-local");
+      await fs.promises.mkdir(storageRoot, { recursive: true });
+      const filePath = path.join(storageRoot, "photo.jpg");
+      await fs.promises.writeFile(filePath, "x");
+
+      const artifact = withImageAssets([
+        { ...createArtifact().sections.imageAssets[0], id: "asset-mixed-local", storagePath: filePath },
+        { ...createArtifact().sections.imageAssets[0], id: "asset-mixed-s3", storagePath: "pending" },
+      ]);
+
+      await expect(verifyExternalReferences(artifact)).rejects.toMatchObject({
+        code: "BACKUP_EXTERNAL_STORAGE_METADATA_MISSING",
+        details: { imageAssetId: "asset-mixed-s3" },
+      });
+    });
   });
 });

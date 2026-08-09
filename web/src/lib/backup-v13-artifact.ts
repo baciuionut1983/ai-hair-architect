@@ -282,6 +282,23 @@ export async function verifyExternalReferences(artifact: BackupV13Artifact): Pro
   }
 
   for (const asset of artifact.sections.imageAssets) {
+    // M33 GO-3: "pending" is the sentinel this codebase writes into storagePath
+    // at upload time whenever S3/object storage is configured, and it is never
+    // overwritten afterward -- this schema line (m13.x) never captured the real
+    // S3 identity fields at all. Without a dedicated check this asset would hit
+    // resolveSafeStoragePath's generic "not absolute" rejection below, reported
+    // as BACKUP_EXTERNAL_REFERENCE_UNSAFE -- indistinguishable from a genuine
+    // unsafe/malicious path. Give operators an honest, specific diagnostic
+    // instead: the metadata needed to verify this asset was never captured.
+    if (asset.storagePath === "pending") {
+      throw new BackupArtifactError(
+        "BACKUP_EXTERNAL_STORAGE_METADATA_MISSING",
+        422,
+        "Image asset was uploaded to external object storage but this backup schema never captured its storage metadata; it cannot be safely verified or restored.",
+        { imageAssetId: asset.id },
+      );
+    }
+
     const safePath = resolveSafeStoragePath(asset.storagePath);
 
     let stat: fs.Stats;

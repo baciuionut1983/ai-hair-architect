@@ -169,6 +169,30 @@ describe("restore-preview route", () => {
     await expect(response.json()).resolves.toMatchObject({ error: "BACKUP_PREVIEW_UNINTERPRETABLE" });
   });
 
+  it("relays a blocked (not thrown) preview for a legacy S3-backed asset with the dedicated storage_metadata_missing status (M33 GO-3)", async () => {
+    vi.mocked(getRuntimeBackupRestorePreviewForUser).mockResolvedValue({
+      eligibleForRestorePlanning: false,
+      externalReferenceStatus: "storage_metadata_missing",
+      blockingReasons: [
+        {
+          code: "EXTERNAL_STORAGE_METADATA_MISSING",
+          section: "imageAssets",
+          recordId: null,
+          referenceId: null,
+          messageSafe: "Image asset was uploaded to external object storage but this backup schema never captured its storage metadata; it cannot be safely verified or restored.",
+        },
+      ],
+    } as never);
+
+    const response = await POST({ json: async () => ({}) } as never, { params: Promise.resolve({ backupId: "backup-1" }) });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      eligibleForRestorePlanning: false,
+      externalReferenceStatus: "storage_metadata_missing",
+    });
+  });
+
   describe("m15.v2 dispatch", () => {
     it("dispatches to the WP2H4 runtime and returns its native result when schemaVersion is m15.v2", async () => {
       vi.mocked(prisma.opsBackupSnapshot.findFirst).mockResolvedValue({ schemaVersion: "m15.v2" } as never);

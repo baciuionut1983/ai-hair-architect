@@ -1455,17 +1455,16 @@ async function resolveExternalReferenceStatus(artifact: BackupV13Artifact): Prom
     await verifyExternalReferences(artifact);
   } catch (error) {
     if (isBackupArtifactIssue(error)) {
+      const [status, issueCode]: [BackupRestorePreviewExternalReferenceStatus, BackupRestorePreviewIssueCode] =
+        error.code === "BACKUP_EXTERNAL_REFERENCE_UNSAFE"
+          ? ["unsafe", "EXTERNAL_PATH_UNSAFE"]
+          : error.code === "BACKUP_EXTERNAL_STORAGE_METADATA_MISSING"
+            ? ["storage_metadata_missing", "EXTERNAL_STORAGE_METADATA_MISSING"]
+            : ["missing", "EXTERNAL_FILE_MISSING"];
+
       return {
-        status: error.code === "BACKUP_EXTERNAL_REFERENCE_UNSAFE" ? "unsafe" : "missing",
-        blockingReasons: [
-          buildArtifactIssue(
-            error.code === "BACKUP_EXTERNAL_REFERENCE_UNSAFE" ? "EXTERNAL_PATH_UNSAFE" : "EXTERNAL_FILE_MISSING",
-            "imageAssets",
-            null,
-            null,
-            error.message,
-          ),
-        ],
+        status,
+        blockingReasons: [buildArtifactIssue(issueCode, "imageAssets", null, null, error.message)],
       };
     }
 

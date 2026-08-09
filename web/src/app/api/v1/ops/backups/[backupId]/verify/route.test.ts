@@ -89,6 +89,25 @@ describe("ops backup verify route", () => {
     await expect(response.json()).resolves.toMatchObject({ error: "BACKUP_NOT_FOUND" });
   });
 
+  it("propagates the dedicated storage-metadata-missing diagnostic for a legacy S3-backed asset (M33 GO-3), not a generic error", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);
+
+    vi.mocked(verifyBackupSnapshotForUser).mockRejectedValue(
+      new BackupArtifactError(
+        "BACKUP_EXTERNAL_STORAGE_METADATA_MISSING",
+        422,
+        "Image asset was uploaded to external object storage but this backup schema never captured its storage metadata; it cannot be safely verified or restored.",
+        { imageAssetId: "asset-1" },
+      ),
+    );
+
+    const response = await GET({} as Request, { params: Promise.resolve({ backupId: "backup-1" }) });
+
+    expect(response.status).toBe(422);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    await expect(response.json()).resolves.toMatchObject({ error: "BACKUP_EXTERNAL_STORAGE_METADATA_MISSING" });
+  });
+
   describe("m15.v2 dispatch", () => {
     beforeEach(() => {
       authMock.authenticateSessionRequest.mockResolvedValue(OWNER_A);

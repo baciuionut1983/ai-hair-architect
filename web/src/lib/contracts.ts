@@ -891,7 +891,8 @@ export type BackupRestorePreviewExternalReferenceStatus =
   | "none"
   | "all_exist_integrity_unverified"
   | "missing"
-  | "unsafe";
+  | "unsafe"
+  | "storage_metadata_missing";
 
 export type BackupRestorePreviewSection =
   | "clients"
@@ -909,6 +910,7 @@ export type BackupRestorePreviewIssueCode =
   | "SCHEMA_DRIFT"
   | "EXTERNAL_FILE_MISSING"
   | "EXTERNAL_PATH_UNSAFE"
+  | "EXTERNAL_STORAGE_METADATA_MISSING"
   | "BACKUP_OLDER_THAN_CURRENT_STATE"
   | "CURRENT_STATE_HAS_EXTRA_ROWS"
   | "LEGACY_CLIENT_FIELDS_OMITTED"

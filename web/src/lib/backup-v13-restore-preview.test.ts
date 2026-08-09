@@ -210,4 +210,66 @@ describe("backup-v13-restore-preview", () => {
     expect(preview.blockingReasons.some((issue) => issue.code === "EXTERNAL_FILE_MISSING")).toBe(true);
     expect(fs.existsSync(assetPath)).toBe(false);
   });
+
+  it("blocks previews with a dedicated storage_metadata_missing status for a legacy S3-backed asset (storagePath \"pending\"), distinct from a generic missing file (M33 GO-3)", async () => {
+    const artifact = createBaseArtifact();
+    artifact.counts.imageAssets = 1;
+    artifact.sections.imageAssets = [
+      {
+        id: "asset-1",
+        fileName: "photo.jpg",
+        mimeType: "image/jpeg",
+        sizeBytes: 1,
+        ownerUserId: "owner-1",
+        clientId: "client-1",
+        storagePath: "pending",
+        exifStripped: true,
+        normalizedOrientation: 1,
+        uploadedAt: "2026-07-22T00:00:00.000Z",
+        deletedAt: null,
+        retentionDeletesAt: null,
+        createdAt: "2026-07-22T00:00:00.000Z",
+        updatedAt: "2026-07-22T00:00:00.000Z",
+      },
+    ];
+    artifact.checksum = computeArtifactChecksumHex(artifact);
+
+    const preview = await buildBackupRestorePreview({
+      ownerUserId: "owner-1",
+      backupId: artifact.backupId,
+      backupRow: {
+        id: artifact.backupId,
+        ownerUserId: artifact.ownerUserId,
+        checksum: artifact.checksum,
+        checksumAlgorithm: artifact.checksumAlgorithm,
+        schemaVersion: artifact.schemaVersion,
+        snapshotJson: artifact,
+      },
+      backupArtifact: artifact,
+      currentState: {
+        clients: [
+          {
+            id: "client-1",
+            fullName: "Client",
+            email: null,
+            phone: null,
+            notes: null,
+            deletedAt: null,
+            ownerUserId: "owner-1",
+            createdAt: new Date("2026-07-22T00:00:00.000Z"),
+            updatedAt: new Date("2026-07-22T00:00:00.000Z"),
+          },
+        ],
+        analyses: [],
+        imageAssets: [],
+        imageAnalyses: [],
+        imageAnalysisReviews: [],
+      },
+    });
+
+    expect(preview.eligibleForRestorePlanning).toBe(false);
+    expect(preview.externalReferenceStatus).toBe("storage_metadata_missing");
+    expect(preview.blockingReasons.some((issue) => issue.code === "EXTERNAL_STORAGE_METADATA_MISSING")).toBe(true);
+    expect(preview.blockingReasons.some((issue) => issue.code === "EXTERNAL_FILE_MISSING")).toBe(false);
+  });
 });
