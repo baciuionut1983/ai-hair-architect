@@ -11,7 +11,7 @@ import type { SidebarNavItem } from "@/components/ui";
 
 const NAV_ITEMS: SidebarNavItem[] = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard, status: "available" },
-  { label: "Clients", href: "/clients", icon: Users, status: "coming-soon" },
+  { label: "Clients", href: "/clients", icon: Users, status: "available" },
   { label: "Appointments", href: "/appointments", icon: CalendarDays, status: "coming-soon" },
   { label: "Academy", href: "/academy", icon: GraduationCap, status: "coming-soon" },
   { label: "Marketplace", href: "/marketplace", icon: ShoppingBag, status: "coming-soon" },

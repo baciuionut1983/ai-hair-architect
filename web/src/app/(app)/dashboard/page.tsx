@@ -21,7 +21,7 @@ const DASHBOARD_LINKS: DashboardLink[] = [
     description: "Manage client profiles and history.",
     href: "/clients",
     icon: Users,
-    status: "coming-soon"
+    status: "available"
   },
   {
     label: "Appointments",
