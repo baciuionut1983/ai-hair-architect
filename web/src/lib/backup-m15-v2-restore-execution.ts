@@ -8,6 +8,7 @@ import type {
   BackupM15V2LegacyLocalReferenceResolver,
   BackupM15V2ObjectBackedReferenceResolver,
 } from "./backup-m15-v2-external-reference-verifier";
+import { getStoragePath } from "./image-storage";
 import { buildBackupM15V2RestorePreview } from "./backup-m15-v2-restore-preview";
 
 const MAX_RESTORE_ATTEMPTS = 3;
@@ -483,7 +484,14 @@ function reverseMapImageAsset(row: BackupM15V2SectionsShape["imageAssets"][numbe
   if (row.storageKind === "legacy-local") {
     return {
       ...common,
-      storagePath: `${row.ownerUserId}/${row.id}/${row.fileName}`,
+      // M33 GO-4: the artifact's own legacyReference.relativePath (used internally by the
+      // resolver abstraction for verify/preview) is relative to the storage root and is
+      // NOT what image-assets/[id]/content/route.ts expects in the storagePath column --
+      // that route reads it directly via createConfinedImageReadStream, which resolves it
+      // as an absolute, upload-time-style path (image-storage.ts's getStoragePath output).
+      // Writing the bare relative form here left every restored legacy-local asset
+      // permanently unreadable (confirmed live: 200 before restore, 409 after).
+      storagePath: getStoragePath(row.ownerUserId, row.id, row.fileName),
       storageBackend: null,
       storageBucketAlias: null,
       storageKey: null,

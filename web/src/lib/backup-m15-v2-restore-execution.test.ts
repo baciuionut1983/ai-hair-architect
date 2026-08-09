@@ -21,6 +21,8 @@ import {
   type BackupM15V2RestoreExecutionInput,
   type BackupM15V2RestoreExecutionTransaction,
 } from "./backup-m15-v2-restore-execution";
+import { ImageAssetStorageRepository } from "./image-asset-storage-repository";
+import { getStoragePath } from "./image-storage";
 import type { ObjectStorage, StoredObject } from "./object-storage";
 
 const OWNER_ID = "11111111-1111-4111-8111-111111111111";
@@ -251,7 +253,20 @@ function fakeDatabase(config: FakeDatabaseConfig) {
       if (errorsQueue.length > 0) {
         throw errorsQueue.shift();
       }
-      return callback(view);
+      // Mirrors real Postgres/Prisma $transaction semantics: any mutation made through
+      // `tx.*` inside the callback is visible only if the callback resolves. If it
+      // rejects, every table is reverted to its pre-transaction snapshot, exactly as a
+      // real ROLLBACK would -- this lets tests prove no partial state survives a
+      // mid-transaction failure, per the M33 GO-4 mandate's rollback requirement.
+      const snapshot = structuredClone(tables);
+      try {
+        return await callback(view);
+      } catch (error) {
+        (Object.keys(tables) as FakeTableName[]).forEach((table) => {
+          tables[table] = snapshot[table];
+        });
+        throw error;
+      }
     }),
   } as unknown as BackupM15V2RestoreExecutionDatabase & {
     tables: Record<FakeTableName, Array<Record<string, unknown>>>;
@@ -350,7 +365,37 @@ describe("executeBackupM15V2RestoreForUser", () => {
       baseInput({ database, request: baseRequestFor(fingerprint), legacyLocalResolver }),
     );
     expect(result.restoredCounts.imageAssets).toBe(1);
-    expect(database.tables.imageAsset[0]).toMatchObject({ storageBackend: null, contentSha256: sha256(content) });
+    expect(database.tables.imageAsset[0]).toMatchObject({
+      storageBackend: null,
+      contentSha256: sha256(content),
+      // M33 GO-4 regression guard: storagePath must be the absolute, upload-time-style
+      // path that image-assets/[id]/content/route.ts reads raw (getStoragePath's output),
+      // NOT the artifact's bare relative legacyReference.relativePath. Writing the latter
+      // here previously left every restored legacy-local asset permanently unreadable
+      // (live-proven: 200 before restore, 409 after) despite restore reporting success.
+      storagePath: getStoragePath(OWNER_ID, assetId, "photo.jpg"),
+    });
+  });
+
+  it("2b. legacy-local restore never writes the artifact's bare relative path into storagePath", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "wp2h7-legacy-"));
+    const content = Buffer.from("legacy-body-2b");
+    const assetId = "22222222-2222-4222-8222-222222222223";
+    fs.mkdirSync(path.join(root, OWNER_ID, assetId), { recursive: true });
+    fs.writeFileSync(path.join(root, OWNER_ID, assetId, "photo.jpg"), content);
+    const artifact = buildArtifact({ clients: [clientArtifactRow()], imageAssets: [legacyArtifactAsset(assetId, content)] });
+    const safetyArtifact = buildArtifact({}, SAFETY_BACKUP_ID);
+    const database = fakeDatabase({
+      snapshots: { [BACKUP_ID]: snapshotRow(artifact), [SAFETY_BACKUP_ID]: snapshotRow(safetyArtifact, SAFETY_CREATED_AT) },
+    });
+    const legacyLocalResolver = createLegacyLocalReferenceResolver({ rootDir: root });
+    const fingerprint = await computeFreshFingerprintWithResolvers(artifact, emptySections(), legacyLocalResolver, noResolvers().objectBackedResolver);
+    await executeBackupM15V2RestoreForUser(
+      baseInput({ database, request: baseRequestFor(fingerprint), legacyLocalResolver }),
+    );
+    const restoredPath = database.tables.imageAsset[0].storagePath as string;
+    expect(restoredPath).not.toBe(`${OWNER_ID}/${assetId}/photo.jpg`);
+    expect(path.isAbsolute(restoredPath)).toBe(true);
   });
 
   it("3. restores successfully with an object-backed image asset", async () => {
@@ -369,6 +414,89 @@ describe("executeBackupM15V2RestoreForUser", () => {
     );
     expect(result.restoredCounts.imageAssets).toBe(1);
     expect(database.tables.imageAsset[0]).toMatchObject({ storageBackend: "s3", storagePath: "pending" });
+
+    // Content-resolution proof (M33 GO-4 mandate section 9): feed the exact restored DB
+    // row through the real ImageAssetStorageRepository (the same class
+    // image-assets/[id]/content/route.ts uses for object-backed reads) and confirm it
+    // reconstructs an ObjectReference whose fields match the original artifact's
+    // objectReference exactly. No second/invented resolver -- this is the one production
+    // repository already used for post-restore reads.
+    const restoredRow = database.tables.imageAsset[0];
+    const repository = new ImageAssetStorageRepository({
+      imageAsset: { findFirst: vi.fn().mockResolvedValue(restoredRow) },
+    } as never);
+    await expect(repository.findObjectReferenceByOwner(OWNER_ID, assetId)).resolves.toEqual({
+      backend: "s3",
+      bucketAlias: "primary-images",
+      key: objectKey(assetId),
+      versionId: `version-${assetId}`,
+      etag: "etag-1",
+      contentSha256: sha256(content),
+      sizeBytes: content.byteLength,
+    });
+  });
+
+  it("3b. restores a mixed backup (legacy-local + object-backed) atomically, both correctly mapped", async () => {
+    const localAssetId = "22222222-2222-4222-8222-222222222225";
+    const objectAssetId = "33333333-3333-4333-8333-333333333335";
+    const localContent = Buffer.from("mixed-local-body");
+    const objectContent = new TextEncoder().encode("mixed-object-body");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "wp2h7-mixed-"));
+    fs.mkdirSync(path.join(root, OWNER_ID, localAssetId), { recursive: true });
+    fs.writeFileSync(path.join(root, OWNER_ID, localAssetId, "photo.jpg"), localContent);
+    const legacyLocalResolver = createLegacyLocalReferenceResolver({ rootDir: root });
+    const storage = fakeObjectStorage(objectAssetId, objectContent);
+    const objectBackedResolver = createObjectBackedReferenceResolver({ resolveObjectStorage: () => storage });
+
+    const artifact = buildArtifact({
+      clients: [clientArtifactRow()],
+      imageAssets: [legacyArtifactAsset(localAssetId, localContent), objectArtifactAsset(objectAssetId, objectContent)],
+    });
+    const safetyArtifact = buildArtifact({}, SAFETY_BACKUP_ID);
+    const database = fakeDatabase({
+      snapshots: { [BACKUP_ID]: snapshotRow(artifact), [SAFETY_BACKUP_ID]: snapshotRow(safetyArtifact, SAFETY_CREATED_AT) },
+    });
+    const fingerprint = await computeFreshFingerprintWithResolvers(artifact, emptySections(), legacyLocalResolver, objectBackedResolver);
+    const result = await executeBackupM15V2RestoreForUser(
+      baseInput({ database, request: baseRequestFor(fingerprint), legacyLocalResolver, objectBackedResolver }),
+    );
+    expect(result.status).toBe("completed");
+    expect(result.restoredCounts.imageAssets).toBe(2);
+    const restoredLocal = database.tables.imageAsset.find((row) => row.id === localAssetId);
+    const restoredObject = database.tables.imageAsset.find((row) => row.id === objectAssetId);
+    expect(restoredLocal).toMatchObject({ storageBackend: null, storagePath: getStoragePath(OWNER_ID, localAssetId, "photo.jpg") });
+    expect(restoredObject).toMatchObject({ storageBackend: "s3", storagePath: "pending", storageKey: objectKey(objectAssetId) });
+  });
+
+  it("3c. rejects an entire mixed restore atomically when only the object-backed asset's reference is invalid (zero mutation, including for the otherwise-valid legacy-local asset)", async () => {
+    const localAssetId = "22222222-2222-4222-8222-222222222226";
+    const objectAssetId = "33333333-3333-4333-8333-333333333336";
+    const localContent = Buffer.from("mixed-local-body-2");
+    const objectContent = new TextEncoder().encode("mixed-object-body-2");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "wp2h7-mixed-fail-"));
+    fs.mkdirSync(path.join(root, OWNER_ID, localAssetId), { recursive: true });
+    fs.writeFileSync(path.join(root, OWNER_ID, localAssetId, "photo.jpg"), localContent);
+    const legacyLocalResolver = createLegacyLocalReferenceResolver({ rootDir: root });
+    // No object storage configured for this resolver -- the object-backed asset's
+    // reference cannot be verified, so the whole mixed backup must fail precheck.
+    const objectBackedResolver = createObjectBackedReferenceResolver({ resolveObjectStorage: () => null });
+
+    const artifact = buildArtifact({
+      clients: [clientArtifactRow()],
+      imageAssets: [legacyArtifactAsset(localAssetId, localContent), objectArtifactAsset(objectAssetId, objectContent)],
+    });
+    const safetyArtifact = buildArtifact({}, SAFETY_BACKUP_ID);
+    const database = fakeDatabase({
+      snapshots: { [BACKUP_ID]: snapshotRow(artifact), [SAFETY_BACKUP_ID]: snapshotRow(safetyArtifact, SAFETY_CREATED_AT) },
+    });
+    await expect(
+      executeBackupM15V2RestoreForUser(
+        baseInput({ database, request: baseRequestFor("0".repeat(64)), legacyLocalResolver, objectBackedResolver }),
+      ),
+    ).rejects.toMatchObject({ code: "PRECHECK_FAILED" });
+    expect(database.$transaction).not.toHaveBeenCalled();
+    expect(database.tables.imageAsset).toEqual([]);
+    expect(database.tables.client).toEqual([]);
   });
 
   it("4. rejects an invalid request (bad fingerprint format)", async () => {
@@ -411,6 +539,27 @@ describe("executeBackupM15V2RestoreForUser", () => {
       snapshots: { [BACKUP_ID]: { id: BACKUP_ID, ownerUserId: OWNER_ID, checksum: "a".repeat(64), checksumAlgorithm: "sha256", schemaVersion: "m15.v2", snapshotJson: { not: "valid" }, createdAt: NOW } },
     });
     await expect(executeBackupM15V2RestoreForUser(baseInput({ database }))).rejects.toMatchObject({ code: "SNAPSHOT_PAYLOAD_INVALID" });
+  });
+
+  it("7b. rejects a stored snapshot with an object-backed asset missing storageKey, with zero mutation", async () => {
+    // The artifact parser (backup-m15-v2-artifact.ts, already exhaustively covered by
+    // backup-m15-v2-artifact.test.ts for every invalid-metadata shape: missing key,
+    // missing versionId, invalid/missing bucketAlias, invalid backend, uppercase hash,
+    // etc.) is reused here, not duplicated -- this test only proves that restore
+    // execution itself fails closed on a corrupted stored snapshot (simulating DB-level
+    // corruption a client could never produce through the normal artifact builder)
+    // before the transaction ever opens, i.e. zero delete, zero insert, zero partial state.
+    const assetId = "33333333-3333-4333-8333-333333333334";
+    const content = new TextEncoder().encode("corrupt-metadata-body");
+    const artifact = buildArtifact({ imageAssets: [objectArtifactAsset(assetId, content)] });
+    const corruptedSnapshotJson = structuredClone(artifact) as unknown as { sections: { imageAssets: Array<{ objectReference: Record<string, unknown> }> } };
+    delete corruptedSnapshotJson.sections.imageAssets[0].objectReference.key;
+    const database = fakeDatabase({
+      snapshots: { [BACKUP_ID]: { ...snapshotRow(artifact), snapshotJson: corruptedSnapshotJson } },
+    });
+    await expect(executeBackupM15V2RestoreForUser(baseInput({ database }))).rejects.toMatchObject({ code: "SNAPSHOT_PAYLOAD_INVALID" });
+    expect(database.$transaction).not.toHaveBeenCalled();
+    expect(database.tables.imageAsset).toEqual([]);
   });
 
   it("8. rejects a stored checksum mismatch", async () => {
@@ -632,6 +781,58 @@ describe("executeBackupM15V2RestoreForUser", () => {
     await expect(
       executeBackupM15V2RestoreForUser(baseInput({ database, request: baseRequestFor(fingerprint) })),
     ).rejects.toMatchObject({ code: "POSTCONDITION_FAILED" });
+  });
+
+  it("24b. rolls back completely when a later section fails after an earlier section already mutated the database", async () => {
+    // Same CLIENT_ID in both current state and the target artifact (a same-owner
+    // "replace" as in test 19, not an "extra row" as in test 10 -- that path is
+    // blocked by preview validation before the transaction even opens, which is
+    // not what this test is exercising). A distinguishing fullName on the
+    // pre-existing row lets the assertions below prove the ORIGINAL content came
+    // back after rollback, not just that some row with the right id exists.
+    const originalClient = { ...clientArtifactRow(), fullName: "Original Pre-Restore Name" };
+    const assetId = "22222222-2222-4222-8222-222222222224";
+    const content = Buffer.from("rollback-proof-body");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "wp2h7-rollback-"));
+    fs.mkdirSync(path.join(root, OWNER_ID, assetId), { recursive: true });
+    fs.writeFileSync(path.join(root, OWNER_ID, assetId, "photo.jpg"), content);
+    const legacyLocalResolver = createLegacyLocalReferenceResolver({ rootDir: root });
+
+    const artifact = buildArtifact({ clients: [clientArtifactRow()], imageAssets: [legacyArtifactAsset(assetId, content)] });
+    const safetyArtifact = buildArtifact({ clients: [originalClient] }, SAFETY_BACKUP_ID);
+    const database = fakeDatabase({
+      snapshots: { [BACKUP_ID]: snapshotRow(artifact), [SAFETY_BACKUP_ID]: snapshotRow(safetyArtifact, SAFETY_CREATED_AT) },
+      tables: { client: [originalClient] },
+    });
+
+    // Section insert order is client -> imageAsset -> imageAnalysis -> analysis -> consultation
+    // -> imageAnalysisReview (confirmed directly in backup-m15-v2-restore-execution.ts). Forcing
+    // imageAsset.create to fail guarantees the pre-restore delete of the existing client AND the
+    // create of its replacement already ran before the transaction aborts -- exactly the "later
+    // section fails after an earlier section was already processed" scenario the mandate requires.
+    vi.mocked(database.imageAsset.create).mockImplementationOnce(async () => {
+      throw new Error("forced-mid-transaction-failure");
+    });
+
+    const currentState = { ...emptySections(), clients: [originalClient] };
+    const fingerprint = await computeFreshFingerprintWithResolvers(artifact, currentState, legacyLocalResolver, noResolvers().objectBackedResolver);
+
+    // The raw forced error is not a typed BackupM15V2RestoreExecutionError, so it is not
+    // retried (not a recognized concurrency signal) and is mapped to the safe, generic
+    // CONCURRENCY_CONFLICT code rather than leaking its internal message -- matching the
+    // same fail-closed, no-internal-detail-leak behavior already covered by tests 28/29/32.
+    await expect(
+      executeBackupM15V2RestoreForUser(baseInput({ database, request: baseRequestFor(fingerprint), legacyLocalResolver })),
+    ).rejects.toMatchObject({ code: "CONCURRENCY_CONFLICT" });
+
+    // Real rollback proof: the client delete + client create that already ran inside the
+    // same transaction must be fully undone -- the database must show the ORIGINAL
+    // pre-restore row content (fullName "Original Pre-Restore Name"), not the new
+    // artifact's replacement content and not an empty table. No trace of the
+    // never-completed imageAsset either.
+    expect(database.$transaction).toHaveBeenCalledTimes(1);
+    expect(database.tables.client).toEqual([originalClient]);
+    expect(database.tables.imageAsset).toEqual([]);
   });
 
   it("25. retries on a retryable concurrency error and eventually succeeds", async () => {

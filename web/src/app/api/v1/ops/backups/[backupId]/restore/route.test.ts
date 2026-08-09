@@ -174,6 +174,30 @@ describe("restore route", () => {
     await expect(response.json()).resolves.toMatchObject({ error: "BACKUP_RESTORE_PREVIEW_FINGERPRINT_STALE" });
   });
 
+  it("maps the legacy m13 GO-2 fail-closed guard (BACKUP_RESTORE_STORAGE_METADATA_MISSING) to 422", async () => {
+    vi.mocked(executeBackupRestoreWithHistory).mockRejectedValue(
+      new BackupArtifactError(
+        "BACKUP_RESTORE_STORAGE_METADATA_MISSING",
+        422,
+        "Backup contains an image asset without safely restorable storage metadata.",
+        { imageAssetId: "asset-1" },
+      ),
+    );
+
+    const response = await POST({
+      json: async () => ({
+        previewFingerprint: VALID_PREVIEW_FINGERPRINT,
+        currentStateFingerprint: VALID_CURRENT_STATE_FINGERPRINT,
+        strategy: "replace_all",
+        acknowledgeDataLoss: true,
+      }),
+    } as never, { params: Promise.resolve({ backupId: "backup-1" }) });
+
+    expect(response.status).toBe(422);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    await expect(response.json()).resolves.toMatchObject({ error: "BACKUP_RESTORE_STORAGE_METADATA_MISSING" });
+  });
+
   it("returns 500 for unexpected failures", async () => {
     vi.mocked(executeBackupRestoreWithHistory).mockRejectedValue(new Error("boom"));
 
