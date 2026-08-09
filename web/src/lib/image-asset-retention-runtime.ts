@@ -1,12 +1,18 @@
 import { Prisma } from "@prisma/client";
 
 import {
+  buildImageAssetRetentionEligibilityWhere,
   executeImageAssetRetentionPurge,
+  IMAGE_ASSET_RETENTION_CONFIRMATION_TOKEN,
   ImageAssetRetentionError,
   type ImageAssetRetentionDatabase,
   type ImageAssetRetentionResult,
   type ImageAssetRetentionTransaction,
 } from "./image-asset-retention";
+import {
+  runImageAssetRetentionAutomationSweep,
+  type RetentionAutomationSweepResult,
+} from "./image-asset-retention-automation";
 import { deleteConfinedImageFileForRetention, getStoragePath } from "./image-storage";
 import { createObjectStorageAliasResolver } from "./object-storage-alias-resolver";
 import { classifyObjectStorageError, ObjectStorageError } from "./object-storage-errors";
@@ -119,6 +125,47 @@ export async function runImageAssetRetentionPurgeForUser(
         resourceId: runId,
         metadata: { eligibleCount },
       });
+    },
+  });
+}
+
+// M37: the scheduler-facing entry point. Finds every owner with at least
+// one eligible row and runs M36's own, unmodified per-owner purge for
+// each -- this function contributes no new deletion logic of its own,
+// only cross-owner orchestration (see image-asset-retention-automation.ts
+// for why no sweep-level lock is added on top of the existing per-owner
+// one).
+export async function runImageAssetRetentionAutomationSweepForRuntime(
+  correlationRequestId: string,
+  dryRun: boolean,
+): Promise<RetentionAutomationSweepResult> {
+  const MAX_OWNERS_PER_RUN = 200;
+  const MAX_CONCURRENCY = 5;
+
+  return runImageAssetRetentionAutomationSweep({
+    now: () => new Date(),
+    maxOwnersPerRun: MAX_OWNERS_PER_RUN,
+    maxConcurrency: MAX_CONCURRENCY,
+    findEligibleOwnerIds: async (limit) => {
+      const rows = await prisma.imageAsset.findMany({
+        where: buildImageAssetRetentionEligibilityWhere(new Date()),
+        select: { ownerUserId: true },
+        distinct: ["ownerUserId"],
+        orderBy: { ownerUserId: "asc" },
+        take: limit,
+      });
+      return rows.map((row) => row.ownerUserId);
+    },
+    purgeForOwner: async (ownerUserId, idempotencyKey) => {
+      const result = await runImageAssetRetentionPurgeForUser({
+        ownerUserId,
+        dryRun,
+        confirmationToken: dryRun ? undefined : IMAGE_ASSET_RETENTION_CONFIRMATION_TOKEN,
+        executionIdempotencyKey: dryRun ? undefined : idempotencyKey,
+        reason: "automated sweep",
+        correlationRequestId,
+      });
+      return { eligibleCount: result.eligibleCount, purgedCount: result.purgedCount, failedCount: result.failedCount };
     },
   });
 }

@@ -164,12 +164,15 @@ export interface ImageAssetRetentionInput {
   readonly writeDryRunAuditEvent: (input: { eligibleCount: number; runId: string }) => Promise<void>;
 }
 
-const CONFIRMATION_TOKEN = "CONFIRM_IMAGE_ASSET_RETENTION_EXECUTION";
+// Exported so callers that construct a real execution request (the
+// interactive route, and M37's automation sweep) share the exact same
+// literal rather than duplicating a security-relevant constant.
+export const IMAGE_ASSET_RETENTION_CONFIRMATION_TOKEN = "CONFIRM_IMAGE_ASSET_RETENTION_EXECUTION";
 
 export async function executeImageAssetRetentionPurge(
   input: ImageAssetRetentionInput,
 ): Promise<ImageAssetRetentionResult> {
-  if (!input.dryRun && input.confirmationToken !== CONFIRMATION_TOKEN) {
+  if (!input.dryRun && input.confirmationToken !== IMAGE_ASSET_RETENTION_CONFIRMATION_TOKEN) {
     throw new ImageAssetRetentionError("CONFIRMATION_REQUIRED", 400, "Explicit confirmation is required to execute retention.");
   }
 
@@ -323,6 +326,34 @@ export async function executeImageAssetRetentionPurge(
   }
 }
 
+// Exported so M37's cross-owner automation sweep (which needs to find
+// which owners have ANY eligible row, not full row data) uses the exact
+// same eligibility rule as the per-owner purge below -- guaranteed never
+// to drift into two subtly different definitions of "eligible."
+export function buildImageAssetRetentionEligibilityWhere(now: Date): {
+  deletedAt: { not: null };
+  retentionDeletesAt: { lte: Date };
+  OR: Array<Record<string, unknown>>;
+} {
+  return {
+    deletedAt: { not: null },
+    retentionDeletesAt: { lte: now },
+    // Deliberately conservative (fail-closed): a legacy-local row
+    // (storageBackend null) is eligible unconditionally once its grace
+    // period has passed. An S3-backed row is eligible ONLY once it has
+    // been correctly transitioned to "delete_pending" -- matching the
+    // exact invariant backup creation itself enforces
+    // (backup-m15-v2-snapshot-persistence.ts). A row with
+    // storageBackend="s3" that is somehow still "available" despite
+    // deletedAt being set (a state that should never occur after the
+    // M36 DELETE-route fix, but could exist from before it shipped) is
+    // NOT touched -- it is an inconsistent state, not an ambiguous
+    // identifier to guess at; it is left for manual review rather than
+    // auto-corrected.
+    OR: [{ storageBackend: null }, { storageBackend: "s3", storageState: "delete_pending" }],
+  };
+}
+
 async function findEligibleRows(
   database: ImageAssetRetentionDatabase,
   ownerUserId: string,
@@ -331,21 +362,7 @@ async function findEligibleRows(
   return database.imageAsset.findMany({
     where: {
       ownerUserId,
-      deletedAt: { not: null },
-      retentionDeletesAt: { lte: now },
-      // Deliberately conservative (fail-closed): a legacy-local row
-      // (storageBackend null) is eligible unconditionally once its grace
-      // period has passed. An S3-backed row is eligible ONLY once it has
-      // been correctly transitioned to "delete_pending" -- matching the
-      // exact invariant backup creation itself enforces
-      // (backup-m15-v2-snapshot-persistence.ts). A row with
-      // storageBackend="s3" that is somehow still "available" despite
-      // deletedAt being set (a state that should never occur after the
-      // M36 DELETE-route fix, but could exist from before it shipped) is
-      // NOT touched -- it is an inconsistent state, not an ambiguous
-      // identifier to guess at; it is left for manual review rather than
-      // auto-corrected.
-      OR: [{ storageBackend: null }, { storageBackend: "s3", storageState: "delete_pending" }],
+      ...buildImageAssetRetentionEligibilityWhere(now),
     },
     select: {
       id: true,

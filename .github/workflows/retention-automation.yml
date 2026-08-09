@@ -1,0 +1,60 @@
+name: Image Asset Retention Automation
+
+# M37: calls the production retention-automation trigger
+# (POST /api/v1/ops/image-assets/retention/automation-run) on a schedule.
+#
+# This workflow is prepared, not active in any real sense, until BOTH of
+# the following are configured as GitHub Actions repository secrets:
+#   - RETENTION_AUTOMATION_PRODUCTION_URL: the base URL of the deployed
+#     production app (e.g. https://your-domain.example) -- there is none
+#     configured as of M37, since this project has no deployment target
+#     yet (confirmed: no vercel.json/Dockerfile/deploy step exists
+#     anywhere in this repo).
+#   - RETENTION_AUTOMATION_TOKEN: the exact same value configured as the
+#     production server's own RETENTION_AUTOMATION_TOKEN environment
+#     variable (src/lib/retention-automation-auth.ts). Generate a real,
+#     random, high-entropy secret for this -- never a placeholder or a
+#     value used anywhere else.
+#
+# Until both secrets exist, the "check configuration" step below exits
+# early and skips the actual call -- this workflow will show as
+# succeeding (not failing/alerting) on every scheduled run while
+# unconfigured, rather than spamming failure notifications for a setup
+# step that hasn't happened yet.
+
+on:
+  schedule:
+    # Once daily. Adjust to match how quickly the product actually wants
+    # expired assets cleared after their 30-day grace period -- daily is
+    # more than sufficient for a 30-day window.
+    - cron: "17 3 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  run-retention-automation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check required secrets are configured
+        id: check
+        run: |
+          if [ -z "${{ secrets.RETENTION_AUTOMATION_PRODUCTION_URL }}" ] || [ -z "${{ secrets.RETENTION_AUTOMATION_TOKEN }}" ]; then
+            echo "Retention automation is not yet configured (RETENTION_AUTOMATION_PRODUCTION_URL and/or RETENTION_AUTOMATION_TOKEN repository secrets are missing). Skipping this run."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Call the retention automation endpoint
+        if: steps.check.outputs.configured == 'true'
+        run: |
+          status=$(curl -sS -o /tmp/retention-response.json -w "%{http_code}" \
+            -X POST "${{ secrets.RETENTION_AUTOMATION_PRODUCTION_URL }}/api/v1/ops/image-assets/retention/automation-run" \
+            -H "Authorization: Bearer ${{ secrets.RETENTION_AUTOMATION_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"dryRun": false}')
+          echo "HTTP status: $status"
+          cat /tmp/retention-response.json
+          if [ "$status" -ne 200 ]; then
+            echo "Retention automation call failed with HTTP $status"
+            exit 1
+          fi
