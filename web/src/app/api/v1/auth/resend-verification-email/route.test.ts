@@ -78,6 +78,15 @@ describe("POST /api/v1/auth/resend-verification-email", () => {
     );
   });
 
+  it("includes an HTML version of the verification email with the correct link", async () => {
+    await invoke({ email: "user@example.com" });
+
+    const call = emailMocks.sendTransactionalEmail.mock.calls[0][0];
+    expect(typeof call.html).toBe("string");
+    expect(call.html).toContain("/verify-email?token=raw-token");
+    expect(call.html).toContain("AI Hair Architect");
+  });
+
   it("returns the identical generic ack for an already-verified account, without issuing a token", async () => {
     persistenceMocks.findPersistenceUserByEmail.mockResolvedValue(VERIFIED_USER);
 

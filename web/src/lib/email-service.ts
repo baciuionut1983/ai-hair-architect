@@ -22,6 +22,7 @@ export interface SendTransactionalEmailInput {
   recipientEmail: string;
   subject: string;
   text: string;
+  html?: string;
   idempotencyKey: string;
   relatedEntityType?: string;
   relatedEntityId?: string;
@@ -91,7 +92,7 @@ export async function sendTransactionalEmail(
 
   try {
     const result = await provider.send(
-      { to: input.recipientEmail, subject: input.subject, text: input.text },
+      { to: input.recipientEmail, subject: input.subject, text: input.text, html: input.html },
       controller.signal,
     );
     await safeMarkSent(notificationId, result.providerMessageId);

@@ -191,6 +191,23 @@ describe("sendTransactionalEmail", () => {
     expect(outcome).toEqual({ status: "sent", notificationId: "email-1", providerMessageId: "re_real_id" });
   });
 
+  it("passes html through to the provider when the caller supplies it", async () => {
+    configMock.resolveEmailConfig.mockReturnValue({
+      status: "enabled",
+      apiKey: "re_key",
+      fromAddress: "noreply@example.com",
+      timeoutMs: 8000,
+    });
+    providerMock.send.mockResolvedValue({ providerMessageId: "re_real_id" });
+
+    await sendTransactionalEmail({ ...INPUT, html: "<p>Hi there</p>" });
+
+    expect(providerMock.send).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "Hi there", html: "<p>Hi there</p>" }),
+      expect.anything(),
+    );
+  });
+
   it("passes the exact category, eventType, recipient, subject, and idempotencyKey through to the repository", async () => {
     await sendTransactionalEmail(INPUT);
 

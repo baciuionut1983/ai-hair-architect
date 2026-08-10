@@ -123,6 +123,16 @@ describe("POST /api/v1/auth/register", () => {
     expect(call.text).toContain("http://localhost:3000/verify-email?token=raw-token-value");
   });
 
+  it("includes an HTML version of the verification email with the correct link", async () => {
+    const response = await invoke(VALID_BODY);
+
+    expect(response.status).toBe(201);
+    const call = emailMocks.sendTransactionalEmail.mock.calls[0][0];
+    expect(typeof call.html).toBe("string");
+    expect(call.html).toContain("http://localhost:3000/verify-email?token=raw-token-value");
+    expect(call.html).toContain("AI Hair Architect");
+  });
+
   it("still returns 201 when the email provider is disabled (skipped)", async () => {
     emailMocks.sendTransactionalEmail.mockResolvedValue({ status: "skipped", notificationId: "email-1" });
 

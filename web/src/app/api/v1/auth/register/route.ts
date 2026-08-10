@@ -6,6 +6,7 @@ import type { AuthRegisterRequest, AuthRegisterResponse, UserRole } from "@/lib/
 import { createPersistenceUserExclusive, findPersistenceUserByEmail } from "@/lib/auth-persistence";
 import { hashPassword } from "@/lib/auth-security";
 import { issueAuthToken } from "@/lib/auth-token-repository";
+import { buildVerificationEmailHtml } from "@/lib/email-verification-html";
 import { sendTransactionalEmail } from "@/lib/email-service";
 import { checkRateLimit, getRequestClientIp } from "@/lib/hardening";
 import { resolveLocale } from "@/lib/i18n";
@@ -86,6 +87,11 @@ export async function POST(request: Request) {
       recipientEmail: user.email,
       subject: "Verify your email for AI Hair Architect",
       text: `Hi, thanks for creating an account. Please verify your email address by visiting: ${verifyUrl}\n\nThis link expires in 24 hours. If you didn't create this account, you can ignore this email.`,
+      html: buildVerificationEmailHtml({
+        introText: "Hi, thanks for creating an account. Please verify your email address to finish setting up your AI Hair Architect account.",
+        verifyUrl,
+        expiryNote: "This link expires in 24 hours. If you didn't create this account, you can ignore this email."
+      }),
       idempotencyKey: `security.email_verification:${issued.tokenId}`,
       relatedEntityType: "AuthToken",
       relatedEntityId: issued.tokenId

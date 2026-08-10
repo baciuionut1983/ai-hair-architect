@@ -4,6 +4,7 @@ export interface EmailSendInput {
   to: string;
   subject: string;
   text: string;
+  html?: string;
 }
 
 export interface EmailSendResult {
@@ -57,6 +58,7 @@ export function createResendEmailProvider(apiKey: string, fromAddress: string): 
           to: input.to,
           subject: input.subject,
           text: input.text,
+          ...(input.html ? { html: input.html } : {}),
         }),
         signal,
       });

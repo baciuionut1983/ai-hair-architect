@@ -123,4 +123,38 @@ describe("createResendEmailProvider", () => {
       text: "Hi there",
     });
   });
+
+  it("includes html in the request body when provided", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ id: "re_abc123" }));
+    const provider = createResendEmailProvider("re_key", "noreply@example.com");
+
+    await provider.send(
+      { to: "user@example.com", subject: "Welcome", text: "Hi there", html: "<p>Hi there</p>" },
+      new AbortController().signal,
+    );
+
+    const call = fetchMock.mock.calls[0];
+    const body = JSON.parse(call[1].body as string);
+    expect(body).toEqual({
+      from: "noreply@example.com",
+      to: "user@example.com",
+      subject: "Welcome",
+      text: "Hi there",
+      html: "<p>Hi there</p>",
+    });
+  });
+
+  it("omits html from the request body when not provided (unchanged behavior for text-only emails)", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ id: "re_abc123" }));
+    const provider = createResendEmailProvider("re_key", "noreply@example.com");
+
+    await provider.send(
+      { to: "user@example.com", subject: "Welcome", text: "Hi there" },
+      new AbortController().signal,
+    );
+
+    const call = fetchMock.mock.calls[0];
+    const body = JSON.parse(call[1].body as string);
+    expect(body).not.toHaveProperty("html");
+  });
 });
