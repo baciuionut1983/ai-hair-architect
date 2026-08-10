@@ -1,13 +1,15 @@
+import { randomUUID } from "crypto";
+
 import { NextResponse } from "next/server";
 
 import type { AuthRegisterRequest, AuthRegisterResponse, UserRole } from "@/lib/contracts";
-import { upsertPersistenceUser } from "@/lib/auth-persistence";
+import { createPersistenceUserExclusive, findPersistenceUserByEmail } from "@/lib/auth-persistence";
 import { hashPassword } from "@/lib/auth-security";
 import { issueAuthToken } from "@/lib/auth-token-repository";
 import { sendTransactionalEmail } from "@/lib/email-service";
 import { checkRateLimit, getRequestClientIp } from "@/lib/hardening";
 import { resolveLocale } from "@/lib/i18n";
-import { createUser, findUserByEmail, sanitize } from "@/lib/milestone1-store";
+import { findUserByEmail, sanitize, upsertUser } from "@/lib/milestone1-store";
 
 const allowedRoles = new Set<UserRole>(["professional", "salon", "consumer"]);
 const EMAIL_VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
@@ -30,20 +32,41 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Rate limit exceeded." }, { status: 429 });
   }
 
-  if (findUserByEmail(email)) {
+  // The in-memory check alone is not reliable across process restarts --
+  // Railway redeploys reset it, Postgres does not -- so both sources must
+  // agree the email is free before any write is attempted.
+  if (findUserByEmail(email) || (await findPersistenceUserByEmail(email))) {
     return NextResponse.json({ error: "Email already registered." }, { status: 409 });
   }
 
   const passwordHash = await hashPassword(password);
-  const user = createUser({ email, password: passwordHash, role, locale });
-  await upsertPersistenceUser({
-    id: user.id,
-    email: user.email,
-    passwordHash: user.passwordHash,
-    role: user.role,
-    locale: user.locale,
-    createdAt: user.createdAt
-  });
+  const candidateId = randomUUID();
+  const createdAt = new Date().toISOString();
+
+  // INSERT-only, never upsert -- a duplicate email must never silently
+  // overwrite an existing account's password. Postgres's unique constraint
+  // on User.email is the real, race-safe authority: the lookup above
+  // narrows the common case, but only this insert's outcome can be trusted
+  // when two registrations for the same email race each other.
+  let persistedUserId: string;
+  try {
+    const result = await createPersistenceUserExclusive({ id: candidateId, email, passwordHash, role, locale, createdAt });
+
+    if (result.status === "conflict") {
+      return NextResponse.json({ error: "Email already registered." }, { status: 409 });
+    }
+
+    persistedUserId = result.status === "created" ? result.id : candidateId;
+  } catch {
+    return NextResponse.json({ error: "Account data is temporarily unavailable." }, { status: 503 });
+  }
+
+  // Sync the in-memory store only now that persistence has confirmed (or
+  // intentionally skipped, in DB-less dev mode) this exact id -- never
+  // before, so a losing race participant's request never leaves a stray,
+  // Postgres-inconsistent entry behind for a later request in this process
+  // to pick up.
+  const user = upsertUser({ id: persistedUserId, email, passwordHash, role, locale, createdAt });
 
   // M26: no session is created here. The account exists but User.emailVerifiedAt
   // stays null (see schema.prisma -- no column default) until the owner clicks

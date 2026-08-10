@@ -1,3 +1,5 @@
+import { Prisma } from "@prisma/client";
+
 import type { Locale, UserRole } from "@/lib/contracts";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 
@@ -75,37 +77,52 @@ export async function findPersistenceUserByEmail(email: string): Promise<Persist
   }
 }
 
-export async function upsertPersistenceUser(input: {
+export type CreatePersistenceUserResult =
+  | { status: "created"; id: string }
+  | { status: "conflict" }
+  | { status: "skipped" };
+
+/**
+ * Register's only entry point for turning a brand-new signup into a
+ * PostgreSQL row. Deliberately INSERT-only, never upsert -- a duplicate
+ * email must never silently overwrite an existing account's
+ * passwordHash/role/locale. Postgres's own unique constraint on User.email
+ * is the real, race-safe conflict detector: two concurrent registrations
+ * for the same email can both pass an earlier in-memory/persisted
+ * pre-check, but only one INSERT can ever succeed here -- the loser gets
+ * "conflict", never a silent overwrite and never a foreign-key crash
+ * downstream (e.g. issuing an AuthToken for a userId that was never
+ * actually committed).
+ */
+export async function createPersistenceUserExclusive(input: {
   id: string;
   email: string;
   passwordHash: string;
   role: UserRole;
   locale: Locale;
   createdAt: string;
-}): Promise<void> {
+}): Promise<CreatePersistenceUserResult> {
   if (!isDatabaseConfigured()) {
-    return;
+    return { status: "skipped" };
   }
 
   try {
-    await prisma.user.upsert({
-      where: { email: input.email.toLowerCase() },
-      create: {
+    const created = await prisma.user.create({
+      data: {
         id: input.id,
         email: input.email.toLowerCase(),
         passwordHash: input.passwordHash,
         role: input.role,
         locale: input.locale,
         createdAt: new Date(input.createdAt)
-      },
-      update: {
-        passwordHash: input.passwordHash,
-        role: input.role,
-        locale: input.locale
       }
     });
-  } catch {
-    // In-memory mode remains available when DB is unreachable.
+    return { status: "created", id: created.id };
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return { status: "conflict" };
+    }
+    throw new AuthPersistenceUnavailableError();
   }
 }
 

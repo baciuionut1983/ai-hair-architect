@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const prismaMocks = vi.hoisted(() => ({
   configured: true,
   userFindUnique: vi.fn(),
+  userCreate: vi.fn(),
   sessionFindUnique: vi.fn(),
 }));
 
@@ -11,6 +12,7 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     user: {
       findUnique: prismaMocks.userFindUnique,
+      create: prismaMocks.userCreate,
     },
     session: {
       findUnique: prismaMocks.sessionFindUnique,
@@ -18,8 +20,11 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
+import { Prisma } from "@prisma/client";
+
 import {
   AuthPersistenceUnavailableError,
+  createPersistenceUserExclusive,
   findEmailVerifiedAtForUser,
   findPersistenceUserByEmail,
   findPersistenceUserBySessionToken,
@@ -260,5 +265,59 @@ describe("resolveAuthenticatedUserFromToken", () => {
     const result = await resolveAuthenticatedUserFromToken("any-token");
 
     expect(result).toBeNull();
+  });
+});
+
+describe("createPersistenceUserExclusive", () => {
+  const INPUT = {
+    id: "candidate-id",
+    email: "new@example.com",
+    passwordHash: "hashed",
+    role: "professional" as const,
+    locale: "en" as const,
+    createdAt: "2026-08-01T00:00:00.000Z",
+  };
+
+  it("inserts a brand-new user and returns the id Postgres actually created", async () => {
+    prismaMocks.userCreate.mockResolvedValue({ id: "candidate-id" });
+
+    const result = await createPersistenceUserExclusive(INPUT);
+
+    expect(result).toEqual({ status: "created", id: "candidate-id" });
+    expect(prismaMocks.userCreate).toHaveBeenCalledWith({
+      data: {
+        id: "candidate-id",
+        email: "new@example.com",
+        passwordHash: "hashed",
+        role: "professional",
+        locale: "en",
+        createdAt: new Date("2026-08-01T00:00:00.000Z"),
+      },
+    });
+  });
+
+  it("returns conflict, never throwing, when the email already exists (P2002) -- the existing account is never touched", async () => {
+    prismaMocks.userCreate.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("duplicate", { code: "P2002", clientVersion: "test" }),
+    );
+
+    const result = await createPersistenceUserExclusive(INPUT);
+
+    expect(result).toEqual({ status: "conflict" });
+  });
+
+  it("returns skipped and never calls Postgres when the database is not configured", async () => {
+    prismaMocks.configured = false;
+
+    const result = await createPersistenceUserExclusive(INPUT);
+
+    expect(result).toEqual({ status: "skipped" });
+    expect(prismaMocks.userCreate).not.toHaveBeenCalled();
+  });
+
+  it("throws AuthPersistenceUnavailableError, never a silent success, on a genuine (non-conflict) database failure", async () => {
+    prismaMocks.userCreate.mockRejectedValue(new Error("connection reset"));
+
+    await expect(createPersistenceUserExclusive(INPUT)).rejects.toBeInstanceOf(AuthPersistenceUnavailableError);
   });
 });
