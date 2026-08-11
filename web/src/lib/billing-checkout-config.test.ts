@@ -45,32 +45,12 @@ describe("resolveBillingCheckoutConfig", () => {
     }
   });
 
-  it("is invalid when enabled but one price ID is missing", () => {
-    const env = baseEnv({ STRIPE_PRICE_SALON: undefined });
-    const result = resolveBillingCheckoutConfig(env);
-    expect(result.status).toBe("invalid");
-    if (result.status === "invalid") {
-      expect(result.issues).toEqual([
-        { code: "STRIPE_PRICE_ID_REQUIRED", variable: "STRIPE_PRICE_SALON", message: "STRIPE_PRICE_SALON is required when BILLING_PROCESSING_MODE is enabled." },
-      ]);
-    }
-  });
-
-  it("collects every missing price ID issue at once, not just the first", () => {
-    const env = baseEnv({ STRIPE_PRICE_PRO: undefined, STRIPE_PRICE_BUSINESS: undefined });
-    const result = resolveBillingCheckoutConfig(env);
-    expect(result.status).toBe("invalid");
-    if (result.status === "invalid") {
-      expect(result.issues.map((i) => i.variable)).toEqual(["STRIPE_PRICE_PRO", "STRIPE_PRICE_BUSINESS"]);
-    }
-  });
-
   it("treats whitespace-only values as missing, not as configured", () => {
     const env = baseEnv({ STRIPE_SECRET_KEY: "   " });
     expect(resolveBillingCheckoutConfig(env).status).toBe("invalid");
   });
 
-  it("resolves to enabled with trimmed values when fully configured", () => {
+  it("resolves to enabled with trimmed values when fully configured (all three plans)", () => {
     const env = baseEnv({
       STRIPE_SECRET_KEY: "  sk_test_secret  ",
       STRIPE_PRICE_PRO: "  price_pro_123  ",
@@ -107,6 +87,60 @@ describe("resolveBillingCheckoutConfig", () => {
     if (result.status === "invalid") {
       expect(result.issues.map((i) => i.variable)).toEqual(["STRIPE_SECRET_KEY", "APP_BASE_URL"]);
     }
+  });
+
+  describe("per-plan price id availability (Business has no Stripe product yet)", () => {
+    it("stays enabled with only Pro and Salon in priceIds when STRIPE_PRICE_BUSINESS is missing -- Business absence never blocks the others", () => {
+      const env = baseEnv({ STRIPE_PRICE_BUSINESS: undefined });
+
+      const result = resolveBillingCheckoutConfig(env);
+
+      expect(result).toEqual({
+        status: "enabled",
+        secretKey: "sk_test_secret",
+        priceIds: { pro: "price_pro_123", salon: "price_salon_123" },
+        appBaseUrl: "https://app.example.com",
+      });
+    });
+
+    it("stays enabled with only Pro in priceIds when both Salon and Business are missing", () => {
+      const env = baseEnv({ STRIPE_PRICE_SALON: undefined, STRIPE_PRICE_BUSINESS: undefined });
+
+      const result = resolveBillingCheckoutConfig(env);
+
+      expect(result).toEqual({
+        status: "enabled",
+        secretKey: "sk_test_secret",
+        priceIds: { pro: "price_pro_123" },
+        appBaseUrl: "https://app.example.com",
+      });
+    });
+
+    it("treats a whitespace-only price id as absent from priceIds, not as configured", () => {
+      const env = baseEnv({ STRIPE_PRICE_BUSINESS: "   " });
+
+      const result = resolveBillingCheckoutConfig(env);
+
+      expect(result.status).toBe("enabled");
+      if (result.status === "enabled") {
+        expect(result.priceIds.business).toBeUndefined();
+        expect(result.priceIds.pro).toBe("price_pro_123");
+        expect(result.priceIds.salon).toBe("price_salon_123");
+      }
+    });
+
+    it("stays enabled with an empty priceIds map when no plan price is configured at all -- STRIPE_SECRET_KEY/APP_BASE_URL are the only hard requirements", () => {
+      const env = baseEnv({ STRIPE_PRICE_PRO: undefined, STRIPE_PRICE_SALON: undefined, STRIPE_PRICE_BUSINESS: undefined });
+
+      const result = resolveBillingCheckoutConfig(env);
+
+      expect(result).toEqual({
+        status: "enabled",
+        secretKey: "sk_test_secret",
+        priceIds: {},
+        appBaseUrl: "https://app.example.com",
+      });
+    });
   });
 });
 

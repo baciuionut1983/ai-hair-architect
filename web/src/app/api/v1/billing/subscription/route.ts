@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 
 import { getSubscriptionByOwner, type BillingSubscriptionRow } from "@/lib/billing-repository";
-import { authenticateBillingSessionOwner } from "@/lib/billing-session-auth";
 import type { SubscriptionPlan, SubscriptionRecord, SubscriptionStatus } from "@/lib/contracts";
+import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
 // Allowlist, not a denylist: only active and trialing (existing product policy,
 // see milestone1-store's getAnalyticsSnapshotForUser) ever carry paid entitlement.
@@ -19,9 +19,9 @@ export interface SubscriptionResponsePayload extends SubscriptionRecord {
   entitlementActive: boolean;
 }
 
-export async function GET(request: Request) {
+export async function GET() {
   try {
-    const owner = await authenticateBillingSessionOwner(request);
+    const owner = await authenticateSessionRequest();
     if (!owner) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

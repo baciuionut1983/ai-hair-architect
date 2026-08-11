@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const authMock = vi.hoisted(() => ({
-  authenticateBillingSessionOwner: vi.fn(),
+  authenticateSessionRequest: vi.fn(),
 }));
-vi.mock("@/lib/billing-session-auth", () => authMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 const repositoryMock = vi.hoisted(() => ({
   getSubscriptionByOwner: vi.fn(),
@@ -11,10 +11,6 @@ const repositoryMock = vi.hoisted(() => ({
 vi.mock("@/lib/billing-repository", () => repositoryMock);
 
 import { GET } from "./route";
-
-function buildRequest(headers: Record<string, string> = {}): Request {
-  return new Request("http://localhost/api/v1/billing/subscription", { headers });
-}
 
 function subscriptionRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -38,19 +34,19 @@ function subscriptionRow(overrides: Record<string, unknown> = {}) {
 }
 
 function authenticateAs(id: string) {
-  authMock.authenticateBillingSessionOwner.mockResolvedValue({ id, email: `${id}@example.com`, role: "professional", locale: "en" });
+  authMock.authenticateSessionRequest.mockResolvedValue({ id, email: `${id}@example.com`, role: "professional", locale: "en" });
 }
 
 beforeEach(() => {
-  authMock.authenticateBillingSessionOwner.mockReset();
+  authMock.authenticateSessionRequest.mockReset();
   repositoryMock.getSubscriptionByOwner.mockReset();
 });
 
 describe("GET /api/v1/billing/subscription", () => {
   it("rejects unauthenticated requests without touching the repository", async () => {
-    authMock.authenticateBillingSessionOwner.mockResolvedValue(null);
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
-    const response = await GET(buildRequest());
+    const response = await GET();
 
     expect(response.status).toBe(401);
     expect(repositoryMock.getSubscriptionByOwner).not.toHaveBeenCalled();
@@ -60,7 +56,7 @@ describe("GET /api/v1/billing/subscription", () => {
     authenticateAs("owner-1");
     repositoryMock.getSubscriptionByOwner.mockResolvedValue(subscriptionRow({ status: "active", planKey: "pro" }));
 
-    const response = await GET(buildRequest());
+    const response = await GET();
 
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -78,7 +74,7 @@ describe("GET /api/v1/billing/subscription", () => {
     authenticateAs("owner-1");
     repositoryMock.getSubscriptionByOwner.mockResolvedValue(subscriptionRow({ status: "trialing", planKey: "salon" }));
 
-    const response = await GET(buildRequest());
+    const response = await GET();
 
     const body = await response.json();
     expect(body.subscription).toMatchObject({ plan: "salon", status: "trialing", entitlementActive: true });
@@ -88,7 +84,7 @@ describe("GET /api/v1/billing/subscription", () => {
     authenticateAs("owner-1");
     repositoryMock.getSubscriptionByOwner.mockResolvedValue(subscriptionRow({ status: "past_due", planKey: "pro" }));
 
-    const response = await GET(buildRequest());
+    const response = await GET();
 
     const body = await response.json();
     expect(body.subscription).toMatchObject({ plan: "pro", status: "past_due", entitlementActive: false });
@@ -98,7 +94,7 @@ describe("GET /api/v1/billing/subscription", () => {
     authenticateAs("owner-1");
     repositoryMock.getSubscriptionByOwner.mockResolvedValue(subscriptionRow({ status: "canceled", planKey: "business" }));
 
-    const response = await GET(buildRequest());
+    const response = await GET();
 
     const body = await response.json();
     expect(body.subscription).toMatchObject({ plan: "business", status: "canceled", entitlementActive: false });
@@ -108,7 +104,7 @@ describe("GET /api/v1/billing/subscription", () => {
     authenticateAs("owner-1");
     repositoryMock.getSubscriptionByOwner.mockResolvedValue(subscriptionRow({ status: "incomplete", planKey: "business" }));
 
-    const response = await GET(buildRequest());
+    const response = await GET();
 
     const body = await response.json();
     expect(body.subscription.entitlementActive).toBe(false);
@@ -120,7 +116,7 @@ describe("GET /api/v1/billing/subscription", () => {
       authenticateAs("owner-1");
       repositoryMock.getSubscriptionByOwner.mockResolvedValue(subscriptionRow({ status, planKey: "pro" }));
 
-      const response = await GET(buildRequest());
+      const response = await GET();
 
       const body = await response.json();
       expect(body.subscription.entitlementActive).toBe(false);
@@ -132,7 +128,7 @@ describe("GET /api/v1/billing/subscription", () => {
     authenticateAs("owner-1");
     repositoryMock.getSubscriptionByOwner.mockResolvedValue(subscriptionRow({ status: "some_future_status", planKey: "pro" }));
 
-    const response = await GET(buildRequest());
+    const response = await GET();
 
     const body = await response.json();
     expect(body.subscription.entitlementActive).toBe(false);
@@ -142,7 +138,7 @@ describe("GET /api/v1/billing/subscription", () => {
     authenticateAs("owner-2");
     repositoryMock.getSubscriptionByOwner.mockResolvedValue(null);
 
-    const response = await GET(buildRequest());
+    const response = await GET();
 
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -158,7 +154,7 @@ describe("GET /api/v1/billing/subscription", () => {
     authenticateAs("owner-5");
     repositoryMock.getSubscriptionByOwner.mockResolvedValue(subscriptionRow({ status: "active", planKey: "unknown" }));
 
-    const response = await GET(buildRequest());
+    const response = await GET();
 
     const body = await response.json();
     expect(body.subscription).toMatchObject({ plan: "free", status: "inactive", entitlementActive: false });
@@ -167,12 +163,12 @@ describe("GET /api/v1/billing/subscription", () => {
   it("isolates owners: each authenticated caller only ever sees their own subscription lookup", async () => {
     authenticateAs("owner-a");
     repositoryMock.getSubscriptionByOwner.mockResolvedValueOnce(subscriptionRow({ ownerUserId: "owner-a", planKey: "pro", status: "active" }));
-    const responseA = await GET(buildRequest());
+    const responseA = await GET();
     const bodyA = await responseA.json();
 
     authenticateAs("owner-b");
     repositoryMock.getSubscriptionByOwner.mockResolvedValueOnce(null);
-    const responseB = await GET(buildRequest());
+    const responseB = await GET();
     const bodyB = await responseB.json();
 
     expect(bodyA.subscription.ownerUserId).toBe("owner-a");
@@ -187,7 +183,7 @@ describe("GET /api/v1/billing/subscription", () => {
     authenticateAs("owner-6");
     repositoryMock.getSubscriptionByOwner.mockRejectedValue(new Error("db down"));
 
-    const response = await GET(buildRequest());
+    const response = await GET();
 
     expect(response.status).toBe(500);
   });

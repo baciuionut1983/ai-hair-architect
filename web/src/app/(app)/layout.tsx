@@ -15,7 +15,7 @@ const NAV_ITEMS: SidebarNavItem[] = [
   { label: "Appointments", href: "/appointments", icon: CalendarDays, status: "coming-soon" },
   { label: "Academy", href: "/academy", icon: GraduationCap, status: "coming-soon" },
   { label: "Marketplace", href: "/marketplace", icon: ShoppingBag, status: "coming-soon" },
-  { label: "Account & Subscription", href: "/account", icon: CircleUserRound, status: "coming-soon" }
+  { label: "Account & Subscription", href: "/account", icon: CircleUserRound, status: "available" }
 ];
 
 type AuthState =

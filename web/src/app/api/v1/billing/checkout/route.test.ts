@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const authMock = vi.hoisted(() => ({
-  authenticateBillingSessionOwner: vi.fn(),
+  authenticateSessionRequest: vi.fn(),
 }));
-vi.mock("@/lib/billing-session-auth", () => authMock);
+vi.mock("@/lib/session-request-auth", () => authMock);
 
 const hardeningMock = vi.hoisted(() => ({
   checkRateLimit: vi.fn(),
@@ -44,7 +44,7 @@ function buildRequest(body: unknown, headers: Record<string, string> = {}): Requ
 }
 
 beforeEach(() => {
-  authMock.authenticateBillingSessionOwner.mockReset().mockResolvedValue(OWNER);
+  authMock.authenticateSessionRequest.mockReset().mockResolvedValue(OWNER);
   hardeningMock.checkRateLimit.mockReset().mockReturnValue({ allowed: true, retryAfter: 0 });
   hardeningMock.ensureRequestId.mockReset().mockReturnValue("req-fixed");
   configMock.resolveBillingCheckoutConfig.mockReset().mockReturnValue({
@@ -61,8 +61,8 @@ beforeEach(() => {
 });
 
 describe("POST /api/v1/billing/checkout", () => {
-  it("rejects unauthenticated requests with zero Stripe or repository calls", async () => {
-    authMock.authenticateBillingSessionOwner.mockResolvedValue(null);
+  it("rejects unauthenticated requests (no aha_session cookie resolved) with zero Stripe or repository calls", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
 
     const response = await POST(buildRequest({ plan: "pro" }));
 
@@ -71,6 +71,12 @@ describe("POST /api/v1/billing/checkout", () => {
     expect(adapterMock.createCheckoutSession).not.toHaveBeenCalled();
     expect(repositoryMock.getBillingCustomerByOwner).not.toHaveBeenCalled();
     expect(repositoryMock.findOrCreateBillingCustomer).not.toHaveBeenCalled();
+  });
+
+  it("authenticates via the cookie-session resolver, never a request header", async () => {
+    await POST(buildRequest({ plan: "pro" }));
+
+    expect(authMock.authenticateSessionRequest).toHaveBeenCalledWith();
   });
 
   it("returns 429 and touches nothing else when the rate limit is exceeded", async () => {
@@ -109,11 +115,76 @@ describe("POST /api/v1/billing/checkout", () => {
         priceId: { pro: "price_pro", salon: "price_salon", business: "price_business" }[plan],
         plan,
         ownerUserId: "owner-1",
-        successUrl: `https://app.example.com/billing/success?plan=${plan}`,
-        cancelUrl: "https://app.example.com/billing/cancel",
+        successUrl: "https://app.example.com/account?checkout=success",
+        cancelUrl: "https://app.example.com/account?checkout=cancel",
       });
     },
   );
+
+  it("Pro selects exactly STRIPE_PRICE_PRO's configured value, never Salon's or Business's", async () => {
+    await POST(buildRequest({ plan: "pro" }));
+
+    expect(adapterMock.createCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({ priceId: "price_pro" }),
+    );
+  });
+
+  it("Salon selects exactly STRIPE_PRICE_SALON's configured value, never Pro's or Business's", async () => {
+    await POST(buildRequest({ plan: "salon" }));
+
+    expect(adapterMock.createCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({ priceId: "price_salon" }),
+    );
+  });
+
+  it("Business missing from priceIds does not block Pro from checking out", async () => {
+    configMock.resolveBillingCheckoutConfig.mockReturnValue({
+      status: "enabled",
+      secretKey: "sk_test_x",
+      priceIds: { pro: "price_pro", salon: "price_salon" }, // no business
+      appBaseUrl: "https://app.example.com",
+    });
+
+    const response = await POST(buildRequest({ plan: "pro" }));
+
+    expect(response.status).toBe(201);
+    expect(adapterMock.createCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({ priceId: "price_pro" }),
+    );
+  });
+
+  it("Business missing from priceIds does not block Salon from checking out", async () => {
+    configMock.resolveBillingCheckoutConfig.mockReturnValue({
+      status: "enabled",
+      secretKey: "sk_test_x",
+      priceIds: { pro: "price_pro", salon: "price_salon" }, // no business
+      appBaseUrl: "https://app.example.com",
+    });
+
+    const response = await POST(buildRequest({ plan: "salon" }));
+
+    expect(response.status).toBe(201);
+    expect(adapterMock.createCheckoutSession).toHaveBeenCalledWith(
+      expect.objectContaining({ priceId: "price_salon" }),
+    );
+  });
+
+  it("Business checkout fails closed with 503 when STRIPE_PRICE_BUSINESS is not configured, without ever calling Stripe", async () => {
+    configMock.resolveBillingCheckoutConfig.mockReturnValue({
+      status: "enabled",
+      secretKey: "sk_test_x",
+      priceIds: { pro: "price_pro", salon: "price_salon" }, // no business
+      appBaseUrl: "https://app.example.com",
+    });
+
+    const response = await POST(buildRequest({ plan: "business" }));
+
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body.error).toBe("BILLING_CHECKOUT_PLAN_UNAVAILABLE");
+    expect(adapterMock.createCustomer).not.toHaveBeenCalled();
+    expect(adapterMock.createCheckoutSession).not.toHaveBeenCalled();
+  });
 
   it("never calls Stripe for the free plan and returns the canonical free subscription", async () => {
     const response = await POST(buildRequest({ plan: "free" }));
@@ -185,7 +256,7 @@ describe("POST /api/v1/billing/checkout", () => {
     expect(body.error).toBe("BILLING_CHECKOUT_SESSION_FAILED");
   });
 
-  it("ignores every client-supplied identity, provider, and redirect field", async () => {
+  it("ignores every client-supplied identity, provider, price id, and redirect field -- an arbitrary Stripe price id from the browser can never be used", async () => {
     const response = await POST(
       buildRequest({
         plan: "pro",
@@ -205,8 +276,8 @@ describe("POST /api/v1/billing/checkout", () => {
       expect.objectContaining({
         ownerUserId: "owner-1",
         priceId: "price_pro",
-        successUrl: "https://app.example.com/billing/success?plan=pro",
-        cancelUrl: "https://app.example.com/billing/cancel",
+        successUrl: "https://app.example.com/account?checkout=success",
+        cancelUrl: "https://app.example.com/account?checkout=cancel",
       }),
     );
   });

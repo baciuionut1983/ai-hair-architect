@@ -38,11 +38,16 @@ describe("evaluateCheckoutReadiness", () => {
     ]);
   });
 
-  it("is invalid when a price id is missing", () => {
-    const env = baseEnv({ STRIPE_PRICE_SALON: undefined });
+  it("stays ready when a single plan's price id is missing -- price availability is per-plan, not a global readiness blocker", () => {
+    const env = baseEnv({ STRIPE_PRICE_BUSINESS: undefined });
     const result = evaluateCheckoutReadiness(env);
-    expect(result.status).toBe("invalid");
-    expect(result.issues?.[0]).toMatchObject({ variable: "STRIPE_PRICE_SALON" });
+    expect(result).toEqual({ status: "ready", message: "Stripe Checkout is ready." });
+  });
+
+  it("stays ready even when no plan price id is configured at all -- STRIPE_SECRET_KEY/APP_BASE_URL are the only hard requirements", () => {
+    const env = baseEnv({ STRIPE_PRICE_PRO: undefined, STRIPE_PRICE_SALON: undefined, STRIPE_PRICE_BUSINESS: undefined });
+    const result = evaluateCheckoutReadiness(env);
+    expect(result).toEqual({ status: "ready", message: "Stripe Checkout is ready." });
   });
 
   it("is invalid when APP_BASE_URL is missing", () => {

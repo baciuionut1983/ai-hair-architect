@@ -3,13 +3,13 @@ import { NextResponse } from "next/server";
 import { createBillingCheckoutAdapter } from "@/lib/billing-checkout-adapter";
 import { resolveBillingCheckoutConfig } from "@/lib/billing-checkout-config";
 import { findOrCreateBillingCustomer, getBillingCustomerByOwner } from "@/lib/billing-repository";
-import { authenticateBillingSessionOwner } from "@/lib/billing-session-auth";
 import type { BillingCheckoutRequest, SubscriptionRecord } from "@/lib/contracts";
 import { checkRateLimit, ensureRequestId } from "@/lib/hardening";
+import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
 export async function POST(request: Request) {
   try {
-    const owner = await authenticateBillingSessionOwner(request);
+    const owner = await authenticateSessionRequest();
     if (!owner) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -56,6 +56,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "BILLING_CHECKOUT_MISCONFIGURED" }, { status: 503 });
     }
 
+    // Per-plan, checked independently of the other plans -- Business having
+    // no Stripe price configured yet must never block Pro or Salon, and
+    // must never fall through to Stripe with an undefined price id.
+    const priceId = config.priceIds[plan];
+    if (!priceId) {
+      return NextResponse.json({ error: "BILLING_CHECKOUT_PLAN_UNAVAILABLE" }, { status: 503 });
+    }
+
     const adapter = createBillingCheckoutAdapter(config.secretKey);
 
     const existingCustomer = await getBillingCustomerByOwner(owner.id, "stripe");
@@ -77,11 +85,17 @@ export async function POST(request: Request) {
     try {
       session = await adapter.createCheckoutSession({
         customerId: providerCustomerId,
-        priceId: config.priceIds[plan],
+        priceId,
         plan,
         ownerUserId: owner.id,
-        successUrl: `${config.appBaseUrl}/billing/success?plan=${plan}`,
-        cancelUrl: `${config.appBaseUrl}/billing/cancel`,
+        // Routes back into the real /account screen (not a dedicated
+        // success/cancel page, which does not exist) -- the checkout=...
+        // query param only ever drives a transient, honest "confirming
+        // your payment" banner there. Entitlement itself is never read
+        // from this URL; it always comes from a fresh GET
+        // /api/v1/billing/subscription call against persisted billing state.
+        successUrl: `${config.appBaseUrl}/account?checkout=success`,
+        cancelUrl: `${config.appBaseUrl}/account?checkout=cancel`,
       });
     } catch {
       return NextResponse.json({ error: "BILLING_CHECKOUT_SESSION_FAILED" }, { status: 502 });
