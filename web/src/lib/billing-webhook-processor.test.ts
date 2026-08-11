@@ -671,7 +671,7 @@ suite("billing-webhook-processor (real Postgres)", () => {
     ).resolves.toMatchObject({ status: "ignored_unsupported" });
   });
 
-  it("ignores an out-of-order checkout.session.completed that is older than an already-applied subscription event", async () => {
+  it("a checkout.session.completed older than an already-applied subscription event still applies as linkage, but never touches status", async () => {
     const { ownerUserId, providerCustomerId } = await createOwnerWithCustomer();
     const subscriptionId = `sub_${randomUUID()}`;
     const sameTime = Math.floor(Date.now() / 1000);
@@ -698,12 +698,279 @@ suite("billing-webhook-processor (real Postgres)", () => {
     const staleResult = await processBillingWebhookRequest({ rawBody: rb2, signatureHeader: sig2, env: testEnv() });
     webhookEventIds.add(staleCheckout.id);
 
-    expect(staleResult).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_OUT_OF_ORDER" });
+    // checkout.session.completed is linkage-only -- it always "processes"
+    // (there is no ordering concept for it to violate), but it must never
+    // be able to move status, regardless of its own timestamp relative to
+    // the authoritative event that already set it.
+    expect(staleResult).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" });
     await expect(
       prisma.billingSubscription.findUnique({
         where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: subscriptionId } },
       }),
     ).resolves.toMatchObject({ status: "trialing" });
+  });
+
+  describe("subscription status authority: checkout.session.completed is never authoritative", () => {
+    it("(A) an older customer.subscription.created still applies after a newer checkout.session.completed", async () => {
+      const ownerUserId = randomUUID();
+      owners.add(ownerUserId);
+      await prisma.user.create({
+        data: {
+          id: ownerUserId,
+          email: `${ownerUserId}@billing-webhook.test`,
+          passwordHash: "test",
+          role: "professional",
+          locale: "en",
+        },
+      });
+      const providerCustomerId = `cus_${ownerUserId}`;
+      const subscriptionId = `sub_${randomUUID()}`;
+      const checkoutTime = Math.floor(Date.now() / 1000);
+
+      const checkoutEvent = checkoutSessionEvent({
+        clientReferenceId: ownerUserId,
+        ownerUserId,
+        plan: "pro",
+        customerId: providerCustomerId,
+        subscriptionId,
+        created: checkoutTime,
+      });
+      const { rawBody: rb1, signatureHeader: sig1 } = signedRequest(checkoutEvent);
+      const checkoutResult = await processBillingWebhookRequest({ rawBody: rb1, signatureHeader: sig1, env: testEnv() });
+      webhookEventIds.add(checkoutEvent.id);
+      expect(checkoutResult).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" });
+
+      // event.created is 1 second OLDER than the checkout event's -- this is
+      // exactly the real-world timing that caused the original bug. Explicit
+      // lookup_key: this test validates status/ordering, not resolvePlanKey
+      // itself (see the dedicated resolvePlanKey describe block for that).
+      const subscriptionCreated = subscriptionEvent({
+        type: "customer.subscription.created",
+        customerId: providerCustomerId,
+        subscriptionId,
+        status: "active",
+        created: checkoutTime - 1,
+        lookupKey: "pro",
+      });
+      const { rawBody: rb2, signatureHeader: sig2 } = signedRequest(subscriptionCreated);
+      const subscriptionResult = await processBillingWebhookRequest({ rawBody: rb2, signatureHeader: sig2, env: testEnv() });
+      webhookEventIds.add(subscriptionCreated.id);
+
+      expect(subscriptionResult).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" });
+      await expect(
+        prisma.billingSubscription.findUnique({
+          where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: subscriptionId } },
+        }),
+      ).resolves.toMatchObject({ status: "active", planKey: "pro" });
+    });
+
+    it("(B) a customer.subscription.updated with status active applies after checkout.session.completed, even with an older event.created", async () => {
+      const ownerUserId = randomUUID();
+      owners.add(ownerUserId);
+      await prisma.user.create({
+        data: {
+          id: ownerUserId,
+          email: `${ownerUserId}@billing-webhook.test`,
+          passwordHash: "test",
+          role: "professional",
+          locale: "en",
+        },
+      });
+      const providerCustomerId = `cus_${ownerUserId}`;
+      const subscriptionId = `sub_${randomUUID()}`;
+      const checkoutTime = Math.floor(Date.now() / 1000);
+
+      const checkoutEvent = checkoutSessionEvent({
+        clientReferenceId: ownerUserId,
+        ownerUserId,
+        plan: "salon",
+        customerId: providerCustomerId,
+        subscriptionId,
+        created: checkoutTime,
+      });
+      const { rawBody: rb1, signatureHeader: sig1 } = signedRequest(checkoutEvent);
+      await processBillingWebhookRequest({ rawBody: rb1, signatureHeader: sig1, env: testEnv() });
+      webhookEventIds.add(checkoutEvent.id);
+
+      const subscriptionUpdated = subscriptionEvent({
+        type: "customer.subscription.updated",
+        customerId: providerCustomerId,
+        subscriptionId,
+        status: "active",
+        created: checkoutTime - 1,
+      });
+      const { rawBody: rb2, signatureHeader: sig2 } = signedRequest(subscriptionUpdated);
+      const result = await processBillingWebhookRequest({ rawBody: rb2, signatureHeader: sig2, env: testEnv() });
+      webhookEventIds.add(subscriptionUpdated.id);
+
+      expect(result).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" });
+      await expect(
+        prisma.billingSubscription.findUnique({
+          where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: subscriptionId } },
+        }),
+      ).resolves.toMatchObject({ status: "active" });
+    });
+
+    it("(C) a newer checkout.session.completed never downgrades a status already set by an authoritative event", async () => {
+      const { ownerUserId, providerCustomerId } = await createOwnerWithCustomer();
+      const subscriptionId = `sub_${randomUUID()}`;
+      const subscriptionTime = Math.floor(Date.now() / 1000);
+
+      const created = subscriptionEvent({
+        type: "customer.subscription.created",
+        customerId: providerCustomerId,
+        subscriptionId,
+        status: "active",
+        created: subscriptionTime,
+      });
+      const { rawBody: rb1, signatureHeader: sig1 } = signedRequest(created);
+      await processBillingWebhookRequest({ rawBody: rb1, signatureHeader: sig1, env: testEnv() });
+      webhookEventIds.add(created.id);
+
+      const newerCheckout = checkoutSessionEvent({
+        clientReferenceId: ownerUserId,
+        ownerUserId,
+        customerId: providerCustomerId,
+        subscriptionId,
+        created: subscriptionTime + 100,
+      });
+      const { rawBody: rb2, signatureHeader: sig2 } = signedRequest(newerCheckout);
+      const result = await processBillingWebhookRequest({ rawBody: rb2, signatureHeader: sig2, env: testEnv() });
+      webhookEventIds.add(newerCheckout.id);
+
+      expect(result).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" });
+      await expect(
+        prisma.billingSubscription.findUnique({
+          where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: subscriptionId } },
+        }),
+      ).resolves.toMatchObject({ status: "active" });
+    });
+
+    it("(D) an older customer.subscription.updated never overwrites a newer one", async () => {
+      const { providerCustomerId } = await createOwnerWithCustomer();
+      const subscriptionId = `sub_${randomUUID()}`;
+      const now = Math.floor(Date.now() / 1000);
+
+      const newer = subscriptionEvent({
+        type: "customer.subscription.updated",
+        customerId: providerCustomerId,
+        subscriptionId,
+        status: "active",
+        created: now,
+      });
+      const { rawBody: rb1, signatureHeader: sig1 } = signedRequest(newer);
+      await processBillingWebhookRequest({ rawBody: rb1, signatureHeader: sig1, env: testEnv() });
+      webhookEventIds.add(newer.id);
+
+      const older = subscriptionEvent({
+        type: "customer.subscription.updated",
+        customerId: providerCustomerId,
+        subscriptionId,
+        status: "past_due",
+        created: now - 50,
+      });
+      const { rawBody: rb2, signatureHeader: sig2 } = signedRequest(older);
+      const result = await processBillingWebhookRequest({ rawBody: rb2, signatureHeader: sig2, env: testEnv() });
+      webhookEventIds.add(older.id);
+
+      expect(result).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_OUT_OF_ORDER" });
+      await expect(
+        prisma.billingSubscription.findUnique({
+          where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: subscriptionId } },
+        }),
+      ).resolves.toMatchObject({ status: "active" });
+    });
+
+    it("(E) customer.subscription.deleted remains authoritative: an older delete is rejected after a newer active update, a genuinely newer delete still cancels", async () => {
+      const { providerCustomerId } = await createOwnerWithCustomer();
+      const subscriptionId = `sub_${randomUUID()}`;
+      const now = Math.floor(Date.now() / 1000);
+
+      const activeUpdate = subscriptionEvent({
+        type: "customer.subscription.updated",
+        customerId: providerCustomerId,
+        subscriptionId,
+        status: "active",
+        created: now,
+      });
+      const { rawBody: rb1, signatureHeader: sig1 } = signedRequest(activeUpdate);
+      await processBillingWebhookRequest({ rawBody: rb1, signatureHeader: sig1, env: testEnv() });
+      webhookEventIds.add(activeUpdate.id);
+
+      const staleDeleted = subscriptionEvent({
+        type: "customer.subscription.deleted",
+        customerId: providerCustomerId,
+        subscriptionId,
+        status: "canceled",
+        canceledAt: now - 50,
+        created: now - 50,
+      });
+      const { rawBody: rb2, signatureHeader: sig2 } = signedRequest(staleDeleted);
+      const staleResult = await processBillingWebhookRequest({ rawBody: rb2, signatureHeader: sig2, env: testEnv() });
+      webhookEventIds.add(staleDeleted.id);
+
+      expect(staleResult).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_OUT_OF_ORDER" });
+      await expect(
+        prisma.billingSubscription.findUnique({
+          where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: subscriptionId } },
+        }),
+      ).resolves.toMatchObject({ status: "active" });
+
+      const realDeleted = subscriptionEvent({
+        type: "customer.subscription.deleted",
+        customerId: providerCustomerId,
+        subscriptionId,
+        status: "canceled",
+        canceledAt: now + 50,
+        created: now + 50,
+      });
+      const { rawBody: rb3, signatureHeader: sig3 } = signedRequest(realDeleted);
+      const realResult = await processBillingWebhookRequest({ rawBody: rb3, signatureHeader: sig3, env: testEnv() });
+      webhookEventIds.add(realDeleted.id);
+
+      expect(realResult).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" });
+      await expect(
+        prisma.billingSubscription.findUnique({
+          where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: subscriptionId } },
+        }),
+      ).resolves.toMatchObject({ status: "canceled" });
+    });
+
+    it("(F) checkout.session.completed alone never grants entitlement, even when it is the only event ever received for a subscription", async () => {
+      const ownerUserId = randomUUID();
+      owners.add(ownerUserId);
+      await prisma.user.create({
+        data: {
+          id: ownerUserId,
+          email: `${ownerUserId}@billing-webhook.test`,
+          passwordHash: "test",
+          role: "professional",
+          locale: "en",
+        },
+      });
+      const providerCustomerId = `cus_${ownerUserId}`;
+      const subscriptionId = `sub_${randomUUID()}`;
+
+      const event = checkoutSessionEvent({
+        clientReferenceId: ownerUserId,
+        ownerUserId,
+        plan: "pro",
+        customerId: providerCustomerId,
+        subscriptionId,
+      });
+      const { rawBody, signatureHeader } = signedRequest(event);
+      const result = await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
+      webhookEventIds.add(event.id);
+
+      expect(result).toEqual({ httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_PROCESSED" });
+      const subscription = await prisma.billingSubscription.findUnique({
+        where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: subscriptionId } },
+      });
+      // "incomplete" is not in the {active, trialing} set the subscription
+      // route uses to compute entitlementActive.
+      expect(subscription?.status).toBe("incomplete");
+      expect(["active", "trialing"]).not.toContain(subscription?.status);
+    });
   });
 
   it("rolls back with no partial writes when checkout.session.completed conflicts with an existing customer mapping", async () => {

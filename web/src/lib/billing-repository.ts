@@ -187,6 +187,19 @@ export async function markWebhookEventStatus(
   });
 }
 
+// Which webhook events are allowed to decide subscription STATUS.
+// "authoritative" (customer.subscription.created/updated/deleted) is the
+// sole source of truth for status/currentPeriod*/cancelAtPeriodEnd/canceledAt,
+// and participates in the ordering-guard watermark below. "linkage"
+// (checkout.session.completed) may only ever establish/refresh the
+// owner<->customer<->subscription mapping and the plan the checkout was for
+// -- it must never write status (beyond an initial honest "incomplete"
+// placeholder when it is the very first event for a subscription) and must
+// never occupy the authoritative watermark, so it can never block a later-
+// arriving authoritative event just because its own Stripe event.created
+// happens to be a little newer.
+export type SubscriptionEventAuthority = "authoritative" | "linkage";
+
 export interface UpsertSubscriptionInput {
   ownerUserId: string;
   billingCustomerId: string;
@@ -200,12 +213,17 @@ export interface UpsertSubscriptionInput {
   canceledAt?: Date | null;
   eventCreatedAt: Date;
   providerEventId: string;
+  authority: SubscriptionEventAuthority;
 }
 
 export async function upsertSubscriptionWithOrderingGuard(
   input: UpsertSubscriptionInput,
   tx?: BillingTransaction,
 ): Promise<{ applied: boolean; subscription: BillingSubscriptionRow }> {
+  if (input.authority === "linkage") {
+    return runBillingQuery(() => applyLinkageUpsert(input, tx));
+  }
+
   if (tx) {
     return runBillingQuery(() => applySubscriptionOrderingGuardAtomically(tx, input));
   }
@@ -224,7 +242,7 @@ export async function upsertSubscriptionWithOrderingGuard(
       return { applied: false, subscription: existing };
     }
 
-    const data = buildSubscriptionData(input);
+    const data = buildAuthoritativeSubscriptionData(input);
     const upserted = existing
       ? await standaloneTx.billingSubscription.update({ where: { id: existing.id }, data })
       : await standaloneTx.billingSubscription.create({ data });
@@ -237,7 +255,7 @@ async function applySubscriptionOrderingGuardAtomically(
   tx: BillingTransaction,
   input: UpsertSubscriptionInput,
 ): Promise<{ applied: boolean; subscription: BillingSubscriptionRow }> {
-  const data = buildSubscriptionData(input);
+  const data = buildAuthoritativeSubscriptionData(input);
 
   await tx.$executeRaw`SAVEPOINT upsert_subscription_ordering_guard`;
   try {
@@ -273,6 +291,34 @@ async function applySubscriptionOrderingGuardAtomically(
     },
   });
   return { applied: claimed.count === 1, subscription: current };
+}
+
+// checkout.session.completed is idempotent-by-construction (a Checkout
+// Session's `subscription` id is assigned once, at creation, so the same
+// providerSubscriptionId can never be the target of two different checkout
+// sessions) and never authoritative for status, so unlike the authoritative
+// path above it needs neither the ordering-guard watermark nor the
+// create-then-conditional-update SAVEPOINT dance -- a plain atomic upsert
+// is always correct: create the linkage placeholder if this is the first
+// event ever seen for this subscription, otherwise only refresh the
+// linkage fields on whatever row already exists (regardless of who created
+// it or what its current status is).
+async function applyLinkageUpsert(
+  input: UpsertSubscriptionInput,
+  tx?: BillingTransaction,
+): Promise<{ applied: boolean; subscription: BillingSubscriptionRow }> {
+  const db = tx ?? prisma;
+  const subscription = await db.billingSubscription.upsert({
+    where: {
+      provider_providerSubscriptionId: {
+        provider: input.provider,
+        providerSubscriptionId: input.providerSubscriptionId,
+      },
+    },
+    create: buildLinkageCreateData(input),
+    update: buildLinkageUpdateData(input),
+  });
+  return { applied: true, subscription };
 }
 
 export interface UpsertPaymentInput {
@@ -478,7 +524,7 @@ export function billingPersistenceUnavailableResponse(): Response {
   );
 }
 
-function buildSubscriptionData(input: UpsertSubscriptionInput) {
+function buildAuthoritativeSubscriptionData(input: UpsertSubscriptionInput) {
   return {
     ownerUserId: input.ownerUserId,
     billingCustomerId: input.billingCustomerId,
@@ -492,6 +538,40 @@ function buildSubscriptionData(input: UpsertSubscriptionInput) {
     canceledAt: input.canceledAt ?? null,
     lastAppliedEventCreatedAt: input.eventCreatedAt,
     lastAppliedEventId: input.providerEventId,
+  };
+}
+
+function buildLinkageCreateData(input: UpsertSubscriptionInput) {
+  return {
+    ownerUserId: input.ownerUserId,
+    billingCustomerId: input.billingCustomerId,
+    provider: input.provider,
+    providerSubscriptionId: input.providerSubscriptionId,
+    planKey: input.planKey,
+    status: input.status,
+    currentPeriodStart: input.currentPeriodStart ?? null,
+    currentPeriodEnd: input.currentPeriodEnd ?? null,
+    cancelAtPeriodEnd: input.cancelAtPeriodEnd ?? false,
+    canceledAt: input.canceledAt ?? null,
+    // lastAppliedEventCreatedAt/lastAppliedEventId deliberately omitted (stay
+    // NULL) -- see the SubscriptionEventAuthority comment above. A NULL
+    // watermark is what lets the very next authoritative event apply
+    // unconditionally, regardless of its own event.created relative to this
+    // checkout event's timestamp.
+  };
+}
+
+function buildLinkageUpdateData(input: UpsertSubscriptionInput) {
+  return {
+    ownerUserId: input.ownerUserId,
+    billingCustomerId: input.billingCustomerId,
+    planKey: input.planKey,
+    // status/currentPeriod*/cancelAtPeriodEnd/canceledAt/lastAppliedEvent*
+    // intentionally NOT included -- checkout.session.completed must never
+    // overwrite subscription status (or the authoritative watermark) once a
+    // row already exists, whether that row's status came from a real
+    // customer.subscription.* event or from this same linkage path's own
+    // initial placeholder.
   };
 }
 

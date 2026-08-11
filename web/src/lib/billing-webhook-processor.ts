@@ -279,6 +279,9 @@ async function processSubscriptionEvent(
       canceledAt: toDateOrNull(subscription.canceled_at),
       eventCreatedAt: new Date(event.created * 1000),
       providerEventId: event.id,
+      // customer.subscription.created/updated/deleted is the sole authority
+      // for status -- see SubscriptionEventAuthority in billing-repository.ts.
+      authority: "authoritative",
     },
     tx,
   );
@@ -414,7 +417,10 @@ async function processCheckoutSessionCompletedEvent(
   // making one here would add live network I/O inside this atomic transaction. "incomplete"
   // records the linkage without granting access; customer.subscription.created/updated
   // remains the sole authority for the real status, applied through the same ordering guard.
-  const upsert = await upsertSubscriptionWithOrderingGuard(
+  // Linkage-only: never authoritative for status (see SubscriptionEventAuthority
+  // in billing-repository.ts) -- always applies, so there is no out-of-order
+  // outcome to handle here.
+  await upsertSubscriptionWithOrderingGuard(
     {
       ownerUserId: customer.ownerUserId,
       billingCustomerId: customer.id,
@@ -428,18 +434,10 @@ async function processCheckoutSessionCompletedEvent(
       canceledAt: null,
       eventCreatedAt: new Date(event.created * 1000),
       providerEventId: event.id,
+      authority: "linkage",
     },
     tx,
   );
-
-  if (!upsert.applied) {
-    await markWebhookEventStatus(
-      eventId,
-      { status: "ignored_out_of_order", ownerUserId: customer.ownerUserId },
-      tx,
-    );
-    return { httpStatus: 200, code: "BILLING_WEBHOOK_EVENT_OUT_OF_ORDER" };
-  }
 
   await markWebhookEventStatus(
     eventId,

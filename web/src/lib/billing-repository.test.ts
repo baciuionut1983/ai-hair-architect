@@ -12,6 +12,7 @@ const prismaMocks = vi.hoisted(() => ({
   billingCustomerCreate: vi.fn(),
   billingSubscriptionFindUnique: vi.fn(),
   billingSubscriptionFindFirst: vi.fn(),
+  billingSubscriptionUpsert: vi.fn(),
   billingWebhookEventCreate: vi.fn(),
   billingWebhookEventFindUnique: vi.fn(),
   billingWebhookEventUpdate: vi.fn(),
@@ -36,6 +37,7 @@ vi.mock("@/lib/prisma", async (importOriginal) => {
       billingSubscription: {
         findUnique: prismaMocks.billingSubscriptionFindUnique,
         findFirst: prismaMocks.billingSubscriptionFindFirst,
+        upsert: prismaMocks.billingSubscriptionUpsert,
       },
       billingWebhookEvent: {
         create: prismaMocks.billingWebhookEventCreate,
@@ -80,7 +82,7 @@ const injectedTx = {
   billingCustomer: { findUnique: vi.fn(), create: vi.fn() },
   billingWebhookEvent: { create: vi.fn(), findUnique: vi.fn(), update: vi.fn() },
   billingPayment: { upsert: vi.fn() },
-  billingSubscription: { create: vi.fn(), updateMany: vi.fn(), findUniqueOrThrow: vi.fn() },
+  billingSubscription: { create: vi.fn(), updateMany: vi.fn(), findUniqueOrThrow: vi.fn(), upsert: vi.fn() },
   $executeRaw: vi.fn(),
 };
 
@@ -117,6 +119,7 @@ unitSuite("billing-repository (mocked)", () => {
     prismaMocks.billingCustomerCreate.mockReset();
     prismaMocks.billingSubscriptionFindUnique.mockReset();
     prismaMocks.billingSubscriptionFindFirst.mockReset();
+    prismaMocks.billingSubscriptionUpsert.mockReset();
     prismaMocks.billingWebhookEventCreate.mockReset();
     prismaMocks.billingWebhookEventFindUnique.mockReset();
     prismaMocks.billingWebhookEventUpdate.mockReset();
@@ -134,6 +137,7 @@ unitSuite("billing-repository (mocked)", () => {
     injectedTx.billingSubscription.create.mockReset();
     injectedTx.billingSubscription.updateMany.mockReset();
     injectedTx.billingSubscription.findUniqueOrThrow.mockReset();
+    injectedTx.billingSubscription.upsert.mockReset();
     injectedTx.$executeRaw.mockReset();
   });
 
@@ -425,6 +429,53 @@ unitSuite("billing-repository (mocked)", () => {
       await expect(
         upsertSubscriptionWithOrderingGuard(subscriptionInput(), injectedTx as never),
       ).resolves.toMatchObject({ applied: false });
+    });
+
+    describe("authority: linkage", () => {
+      it("applies via a plain upsert, never touching the ordering-guard machinery used by authoritative writes", async () => {
+        injectedTx.billingSubscription.upsert.mockResolvedValueOnce(subscriptionRow({
+          status: "incomplete",
+          lastAppliedEventCreatedAt: null,
+          lastAppliedEventId: null,
+        }));
+
+        const result = await upsertSubscriptionWithOrderingGuard(
+          subscriptionInput({ status: "incomplete", authority: "linkage" }),
+          injectedTx as never,
+        );
+
+        expect(result.applied).toBe(true);
+        expect(injectedTx.billingSubscription.upsert).toHaveBeenCalledTimes(1);
+        expect(injectedTx.billingSubscription.create).not.toHaveBeenCalled();
+        expect(injectedTx.billingSubscription.updateMany).not.toHaveBeenCalled();
+        expect(injectedTx.billingSubscription.findUniqueOrThrow).not.toHaveBeenCalled();
+        expect(injectedTx.$executeRaw).not.toHaveBeenCalled();
+      });
+
+      it("never writes status or the authoritative watermark, on either the create or update branch", async () => {
+        injectedTx.billingSubscription.upsert.mockResolvedValueOnce(subscriptionRow());
+
+        await upsertSubscriptionWithOrderingGuard(
+          subscriptionInput({ status: "incomplete", authority: "linkage" }),
+          injectedTx as never,
+        );
+
+        const call = injectedTx.billingSubscription.upsert.mock.calls[0][0] as {
+          create: Record<string, unknown>;
+          update: Record<string, unknown>;
+        };
+        // The create branch may set an initial "incomplete" placeholder
+        // status, but must never occupy the authoritative watermark.
+        expect(call.create).not.toHaveProperty("lastAppliedEventCreatedAt");
+        expect(call.create).not.toHaveProperty("lastAppliedEventId");
+        // The update branch must never move status/period/cancel fields or
+        // the watermark once a row already exists.
+        expect(call.update).toEqual({
+          ownerUserId: expect.any(String),
+          billingCustomerId: expect.any(String),
+          planKey: expect.any(String),
+        });
+      });
     });
   });
 
@@ -735,6 +786,7 @@ integrationSuite("billing-repository (real Postgres)", () => {
       status: "canceled",
       eventCreatedAt: new Date("2026-08-01T00:00:00.000Z"),
       providerEventId: "evt_a",
+      authority: "authoritative",
     });
     const newer = await upsertSubscriptionWithOrderingGuard({
       ownerUserId,
@@ -745,6 +797,7 @@ integrationSuite("billing-repository (real Postgres)", () => {
       status: "active",
       eventCreatedAt: new Date("2026-08-01T01:00:00.000Z"),
       providerEventId: "evt_b",
+      authority: "authoritative",
     });
 
     await expect(getSubscriptionByOwner(ownerUserId, "stripe")).resolves.toMatchObject({
@@ -830,6 +883,7 @@ integrationSuite("billing-repository (real Postgres)", () => {
       status: "active",
       eventCreatedAt: new Date("2026-08-01T02:00:00.000Z"),
       providerEventId: "evt_b",
+      authority: "authoritative",
     });
     expect(first.applied).toBe(true);
 
@@ -842,6 +896,7 @@ integrationSuite("billing-repository (real Postgres)", () => {
       status: "past_due",
       eventCreatedAt: new Date("2026-08-01T01:00:00.000Z"),
       providerEventId: "evt_a",
+      authority: "authoritative",
     });
     expect(stale.applied).toBe(false);
     expect(stale.subscription.status).toBe("active");
@@ -855,6 +910,7 @@ integrationSuite("billing-repository (real Postgres)", () => {
       status: "past_due",
       eventCreatedAt: new Date("2026-08-01T02:00:00.000Z"),
       providerEventId: "evt_a",
+      authority: "authoritative",
     });
     expect(tieLosing.applied).toBe(false);
 
@@ -867,9 +923,68 @@ integrationSuite("billing-repository (real Postgres)", () => {
       status: "canceled",
       eventCreatedAt: new Date("2026-08-01T02:00:00.000Z"),
       providerEventId: "evt_c",
+      authority: "authoritative",
     });
     expect(tieWinning.applied).toBe(true);
     expect(tieWinning.subscription.status).toBe("canceled");
+  });
+
+  it("authority=linkage creates a placeholder without occupying the authoritative watermark, so a later authoritative event applies even with an older event.created", async () => {
+    const ownerUserId = await createOwner(owners);
+    const customer = await findOrCreateBillingCustomer({
+      ownerUserId,
+      provider: "stripe",
+      providerCustomerId: `cus_${ownerUserId}`,
+    });
+    const providerSubscriptionId = `sub_${randomUUID()}`;
+    const linkageTime = new Date("2026-08-01T10:00:00.000Z");
+
+    const linkage = await upsertSubscriptionWithOrderingGuard({
+      ownerUserId,
+      billingCustomerId: customer.id,
+      provider: "stripe",
+      providerSubscriptionId,
+      planKey: "pro",
+      status: "incomplete",
+      eventCreatedAt: linkageTime,
+      providerEventId: "evt_checkout",
+      authority: "linkage",
+    });
+    expect(linkage.applied).toBe(true);
+    expect(linkage.subscription.status).toBe("incomplete");
+    expect(linkage.subscription.lastAppliedEventCreatedAt).toBeNull();
+    expect(linkage.subscription.lastAppliedEventId).toBeNull();
+
+    // Deliberately OLDER than the linkage event's own timestamp -- under the
+    // old single-watermark model this would have been rejected as stale.
+    const authoritative = await upsertSubscriptionWithOrderingGuard({
+      ownerUserId,
+      billingCustomerId: customer.id,
+      provider: "stripe",
+      providerSubscriptionId,
+      planKey: "pro",
+      status: "active",
+      eventCreatedAt: new Date(linkageTime.getTime() - 60_000),
+      providerEventId: "evt_subscription_created",
+      authority: "authoritative",
+    });
+    expect(authoritative.applied).toBe(true);
+    expect(authoritative.subscription.status).toBe("active");
+
+    // A later linkage-only call must never revert the now-authoritative status.
+    const secondLinkage = await upsertSubscriptionWithOrderingGuard({
+      ownerUserId,
+      billingCustomerId: customer.id,
+      provider: "stripe",
+      providerSubscriptionId,
+      planKey: "pro",
+      status: "incomplete",
+      eventCreatedAt: new Date(linkageTime.getTime() + 60_000),
+      providerEventId: "evt_checkout_2",
+      authority: "linkage",
+    });
+    expect(secondLinkage.applied).toBe(true);
+    expect(secondLinkage.subscription.status).toBe("active");
   });
 
   it("upserts a payment keyed by invoice id and enforces owner isolation across reads", async () => {
@@ -931,6 +1046,7 @@ integrationSuite("billing-repository (real Postgres)", () => {
         status: "active",
         eventCreatedAt: new Date("2026-08-01T00:00:00.000Z"),
         providerEventId,
+        authority: "authoritative",
       }, tx);
 
       await markWebhookEventStatus(claim.event.id, {
@@ -1088,6 +1204,7 @@ function subscriptionInput(overrides: Record<string, unknown> = {}) {
     status: "active" as const,
     eventCreatedAt: new Date("2026-08-01T00:00:00.000Z"),
     providerEventId: "evt_1",
+    authority: "authoritative" as const,
     ...overrides,
   };
 }
