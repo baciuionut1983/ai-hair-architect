@@ -53,6 +53,14 @@ export default function AccountPage() {
 
       if (!response.ok || !data.checkout?.url) {
         setCheckoutError(checkoutErrorMessage(data.error));
+        // The server just told us the owner already has an active
+        // subscription -- most likely because it was activated in another
+        // tab, or the page's initial snapshot was already stale by the
+        // time this click landed. Re-fetch so the plan cards immediately
+        // reflect reality instead of still offering a Subscribe button.
+        if (data.error === "BILLING_CHECKOUT_ALREADY_ACTIVE") {
+          refresh();
+        }
         return;
       }
 

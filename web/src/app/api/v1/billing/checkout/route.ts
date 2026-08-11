@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { createBillingCheckoutAdapter } from "@/lib/billing-checkout-adapter";
 import { resolveBillingCheckoutConfig } from "@/lib/billing-checkout-config";
-import { findOrCreateBillingCustomer, getBillingCustomerByOwner } from "@/lib/billing-repository";
+import { findOrCreateBillingCustomer, getBillingCustomerByOwner, hasEntitledSubscription } from "@/lib/billing-repository";
 import type { BillingCheckoutRequest, SubscriptionRecord } from "@/lib/contracts";
 import { checkRateLimit, ensureRequestId } from "@/lib/hardening";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
@@ -62,6 +62,18 @@ export async function POST(request: Request) {
     const priceId = config.priceIds[plan];
     if (!priceId) {
       return NextResponse.json({ error: "BILLING_CHECKOUT_PLAN_UNAVAILABLE" }, { status: 503 });
+    }
+
+    // Server-side guard against a second concurrent Stripe subscription: the
+    // UI already hides the Subscribe button once entitled, but that is
+    // purely cosmetic -- nothing previously stopped a direct request from
+    // reaching Stripe. Checked against ANY of the owner's rows in an
+    // entitled status (not just the most-recently-updated one), so this
+    // stays correct even if the owner already ended up with more than one
+    // BillingSubscription row. Deliberately placed before the adapter is
+    // even constructed, so a blocked request never calls Stripe at all.
+    if (await hasEntitledSubscription(owner.id, "stripe")) {
+      return NextResponse.json({ error: "BILLING_CHECKOUT_ALREADY_ACTIVE" }, { status: 409 });
     }
 
     const adapter = createBillingCheckoutAdapter(config.secretKey);

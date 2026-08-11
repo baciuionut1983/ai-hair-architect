@@ -7,6 +7,7 @@ vi.mock("@/lib/session-request-auth", () => authMock);
 
 const repositoryMock = vi.hoisted(() => ({
   getSubscriptionByOwner: vi.fn(),
+  ENTITLED_SUBSCRIPTION_STATUSES: new Set(["active", "trialing"]),
 }));
 vi.mock("@/lib/billing-repository", () => repositoryMock);
 

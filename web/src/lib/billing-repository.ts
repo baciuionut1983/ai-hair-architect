@@ -391,6 +391,34 @@ export async function getSubscriptionByOwner(
   }));
 }
 
+// Single source of truth for "which statuses carry paid entitlement" --
+// shared by the subscription-read route (entitlementActive) and the
+// checkout route (blocking a second subscription). Allowlist, not a
+// denylist: only active/trialing ever count; every other known status,
+// and any future status this code does not yet recognize, falls closed.
+export const ENTITLED_SUBSCRIPTION_STATUSES: ReadonlySet<BillingSubscriptionStatus> = new Set(["active", "trialing"]);
+
+/**
+ * Whether the owner has ANY BillingSubscription row -- not just the most
+ * recently updated one -- in an entitled (active/trialing) status. Unlike
+ * getSubscriptionByOwner (which returns a single row for display purposes),
+ * this must stay correct even if an owner ends up with multiple rows for
+ * the same provider (e.g. a prior double-checkout), so it queries for
+ * existence directly rather than trusting updatedAt ordering.
+ */
+export async function hasEntitledSubscription(
+  ownerUserId: string,
+  provider: BillingProvider,
+): Promise<boolean> {
+  return runBillingQuery(async () => {
+    const row = await prisma.billingSubscription.findFirst({
+      where: { ownerUserId, provider, status: { in: [...ENTITLED_SUBSCRIPTION_STATUSES] } },
+      select: { id: true },
+    });
+    return row !== null;
+  });
+}
+
 export async function getWebhookEventByProviderId(
   provider: BillingProvider,
   providerEventId: string,

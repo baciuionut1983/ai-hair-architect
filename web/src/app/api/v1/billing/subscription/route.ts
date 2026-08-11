@@ -1,18 +1,9 @@
 import { NextResponse } from "next/server";
 
-import { getSubscriptionByOwner, type BillingSubscriptionRow } from "@/lib/billing-repository";
+import { ENTITLED_SUBSCRIPTION_STATUSES, getSubscriptionByOwner, type BillingSubscriptionRow } from "@/lib/billing-repository";
 import type { SubscriptionPlan, SubscriptionRecord, SubscriptionStatus } from "@/lib/contracts";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
-// Allowlist, not a denylist: only active and trialing (existing product policy,
-// see milestone1-store's getAnalyticsSnapshotForUser) ever carry paid entitlement.
-// Every other known status (past_due, canceled, unpaid, paused, incomplete,
-// incomplete_expired) -- and any future status this code does not yet know about --
-// falls closed to entitlementActive: false. The real plan/status are still
-// surfaced for UI/informational purposes; entitlementActive is the single,
-// unambiguous field callers must check to decide paid access. No caller may
-// infer access from plan alone.
-const ENTITLED_STATUSES = new Set(["active", "trialing"]);
 const KNOWN_PLANS = new Set(["pro", "salon", "business"]);
 
 export interface SubscriptionResponsePayload extends SubscriptionRecord {
@@ -42,7 +33,7 @@ function toSubscriptionRecord(ownerUserId: string, row: BillingSubscriptionRow |
     ownerUserId,
     plan: row.planKey as SubscriptionPlan,
     status: row.status as SubscriptionStatus,
-    entitlementActive: ENTITLED_STATUSES.has(row.status),
+    entitlementActive: ENTITLED_SUBSCRIPTION_STATUSES.has(row.status),
     currentPeriodEnd: (row.currentPeriodEnd ?? new Date()).toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

@@ -28,6 +28,7 @@ vi.mock("@/lib/billing-checkout-adapter", () => ({
 const repositoryMock = vi.hoisted(() => ({
   getBillingCustomerByOwner: vi.fn(),
   findOrCreateBillingCustomer: vi.fn(),
+  hasEntitledSubscription: vi.fn(),
 }));
 vi.mock("@/lib/billing-repository", () => repositoryMock);
 
@@ -58,6 +59,7 @@ beforeEach(() => {
   adapterMock.createCheckoutSession.mockReset().mockResolvedValue({ id: "cs_1", url: "https://checkout.stripe.com/cs_1" });
   repositoryMock.getBillingCustomerByOwner.mockReset().mockResolvedValue(null);
   repositoryMock.findOrCreateBillingCustomer.mockReset().mockResolvedValue({ id: "cust-1", providerCustomerId: "cus_created" });
+  repositoryMock.hasEntitledSubscription.mockReset().mockResolvedValue(false);
 });
 
 describe("POST /api/v1/billing/checkout", () => {
@@ -254,6 +256,104 @@ describe("POST /api/v1/billing/checkout", () => {
     expect(response.status).toBe(502);
     const body = await response.json();
     expect(body.error).toBe("BILLING_CHECKOUT_SESSION_FAILED");
+  });
+
+  it("unauthenticated requests never consult the entitlement guard either", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    await POST(buildRequest({ plan: "pro" }));
+
+    expect(repositoryMock.hasEntitledSubscription).not.toHaveBeenCalled();
+  });
+
+  describe("double-subscription protection", () => {
+    it("owner with no subscription: checkout is permitted (default state)", async () => {
+      repositoryMock.hasEntitledSubscription.mockResolvedValue(false);
+
+      const response = await POST(buildRequest({ plan: "pro" }));
+
+      expect(response.status).toBe(201);
+      expect(repositoryMock.hasEntitledSubscription).toHaveBeenCalledWith("owner-1", "stripe");
+    });
+
+    it("owner with an active pro subscription: checkout for a different plan (salon) is blocked with 409, zero Stripe calls", async () => {
+      repositoryMock.hasEntitledSubscription.mockResolvedValue(true);
+
+      const response = await POST(buildRequest({ plan: "salon" }));
+
+      expect(response.status).toBe(409);
+      const body = await response.json();
+      expect(body).toEqual({ error: "BILLING_CHECKOUT_ALREADY_ACTIVE" });
+      expect(adapterMock.createCustomer).not.toHaveBeenCalled();
+      expect(adapterMock.createCheckoutSession).not.toHaveBeenCalled();
+      expect(repositoryMock.findOrCreateBillingCustomer).not.toHaveBeenCalled();
+    });
+
+    it("owner with an active pro subscription: checkout for the SAME plan (pro) is also blocked, zero Stripe calls", async () => {
+      repositoryMock.hasEntitledSubscription.mockResolvedValue(true);
+
+      const response = await POST(buildRequest({ plan: "pro" }));
+
+      expect(response.status).toBe(409);
+      expect(adapterMock.createCustomer).not.toHaveBeenCalled();
+      expect(adapterMock.createCheckoutSession).not.toHaveBeenCalled();
+    });
+
+    it("owner with a trialing subscription: new checkout is blocked, zero Stripe calls", async () => {
+      // The route only ever consults the boolean the repository already
+      // computed from status -- this proves the route itself does not
+      // special-case "active" vs "trialing" (that policy lives in
+      // hasEntitledSubscription / ENTITLED_SUBSCRIPTION_STATUSES).
+      repositoryMock.hasEntitledSubscription.mockResolvedValue(true);
+
+      const response = await POST(buildRequest({ plan: "salon" }));
+
+      expect(response.status).toBe(409);
+      expect(adapterMock.createCheckoutSession).not.toHaveBeenCalled();
+    });
+
+    it("owner with only a canceled subscription: new checkout is permitted, per existing entitlement policy", async () => {
+      repositoryMock.hasEntitledSubscription.mockResolvedValue(false);
+
+      const response = await POST(buildRequest({ plan: "pro" }));
+
+      expect(response.status).toBe(201);
+      expect(adapterMock.createCheckoutSession).toHaveBeenCalled();
+    });
+
+    it("owner with only an incomplete (abandoned) subscription: retry checkout is permitted, per existing entitlement policy", async () => {
+      repositoryMock.hasEntitledSubscription.mockResolvedValue(false);
+
+      const response = await POST(buildRequest({ plan: "pro" }));
+
+      expect(response.status).toBe(201);
+      expect(adapterMock.createCheckoutSession).toHaveBeenCalled();
+    });
+
+    it("the entitlement guard is checked before the Stripe adapter is even constructed, and before any customer lookup", async () => {
+      repositoryMock.hasEntitledSubscription.mockResolvedValue(true);
+
+      await POST(buildRequest({ plan: "pro" }));
+
+      expect(createBillingCheckoutAdapterMock).not.toHaveBeenCalled();
+      expect(repositoryMock.getBillingCustomerByOwner).not.toHaveBeenCalled();
+    });
+
+    it("an invalid/unconfigured plan still fails closed with its own error before the entitlement guard ever runs", async () => {
+      configMock.resolveBillingCheckoutConfig.mockReturnValue({
+        status: "enabled",
+        secretKey: "sk_test_x",
+        priceIds: { pro: "price_pro", salon: "price_salon" }, // no business
+        appBaseUrl: "https://app.example.com",
+      });
+
+      const response = await POST(buildRequest({ plan: "business" }));
+
+      expect(response.status).toBe(503);
+      const body = await response.json();
+      expect(body.error).toBe("BILLING_CHECKOUT_PLAN_UNAVAILABLE");
+      expect(repositoryMock.hasEntitledSubscription).not.toHaveBeenCalled();
+    });
   });
 
   it("ignores every client-supplied identity, provider, price id, and redirect field -- an arbitrary Stripe price id from the browser can never be used", async () => {

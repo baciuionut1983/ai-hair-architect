@@ -72,6 +72,8 @@ const CHECKOUT_ERROR_MESSAGES: Record<string, string> = {
   BILLING_CHECKOUT_MISCONFIGURED: "Checkout is temporarily unavailable. Please try again later.",
   BILLING_CHECKOUT_CUSTOMER_FAILED: "Could not start checkout. Please try again.",
   BILLING_CHECKOUT_SESSION_FAILED: "Could not start checkout. Please try again.",
+  // Neutral by design -- never surfaces Stripe/internal subscription detail.
+  BILLING_CHECKOUT_ALREADY_ACTIVE: "You already have an active subscription.",
 };
 
 export function checkoutErrorMessage(errorCode: string | undefined): string {

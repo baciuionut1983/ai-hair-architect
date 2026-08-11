@@ -62,6 +62,7 @@ import {
   getSubscriptionByOwner,
   getSubscriptionByProviderId,
   getWebhookEventByProviderId,
+  hasEntitledSubscription,
   isBillingPersistenceError,
   markWebhookEventStatus,
   recordWebhookEventIdempotently,
@@ -806,6 +807,109 @@ integrationSuite("billing-repository (real Postgres)", () => {
       status: "active",
     });
     expect(older.applied).toBe(true);
+  });
+
+  describe("hasEntitledSubscription", () => {
+    it("(7) an older active row plus a newer incomplete row: still entitled (does not depend on updatedAt ordering)", async () => {
+      const ownerUserId = await createOwner(owners);
+      const customer = await findOrCreateBillingCustomer({
+        ownerUserId,
+        provider: "stripe",
+        providerCustomerId: `cus_${ownerUserId}`,
+      });
+
+      await upsertSubscriptionWithOrderingGuard({
+        ownerUserId,
+        billingCustomerId: customer.id,
+        provider: "stripe",
+        providerSubscriptionId: `sub_${randomUUID()}`,
+        planKey: "pro",
+        status: "active",
+        eventCreatedAt: new Date("2026-08-01T00:00:00.000Z"),
+        providerEventId: "evt_a",
+        authority: "authoritative",
+      });
+      // Created after, so it is the most-recently-updated row -- proving
+      // this check does not just look at getSubscriptionByOwner's result.
+      await upsertSubscriptionWithOrderingGuard({
+        ownerUserId,
+        billingCustomerId: customer.id,
+        provider: "stripe",
+        providerSubscriptionId: `sub_${randomUUID()}`,
+        planKey: "pro",
+        status: "incomplete",
+        eventCreatedAt: new Date("2026-08-01T01:00:00.000Z"),
+        providerEventId: "evt_b",
+        authority: "authoritative",
+      });
+
+      await expect(hasEntitledSubscription(ownerUserId, "stripe")).resolves.toBe(true);
+    });
+
+    it("(8) an older trialing row plus a newer canceled row: still entitled", async () => {
+      const ownerUserId = await createOwner(owners);
+      const customer = await findOrCreateBillingCustomer({
+        ownerUserId,
+        provider: "stripe",
+        providerCustomerId: `cus_${ownerUserId}`,
+      });
+
+      await upsertSubscriptionWithOrderingGuard({
+        ownerUserId,
+        billingCustomerId: customer.id,
+        provider: "stripe",
+        providerSubscriptionId: `sub_${randomUUID()}`,
+        planKey: "salon",
+        status: "trialing",
+        eventCreatedAt: new Date("2026-08-01T00:00:00.000Z"),
+        providerEventId: "evt_a",
+        authority: "authoritative",
+      });
+      await upsertSubscriptionWithOrderingGuard({
+        ownerUserId,
+        billingCustomerId: customer.id,
+        provider: "stripe",
+        providerSubscriptionId: `sub_${randomUUID()}`,
+        planKey: "salon",
+        status: "canceled",
+        eventCreatedAt: new Date("2026-08-01T01:00:00.000Z"),
+        providerEventId: "evt_b",
+        authority: "authoritative",
+      });
+
+      await expect(hasEntitledSubscription(ownerUserId, "stripe")).resolves.toBe(true);
+    });
+
+    it("(9) only non-entitled rows (canceled, incomplete, past_due): not entitled", async () => {
+      const ownerUserId = await createOwner(owners);
+      const customer = await findOrCreateBillingCustomer({
+        ownerUserId,
+        provider: "stripe",
+        providerCustomerId: `cus_${ownerUserId}`,
+      });
+
+      for (const [status, offset] of [["canceled", 0], ["incomplete", 1], ["past_due", 2]] as const) {
+        await upsertSubscriptionWithOrderingGuard({
+          ownerUserId,
+          billingCustomerId: customer.id,
+          provider: "stripe",
+          providerSubscriptionId: `sub_${randomUUID()}`,
+          planKey: "pro",
+          status,
+          eventCreatedAt: new Date(`2026-08-01T0${offset}:00:00.000Z`),
+          providerEventId: `evt_${offset}`,
+          authority: "authoritative",
+        });
+      }
+
+      await expect(hasEntitledSubscription(ownerUserId, "stripe")).resolves.toBe(false);
+    });
+
+    it("returns false for an owner with no BillingSubscription rows at all", async () => {
+      const ownerUserId = await createOwner(owners);
+
+      await expect(hasEntitledSubscription(ownerUserId, "stripe")).resolves.toBe(false);
+    });
   });
 
   it("records exactly one durable row and classifies the losing concurrent delivery as duplicate", async () => {
