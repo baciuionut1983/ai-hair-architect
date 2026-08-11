@@ -454,9 +454,45 @@ function trimmedOrNull(value: string | null | undefined): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function resolvePlanKey(subscription: Stripe.Subscription): string {
+const INTERNAL_PLAN_KEYS = new Set(["pro", "salon", "business"]);
+
+const PRICE_ID_ENV_VAR_TO_PLAN_KEY: Record<string, string> = {
+  STRIPE_PRICE_PRO: "pro",
+  STRIPE_PRICE_SALON: "salon",
+  STRIPE_PRICE_BUSINESS: "business",
+};
+
+/**
+ * Never returns a raw Stripe price id as the internal planKey -- only one
+ * of "pro"/"salon"/"business", or "unknown" (fail-closed; toSubscriptionRecord
+ * in the subscription route treats "unknown" the same as any other
+ * unrecognized plan, falling back to the free/no-entitlement record, never
+ * granting access for a plan it cannot positively identify).
+ *
+ * Order: Stripe's own price.lookup_key first, but only when it already is
+ * one of our own plan keys verbatim -- then a reverse lookup of price.id
+ * against our own STRIPE_PRICE_PRO/SALON/BUSINESS env vars, so this stays
+ * correct even when a Stripe Price was never given a matching lookup_key in
+ * the Dashboard.
+ */
+export function resolvePlanKey(subscription: Stripe.Subscription, env: NodeJS.ProcessEnv = process.env): string {
   const price = subscription.items.data[0]?.price;
-  return price?.lookup_key || price?.id || "unknown";
+  if (!price) return "unknown";
+
+  const lookupKey = price.lookup_key;
+  if (lookupKey && INTERNAL_PLAN_KEYS.has(lookupKey)) {
+    return lookupKey;
+  }
+
+  const priceId = price.id;
+  for (const [variable, planKey] of Object.entries(PRICE_ID_ENV_VAR_TO_PLAN_KEY)) {
+    const configuredPriceId = String(env[variable] ?? "").trim();
+    if (configuredPriceId && configuredPriceId === priceId) {
+      return planKey;
+    }
+  }
+
+  return "unknown";
 }
 
 function sanitizeInvoiceFailureCode(invoice: Stripe.Invoice): string {

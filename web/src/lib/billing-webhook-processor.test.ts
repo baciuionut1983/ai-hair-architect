@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   processBillingWebhookRequest,
   resolveBillingProcessingMode,
+  resolvePlanKey,
 } from "./billing-webhook-processor";
 import { findOrCreateBillingCustomer } from "./billing-repository";
 import { prisma } from "@/lib/prisma";
@@ -308,7 +309,10 @@ suite("billing-webhook-processor (real Postgres)", () => {
 
   it("processes a supported customer.subscription.created event end-to-end", async () => {
     const { ownerUserId, providerCustomerId } = await createOwnerWithCustomer();
-    const event = subscriptionEvent({ type: "customer.subscription.created", customerId: providerCustomerId });
+    // Explicit, valid lookup_key -- this test validates the full happy
+    // path (event -> real planKey persisted), not plan-key resolution
+    // itself (see the dedicated resolvePlanKey describe block for that).
+    const event = subscriptionEvent({ type: "customer.subscription.created", customerId: providerCustomerId, lookupKey: "pro" });
     const { rawBody, signatureHeader } = signedRequest(event);
 
     const result = await processBillingWebhookRequest({ rawBody, signatureHeader, env: testEnv() });
@@ -319,7 +323,7 @@ suite("billing-webhook-processor (real Postgres)", () => {
       prisma.billingSubscription.findUnique({
         where: { provider_providerSubscriptionId: { provider: "stripe", providerSubscriptionId: event.data.object.id } },
       }),
-    ).resolves.toMatchObject({ ownerUserId, status: "active", planKey: "pro_monthly" });
+    ).resolves.toMatchObject({ ownerUserId, status: "active", planKey: "pro" });
     await expect(
       prisma.billingWebhookEvent.findUnique({
         where: { provider_providerEventId: { provider: "stripe", providerEventId: event.id } },
@@ -899,5 +903,69 @@ suite("billing-webhook-processor (real Postgres)", () => {
       }),
     ).resolves.toMatchObject({ status: "failed_terminal", lastFailureCode: "BILLING_WEBHOOK_EVENT_MALFORMED" });
     webhookEventIds.add(event.id);
+  });
+});
+
+function subscriptionWithPrice(overrides: { priceId?: string; lookupKey?: string | null } = {}): Stripe.Subscription {
+  return subscriptionEvent({ priceId: overrides.priceId, lookupKey: overrides.lookupKey }).data
+    .object as unknown as Stripe.Subscription;
+}
+
+describe("resolvePlanKey", () => {
+  function envWithPriceIds(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      STRIPE_PRICE_PRO: "price_env_pro",
+      STRIPE_PRICE_SALON: "price_env_salon",
+      STRIPE_PRICE_BUSINESS: "price_env_business",
+      ...overrides,
+    };
+  }
+
+  it('lookup_key "pro" resolves to "pro"', () => {
+    const subscription = subscriptionWithPrice({ lookupKey: "pro", priceId: "price_whatever" });
+    expect(resolvePlanKey(subscription, envWithPriceIds())).toBe("pro");
+  });
+
+  it('lookup_key "salon" resolves to "salon"', () => {
+    const subscription = subscriptionWithPrice({ lookupKey: "salon", priceId: "price_whatever" });
+    expect(resolvePlanKey(subscription, envWithPriceIds())).toBe("salon");
+  });
+
+  it('lookup_key "business" resolves to "business"', () => {
+    const subscription = subscriptionWithPrice({ lookupKey: "business", priceId: "price_whatever" });
+    expect(resolvePlanKey(subscription, envWithPriceIds())).toBe("business");
+  });
+
+  it("no lookup_key, price.id matches STRIPE_PRICE_PRO -> \"pro\"", () => {
+    const subscription = subscriptionWithPrice({ lookupKey: null, priceId: "price_env_pro" });
+    expect(resolvePlanKey(subscription, envWithPriceIds())).toBe("pro");
+  });
+
+  it("no lookup_key, price.id matches STRIPE_PRICE_SALON -> \"salon\"", () => {
+    const subscription = subscriptionWithPrice({ lookupKey: null, priceId: "price_env_salon" });
+    expect(resolvePlanKey(subscription, envWithPriceIds())).toBe("salon");
+  });
+
+  it("no lookup_key, price.id matches STRIPE_PRICE_BUSINESS -> \"business\"", () => {
+    const subscription = subscriptionWithPrice({ lookupKey: null, priceId: "price_env_business" });
+    expect(resolvePlanKey(subscription, envWithPriceIds())).toBe("business");
+  });
+
+  it("an unrecognized price (no lookup_key, id matches no configured env var) resolves to \"unknown\"", () => {
+    const subscription = subscriptionWithPrice({ lookupKey: null, priceId: "price_completely_unknown" });
+    expect(resolvePlanKey(subscription, envWithPriceIds())).toBe("unknown");
+  });
+
+  it("the raw Stripe price.id is never returned as the plan key, even when no env var is configured", () => {
+    const subscription = subscriptionWithPrice({ lookupKey: null, priceId: "price_1U3C7uCvzydruyH0sEY8Em4k" });
+    const result = resolvePlanKey(subscription, envWithPriceIds({ STRIPE_PRICE_PRO: undefined, STRIPE_PRICE_SALON: undefined, STRIPE_PRICE_BUSINESS: undefined }));
+    expect(result).not.toBe("price_1U3C7uCvzydruyH0sEY8Em4k");
+    expect(result).toBe("unknown");
+  });
+
+  it("an unrecognized lookup_key falls through to the price.id reverse lookup instead of being trusted directly", () => {
+    const subscription = subscriptionWithPrice({ lookupKey: "some_other_product", priceId: "price_env_salon" });
+    expect(resolvePlanKey(subscription, envWithPriceIds())).toBe("salon");
   });
 });
