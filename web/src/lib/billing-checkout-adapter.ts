@@ -18,6 +18,11 @@ export interface CreateStripeCheckoutSessionInput {
   ownerUserId: string;
   successUrl: string;
   cancelUrl: string;
+  // M38: bounds how long this session stays payable. When provided, the
+  // caller is expected to keep this in lockstep with its own
+  // BillingCheckoutLock TTL, so the lock can never be reclaimed while this
+  // session might still be paid. Omitted, Stripe defaults to 24 hours.
+  expiresAt?: Date;
 }
 
 export interface StripeCheckoutSessionResult {
@@ -46,6 +51,7 @@ export interface StripeCheckoutClient {
         subscription_data: { metadata: Record<string, string> };
         success_url: string;
         cancel_url: string;
+        expires_at?: number;
       }): Promise<{ id: string; url: string | null }>;
     };
   };
@@ -86,6 +92,7 @@ export function createBillingCheckoutAdapter(
         subscription_data: { metadata: { ownerUserId: input.ownerUserId, plan: input.plan } },
         success_url: input.successUrl,
         cancel_url: input.cancelUrl,
+        expires_at: input.expiresAt ? Math.floor(input.expiresAt.getTime() / 1000) : undefined,
       });
 
       if (!session.url) {

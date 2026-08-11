@@ -148,6 +148,7 @@ model User {
   billingCustomers              BillingCustomer[]
   billingSubscriptions          BillingSubscription[]
   billingPayments               BillingPayment[]
+  billingCheckoutLocks          BillingCheckoutLock[]
   imageAnalysisProviderAttempts ImageAnalysisProviderAttempt[]
   videoLessons                  VideoLesson[]
   emailNotifications            EmailNotification[]
@@ -898,6 +899,29 @@ model BillingCustomer {
   @@unique([provider, providerCustomerId])
   @@unique([ownerUserId, provider])
   @@index([ownerUserId])
+}
+
+// M38: at most one in-flight checkout per (ownerUserId, provider), enforced
+// by the composite primary key itself -- a second concurrent request can
+// never insert a second row, on any number of app instances, since this is
+// a single shared Postgres constraint, not an in-process lock. expiresAt is
+// what makes an abandoned/expired checkout reclaimable without any cleanup
+// job: a row past its expiresAt is simply treated as free by the ordinary
+// acquire query. See acquireCheckoutLock in billing-repository.ts.
+model BillingCheckoutLock {
+  ownerUserId       String
+  provider          BillingProvider @default(stripe)
+  plan              String          @db.VarChar(64)
+  providerSessionId String?         @db.VarChar(255)
+  acquiredAt        DateTime        @default(now()) @db.Timestamp(6)
+  expiresAt         DateTime        @db.Timestamp(6)
+  createdAt         DateTime        @default(now()) @db.Timestamp(6)
+  updatedAt         DateTime        @updatedAt @db.Timestamp(6)
+
+  owner User @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@id([ownerUserId, provider])
+  @@index([expiresAt])
 }
 
 model BillingSubscription {

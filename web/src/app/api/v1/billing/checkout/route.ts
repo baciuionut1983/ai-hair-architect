@@ -2,10 +2,27 @@ import { NextResponse } from "next/server";
 
 import { createBillingCheckoutAdapter } from "@/lib/billing-checkout-adapter";
 import { resolveBillingCheckoutConfig } from "@/lib/billing-checkout-config";
-import { findOrCreateBillingCustomer, getBillingCustomerByOwner, hasEntitledSubscription } from "@/lib/billing-repository";
+import {
+  acquireCheckoutLock,
+  attachCheckoutLockSession,
+  findOrCreateBillingCustomer,
+  getBillingCustomerByOwner,
+  hasEntitledSubscription,
+  releaseCheckoutLock,
+} from "@/lib/billing-repository";
 import type { BillingCheckoutRequest, SubscriptionRecord } from "@/lib/contracts";
 import { checkRateLimit, ensureRequestId } from "@/lib/hardening";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
+
+// M38: how long a single checkout attempt reserves the owner's "one
+// in-flight checkout" slot. Matches Stripe Checkout's own minimum
+// configurable expires_at (30 minutes) -- an abandoned/declined checkout
+// therefore never blocks a retry for longer than Stripe's own session
+// would have stayed payable anyway. CHECKOUT_LOCK_SAFETY_BUFFER_MS keeps
+// the lock alive slightly longer than the Stripe session itself, so the
+// lock can never be reclaimed while that session might still be paid.
+const CHECKOUT_SESSION_TTL_MS = 30 * 60 * 1000;
+const CHECKOUT_LOCK_SAFETY_BUFFER_MS = 60 * 1000;
 
 export async function POST(request: Request) {
   try {
@@ -76,6 +93,18 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "BILLING_CHECKOUT_ALREADY_ACTIVE" }, { status: 409 });
     }
 
+    // M38: closes the remaining TOCTOU gap -- two requests racing past the
+    // entitlement check above (neither has a subscription yet) must still
+    // never both reach Stripe. Enforced by BillingCheckoutLock's composite
+    // primary key in Postgres, so this holds across concurrent requests on
+    // any number of app instances, not just within this one process.
+    const now = new Date();
+    const lockExpiresAt = new Date(now.getTime() + CHECKOUT_SESSION_TTL_MS + CHECKOUT_LOCK_SAFETY_BUFFER_MS);
+    const lock = await acquireCheckoutLock({ ownerUserId: owner.id, provider: "stripe", plan, now, expiresAt: lockExpiresAt });
+    if (!lock.acquired) {
+      return NextResponse.json({ error: "BILLING_CHECKOUT_IN_PROGRESS" }, { status: 409 });
+    }
+
     const adapter = createBillingCheckoutAdapter(config.secretKey);
 
     const existingCustomer = await getBillingCustomerByOwner(owner.id, "stripe");
@@ -87,6 +116,9 @@ export async function POST(request: Request) {
       try {
         created = await adapter.createCustomer({ ownerUserId: owner.id, email: owner.email });
       } catch {
+        // Release immediately -- a failed attempt must never block a retry
+        // for the full lock TTL.
+        await releaseCheckoutLock(owner.id, "stripe");
         return NextResponse.json({ error: "BILLING_CHECKOUT_CUSTOMER_FAILED" }, { status: 502 });
       }
       providerCustomerId = created.id;
@@ -108,10 +140,19 @@ export async function POST(request: Request) {
         // /api/v1/billing/subscription call against persisted billing state.
         successUrl: `${config.appBaseUrl}/account?checkout=success`,
         cancelUrl: `${config.appBaseUrl}/account?checkout=cancel`,
+        expiresAt: new Date(now.getTime() + CHECKOUT_SESSION_TTL_MS),
       });
     } catch {
+      await releaseCheckoutLock(owner.id, "stripe");
       return NextResponse.json({ error: "BILLING_CHECKOUT_SESSION_FAILED" }, { status: 502 });
     }
+
+    // Deliberately NOT wrapped in a release-on-failure block: by this point
+    // Stripe has already created a real, payable Checkout Session. If this
+    // write itself fails, the safe default is to keep the lock held (fail
+    // closed) rather than risk a second session being created while this
+    // one might still exist -- it just self-heals via the TTL either way.
+    await attachCheckoutLockSession(owner.id, "stripe", session.id);
 
     return NextResponse.json(
       { requestId, checkout: { provider: "stripe", url: session.url } },

@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 
 import {
   Prisma,
+  type BillingCheckoutLock as PrismaBillingCheckoutLockRow,
   type BillingCustomer as PrismaBillingCustomerRow,
   type BillingPayment as PrismaBillingPaymentRow,
   type BillingProvider,
@@ -23,10 +24,11 @@ export type BillingCustomerRow = PrismaBillingCustomerRow;
 export type BillingSubscriptionRow = PrismaBillingSubscriptionRow;
 export type BillingPaymentRow = PrismaBillingPaymentRow;
 export type BillingWebhookEventRow = PrismaBillingWebhookEventRow;
+export type BillingCheckoutLockRow = PrismaBillingCheckoutLockRow;
 
 export type BillingTransaction = Pick<
   Prisma.TransactionClient,
-  "billingCustomer" | "billingSubscription" | "billingPayment" | "billingWebhookEvent" | "$executeRaw"
+  "billingCustomer" | "billingSubscription" | "billingPayment" | "billingWebhookEvent" | "billingCheckoutLock" | "$executeRaw"
 >;
 
 export class BillingPersistenceError extends Error {
@@ -416,6 +418,106 @@ export async function hasEntitledSubscription(
       select: { id: true },
     });
     return row !== null;
+  });
+}
+
+// M38: at most one in-flight Stripe checkout per (ownerUserId, provider).
+// Backed by BillingCheckoutLock's composite primary key, so the guarantee
+// is enforced by Postgres itself -- correct across any number of app
+// instances sharing this database, not an in-process/local lock. Uses the
+// same create-then-conditional-reclaim idiom as
+// applySubscriptionOrderingGuardAtomically/findOrCreateBillingCustomer
+// elsewhere in this file, rather than a transaction-scoped advisory lock,
+// because the operation this protects (a real Stripe API call) must never
+// happen while holding an open DB transaction/connection.
+export interface AcquireCheckoutLockInput {
+  ownerUserId: string;
+  provider: BillingProvider;
+  plan: string;
+  now: Date;
+  expiresAt: Date;
+}
+
+export async function acquireCheckoutLock(
+  input: AcquireCheckoutLockInput,
+  db: BillingTransaction = prisma,
+): Promise<{ acquired: boolean; lock: BillingCheckoutLockRow }> {
+  return runBillingQuery(async () => {
+    const insideTransaction = db !== prisma;
+    if (insideTransaction) await db.$executeRaw`SAVEPOINT acquire_checkout_lock`;
+
+    try {
+      const created = await db.billingCheckoutLock.create({
+        data: {
+          ownerUserId: input.ownerUserId,
+          provider: input.provider,
+          plan: input.plan,
+          acquiredAt: input.now,
+          expiresAt: input.expiresAt,
+        },
+      });
+      return { acquired: true, lock: created };
+    } catch (error) {
+      if (!isUniqueConstraintViolation(error)) throw error;
+      if (insideTransaction) await db.$executeRaw`ROLLBACK TO SAVEPOINT acquire_checkout_lock`;
+    }
+
+    // A row already exists. It is only reclaimable if it is past its own
+    // expiresAt -- this UPDATE's WHERE clause is what makes the reclaim
+    // itself race-safe: Postgres row-locks the matching row for the
+    // duration of the UPDATE, so if two callers reach this at the same
+    // time, only one of them can actually advance expiresAt into the
+    // future; the other's WHERE clause (re-evaluated against the now-
+    // updated row) matches zero rows.
+    const claimed = await db.billingCheckoutLock.updateMany({
+      where: {
+        ownerUserId: input.ownerUserId,
+        provider: input.provider,
+        expiresAt: { lte: input.now },
+      },
+      data: {
+        plan: input.plan,
+        providerSessionId: null,
+        acquiredAt: input.now,
+        expiresAt: input.expiresAt,
+      },
+    });
+
+    const current = await db.billingCheckoutLock.findUniqueOrThrow({
+      where: { ownerUserId_provider: { ownerUserId: input.ownerUserId, provider: input.provider } },
+    });
+    return { acquired: claimed.count === 1, lock: current };
+  });
+}
+
+// Called once the real Stripe Checkout Session exists, purely for
+// observability -- the lock itself stays held (by design) until it expires
+// or is explicitly released, so a session already handed to the browser
+// keeps blocking a second concurrent/sequential checkout for this owner.
+export async function attachCheckoutLockSession(
+  ownerUserId: string,
+  provider: BillingProvider,
+  providerSessionId: string,
+  db: BillingTransaction = prisma,
+): Promise<void> {
+  return runBillingQuery(async () => {
+    await db.billingCheckoutLock.updateMany({
+      where: { ownerUserId, provider },
+      data: { providerSessionId },
+    });
+  });
+}
+
+// Called on any failure AFTER the lock was acquired (customer or session
+// creation failed) so a failed attempt never blocks a retry for the full
+// TTL -- the owner can try again immediately.
+export async function releaseCheckoutLock(
+  ownerUserId: string,
+  provider: BillingProvider,
+  db: BillingTransaction = prisma,
+): Promise<void> {
+  return runBillingQuery(async () => {
+    await db.billingCheckoutLock.deleteMany({ where: { ownerUserId, provider } });
   });
 }
 

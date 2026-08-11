@@ -13,6 +13,10 @@ const prismaMocks = vi.hoisted(() => ({
   billingSubscriptionFindUnique: vi.fn(),
   billingSubscriptionFindFirst: vi.fn(),
   billingSubscriptionUpsert: vi.fn(),
+  billingCheckoutLockCreate: vi.fn(),
+  billingCheckoutLockUpdateMany: vi.fn(),
+  billingCheckoutLockDeleteMany: vi.fn(),
+  billingCheckoutLockFindUniqueOrThrow: vi.fn(),
   billingWebhookEventCreate: vi.fn(),
   billingWebhookEventFindUnique: vi.fn(),
   billingWebhookEventUpdate: vi.fn(),
@@ -39,6 +43,12 @@ vi.mock("@/lib/prisma", async (importOriginal) => {
         findFirst: prismaMocks.billingSubscriptionFindFirst,
         upsert: prismaMocks.billingSubscriptionUpsert,
       },
+      billingCheckoutLock: {
+        create: prismaMocks.billingCheckoutLockCreate,
+        updateMany: prismaMocks.billingCheckoutLockUpdateMany,
+        deleteMany: prismaMocks.billingCheckoutLockDeleteMany,
+        findUniqueOrThrow: prismaMocks.billingCheckoutLockFindUniqueOrThrow,
+      },
       billingWebhookEvent: {
         create: prismaMocks.billingWebhookEventCreate,
         findUnique: prismaMocks.billingWebhookEventFindUnique,
@@ -52,6 +62,8 @@ vi.mock("@/lib/prisma", async (importOriginal) => {
 });
 
 import {
+  acquireCheckoutLock,
+  attachCheckoutLockSession,
   BillingCustomerConflictError,
   BillingPersistenceError,
   billingPersistenceUnavailableResponse,
@@ -66,6 +78,7 @@ import {
   isBillingPersistenceError,
   markWebhookEventStatus,
   recordWebhookEventIdempotently,
+  releaseCheckoutLock,
   runBillingWebhookTransaction,
   upsertPayment,
   upsertSubscriptionWithOrderingGuard,
@@ -121,6 +134,10 @@ unitSuite("billing-repository (mocked)", () => {
     prismaMocks.billingSubscriptionFindUnique.mockReset();
     prismaMocks.billingSubscriptionFindFirst.mockReset();
     prismaMocks.billingSubscriptionUpsert.mockReset();
+    prismaMocks.billingCheckoutLockCreate.mockReset();
+    prismaMocks.billingCheckoutLockUpdateMany.mockReset();
+    prismaMocks.billingCheckoutLockDeleteMany.mockReset();
+    prismaMocks.billingCheckoutLockFindUniqueOrThrow.mockReset();
     prismaMocks.billingWebhookEventCreate.mockReset();
     prismaMocks.billingWebhookEventFindUnique.mockReset();
     prismaMocks.billingWebhookEventUpdate.mockReset();
@@ -480,6 +497,102 @@ unitSuite("billing-repository (mocked)", () => {
     });
   });
 
+  describe("acquireCheckoutLock / releaseCheckoutLock / attachCheckoutLockSession", () => {
+    const lockInput = () => ({
+      ownerUserId: "owner-1",
+      provider: "stripe" as const,
+      plan: "pro",
+      now: new Date("2026-08-12T00:00:00.000Z"),
+      expiresAt: new Date("2026-08-12T00:31:00.000Z"),
+    });
+
+    function lockRow(overrides: Record<string, unknown> = {}) {
+      return {
+        ownerUserId: "owner-1",
+        provider: "stripe",
+        plan: "pro",
+        providerSessionId: null,
+        acquiredAt: new Date("2026-08-12T00:00:00.000Z"),
+        expiresAt: new Date("2026-08-12T00:31:00.000Z"),
+        createdAt: new Date("2026-08-12T00:00:00.000Z"),
+        updatedAt: new Date("2026-08-12T00:00:00.000Z"),
+        ...overrides,
+      };
+    }
+
+    it("creates the lock when none exists", async () => {
+      prismaMocks.billingCheckoutLockCreate.mockResolvedValueOnce(lockRow());
+
+      await expect(acquireCheckoutLock(lockInput())).resolves.toMatchObject({ acquired: true });
+      expect(prismaMocks.billingCheckoutLockCreate).toHaveBeenCalledWith({
+        data: {
+          ownerUserId: "owner-1",
+          provider: "stripe",
+          plan: "pro",
+          acquiredAt: lockInput().now,
+          expiresAt: lockInput().expiresAt,
+        },
+      });
+      expect(prismaMocks.billingCheckoutLockUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("reclaims an expired lock via the conditional update, never a raw overwrite", async () => {
+      prismaMocks.billingCheckoutLockCreate.mockRejectedValueOnce(uniqueConstraintError());
+      prismaMocks.billingCheckoutLockUpdateMany.mockResolvedValueOnce({ count: 1 });
+      prismaMocks.billingCheckoutLockFindUniqueOrThrow.mockResolvedValueOnce(lockRow());
+
+      await expect(acquireCheckoutLock(lockInput())).resolves.toMatchObject({ acquired: true });
+      expect(prismaMocks.billingCheckoutLockUpdateMany).toHaveBeenCalledWith({
+        where: { ownerUserId: "owner-1", provider: "stripe", expiresAt: { lte: lockInput().now } },
+        data: {
+          plan: "pro",
+          providerSessionId: null,
+          acquiredAt: lockInput().now,
+          expiresAt: lockInput().expiresAt,
+        },
+      });
+    });
+
+    it("reports not-acquired when an existing lock is still live (conditional update matches zero rows)", async () => {
+      prismaMocks.billingCheckoutLockCreate.mockRejectedValueOnce(uniqueConstraintError());
+      prismaMocks.billingCheckoutLockUpdateMany.mockResolvedValueOnce({ count: 0 });
+      prismaMocks.billingCheckoutLockFindUniqueOrThrow.mockResolvedValueOnce(lockRow({ plan: "salon" }));
+
+      await expect(acquireCheckoutLock(lockInput())).resolves.toMatchObject({
+        acquired: false,
+        lock: { plan: "salon" },
+      });
+    });
+
+    it("propagates a genuine (non-conflict) database error instead of treating it as a lock collision", async () => {
+      prismaMocks.billingCheckoutLockCreate.mockRejectedValueOnce(new Error("connection reset"));
+
+      await expect(acquireCheckoutLock(lockInput())).rejects.toBeInstanceOf(BillingPersistenceError);
+      expect(prismaMocks.billingCheckoutLockUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("releaseCheckoutLock deletes exactly the owner+provider row", async () => {
+      prismaMocks.billingCheckoutLockDeleteMany.mockResolvedValueOnce({ count: 1 });
+
+      await releaseCheckoutLock("owner-1", "stripe");
+
+      expect(prismaMocks.billingCheckoutLockDeleteMany).toHaveBeenCalledWith({
+        where: { ownerUserId: "owner-1", provider: "stripe" },
+      });
+    });
+
+    it("attachCheckoutLockSession only ever updates providerSessionId", async () => {
+      prismaMocks.billingCheckoutLockUpdateMany.mockResolvedValueOnce({ count: 1 });
+
+      await attachCheckoutLockSession("owner-1", "stripe", "cs_real_session");
+
+      expect(prismaMocks.billingCheckoutLockUpdateMany).toHaveBeenCalledWith({
+        where: { ownerUserId: "owner-1", provider: "stripe" },
+        data: { providerSessionId: "cs_real_session" },
+      });
+    });
+  });
+
   describe("injected transaction client (other functions)", () => {
     it("findOwnerByProviderCustomerId uses the injected client instead of the default", async () => {
       injectedTx.billingCustomer.findUnique.mockResolvedValueOnce({ id: "cust-9", ownerUserId: "owner-9" });
@@ -692,6 +805,7 @@ integrationSuite("billing-repository (real Postgres)", () => {
   afterEach(async () => {
     const { prisma } = await import("@/lib/prisma");
     await prisma.billingWebhookEvent.deleteMany({ where: { id: { in: [...webhookEventIds] } } });
+    await prisma.billingCheckoutLock.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
     await prisma.billingPayment.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
     await prisma.billingSubscription.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
     await prisma.billingCustomer.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
@@ -909,6 +1023,119 @@ integrationSuite("billing-repository (real Postgres)", () => {
       const ownerUserId = await createOwner(owners);
 
       await expect(hasEntitledSubscription(ownerUserId, "stripe")).resolves.toBe(false);
+    });
+  });
+
+  describe("acquireCheckoutLock: real concurrency guarantee", () => {
+    it("two truly concurrent acquires for the same owner+plan: exactly one wins", async () => {
+      const ownerUserId = await createOwner(owners);
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 31 * 60 * 1000);
+
+      const [first, second] = await Promise.all([
+        acquireCheckoutLock({ ownerUserId, provider: "stripe", plan: "pro", now, expiresAt }),
+        acquireCheckoutLock({ ownerUserId, provider: "stripe", plan: "pro", now, expiresAt }),
+      ]);
+
+      const outcomes = [first.acquired, second.acquired].sort();
+      expect(outcomes).toEqual([false, true]);
+
+      const { prisma } = await import("@/lib/prisma");
+      await expect(
+        prisma.billingCheckoutLock.count({ where: { ownerUserId, provider: "stripe" } }),
+      ).resolves.toBe(1);
+    });
+
+    it("two truly concurrent acquires for the same owner but DIFFERENT plans (pro vs salon): still exactly one wins", async () => {
+      const ownerUserId = await createOwner(owners);
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 31 * 60 * 1000);
+
+      const [pro, salon] = await Promise.all([
+        acquireCheckoutLock({ ownerUserId, provider: "stripe", plan: "pro", now, expiresAt }),
+        acquireCheckoutLock({ ownerUserId, provider: "stripe", plan: "salon", now, expiresAt }),
+      ]);
+
+      const outcomes = [pro.acquired, salon.acquired].sort();
+      expect(outcomes).toEqual([false, true]);
+
+      const { prisma } = await import("@/lib/prisma");
+      await expect(
+        prisma.billingCheckoutLock.count({ where: { ownerUserId, provider: "stripe" } }),
+      ).resolves.toBe(1);
+    });
+
+    it("a second acquire for a DIFFERENT owner is completely unaffected", async () => {
+      const ownerA = await createOwner(owners);
+      const ownerB = await createOwner(owners);
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 31 * 60 * 1000);
+
+      const [a, b] = await Promise.all([
+        acquireCheckoutLock({ ownerUserId: ownerA, provider: "stripe", plan: "pro", now, expiresAt }),
+        acquireCheckoutLock({ ownerUserId: ownerB, provider: "stripe", plan: "pro", now, expiresAt }),
+      ]);
+
+      expect(a.acquired).toBe(true);
+      expect(b.acquired).toBe(true);
+    });
+
+    it("after releaseCheckoutLock, a new acquire succeeds immediately -- no need to wait for expiry", async () => {
+      const ownerUserId = await createOwner(owners);
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 31 * 60 * 1000);
+
+      const first = await acquireCheckoutLock({ ownerUserId, provider: "stripe", plan: "pro", now, expiresAt });
+      expect(first.acquired).toBe(true);
+
+      const blocked = await acquireCheckoutLock({ ownerUserId, provider: "stripe", plan: "pro", now, expiresAt });
+      expect(blocked.acquired).toBe(false);
+
+      await releaseCheckoutLock(ownerUserId, "stripe");
+
+      const retried = await acquireCheckoutLock({ ownerUserId, provider: "stripe", plan: "pro", now: new Date(), expiresAt });
+      expect(retried.acquired).toBe(true);
+    });
+
+    it("an expired lock is reclaimed by a new acquire without any explicit release or cleanup job", async () => {
+      const ownerUserId = await createOwner(owners);
+      const past = new Date(Date.now() - 60 * 60 * 1000);
+      const alreadyExpired = new Date(Date.now() - 1000);
+
+      const first = await acquireCheckoutLock({
+        ownerUserId,
+        provider: "stripe",
+        plan: "pro",
+        now: past,
+        expiresAt: alreadyExpired,
+      });
+      expect(first.acquired).toBe(true);
+
+      const reclaimed = await acquireCheckoutLock({
+        ownerUserId,
+        provider: "stripe",
+        plan: "salon",
+        now: new Date(),
+        expiresAt: new Date(Date.now() + 31 * 60 * 1000),
+      });
+      expect(reclaimed.acquired).toBe(true);
+      expect(reclaimed.lock.plan).toBe("salon");
+    });
+
+    it("attachCheckoutLockSession persists the real Stripe session id without disturbing expiresAt", async () => {
+      const ownerUserId = await createOwner(owners);
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 31 * 60 * 1000);
+
+      await acquireCheckoutLock({ ownerUserId, provider: "stripe", plan: "pro", now, expiresAt });
+      await attachCheckoutLockSession(ownerUserId, "stripe", "cs_real_session_123");
+
+      const { prisma } = await import("@/lib/prisma");
+      await expect(
+        prisma.billingCheckoutLock.findUnique({
+          where: { ownerUserId_provider: { ownerUserId, provider: "stripe" } },
+        }),
+      ).resolves.toMatchObject({ providerSessionId: "cs_real_session_123", expiresAt });
     });
   });
 

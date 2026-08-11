@@ -29,6 +29,9 @@ const repositoryMock = vi.hoisted(() => ({
   getBillingCustomerByOwner: vi.fn(),
   findOrCreateBillingCustomer: vi.fn(),
   hasEntitledSubscription: vi.fn(),
+  acquireCheckoutLock: vi.fn(),
+  releaseCheckoutLock: vi.fn(),
+  attachCheckoutLockSession: vi.fn(),
 }));
 vi.mock("@/lib/billing-repository", () => repositoryMock);
 
@@ -60,6 +63,9 @@ beforeEach(() => {
   repositoryMock.getBillingCustomerByOwner.mockReset().mockResolvedValue(null);
   repositoryMock.findOrCreateBillingCustomer.mockReset().mockResolvedValue({ id: "cust-1", providerCustomerId: "cus_created" });
   repositoryMock.hasEntitledSubscription.mockReset().mockResolvedValue(false);
+  repositoryMock.acquireCheckoutLock.mockReset().mockResolvedValue({ acquired: true, lock: { ownerUserId: "owner-1", provider: "stripe" } });
+  repositoryMock.releaseCheckoutLock.mockReset().mockResolvedValue(undefined);
+  repositoryMock.attachCheckoutLockSession.mockReset().mockResolvedValue(undefined);
 });
 
 describe("POST /api/v1/billing/checkout", () => {
@@ -119,6 +125,7 @@ describe("POST /api/v1/billing/checkout", () => {
         ownerUserId: "owner-1",
         successUrl: "https://app.example.com/account?checkout=success",
         cancelUrl: "https://app.example.com/account?checkout=cancel",
+        expiresAt: expect.any(Date),
       });
     },
   );
@@ -353,6 +360,108 @@ describe("POST /api/v1/billing/checkout", () => {
       const body = await response.json();
       expect(body.error).toBe("BILLING_CHECKOUT_PLAN_UNAVAILABLE");
       expect(repositoryMock.hasEntitledSubscription).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("in-flight checkout lock (concurrent first-checkout protection)", () => {
+    it("acquireCheckoutLock reporting not-acquired blocks with 409 BILLING_CHECKOUT_IN_PROGRESS, zero Stripe calls -- this is the route-level contract for two concurrent requests racing past the entitlement check (the actual concurrency guarantee is proven at the repository level against real Postgres)", async () => {
+      repositoryMock.acquireCheckoutLock.mockResolvedValue({ acquired: false, lock: { ownerUserId: "owner-1" } });
+
+      const response = await POST(buildRequest({ plan: "pro" }));
+
+      expect(response.status).toBe(409);
+      const body = await response.json();
+      expect(body).toEqual({ error: "BILLING_CHECKOUT_IN_PROGRESS" });
+      expect(createBillingCheckoutAdapterMock).not.toHaveBeenCalled();
+      expect(adapterMock.createCustomer).not.toHaveBeenCalled();
+      expect(adapterMock.createCheckoutSession).not.toHaveBeenCalled();
+      expect(repositoryMock.getBillingCustomerByOwner).not.toHaveBeenCalled();
+    });
+
+    it("blocks a second checkout for a DIFFERENT plan too -- the lock is keyed on owner+provider, not owner+plan", async () => {
+      repositoryMock.acquireCheckoutLock.mockResolvedValue({ acquired: false, lock: { ownerUserId: "owner-1" } });
+
+      const response = await POST(buildRequest({ plan: "salon" }));
+
+      expect(response.status).toBe(409);
+      expect(adapterMock.createCheckoutSession).not.toHaveBeenCalled();
+    });
+
+    it("on success, attaches the real Stripe session id to the lock and never releases it -- it stays held until it naturally expires", async () => {
+      adapterMock.createCheckoutSession.mockResolvedValue({ id: "cs_real_123", url: "https://checkout.stripe.com/cs_real_123" });
+
+      const response = await POST(buildRequest({ plan: "pro" }));
+
+      expect(response.status).toBe(201);
+      expect(repositoryMock.attachCheckoutLockSession).toHaveBeenCalledWith("owner-1", "stripe", "cs_real_123");
+      expect(repositoryMock.releaseCheckoutLock).not.toHaveBeenCalled();
+    });
+
+    it("(7) releases the lock immediately when customer creation fails, so a retry is not blocked for the TTL", async () => {
+      adapterMock.createCustomer.mockRejectedValue(new Error("stripe down"));
+
+      const response = await POST(buildRequest({ plan: "pro" }));
+
+      expect(response.status).toBe(502);
+      expect(repositoryMock.releaseCheckoutLock).toHaveBeenCalledWith("owner-1", "stripe");
+    });
+
+    it("(7) releases the lock immediately when checkout session creation fails, so a retry is not blocked for the TTL", async () => {
+      adapterMock.createCheckoutSession.mockRejectedValue(new Error("stripe down"));
+
+      const response = await POST(buildRequest({ plan: "pro" }));
+
+      expect(response.status).toBe(502);
+      expect(repositoryMock.releaseCheckoutLock).toHaveBeenCalledWith("owner-1", "stripe");
+      expect(repositoryMock.attachCheckoutLockSession).not.toHaveBeenCalled();
+    });
+
+    it("(D) the entitlement guard still runs first -- an owner who becomes active/trialing is blocked by BILLING_CHECKOUT_ALREADY_ACTIVE and the lock is never even attempted", async () => {
+      repositoryMock.hasEntitledSubscription.mockResolvedValue(true);
+
+      const response = await POST(buildRequest({ plan: "pro" }));
+
+      const body = await response.json();
+      expect(body.error).toBe("BILLING_CHECKOUT_ALREADY_ACTIVE");
+      expect(repositoryMock.acquireCheckoutLock).not.toHaveBeenCalled();
+    });
+
+    it("an invalid/unconfigured plan fails closed before the lock is ever attempted", async () => {
+      configMock.resolveBillingCheckoutConfig.mockReturnValue({
+        status: "enabled",
+        secretKey: "sk_test_x",
+        priceIds: { pro: "price_pro", salon: "price_salon" }, // no business
+        appBaseUrl: "https://app.example.com",
+      });
+
+      await POST(buildRequest({ plan: "business" }));
+
+      expect(repositoryMock.acquireCheckoutLock).not.toHaveBeenCalled();
+    });
+
+    it("(12) unauthenticated requests never attempt to acquire the lock either", async () => {
+      authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+      await POST(buildRequest({ plan: "pro" }));
+
+      expect(repositoryMock.acquireCheckoutLock).not.toHaveBeenCalled();
+    });
+
+    it("the free plan never touches the lock -- it never talks to Stripe at all", async () => {
+      await POST(buildRequest({ plan: "free" }));
+
+      expect(repositoryMock.acquireCheckoutLock).not.toHaveBeenCalled();
+    });
+
+    it("the lock's expiresAt always outlives the Stripe session's own expires_at, so the lock can never be reclaimed while the session might still be paid", async () => {
+      await POST(buildRequest({ plan: "pro" }));
+
+      const lockCall = repositoryMock.acquireCheckoutLock.mock.calls[0][0] as { expiresAt: Date; plan: string };
+      const sessionCall = adapterMock.createCheckoutSession.mock.calls[0][0] as { expiresAt: Date };
+
+      expect(lockCall.plan).toBe("pro");
+      expect(sessionCall.expiresAt).toBeInstanceOf(Date);
+      expect(lockCall.expiresAt.getTime()).toBeGreaterThan(sessionCall.expiresAt.getTime());
     });
   });
 
