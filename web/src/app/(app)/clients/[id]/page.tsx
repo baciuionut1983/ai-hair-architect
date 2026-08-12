@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Camera, CalendarDays, FlaskConical, Sparkles, Users, Wand2 } from "lucide-react";
+import { ArrowLeft, Camera, CalendarDays, ClipboardList, FlaskConical, Sparkles, Users, Wand2 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -10,19 +10,19 @@ import { Alert, Button, Card, EmptyState, ErrorState, LoadingState, Tabs } from 
 import type { TabItem } from "@/components/ui";
 import type {
   AppointmentRecord,
-  ClientPhotoRecord,
   ClientRecord,
   ClientTimelineResponse,
-  FormulaRecord,
-  TreatmentRecord
+  ConsultationRecord
 } from "@/lib/contracts";
 
+import { buildHistoryStateFromTimeline, isClientHistoryEmpty, type ClientHistoryData } from "./client-history-logic";
+import { ConsultationList } from "./consultation-list";
 import { useClientProfile } from "./use-client-profile";
 
 type HistoryState =
   | { status: "loading" }
   | { status: "error" }
-  | { status: "ready"; photos: ClientPhotoRecord[]; formulas: FormulaRecord[]; treatments: TreatmentRecord[] };
+  | ({ status: "ready" } & ClientHistoryData);
 
 type AppointmentsState =
   | { status: "loading" }
@@ -71,12 +71,7 @@ export default function ClientDetailPage() {
         }
 
         const payload = (await response.json()) as ClientTimelineResponse;
-        setHistoryState({
-          status: "ready",
-          photos: payload.photos,
-          formulas: payload.formulas,
-          treatments: payload.treatments
-        });
+        setHistoryState({ status: "ready", ...buildHistoryStateFromTimeline(payload) });
       } catch {
         if (!cancelled) {
           setHistoryState({ status: "error" });
@@ -168,31 +163,48 @@ export default function ClientDetailPage() {
       <Tabs items={TAB_ITEMS} value={activeTab} onChange={setActiveTab} />
 
       {activeTab === "overview" ? <OverviewTab client={client} /> : null}
-      {activeTab === "history" ? <HistoryTab state={historyState} /> : null}
+      {activeTab === "history" ? <HistoryTab state={historyState} clientId={clientId} /> : null}
       {activeTab === "appointments" ? <AppointmentsTab state={appointmentsState} /> : null}
-      {activeTab === "ai-analysis" ? <AiAnalysisTab clientId={clientId} /> : null}
+      {activeTab === "ai-analysis" ? (
+        <AiAnalysisTab
+          clientId={clientId}
+          consultations={historyState.status === "ready" ? historyState.consultations : []}
+        />
+      ) : null}
     </div>
   );
 }
 
-// M31 GO-3: deliberately minimal -- a short explanation and a CTA into the
-// dedicated wizard at /clients/[id]/analysis/new. Not an analysis history
-// list; that's explicitly out of scope for M31.
-function AiAnalysisTab({ clientId }: { clientId: string }) {
+// M31 GO-3 started this as deliberately minimal -- a short explanation and a
+// CTA into the dedicated wizard at /clients/[id]/analysis/new, with no
+// analysis history list. It still isn't a full history of every analysis
+// ever run (that would need a new list-all-analyses backend capability),
+// but it now surfaces the consultations the stylist already chose to save,
+// each linking to its full original result.
+function AiAnalysisTab({ clientId, consultations }: { clientId: string; consultations: ConsultationRecord[] }) {
   return (
-    <Card className="flex flex-col items-start gap-3">
-      <Wand2 className="h-6 w-6 text-accent" aria-hidden="true" />
-      <div>
-        <p className="font-medium text-foreground">Run an AI hair analysis</p>
-        <p className="mt-1 text-sm text-muted">
-          Answer a few questions about this client&apos;s hair and goal to get a structured haircut, color, and/or
-          treatment plan.
-        </p>
-      </div>
-      <Link href={`/clients/${clientId}/analysis/new`}>
-        <Button type="button">Start a new analysis</Button>
-      </Link>
-    </Card>
+    <div className="flex flex-col gap-6">
+      <Card className="flex flex-col items-start gap-3">
+        <Wand2 className="h-6 w-6 text-accent" aria-hidden="true" />
+        <div>
+          <p className="font-medium text-foreground">Run an AI hair analysis</p>
+          <p className="mt-1 text-sm text-muted">
+            Answer a few questions about this client&apos;s hair and goal to get a structured haircut, color, and/or
+            treatment plan.
+          </p>
+        </div>
+        <Link href={`/clients/${clientId}/analysis/new`}>
+          <Button type="button">Start a new analysis</Button>
+        </Link>
+      </Card>
+
+      {consultations.length > 0 ? (
+        <div>
+          <h2 className="mb-2 text-sm font-semibold text-foreground">Saved consultations</h2>
+          <ConsultationList clientId={clientId} consultations={consultations} />
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -228,7 +240,7 @@ function OverviewTab({ client }: { client: ClientRecord }) {
   );
 }
 
-function HistoryTab({ state }: { state: HistoryState }) {
+function HistoryTab({ state, clientId }: { state: HistoryState; clientId: string }) {
   if (state.status === "loading") {
     return <LoadingState label="Loading history..." />;
   }
@@ -237,21 +249,30 @@ function HistoryTab({ state }: { state: HistoryState }) {
     return <Alert variant="error" title="Couldn't load history">Please try refreshing the page.</Alert>;
   }
 
-  const { photos, formulas, treatments } = state;
-  const isEmpty = photos.length === 0 && formulas.length === 0 && treatments.length === 0;
+  const { photos, formulas, treatments, consultations } = state;
+  const isEmpty = isClientHistoryEmpty(photos, formulas, treatments, consultations);
 
   if (isEmpty) {
     return (
       <EmptyState
         icon={Camera}
         title="No history yet"
-        description="Photos, formulas, and treatments logged for this client will appear here."
+        description="Photos, formulas, treatments, and consultations logged for this client will appear here."
       />
     );
   }
 
   return (
     <div className="flex flex-col gap-6">
+      <HistorySection
+        icon={ClipboardList}
+        title="Consultations"
+        isEmpty={consultations.length === 0}
+        emptyLabel="No consultations yet."
+      >
+        <ConsultationList clientId={clientId} consultations={consultations} />
+      </HistorySection>
+
       <HistorySection icon={Camera} title="Photos" isEmpty={photos.length === 0} emptyLabel="No photos yet.">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           {photos.map((photo) => (
