@@ -7,6 +7,7 @@ import { useParams } from "next/navigation";
 import { ColorPlanView, getConfidenceBadgeVariant, TechnicalCutPlanView, TreatmentPlanView } from "@/components/analysis";
 import { Alert, Badge, Card, ErrorState, LoadingState } from "@/components/ui";
 
+import { formatOverallConfidenceLabel } from "./analysis-result-logic";
 import { useAnalysisResult } from "./use-analysis-result";
 
 export default function AnalysisResultPage() {
@@ -58,7 +59,7 @@ export default function AnalysisResultPage() {
       <Card className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={getConfidenceBadgeVariant(result.confidenceScore)}>
-            Confidence: {Math.round(result.confidenceScore * 100)}%
+            {formatOverallConfidenceLabel(result.confidenceScore)}
           </Badge>
         </div>
 

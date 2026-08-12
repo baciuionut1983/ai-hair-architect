@@ -59,7 +59,7 @@ export function ColorPlanView({ plan }: ColorPlanViewProps) {
         <Alert variant="warning">A strand test is required before applying this formula.</Alert>
       ) : null}
 
-      <RecommendationPlanBase plan={plan} />
+      <RecommendationPlanBase plan={plan} planLabel="Color plan" />
     </Card>
   );
 }

@@ -47,7 +47,7 @@ export function TreatmentPlanView({ plan }: TreatmentPlanViewProps) {
         </div>
       ) : null}
 
-      <RecommendationPlanBase plan={plan} />
+      <RecommendationPlanBase plan={plan} planLabel="Treatment plan" />
     </Card>
   );
 }

@@ -44,7 +44,7 @@ export function TechnicalCutPlanView({ plan }: TechnicalCutPlanViewProps) {
         </div>
       ) : null}
 
-      <RecommendationPlanBase plan={plan} />
+      <RecommendationPlanBase plan={plan} planLabel="Haircut plan" />
     </Card>
   );
 }

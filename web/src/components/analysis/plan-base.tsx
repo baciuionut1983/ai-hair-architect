@@ -12,8 +12,22 @@ export function getConfidenceBadgeVariant(confidence: number): BadgeVariant {
   return "danger";
 }
 
+// This plan-level confidence (calculateRecommendationConfidence, penalized
+// per missing optional field/warning/contraindication specific to THIS
+// plan) is a different metric from Analysis.confidenceScore (the coarse,
+// overall-analysis gate shown separately -- see
+// analysis-result-logic.ts's formatOverallConfidenceLabel). The two are
+// intentionally never synchronized; this label exists so the UI never
+// presents them as if they were the same number under the same word.
+export type RecommendationPlanLabel = "Haircut plan" | "Color plan" | "Treatment plan";
+
+export function formatPlanConfidenceLabel(planLabel: RecommendationPlanLabel, confidence: number): string {
+  return `${planLabel} confidence: ${Math.round(confidence * 100)}%`;
+}
+
 export interface RecommendationPlanBaseProps {
   plan: BaseRecommendationPlan;
+  planLabel: RecommendationPlanLabel;
 }
 
 // M31 GO-2: shared rendering for the fields every M27 recommendation plan
@@ -22,12 +36,12 @@ export interface RecommendationPlanBaseProps {
 // treatment-plan-view.tsx) renders only its own extra fields and embeds
 // this component for everything else, so the common-field markup exists
 // exactly once.
-export function RecommendationPlanBase({ plan }: RecommendationPlanBaseProps) {
+export function RecommendationPlanBase({ plan, planLabel }: RecommendationPlanBaseProps) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
         <Badge variant={getConfidenceBadgeVariant(plan.confidence)}>
-          Confidence: {Math.round(plan.confidence * 100)}%
+          {formatPlanConfidenceLabel(planLabel, plan.confidence)}
         </Badge>
         <span className="text-xs text-muted">v{plan.version}</span>
       </div>
