@@ -93,6 +93,24 @@ describe("sendConsultationMessage", () => {
     expect(messageRepoMock.recordConsultationMessage).not.toHaveBeenCalled();
   });
 
+  // Regression: a failed history read used to escape the two explicit
+  // PERSISTENCE_FAILURE try/catch blocks entirely and fall through to the
+  // outer catch-all, misclassifying a database problem as
+  // INTERNAL_PROCESSING_FAILURE (a generic, less actionable code) instead of
+  // the same PERSISTENCE_FAILURE every other database call in this function
+  // already reports. Found while investigating a production report of chat
+  // being unavailable -- not confirmed as that report's root cause, but a
+  // real, independent correctness gap in this function regardless.
+  it("classifies a failed history read as PERSISTENCE_FAILURE, not the generic INTERNAL_PROCESSING_FAILURE -- and never proceeds to persist or call the provider", async () => {
+    messageRepoMock.listRecentConsultationMessages.mockRejectedValue(new Error("db down"));
+    const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+    expect(result).toEqual({ outcome: "failed", code: "PERSISTENCE_FAILURE" });
+    expect(messageRepoMock.recordConsultationMessage).not.toHaveBeenCalled();
+  });
+
   it("persists the stylist's message even before calling the provider (never lost on a later failure)", async () => {
     const rejecting = stubProvider(async () => {
       throw Object.assign(new Error("boom"), { code: "PROVIDER_ERROR", retryable: true });

@@ -60,6 +60,8 @@ export async function sendConsultationMessage(
   analysisId: string | undefined,
   dependencies: SendConsultationMessageDependencies = {},
 ): Promise<SendConsultationMessageResult> {
+  const startedAt = (dependencies.now ?? (() => new Date()))().getTime();
+
   try {
     const env = dependencies.env ?? process.env;
     const config = resolveImageAnalysisProviderConfig(env);
@@ -78,7 +80,20 @@ export async function sendConsultationMessage(
       }
     }
 
-    const priorMessages = await listRecentConsultationMessages(ownerUserId, client.id, 10);
+    let priorMessages;
+    try {
+      priorMessages = await listRecentConsultationMessages(ownerUserId, client.id, 10);
+    } catch {
+      logConsultationChatFailure({
+        stage: "history_read",
+        resultCode: "PERSISTENCE_FAILURE",
+        ownerUserId,
+        clientId: client.id,
+        analysisId,
+        durationMs: Date.now() - startedAt,
+      });
+      return failure("PERSISTENCE_FAILURE");
+    }
 
     let stored;
     try {
@@ -90,6 +105,14 @@ export async function sendConsultationMessage(
         content: message,
       });
     } catch {
+      logConsultationChatFailure({
+        stage: "stylist_message_write",
+        resultCode: "PERSISTENCE_FAILURE",
+        ownerUserId,
+        clientId: client.id,
+        analysisId,
+        durationMs: Date.now() - startedAt,
+      });
       return failure("PERSISTENCE_FAILURE");
     }
 
@@ -102,7 +125,21 @@ export async function sendConsultationMessage(
     try {
       result = await provider.respond(message, context, controller.signal);
     } catch (error) {
-      return failure(classifyProviderFailure(error));
+      const resultCode = classifyProviderFailure(error);
+      const providerError = error as Partial<ChatProviderError> | undefined;
+      logConsultationChatFailure({
+        stage: "provider_call",
+        resultCode,
+        ownerUserId,
+        clientId: client.id,
+        analysisId,
+        durationMs: Date.now() - startedAt,
+        providerName: provider.name,
+        providerModelVersion: provider.modelVersion,
+        providerErrorCode: providerError?.code,
+        providerErrorStatus: providerError?.status,
+      });
+      return failure(resultCode);
     }
 
     let replyRow;
@@ -116,13 +153,30 @@ export async function sendConsultationMessage(
         proposedCorrection: result.proposedCorrection ?? undefined,
       });
     } catch {
+      logConsultationChatFailure({
+        stage: "reply_write",
+        resultCode: "PERSISTENCE_FAILURE",
+        ownerUserId,
+        clientId: client.id,
+        analysisId,
+        durationMs: Date.now() - startedAt,
+      });
       return failure("PERSISTENCE_FAILURE");
     }
 
     void stored; // the stylist's own message is already durably persisted above
 
     return { outcome: "succeeded", reply: replyRow, needsClarification: result.needsClarification };
-  } catch {
+  } catch (error) {
+    logConsultationChatFailure({
+      stage: "unexpected",
+      resultCode: "INTERNAL_PROCESSING_FAILURE",
+      ownerUserId,
+      clientId: client.id,
+      analysisId,
+      durationMs: Date.now() - startedAt,
+      errorName: error instanceof Error ? error.name : "unknown",
+    });
     return failure("INTERNAL_PROCESSING_FAILURE");
   }
 }
@@ -199,4 +253,55 @@ function classifyProviderFailure(error: unknown): ConsultationChatResultCode {
 
 function failure(code: ConsultationChatResultCode): SendConsultationMessageResult {
   return { outcome: "failed", code };
+}
+
+// Structured, safe-fields-only diagnostic log -- same JSON-record convention
+// as image-analysis-processing-service.ts's logProviderFailure (never the
+// message content, never the API key, never the provider's raw error text;
+// only classification codes, the real HTTP status when known, and coarse
+// timing). `stage` pinpoints exactly which step of the pipeline failed
+// (config resolution never logs here -- it returns before this point --
+// history read / stylist message write / the provider call itself / reply
+// write / an unexpected exception), which is precisely what is needed to
+// tell a genuine Gemini-side failure apart from a database or
+// application-level one from Railway logs alone.
+function logConsultationChatFailure(input: {
+  stage: "history_read" | "stylist_message_write" | "provider_call" | "reply_write" | "unexpected";
+  resultCode: ConsultationChatResultCode;
+  ownerUserId: string;
+  clientId: string;
+  analysisId?: string;
+  durationMs: number;
+  providerName?: string;
+  providerModelVersion?: string;
+  providerErrorCode?: string;
+  providerErrorStatus?: number;
+  errorName?: string;
+}): void {
+  console.error(
+    JSON.stringify({
+      gate: "CONSULTATION_CHAT",
+      status: "FAILED",
+      stage: input.stage,
+      resultCode: input.resultCode,
+      ownerUserId: input.ownerUserId,
+      clientId: input.clientId,
+      analysisId: input.analysisId ?? null,
+      durationBucket: bucketDurationMs(input.durationMs),
+      providerName: input.providerName ?? null,
+      providerModelVersion: input.providerModelVersion ?? null,
+      providerErrorCode: input.providerErrorCode ?? null,
+      providerErrorStatus: input.providerErrorStatus ?? null,
+      errorName: input.errorName ?? null,
+    }),
+  );
+}
+
+function bucketDurationMs(ms: number): string {
+  if (ms < 1000) return "<1s";
+  if (ms < 5000) return "1-5s";
+  if (ms < 15000) return "5-15s";
+  if (ms < 30000) return "15-30s";
+  if (ms < 60000) return "30-60s";
+  return ">=60s";
 }

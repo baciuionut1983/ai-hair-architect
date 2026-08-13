@@ -4,6 +4,7 @@ import {
   GEMINI_CHAT_DEFAULT_TIMEOUT_MS,
   GEMINI_CHAT_PROVIDER_NAME,
   GeminiConsultationChatProvider,
+  RESPONSE_SCHEMA,
   type GeminiChatGenerateClient,
   type GeminiChatGenerateInput,
 } from "./consultation-chat-provider-gemini";
@@ -52,6 +53,20 @@ function httpError(status: number, message: string): Error {
 
 function isChatProviderError(error: unknown): error is ChatProviderError {
   return error instanceof Error && typeof (error as { code?: unknown }).code === "string";
+}
+
+function hasNullable(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(hasNullable);
+  }
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.nullable === true) {
+    return true;
+  }
+  return Object.values(record).some(hasNullable);
 }
 
 describe("GeminiConsultationChatProvider", () => {
@@ -203,6 +218,38 @@ describe("GeminiConsultationChatProvider", () => {
   it("classifies a 5xx as a provider-unavailable PROVIDER_ERROR, retryable", async () => {
     const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, rejectingClient(httpError(503, "service unavailable")));
     await expect(provider.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({ code: "PROVIDER_ERROR", retryable: true });
+  });
+
+  // Regression: a production report ("The AI consultation assistant is not
+  // available right now.") could not be root-caused without the real HTTP
+  // status Gemini returned surviving into the classified error -- previously
+  // it was discarded after classification, so Railway logs could only ever
+  // show a coarse code, never distinguishing e.g. a 400 schema rejection
+  // from a genuine 500. These lock in that the real status is preserved.
+  it("carries the real HTTP status through onto the classified error, for diagnostics", async () => {
+    const provider401 = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, rejectingClient(httpError(401, "unauthorized")));
+    await expect(provider401.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({ status: 401 });
+
+    const provider429 = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, rejectingClient(httpError(429, "too many requests")));
+    await expect(provider429.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({ status: 429 });
+
+    const provider503 = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, rejectingClient(httpError(503, "service unavailable")));
+    await expect(provider503.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({ status: 503 });
+
+    const provider400 = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, rejectingClient(httpError(400, "invalid schema")));
+    await expect(provider400.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({ status: 400 });
+  });
+
+  // Regression: the schema previously marked proposedCorrection as
+  // `nullable: true` on an OBJECT-typed property -- a construct with
+  // unreliable support in Gemini's structured-output (responseSchema) across
+  // API/SDK versions, capable of failing the whole request with no
+  // application-visible signal beyond "provider unavailable". It is already
+  // optional by omission from the outer `required` list, so `nullable` adds
+  // no validation power and is never reintroduced.
+  it("never marks any schema property as nullable -- optionality comes only from omission in `required`", () => {
+    expect(hasNullable(RESPONSE_SCHEMA)).toBe(false);
+    expect(RESPONSE_SCHEMA.required).toEqual(["reply", "needsClarification"]);
   });
 
   it("never includes the api key in any thrown error message", async () => {

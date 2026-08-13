@@ -17,14 +17,23 @@ const CORRECTION_SOURCES = ["stylist_confirmed", "client_reported"] as const;
 // importing it directly rather than re-listing the fields -- if that list
 // ever changes, this schema (and therefore what the model is even allowed
 // to propose) changes with it automatically, so the two can never drift.
-const RESPONSE_SCHEMA: Schema = {
+//
+// proposedCorrection deliberately has NO `nullable: true` -- omitting it
+// from the outer `required` list already makes it optional under JSON
+// Schema semantics, and Gemini's structured-output (responseSchema) support
+// for `nullable` on an OBJECT-typed property (as opposed to a scalar) has
+// been an unreliable, API/SDK-version-dependent construct in practice,
+// capable of producing a request-level failure with zero application-level
+// signal beyond "the provider is unavailable." Omission is strictly safer
+// here and loses no validation power, since parseProposedCorrection already
+// treats a missing/null value as "no correction" explicitly.
+export const RESPONSE_SCHEMA: Schema = {
   type: Type.OBJECT,
   properties: {
     reply: { type: Type.STRING },
     needsClarification: { type: Type.BOOLEAN },
     proposedCorrection: {
       type: Type.OBJECT,
-      nullable: true,
       properties: {
         field: { type: Type.STRING, enum: [...CORRECTABLE_ANALYSIS_FIELDS] },
         value: { type: Type.STRING },
@@ -195,15 +204,15 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
 
     const status = extractHttpStatus(error);
     if (status === 401 || status === 403) {
-      return this.createProviderError("NOT_CONFIGURED", "Gemini authentication failed.", false);
+      return this.createProviderError("NOT_CONFIGURED", "Gemini authentication failed.", false, status);
     }
     if (status === 429) {
-      return this.createProviderError("RATE_LIMITED", "Gemini rate limit exceeded.", true);
+      return this.createProviderError("RATE_LIMITED", "Gemini rate limit exceeded.", true, status);
     }
     if (typeof status === "number" && status >= 500) {
-      return this.createProviderError("PROVIDER_ERROR", "Gemini service unavailable.", true);
+      return this.createProviderError("PROVIDER_ERROR", "Gemini service unavailable.", true, status);
     }
-    return this.createProviderError("PROVIDER_ERROR", "Gemini request failed.", false);
+    return this.createProviderError("PROVIDER_ERROR", "Gemini request failed.", false, status);
   }
 }
 

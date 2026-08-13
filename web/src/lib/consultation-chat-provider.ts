@@ -46,6 +46,14 @@ export interface ConsultationChatResult {
 export interface ChatProviderError extends Error {
   code: "TIMEOUT" | "INVALID_FORMAT" | "RATE_LIMITED" | "PROVIDER_ERROR" | "NOT_CONFIGURED";
   retryable: boolean;
+  // The real HTTP status the provider's API returned, when known (e.g. 400,
+  // 429, 500) -- distinct from `code`, which is this app's own coarse
+  // classification. Carried through purely for diagnostics (structured
+  // failure logs in consultation-chat-service.ts): a status code is safe,
+  // non-sensitive metadata, unlike the provider's raw error text, which this
+  // codebase deliberately never logs (see image-analysis-processing-service.ts's
+  // logProviderFailure).
+  status?: number;
 }
 
 /**
@@ -65,11 +73,13 @@ export abstract class ConsultationChatProvider {
   protected createProviderError(
     code: ChatProviderError["code"],
     message: string,
-    retryable: boolean = false
+    retryable: boolean = false,
+    status?: number
   ): ChatProviderError {
     const err = new Error(message) as ChatProviderError;
     err.code = code;
     err.retryable = retryable;
+    if (status !== undefined) err.status = status;
     return err;
   }
 }
