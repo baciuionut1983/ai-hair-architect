@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { Badge, Card } from "@/components/ui";
 import type { AuthSessionResponse } from "@/lib/contracts";
 
-interface DashboardLink {
+export interface DashboardLink {
   label: string;
   description: string;
   href: string;
@@ -15,7 +15,7 @@ interface DashboardLink {
   status: "available" | "coming-soon";
 }
 
-const DASHBOARD_LINKS: DashboardLink[] = [
+export const DASHBOARD_LINKS: DashboardLink[] = [
   {
     label: "Clients",
     description: "Manage client profiles and history.",
@@ -49,7 +49,7 @@ const DASHBOARD_LINKS: DashboardLink[] = [
     description: "View your plan and billing details.",
     href: "/account",
     icon: CircleUserRound,
-    status: "coming-soon"
+    status: "available"
   }
 ];
 
