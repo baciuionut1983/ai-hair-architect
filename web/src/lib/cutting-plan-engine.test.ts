@@ -51,4 +51,53 @@ describe("cutting-plan-engine", () => {
     expect(plan.confidence).toBeLessThanOrEqual(0.96);
     expect(plan.version).toBe("1.0.0-m8");
   });
+
+  // Regression coverage for the production complaint: real, provider-supplied
+  // visual attributes must actually reach the plan and stop being reported
+  // as missing/assumed -- this is the engine-side half of that fix (the
+  // Gemini-side half is in image-analysis-provider-gemini.test.ts).
+  it("does not flag faceShape/headShape/hairLength/growthPattern as missing, and does not fall back to their neutral assumptions, once real values are supplied", () => {
+    const plan = generateTechnicalCutPlan({
+      goal: "reshape",
+      hairType: "medium",
+      density: "medium",
+      porosity: "medium",
+      faceShape: "heart",
+      headShape: "flat_occipital",
+      hairLength: "long",
+      growthPattern: "front_cowlick"
+    });
+
+    expect(plan.missingData).not.toContain("faceShape");
+    expect(plan.missingData).not.toContain("headShape");
+    expect(plan.missingData).not.toContain("hairLength");
+    expect(plan.missingData).not.toContain("growthPattern");
+    expect(plan.assumptions.some((assumption) => assumption.includes("neutral face balance"))).toBe(false);
+    expect(plan.assumptions.some((assumption) => assumption.includes("balanced occipital"))).toBe(false);
+    expect(plan.assumptions.some((assumption) => assumption.includes("regular growth pattern"))).toBe(false);
+  });
+
+  it("flags faceShape/headShape/hairLength/growthPattern as missing and falls back to professional assumptions -- but targetShape is always missing too, never invented, when nothing supplied it", () => {
+    const plan = generateTechnicalCutPlan({
+      goal: "reshape",
+      hairType: "medium",
+      density: "medium",
+      porosity: "medium"
+    });
+
+    expect(plan.missingData).toEqual(
+      expect.arrayContaining([
+        "faceShape",
+        "headShape",
+        "hairLength",
+        "hairTexture",
+        "hairCondition",
+        "growthPattern",
+        "targetShape"
+      ])
+    );
+    expect(plan.assumptions.some((assumption) => assumption.includes("neutral face balance"))).toBe(true);
+    expect(plan.assumptions.some((assumption) => assumption.includes("balanced occipital"))).toBe(true);
+    expect(plan.assumptions.some((assumption) => assumption.includes("regular growth pattern"))).toBe(true);
+  });
 });

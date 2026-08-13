@@ -22,9 +22,14 @@ export async function POST(
   }
 
   const body = (await request.json()) as Partial<AnalysisClarifyRequest>;
-  const answers = Array.isArray(body.answers) ? body.answers.map((entry) => sanitize(entry)).filter(Boolean) : [];
+  // Position-preserving: analyzeWithClarifications matches answers[i]
+  // against the question it was actually shown at index i (the only way to
+  // know which specific clarification answer is which) -- filtering blanks
+  // here would silently shift every later answer's index and misattribute
+  // it to the wrong question.
+  const answers = Array.isArray(body.answers) ? body.answers.map((entry) => sanitize(entry)) : [];
 
-  if (answers.length === 0) {
+  if (!answers.some((answer) => answer.length > 0)) {
     return NextResponse.json({ error: "answers[] is required." }, { status: 400 });
   }
 

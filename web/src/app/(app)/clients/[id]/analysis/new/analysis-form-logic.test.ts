@@ -5,7 +5,8 @@ import {
   canStartAnalysis,
   collectClarificationAnswers,
   DEFAULT_ANALYSIS_FORM,
-  getRelevantFieldGroup
+  getRelevantFieldGroup,
+  hasAnyClarificationAnswer
 } from "./analysis-form-logic";
 
 describe("getRelevantFieldGroup", () => {
@@ -136,15 +137,32 @@ describe("buildAnalysisRequest", () => {
 });
 
 describe("collectClarificationAnswers", () => {
-  it("trims and drops empty answers", () => {
-    expect(collectClarificationAnswers(["  yes  ", "", "   ", "no bleach"])).toEqual(["yes", "no bleach"]);
+  // Position-preserving: the backend (analyzeWithClarifications) matches
+  // answers[i] against the question shown at index i. Dropping a blank
+  // entry here would shift every later answer onto the wrong question.
+  it("trims each answer but keeps blanks at their original index", () => {
+    expect(collectClarificationAnswers(["  yes  ", "", "   ", "no bleach"])).toEqual(["yes", "", "", "no bleach"]);
   });
 
-  it("returns an empty array when every answer is empty", () => {
-    expect(collectClarificationAnswers(["", "  "])).toEqual([]);
+  it("returns an array of empty strings (not []) when every answer is blank", () => {
+    expect(collectClarificationAnswers(["", "  "])).toEqual(["", ""]);
   });
 
   it("returns an empty array for an empty input array", () => {
     expect(collectClarificationAnswers([])).toEqual([]);
+  });
+});
+
+describe("hasAnyClarificationAnswer", () => {
+  it("is true when at least one answer is non-empty", () => {
+    expect(hasAnyClarificationAnswer(["", "no bleach", ""])).toBe(true);
+  });
+
+  it("is false when every answer is empty", () => {
+    expect(hasAnyClarificationAnswer(["", ""])).toBe(false);
+  });
+
+  it("is false for an empty array", () => {
+    expect(hasAnyClarificationAnswer([])).toBe(false);
   });
 });

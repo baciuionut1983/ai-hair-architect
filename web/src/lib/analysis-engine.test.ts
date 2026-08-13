@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { analyzeInitial, analyzeWithClarifications } from "./analysis-engine";
+import { analyzeInitial, analyzeWithClarifications, deriveHairConditionFromClarifications } from "./analysis-engine";
+import type { AnalysisCreateRecordInput } from "./milestone2-types";
+
+function stateFrom(seed: AnalysisCreateRecordInput) {
+  return {
+    id: "a1",
+    clientId: "c1",
+    createdByUserId: "u1",
+    clarificationAnswers: [] as string[],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...seed
+  };
+}
 
 describe("analysis-engine", () => {
   it("returns pending questions for risky inputs", () => {
@@ -156,6 +169,98 @@ describe("analysis-engine", () => {
     expect(result.colorPlan).toBeDefined();
     expect(result.colorPlan?.warnings.some((w) => w.toLowerCase().includes("treatment"))).toBe(true);
     expect(result.treatmentPlan).toBeUndefined();
+  });
+
+  // Regression coverage for the production bug where Submit clarifications
+  // only nudged confidenceScore/phase and left the plan, warnings, and
+  // missingData completely frozen from before the clarification existed.
+  describe("clarifications drive real plan recomputation, not just confidence/status", () => {
+    it("a relevant clarification answer changes the color plan's professional output (developer volume, contraindications) -- proves real recomputation, not a hardcoded result", () => {
+      const seed = analyzeInitial({
+        goal: "lighten",
+        hairType: "medium",
+        density: "medium",
+        porosity: "medium",
+        desiredColorResult: "full_lightening"
+      });
+      // These are the exact, only two questions analyzeInitial ever asks --
+      // asserted here so this test fails loudly if that text ever drifts
+      // out of sync with deriveHairConditionFromClarifications's matching.
+      expect(seed.followUpQuestions).toEqual([
+        "Did the client bleach in the last 90 days?",
+        "Is there visible breakage or strong elasticity loss?"
+      ]);
+
+      const healthy = analyzeWithClarifications(stateFrom(seed), { answers: ["no", "no"] });
+      const bleached = analyzeWithClarifications(stateFrom(seed), { answers: ["yes", "no"] });
+      const breakage = analyzeWithClarifications(stateFrom(seed), { answers: ["no", "yes"] });
+
+      expect(healthy.hairCondition).toBe("virgin_healthy");
+      expect(bleached.hairCondition).toBe("chemically_treated");
+      expect(breakage.hairCondition).toBe("fragile_breakage");
+
+      // Same desiredColorResult, three different clarification outcomes ->
+      // three professionally distinct developer strengths (color-plan-engine.ts's
+      // mandatory safety clamp), not three copies of the same frozen plan.
+      expect(healthy.colorPlan?.developerVolume).toBe("40vol");
+      expect(bleached.colorPlan?.developerVolume).toBe("30vol");
+      expect(breakage.colorPlan?.developerVolume).toBe("20vol");
+
+      expect(breakage.colorPlan?.contraindications).toContain(
+        "Do not perform double-process lightening on compromised hair in this session."
+      );
+      expect(healthy.colorPlan?.contraindications ?? []).not.toContain(
+        "Do not perform double-process lightening on compromised hair in this session."
+      );
+
+      // Closes the exact production complaint: hairCondition no longer sits
+      // in missingData once a clarification answer actually resolved it.
+      expect(healthy.colorPlan?.missingData).not.toContain("hairCondition");
+      expect(bleached.colorPlan?.missingData).not.toContain("hairCondition");
+      expect(breakage.colorPlan?.missingData).not.toContain("hairCondition");
+    });
+
+    it("clarification answers are persisted (non-empty only) and actually consumed by the next round, across multiple rounds", () => {
+      const seed = analyzeInitial({ goal: "lighten", hairType: "fine", density: "medium", porosity: "high" });
+
+      const round1 = analyzeWithClarifications(stateFrom(seed), { answers: ["no", ""] });
+      expect(round1.clarificationAnswers).toEqual(["no"]);
+
+      const round2 = analyzeWithClarifications({ ...stateFrom(seed), ...round1 }, { answers: ["fine"] });
+      expect(round2.clarificationAnswers).toEqual(["no", "fine"]);
+      expect(round2.clarificationRound).toBe(2);
+    });
+
+    it("does not invent a hairCondition from an ambiguous or unanswered clarification -- stays undefined, never guessed", () => {
+      const questions = [
+        "Did the client bleach in the last 90 days?",
+        "Is there visible breakage or strong elasticity loss?"
+      ];
+      expect(deriveHairConditionFromClarifications(questions, ["maybe", "not sure"], undefined)).toBeUndefined();
+      expect(deriveHairConditionFromClarifications(questions, [], undefined)).toBeUndefined();
+    });
+
+    it("never overwrites a hairCondition already known from the photo/manual form with a clarification-derived guess", () => {
+      const questions = [
+        "Did the client bleach in the last 90 days?",
+        "Is there visible breakage or strong elasticity loss?"
+      ];
+      expect(deriveHairConditionFromClarifications(questions, ["yes", "yes"], "virgin_healthy")).toBe("virgin_healthy");
+    });
+
+    it("targetShape is never inferred from clarifications either -- it stays whatever the client/stylist explicitly declared (or undefined)", () => {
+      const seed = analyzeInitial({
+        goal: "reshape",
+        hairType: "medium",
+        density: "medium",
+        porosity: "medium",
+        faceShape: "round"
+      });
+
+      const updated = analyzeWithClarifications(stateFrom(seed), { answers: ["no", "no"] });
+
+      expect(updated.targetShape).toBeUndefined();
+    });
   });
 
   it("falls back to the generic recommendations when no domain engine fires", () => {

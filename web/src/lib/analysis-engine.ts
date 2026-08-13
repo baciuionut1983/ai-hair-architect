@@ -1,3 +1,4 @@
+import type { ColorPlan, HairCondition, TechnicalCutPlan, TreatmentPlan } from "./contracts";
 import type {
   AnalysisClarifyRequest,
   AnalysisCreateRecordInput,
@@ -15,36 +16,20 @@ function isLikelyLowConfidence(input: AnalysisEngineInput): boolean {
   return input.goal === "lighten" || input.porosity === "high" || input.hairType === "fine";
 }
 
-export function analyzeInitial(input: AnalysisEngineInput): AnalysisCreateRecordInput {
-  const lowConfidence = isLikelyLowConfidence(input);
-  const confidenceScore = lowConfidence ? 0.62 : 0.87;
-  const technicalCutPlan = shouldGenerateTechnicalCutPlan(input)
-    ? generateTechnicalCutPlan(input)
-    : undefined;
-  const colorPlan = shouldGenerateColorPlan(input) ? generateColorPlan(input) : undefined;
-  const treatmentPlan = shouldGenerateTreatmentPlan(input) ? generateTreatmentPlan(input) : undefined;
-  const uncertaintyReasons = lowConfidence
-    ? [
-        "High-risk combination detected for target service.",
-        "Chemical history and elasticity details are incomplete."
-      ]
-    : [];
-  const followUpQuestions = lowConfidence
-    ? [
-        "Did the client bleach in the last 90 days?",
-        "Is there visible breakage or strong elasticity loss?"
-      ]
-    : [];
-
-  // M27: each domain engine that fires contributes its own summary lines to
-  // the flat recommendations/safetyNotes arrays (backward-compatible with
-  // every existing consumer), in addition to exposing its own full
-  // structured plan below. Haircut is checked first so recommendations[0]
-  // stays the haircut summary whenever technicalCutPlan fires, unchanged
-  // from pre-M27 behavior. The three engines are independently triggered --
-  // a Color plan's warnings may suggest a Treatment plan first, but nothing
-  // here ever auto-generates a plan the caller's input didn't itself
-  // request.
+// M27: each domain engine that fires contributes its own summary lines to
+// the flat recommendations/safetyNotes arrays (backward-compatible with
+// every existing consumer), in addition to exposing its own full
+// structured plan. Haircut is checked first so recommendations[0] stays the
+// haircut summary whenever technicalCutPlan fires, unchanged from pre-M27
+// behavior. Shared by analyzeInitial and analyzeWithClarifications so a
+// clarification-triggered recomputation produces recommendations/
+// safetyNotes through the exact same logic as the first computation --
+// never a second, drifting copy.
+function buildRecommendationsAndSafetyNotes(
+  technicalCutPlan: TechnicalCutPlan | undefined,
+  colorPlan: ColorPlan | undefined,
+  treatmentPlan: TreatmentPlan | undefined
+): { recommendations: string[]; safetyNotes: string[] } {
   const recommendations: string[] = [];
   const safetyNotes: string[] = [];
 
@@ -83,6 +68,32 @@ export function analyzeInitial(input: AnalysisEngineInput): AnalysisCreateRecord
     safetyNotes.push("Perform strand test before high-lift or correction services.");
   }
 
+  return { recommendations, safetyNotes };
+}
+
+export function analyzeInitial(input: AnalysisEngineInput): AnalysisCreateRecordInput {
+  const lowConfidence = isLikelyLowConfidence(input);
+  const confidenceScore = lowConfidence ? 0.62 : 0.87;
+  const technicalCutPlan = shouldGenerateTechnicalCutPlan(input)
+    ? generateTechnicalCutPlan(input)
+    : undefined;
+  const colorPlan = shouldGenerateColorPlan(input) ? generateColorPlan(input) : undefined;
+  const treatmentPlan = shouldGenerateTreatmentPlan(input) ? generateTreatmentPlan(input) : undefined;
+  const uncertaintyReasons = lowConfidence
+    ? [
+        "High-risk combination detected for target service.",
+        "Chemical history and elasticity details are incomplete."
+      ]
+    : [];
+  const followUpQuestions = lowConfidence
+    ? [
+        "Did the client bleach in the last 90 days?",
+        "Is there visible breakage or strong elasticity loss?"
+      ]
+    : [];
+
+  const { recommendations, safetyNotes } = buildRecommendationsAndSafetyNotes(technicalCutPlan, colorPlan, treatmentPlan);
+
   return {
     ...input,
     phase: confidenceScore >= ANALYSIS_READY_THRESHOLD ? "ready" : "pending_questions",
@@ -98,11 +109,67 @@ export function analyzeInitial(input: AnalysisEngineInput): AnalysisCreateRecord
   };
 }
 
+// This codebase's two fixed low-confidence clarification questions are
+// professionally designed to elicit exactly the two criteria the
+// HairCondition enum is built from: recent chemical processing, and visible
+// breakage/elasticity loss. Matched by exact question text against
+// followUpQuestions -- the only two questions analyzeInitial ever asks --
+// so this generalizes to every low-confidence analysis, not one photo.
+// Never invents "yes"/"no" from an ambiguous answer, and never overwrites a
+// hairCondition already known from the photo/manual form with a weaker
+// inference from a clarification answer.
+const BLEACH_QUESTION = "Did the client bleach in the last 90 days?";
+const BREAKAGE_QUESTION = "Is there visible breakage or strong elasticity loss?";
+
+function parseYesNo(answer: string | undefined): boolean | null {
+  if (!answer) return null;
+  const lowered = answer.trim().toLowerCase();
+  if (/\byes\b/.test(lowered)) return true;
+  if (/\bno\b/.test(lowered)) return false;
+  return null;
+}
+
+export function deriveHairConditionFromClarifications(
+  questionsAsked: string[],
+  answersGiven: string[],
+  existing: HairCondition | undefined
+): HairCondition | undefined {
+  if (existing) return existing;
+
+  const answerTo = (question: string): boolean | null => {
+    const index = questionsAsked.indexOf(question);
+    if (index === -1) return null;
+    return parseYesNo(answersGiven[index]);
+  };
+
+  const breakage = answerTo(BREAKAGE_QUESTION);
+  if (breakage === true) return "fragile_breakage";
+
+  const bleached = answerTo(BLEACH_QUESTION);
+  if (bleached === true) return "chemically_treated";
+
+  if (bleached === false && breakage === false) return "virgin_healthy";
+
+  return existing;
+}
+
 export function analyzeWithClarifications(
   current: AnalysisState,
   request: AnalysisClarifyRequest
 ): Omit<AnalysisState, "id" | "clientId" | "createdByUserId" | "createdAt" | "updatedAt"> {
-  const mergedAnswers = [...current.clarificationAnswers, ...request.answers].slice(0, 10);
+  // request.answers is position-aligned with current.followUpQuestions (the
+  // questions the caller was actually shown this round) -- required to know
+  // which specific answer belongs to which question. clarificationAnswers
+  // (the persisted audit log) keeps its pre-existing semantics: only
+  // non-empty answers, never blanks.
+  const derivedHairCondition = deriveHairConditionFromClarifications(
+    current.followUpQuestions,
+    request.answers,
+    current.hairCondition
+  );
+
+  const nonEmptyAnswers = request.answers.map((answer) => answer.trim()).filter(Boolean);
+  const mergedAnswers = [...current.clarificationAnswers, ...nonEmptyAnswers].slice(0, 10);
   const positiveAnswers = mergedAnswers.filter((answer) => {
     const lowered = answer.toLowerCase();
     return lowered.includes("no") || lowered.includes("healthy") || lowered.includes("safe");
@@ -127,7 +194,12 @@ export function analyzeWithClarifications(
       ? []
       : ["Additional consultation details are still required for safer execution."];
 
-  return {
+  // The updated (possibly clarification-derived) input is what actually
+  // gets re-planned -- this is the fix: a relevant clarification answer now
+  // reaches the same deterministic engines analyzeInitial uses, instead of
+  // only ever nudging confidence while leaving the original plan/warnings/
+  // missingData/assumptions frozen from before the clarification existed.
+  const updatedInput: AnalysisEngineInput = {
     goal: current.goal,
     hairType: current.hairType,
     density: current.density,
@@ -136,22 +208,34 @@ export function analyzeWithClarifications(
     headShape: current.headShape,
     hairLength: current.hairLength,
     hairTexture: current.hairTexture,
-    hairCondition: current.hairCondition,
+    hairCondition: derivedHairCondition,
     growthPattern: current.growthPattern,
     targetShape: current.targetShape,
     desiredColorResult: current.desiredColorResult,
     grayPercentage: current.grayPercentage,
     scalpCondition: current.scalpCondition,
-    treatmentGoalDetail: current.treatmentGoalDetail,
+    treatmentGoalDetail: current.treatmentGoalDetail
+  };
+
+  const technicalCutPlan = shouldGenerateTechnicalCutPlan(updatedInput)
+    ? generateTechnicalCutPlan(updatedInput)
+    : undefined;
+  const colorPlan = shouldGenerateColorPlan(updatedInput) ? generateColorPlan(updatedInput) : undefined;
+  const treatmentPlan = shouldGenerateTreatmentPlan(updatedInput) ? generateTreatmentPlan(updatedInput) : undefined;
+
+  const { recommendations, safetyNotes } = buildRecommendationsAndSafetyNotes(technicalCutPlan, colorPlan, treatmentPlan);
+
+  return {
+    ...updatedInput,
     phase,
     confidenceScore,
     uncertaintyReasons,
     followUpQuestions: stillPendingQuestions,
-    recommendations: current.recommendations,
-    safetyNotes: current.safetyNotes,
-    technicalCutPlan: current.technicalCutPlan,
-    colorPlan: current.colorPlan,
-    treatmentPlan: current.treatmentPlan,
+    recommendations,
+    safetyNotes,
+    technicalCutPlan,
+    colorPlan,
+    treatmentPlan,
     clarificationAnswers: mergedAnswers,
     clarificationRound: nextRound
   };

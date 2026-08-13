@@ -9,12 +9,32 @@ import {
 } from "./image-analysis-provider-gemini";
 import type { ProviderError } from "./image-analysis-provider";
 
-const VALID_RESPONSE = JSON.stringify({
-  hairType: "curly",
-  density: "high",
-  porosity: "medium",
-  confidences: { hairType: 0.91, density: 0.82, porosity: 0.77 },
-});
+// headShape/growthPattern are deliberately "unknown" here -- realistic for
+// a single frontal client photo, which typically cannot show the
+// crown/nape/profile those two attributes require.
+function fullValidPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    hairType: "curly",
+    density: "high",
+    porosity: "medium",
+    faceShape: "oval",
+    headShape: "unknown",
+    hairLength: "medium",
+    growthPattern: "unknown",
+    confidences: {
+      hairType: 0.91,
+      density: 0.82,
+      porosity: 0.77,
+      faceShape: 0.8,
+      headShape: 0,
+      hairLength: 0.75,
+      growthPattern: 0,
+    },
+    ...overrides,
+  };
+}
+
+const VALID_RESPONSE = JSON.stringify(fullValidPayload());
 
 function analysisOptions() {
   return {
@@ -86,7 +106,7 @@ describe("GeminiImageAnalysisProvider", () => {
     expect(provider.modelVersion).toBe("gemini-3.6-flash");
   });
 
-  it("parses a valid structured response into the exactly-3-field MVP contract", async () => {
+  it("parses a valid structured response into the full visual-attributes contract", async () => {
     const provider = new GeminiImageAnalysisProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(VALID_RESPONSE));
 
     const outcome = await provider.analyze(analysisOptions());
@@ -95,9 +115,9 @@ describe("GeminiImageAnalysisProvider", () => {
       hairType: "curly",
       density: "high",
       porosity: "medium",
-      faceShape: null,
+      faceShape: "oval",
       headShape: null,
-      hairLength: null,
+      hairLength: "medium",
       hairTexture: null,
       hairCondition: null,
       growthPattern: null,
@@ -107,16 +127,61 @@ describe("GeminiImageAnalysisProvider", () => {
       hairType: 0.91,
       density: 0.82,
       porosity: 0.77,
-      faceShape: 0,
+      faceShape: 0.8,
       headShape: 0,
-      hairLength: 0,
+      hairLength: 0.75,
+      growthPattern: 0,
       hairTexture: 0,
       hairCondition: 0,
-      growthPattern: 0,
       targetShape: 0,
     });
     expect(outcome.warnings.length).toBeGreaterThan(0);
     expect(outcome.limitations.length).toBeGreaterThan(0);
+  });
+
+  // Regression coverage for the production "everything except hairType/
+  // density/porosity always ends up in missingData" bug: a real
+  // (non-"unknown") value for a visually-observable attribute must survive
+  // all the way through, never silently discarded back to null/unknown.
+  it("passes through a confidently-detected faceShape and hairLength unchanged (never forced to unknown/null)", async () => {
+    const provider = new GeminiImageAnalysisProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      fixedClient(JSON.stringify(fullValidPayload({ faceShape: "heart", hairLength: "long" }))),
+    );
+
+    const outcome = await provider.analyze(analysisOptions());
+
+    expect(outcome.result.faceShape).toBe("heart");
+    expect(outcome.result.hairLength).toBe("long");
+  });
+
+  it("converts Gemini's \"unknown\" to null for faceShape/headShape/hairLength/growthPattern (their type has no \"unknown\" literal, unlike hairType/density/porosity)", async () => {
+    const provider = new GeminiImageAnalysisProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      fixedClient(JSON.stringify(fullValidPayload({
+        faceShape: "unknown",
+        headShape: "unknown",
+        hairLength: "unknown",
+        growthPattern: "unknown",
+      }))),
+    );
+
+    const outcome = await provider.analyze(analysisOptions());
+
+    expect(outcome.result.faceShape).toBeNull();
+    expect(outcome.result.headShape).toBeNull();
+    expect(outcome.result.hairLength).toBeNull();
+    expect(outcome.result.growthPattern).toBeNull();
+  });
+
+  it("never asks for or accepts hairCondition, targetShape, or hairTexture from the provider -- history/intent are not visually observable, and hairTexture duplicates hairType", async () => {
+    for (const field of ["hairCondition", "targetShape", "hairTexture"]) {
+      const provider = new GeminiImageAnalysisProvider(
+        { apiKey: "key", model: "gemini-3.6-flash" },
+        fixedClient(JSON.stringify(fullValidPayload({ [field]: "anything" }))),
+      );
+      await expect(provider.analyze(analysisOptions())).rejects.toMatchObject({ code: "INVALID_FORMAT" });
+    }
   });
 
   it("parsing is deterministic: the same response always maps to the same structured output", async () => {
@@ -161,50 +226,37 @@ describe("GeminiImageAnalysisProvider", () => {
   });
 
   it("rejects a response missing a required field", async () => {
-    const missingPorosity = JSON.stringify({
-      hairType: "curly",
-      density: "high",
-      confidences: { hairType: 0.9, density: 0.8, porosity: 0.7 },
-    });
-    const provider = new GeminiImageAnalysisProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(missingPorosity));
+    const payload = fullValidPayload() as Record<string, unknown>;
+    delete payload.porosity;
+    const provider = new GeminiImageAnalysisProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(JSON.stringify(payload)));
     await expect(provider.analyze(analysisOptions())).rejects.toMatchObject({ code: "INVALID_FORMAT" });
   });
 
   it("rejects a response containing an unrecognized top-level field", async () => {
-    const withExtraField = JSON.stringify({
-      hairType: "curly",
-      density: "high",
-      porosity: "medium",
-      confidences: { hairType: 0.9, density: 0.8, porosity: 0.7 },
-      extraUnexpectedField: "should not be here",
-    });
+    const withExtraField = JSON.stringify(fullValidPayload({ extraUnexpectedField: "should not be here" }));
     const provider = new GeminiImageAnalysisProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(withExtraField));
     await expect(provider.analyze(analysisOptions())).rejects.toMatchObject({ code: "INVALID_FORMAT" });
   });
 
   it("rejects a response containing an unrecognized confidence sub-field", async () => {
+    const payload = fullValidPayload();
     const withExtraConfidence = JSON.stringify({
-      hairType: "curly",
-      density: "high",
-      porosity: "medium",
-      confidences: { hairType: 0.9, density: 0.8, porosity: 0.7, faceShape: 0.5 },
+      ...payload,
+      confidences: { ...(payload.confidences as Record<string, number>), extraConfidence: 0.5 },
     });
     const provider = new GeminiImageAnalysisProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(withExtraConfidence));
     await expect(provider.analyze(analysisOptions())).rejects.toMatchObject({ code: "INVALID_FORMAT" });
   });
 
   it("rejects an out-of-range or non-numeric confidence value", async () => {
+    const payload = fullValidPayload();
     const outOfRange = JSON.stringify({
-      hairType: "curly",
-      density: "high",
-      porosity: "medium",
-      confidences: { hairType: 1.5, density: 0.8, porosity: 0.7 },
+      ...payload,
+      confidences: { ...(payload.confidences as Record<string, number>), hairType: 1.5 },
     });
     const nonNumeric = JSON.stringify({
-      hairType: "curly",
-      density: "high",
-      porosity: "medium",
-      confidences: { hairType: "high-confidence", density: 0.8, porosity: 0.7 },
+      ...payload,
+      confidences: { ...(payload.confidences as Record<string, number>), hairType: "high-confidence" },
     });
 
     await expect(
@@ -216,14 +268,24 @@ describe("GeminiImageAnalysisProvider", () => {
   });
 
   it("rejects an unrecognized enum value for hairType/density/porosity", async () => {
-    const invalidEnum = JSON.stringify({
-      hairType: "spiky",
-      density: "high",
-      porosity: "medium",
-      confidences: { hairType: 0.9, density: 0.8, porosity: 0.7 },
-    });
+    const invalidEnum = JSON.stringify(fullValidPayload({ hairType: "spiky" }));
     const provider = new GeminiImageAnalysisProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(invalidEnum));
     await expect(provider.analyze(analysisOptions())).rejects.toMatchObject({ code: "INVALID_FORMAT" });
+  });
+
+  it("rejects an unrecognized enum value for faceShape/headShape/hairLength/growthPattern", async () => {
+    for (const [field, badValue] of [
+      ["faceShape", "triangle"],
+      ["headShape", "pointy"],
+      ["hairLength", "shoulder-length"],
+      ["growthPattern", "spiral"],
+    ]) {
+      const provider = new GeminiImageAnalysisProvider(
+        { apiKey: "key", model: "gemini-3.6-flash" },
+        fixedClient(JSON.stringify(fullValidPayload({ [field]: badValue }))),
+      );
+      await expect(provider.analyze(analysisOptions())).rejects.toMatchObject({ code: "INVALID_FORMAT" });
+    }
   });
 
   it("times out after the configured duration and classifies as TIMEOUT/retryable", async () => {

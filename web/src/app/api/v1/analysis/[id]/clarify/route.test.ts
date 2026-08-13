@@ -104,17 +104,32 @@ describe("POST /api/v1/analysis/[id]/clarify", () => {
       clarificationAnswers: ["no", "healthy"],
     });
     expect(legacyPersistenceMock.upsertPersistedAnalysis).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toEqual({
+    // The envelope fields are asserted exactly; recommendations/safetyNotes/
+    // colorPlan are NOT re-asserted exhaustively here -- this fixture's goal
+    // ("lighten") now genuinely triggers a real color-plan recomputation
+    // (see the dedicated "recomputes the plan..." test below and
+    // color-plan-engine.test.ts for the engine's own exhaustive coverage),
+    // so pinning the full nested plan object here would just duplicate that
+    // coverage and make this route-level test brittle to engine changes.
+    const body = await response.json();
+    expect(body).toMatchObject({
       analysisId: "analysis-1",
       phase: "ready",
       clarificationRound: 1,
       confidenceScore: 0.81,
       uncertaintyReasons: [],
       followUpQuestions: [],
-      recommendations: ["Document the service."],
-      safetyNotes: ["Perform a strand test."],
       imageAssetId: null,
     });
+  });
+
+  it("recomputes the plan through the real engine -- the route response reflects a freshly generated colorPlan, not a frozen pre-clarification one (this fixture had none before clarify)", async () => {
+    const response = await invoke("analysis-1", { answers: [" no ", "healthy"] });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.colorPlan).toBeDefined();
+    expect(body.recommendations.some((line: string) => line.includes("Color direction"))).toBe(true);
   });
 
   it("preserves imageAssetId through a clarification round for a photo-derived analysis", async () => {

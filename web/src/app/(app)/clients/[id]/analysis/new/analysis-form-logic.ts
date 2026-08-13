@@ -119,9 +119,16 @@ export function buildAnalysisRequest(clientId: string, form: AnalysisFormValues)
   return request;
 }
 
-// Mirrors the exact behavior of the pre-existing milestone2-analysis-panel.tsx:
-// trim every answer, drop empty ones, send whatever remains (the backend
-// only requires answers.length > 0, not a 1:1 match with followUpQuestions).
+// Position-preserving: answers[i] must stay aligned with followUpQuestions[i]
+// so the backend (analyzeWithClarifications) can tell which specific answer
+// belongs to which question -- dropping blank entries here would silently
+// shift every later answer onto the wrong question's index. A blank input
+// is sent through as "" (not omitted); the backend only requires that at
+// least one answer is non-empty (see hasAnyClarificationAnswer below).
 export function collectClarificationAnswers(inputs: string[]): string[] {
-  return inputs.map((input) => input.trim()).filter(Boolean);
+  return inputs.map((input) => input.trim());
+}
+
+export function hasAnyClarificationAnswer(answers: string[]): boolean {
+  return answers.some((answer) => answer.length > 0);
 }

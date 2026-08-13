@@ -21,24 +21,57 @@ export const GEMINI_DEFAULT_TIMEOUT_MS = 45_000;
 const HAIR_TYPES = ["straight", "wavy", "curly", "coily", "unknown"] as const;
 const DENSITIES = ["low", "medium", "high", "unknown"] as const;
 const POROSITIES = ["low", "medium", "high", "unknown"] as const;
+const FACE_SHAPES = ["oval", "round", "square", "heart", "diamond", "oblong", "unknown"] as const;
+const HEAD_SHAPES = ["balanced", "flat_occipital", "prominent_crown", "wide_parietal", "irregular_occipital", "unknown"] as const;
+const HAIR_LENGTHS = ["pixie", "short", "medium", "long", "extra_long", "unknown"] as const;
+const GROWTH_PATTERNS = ["regular", "double_crown", "front_cowlick", "nape_whorl", "strong_widow_peak", "unknown"] as const;
 
-const UNSUPPORTED_FIELDS = [
-  "faceShape",
-  "headShape",
-  "hairLength",
-  "hairTexture",
-  "hairCondition",
-  "growthPattern",
-  "targetShape",
-] as const;
+const REQUIRED_FIELDS = ["hairType", "density", "porosity", "faceShape", "headShape", "hairLength", "growthPattern"] as const;
+type RequiredField = (typeof REQUIRED_FIELDS)[number];
+
+const FIELD_ENUMS: Record<RequiredField, readonly string[]> = {
+  hairType: HAIR_TYPES,
+  density: DENSITIES,
+  porosity: POROSITIES,
+  faceShape: FACE_SHAPES,
+  headShape: HEAD_SHAPES,
+  hairLength: HAIR_LENGTHS,
+  growthPattern: GROWTH_PATTERNS,
+};
+
+// Deliberately excluded from what Gemini is ever asked to classify -- not
+// because they're unimportant, but because they are not safely determinable
+// from a single client photo:
+//  - hairCondition mixes a visual symptom (damage/breakage) with a
+//    historical cause (recent chemical processing) in one enum; the
+//    professional signal for it comes from the clarification flow
+//    (analysis-engine.ts's deriveHairConditionFromClarifications), which
+//    asks the stylist directly, never guessed from pixels.
+//  - hairTexture is a duplicate of hairType (both are the same
+//    straight/wavy/curly/coily scale) -- texture already flows through
+//    hairType via photo-analysis-request-mapper.ts, so asking for it twice
+//    would only invite disagreement between two answers to the same
+//    question.
+//  - targetShape is the client/stylist's declared intent, not an
+//    observation -- never inferred from a photo, by explicit product
+//    decision.
+const UNSUPPORTED_FIELDS = ["hairTexture", "hairCondition", "targetShape"] as const;
 
 const ANALYSIS_PROMPT =
-  "Analyze the hair shown in this photo and classify exactly three attributes: " +
+  "Analyze the hair and head/face shown in this photo and classify these attributes: " +
   "hairType (one of: straight, wavy, curly, coily, unknown), " +
   "density (one of: low, medium, high, unknown), " +
-  "porosity (one of: low, medium, high, unknown). " +
-  "Use \"unknown\" only when the photo does not show hair clearly enough to classify " +
-  "that attribute, and set that attribute's confidence to 0 in that case. " +
+  "porosity (one of: low, medium, high, unknown), " +
+  "faceShape (one of: oval, round, square, heart, diamond, oblong, unknown), " +
+  "headShape (one of: balanced, flat_occipital, prominent_crown, wide_parietal, irregular_occipital, unknown), " +
+  "hairLength (one of: pixie, short, medium, long, extra_long, unknown), " +
+  "growthPattern (one of: regular, double_crown, front_cowlick, nape_whorl, strong_widow_peak, unknown). " +
+  "Use \"unknown\" whenever the photo does not show that attribute clearly enough to classify it -- " +
+  "for example, headShape and growthPattern often require a profile, crown, or nape view that a single " +
+  "frontal photo does not show, and porosity/density require reasonably close, well-lit hair. " +
+  "Set that attribute's confidence to 0 whenever you return \"unknown\" for it. " +
+  "Only classify what is visually observable in this specific photo -- never guess a client's chemical " +
+  "or treatment history, and never infer a desired/target style, since neither is visible in a photo. " +
   "Respond with strict JSON matching the provided schema. Do not include any " +
   "commentary, markdown formatting, or fields other than those defined in the schema.";
 
@@ -48,17 +81,25 @@ const RESPONSE_SCHEMA: Schema = {
     hairType: { type: Type.STRING, enum: [...HAIR_TYPES] },
     density: { type: Type.STRING, enum: [...DENSITIES] },
     porosity: { type: Type.STRING, enum: [...POROSITIES] },
+    faceShape: { type: Type.STRING, enum: [...FACE_SHAPES] },
+    headShape: { type: Type.STRING, enum: [...HEAD_SHAPES] },
+    hairLength: { type: Type.STRING, enum: [...HAIR_LENGTHS] },
+    growthPattern: { type: Type.STRING, enum: [...GROWTH_PATTERNS] },
     confidences: {
       type: Type.OBJECT,
       properties: {
         hairType: { type: Type.NUMBER },
         density: { type: Type.NUMBER },
         porosity: { type: Type.NUMBER },
+        faceShape: { type: Type.NUMBER },
+        headShape: { type: Type.NUMBER },
+        hairLength: { type: Type.NUMBER },
+        growthPattern: { type: Type.NUMBER },
       },
-      required: ["hairType", "density", "porosity"],
+      required: [...REQUIRED_FIELDS],
     },
   },
-  required: ["hairType", "density", "porosity", "confidences"],
+  required: [...REQUIRED_FIELDS, "confidences"],
 };
 
 export interface GeminiImageAnalysisProviderOptions {
@@ -154,7 +195,7 @@ export class GeminiImageAnalysisProvider extends ImageAnalysisProvider {
     }
 
     const topLevelKeys = new Set(Object.keys(parsed));
-    const allowedTopLevelKeys = new Set(["hairType", "density", "porosity", "confidences"]);
+    const allowedTopLevelKeys = new Set<string>([...REQUIRED_FIELDS, "confidences"]);
     for (const key of topLevelKeys) {
       if (!allowedTopLevelKeys.has(key)) {
         throw this.createProviderError("INVALID_FORMAT", "Gemini response contains an unrecognized field.");
@@ -166,24 +207,20 @@ export class GeminiImageAnalysisProvider extends ImageAnalysisProvider {
       }
     }
 
-    if (!isEnumValue(parsed.hairType, HAIR_TYPES)) {
-      throw this.createProviderError("INVALID_FORMAT", "Gemini response has a malformed hairType value.");
+    const values: Record<RequiredField, string> = {} as Record<RequiredField, string>;
+    for (const field of REQUIRED_FIELDS) {
+      const value = parsed[field];
+      if (!isEnumValue(value, FIELD_ENUMS[field])) {
+        throw this.createProviderError("INVALID_FORMAT", `Gemini response has a malformed ${field} value.`);
+      }
+      values[field] = value;
     }
-    if (!isEnumValue(parsed.density, DENSITIES)) {
-      throw this.createProviderError("INVALID_FORMAT", "Gemini response has a malformed density value.");
-    }
-    if (!isEnumValue(parsed.porosity, POROSITIES)) {
-      throw this.createProviderError("INVALID_FORMAT", "Gemini response has a malformed porosity value.");
-    }
-    const hairType = parsed.hairType;
-    const density = parsed.density;
-    const porosity = parsed.porosity;
 
     if (!isPlainObject(parsed.confidences)) {
       throw this.createProviderError("INVALID_FORMAT", "Gemini response has a malformed confidences object.");
     }
     const confidenceKeys = new Set(Object.keys(parsed.confidences));
-    const allowedConfidenceKeys = new Set(["hairType", "density", "porosity"]);
+    const allowedConfidenceKeys = new Set<string>(REQUIRED_FIELDS);
     for (const key of confidenceKeys) {
       if (!allowedConfidenceKeys.has(key)) {
         throw this.createProviderError("INVALID_FORMAT", "Gemini response contains an unrecognized confidence field.");
@@ -195,37 +232,29 @@ export class GeminiImageAnalysisProvider extends ImageAnalysisProvider {
       }
     }
 
-    if (!isValidConfidence(parsed.confidences.hairType)) {
-      throw this.createProviderError("INVALID_FORMAT", "Gemini response has a malformed hairType confidence value.");
+    const confidenceValues: Record<RequiredField, number> = {} as Record<RequiredField, number>;
+    for (const field of REQUIRED_FIELDS) {
+      const value = (parsed.confidences as Record<string, unknown>)[field];
+      if (!isValidConfidence(value)) {
+        throw this.createProviderError("INVALID_FORMAT", `Gemini response has a malformed ${field} confidence value.`);
+      }
+      confidenceValues[field] = value;
     }
-    if (!isValidConfidence(parsed.confidences.density)) {
-      throw this.createProviderError("INVALID_FORMAT", "Gemini response has a malformed density confidence value.");
-    }
-    if (!isValidConfidence(parsed.confidences.porosity)) {
-      throw this.createProviderError("INVALID_FORMAT", "Gemini response has a malformed porosity confidence value.");
-    }
-    const hairTypeConfidence = parsed.confidences.hairType;
-    const densityConfidence = parsed.confidences.density;
-    const porosityConfidence = parsed.confidences.porosity;
 
     const result: ImageAnalysisResult = {
-      hairType,
-      density,
-      porosity,
-      faceShape: null,
-      headShape: null,
-      hairLength: null,
+      hairType: values.hairType as ImageAnalysisResult["hairType"],
+      density: values.density as ImageAnalysisResult["density"],
+      porosity: values.porosity as ImageAnalysisResult["porosity"],
+      faceShape: toNullableValue(values.faceShape),
+      headShape: toNullableValue(values.headShape),
+      hairLength: toNullableValue(values.hairLength),
       hairTexture: null,
       hairCondition: null,
-      growthPattern: null,
+      growthPattern: toNullableValue(values.growthPattern),
       targetShape: null,
     };
 
-    const confidences: FieldConfidence = {
-      hairType: hairTypeConfidence,
-      density: densityConfidence,
-      porosity: porosityConfidence,
-    };
+    const confidences: FieldConfidence = { ...confidenceValues };
     for (const field of UNSUPPORTED_FIELDS) {
       confidences[field] = 0;
     }
@@ -233,9 +262,10 @@ export class GeminiImageAnalysisProvider extends ImageAnalysisProvider {
     return {
       result,
       confidences,
-      warnings: ["Automated analysis limited to hairType, density, and porosity (Gemini provider)."],
+      warnings: ["Automated analysis limited to visually observable attributes (Gemini provider)."],
       limitations: [
-        "Cannot determine faceShape, headShape, hairLength, hairTexture, hairCondition, growthPattern, targetShape",
+        "Cannot determine hairTexture (duplicate of hairType), hairCondition (requires chemical/treatment history), or targetShape (client/stylist intent, not visible in a photo)",
+        "headShape and growthPattern frequently return \"unknown\" for a single frontal photo -- they require a profile, crown, or nape view",
         "Confidence scores below 0.7 require manual verification",
       ],
     };
@@ -286,6 +316,15 @@ function createDefaultGeminiClient(apiKey: string, timeoutMs: number): GeminiGen
       return response.text;
     },
   };
+}
+
+// "unknown" is a valid classification (the photo genuinely doesn't show
+// enough to tell), but downstream (photo-analysis-request-mapper.ts's
+// pickEnum) only ever recognizes the real enum values -- never "unknown" --
+// so this keeps that same fail-closed contract explicit at the source
+// instead of relying on it implicitly.
+function toNullableValue<T extends string>(value: T): T | null {
+  return value === "unknown" ? null : value;
 }
 
 function isEnumValue<T extends string>(value: unknown, allowed: readonly T[]): value is T {

@@ -39,7 +39,8 @@ import {
   canStartAnalysis,
   collectClarificationAnswers,
   DEFAULT_ANALYSIS_FORM,
-  getRelevantFieldGroup
+  getRelevantFieldGroup,
+  hasAnyClarificationAnswer
 } from "./analysis-form-logic";
 import { useClientProfile } from "../../use-client-profile";
 
@@ -276,7 +277,7 @@ export default function NewAnalysisPage() {
     if (!analysisResult) return;
 
     const answers = collectClarificationAnswers(clarificationInputs);
-    if (answers.length === 0) {
+    if (!hasAnyClarificationAnswer(answers)) {
       setClarifyError("Provide at least one clarification answer.");
       return;
     }
