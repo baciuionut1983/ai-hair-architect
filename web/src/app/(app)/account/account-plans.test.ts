@@ -4,6 +4,7 @@ import {
   ACCOUNT_PLANS,
   checkoutErrorMessage,
   planDisplayName,
+  portalErrorMessage,
   resolveAccountPlanCardStatus,
 } from "./account-plans";
 
@@ -65,5 +66,33 @@ describe("checkoutErrorMessage", () => {
   it("falls back to a generic retry message for an unknown or missing error code", () => {
     expect(checkoutErrorMessage("SOMETHING_NEW")).toBe("Could not start checkout. Please try again.");
     expect(checkoutErrorMessage(undefined)).toBe("Could not start checkout. Please try again.");
+  });
+});
+
+describe("portalErrorMessage", () => {
+  it("maps BILLING_CUSTOMER_NOT_FOUND to a message pointing the user to subscribe first", () => {
+    expect(portalErrorMessage("BILLING_CUSTOMER_NOT_FOUND")).toBe(
+      "You don't have a billing account yet. Subscribe to a plan first.",
+    );
+  });
+
+  it("maps BILLING_PORTAL_DISABLED and BILLING_PORTAL_MISCONFIGURED to the same honest unavailability message", () => {
+    expect(portalErrorMessage("BILLING_PORTAL_DISABLED")).toBe(
+      "Subscription management is temporarily unavailable. Please try again later.",
+    );
+    expect(portalErrorMessage("BILLING_PORTAL_MISCONFIGURED")).toBe(
+      "Subscription management is temporarily unavailable. Please try again later.",
+    );
+  });
+
+  it("maps BILLING_PORTAL_SESSION_FAILED to a retry message", () => {
+    expect(portalErrorMessage("BILLING_PORTAL_SESSION_FAILED")).toBe(
+      "Could not open subscription management. Please try again.",
+    );
+  });
+
+  it("falls back to a generic retry message for an unknown or missing error code", () => {
+    expect(portalErrorMessage("SOMETHING_NEW")).toBe("Could not open subscription management. Please try again.");
+    expect(portalErrorMessage(undefined)).toBe("Could not open subscription management. Please try again.");
   });
 });

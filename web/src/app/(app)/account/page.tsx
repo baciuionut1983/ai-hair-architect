@@ -9,6 +9,7 @@ import {
   ACCOUNT_PLANS,
   checkoutErrorMessage,
   planDisplayName,
+  portalErrorMessage,
   resolveAccountPlanCardStatus,
   type AccountPlanCardStatus,
   type AccountPlanDefinition,
@@ -190,15 +191,38 @@ function PlanCard({
 }
 
 function ManageSubscriptionCard() {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleManageSubscription() {
+    setError(null);
+    setBusy(true);
+    try {
+      const response = await fetch("/api/v1/billing/portal", { method: "POST" });
+      const data = (await response.json()) as { portal?: { url?: string }; error?: string };
+
+      if (!response.ok || !data.portal?.url) {
+        setError(portalErrorMessage(data.error));
+        return;
+      }
+
+      navigateToExternalUrl(data.portal.url);
+    } catch {
+      setError(portalErrorMessage(undefined));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <Card className="flex flex-col gap-2">
       <h2 className="text-sm font-semibold text-foreground">Manage subscription</h2>
       <p className="text-sm text-muted">
-        Self-service subscription management (payment method, cancellation, invoices) is not available yet. Contact
-        support if you need to make changes to your subscription.
+        Update your payment method, view invoices, or cancel your subscription securely via Stripe.
       </p>
-      <Button type="button" variant="secondary" disabled>
-        Manage subscription (coming soon)
+      {error ? <Alert variant="error">{error}</Alert> : null}
+      <Button type="button" variant="secondary" onClick={handleManageSubscription} loading={busy}>
+        Manage subscription
       </Button>
     </Card>
   );

@@ -80,3 +80,15 @@ export function checkoutErrorMessage(errorCode: string | undefined): string {
   if (!errorCode) return "Could not start checkout. Please try again.";
   return CHECKOUT_ERROR_MESSAGES[errorCode] ?? "Could not start checkout. Please try again.";
 }
+
+const PORTAL_ERROR_MESSAGES: Record<string, string> = {
+  BILLING_CUSTOMER_NOT_FOUND: "You don't have a billing account yet. Subscribe to a plan first.",
+  BILLING_PORTAL_DISABLED: "Subscription management is temporarily unavailable. Please try again later.",
+  BILLING_PORTAL_MISCONFIGURED: "Subscription management is temporarily unavailable. Please try again later.",
+  BILLING_PORTAL_SESSION_FAILED: "Could not open subscription management. Please try again.",
+};
+
+export function portalErrorMessage(errorCode: string | undefined): string {
+  if (!errorCode) return "Could not open subscription management. Please try again.";
+  return PORTAL_ERROR_MESSAGES[errorCode] ?? "Could not open subscription management. Please try again.";
+}
