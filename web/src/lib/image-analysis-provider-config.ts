@@ -1,3 +1,5 @@
+import { GEMINI_DEFAULT_TIMEOUT_MS } from "@/lib/image-analysis-provider-gemini";
+
 export type ImageAnalysisProviderName = "gemini";
 
 const ALLOWED_PROVIDERS: readonly ImageAnalysisProviderName[] = ["gemini"];
@@ -18,7 +20,16 @@ export interface GeminiImageAnalysisProviderConfig {
   provider: "gemini";
   apiKey: string;
   model: string;
+  timeoutMs: number;
 }
+
+// Bounds for the optional AI_ANALYSIS_TIMEOUT_MS override -- a misconfigured
+// value (0, negative, non-numeric, or absurdly large) must never produce an
+// unbounded or effectively-disabled timeout; it silently clamps to this
+// range instead of flipping config status to "invalid", since an operator
+// tuning this value should never accidentally take the whole provider down.
+const MIN_TIMEOUT_MS = 5_000;
+const MAX_TIMEOUT_MS = 120_000;
 
 export type ImageAnalysisProviderConfigResult =
   | { status: "disabled" }
@@ -70,7 +81,24 @@ export function resolveImageAnalysisProviderConfig(env: EnvironmentSource): Imag
     return { status: "invalid", issues };
   }
 
-  return { status: "enabled", provider: "gemini", apiKey, model };
+  return { status: "enabled", provider: "gemini", apiKey, model, timeoutMs: resolveTimeoutMs(env.AI_ANALYSIS_TIMEOUT_MS) };
+}
+
+// Optional override, clamped rather than validated -- see MIN/MAX_TIMEOUT_MS.
+// Unset, empty, non-numeric, or out-of-range values all fall back to the
+// same realistic default the provider itself uses (GEMINI_DEFAULT_TIMEOUT_MS).
+function resolveTimeoutMs(raw: string | undefined): number {
+  const trimmed = value(raw);
+  if (!trimmed) {
+    return GEMINI_DEFAULT_TIMEOUT_MS;
+  }
+
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) {
+    return GEMINI_DEFAULT_TIMEOUT_MS;
+  }
+
+  return Math.min(MAX_TIMEOUT_MS, Math.max(MIN_TIMEOUT_MS, parsed));
 }
 
 function isAllowedProvider(value: string): value is ImageAnalysisProviderName {

@@ -2,6 +2,8 @@ import { randomUUID } from "crypto";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ImageProcessingError } from "@/lib/image-normalizer";
+
 const prismaMock = vi.hoisted(() => ({ sessionFindUnique: vi.fn() }));
 const serviceMock = vi.hoisted(() => ({ uploadAndAnalyzeImages: vi.fn() }));
 
@@ -142,6 +144,53 @@ describe("POST /api/v1/uploads", () => {
     const response = await invoke("token", undefined, 0);
     expect(response.status).toBe(400);
     expect(serviceMock.uploadAndAnalyzeImages).not.toHaveBeenCalled();
+  });
+
+  it("returns a safe, generic 422 message (never the raw sharp/libvips error) when image processing fails", async () => {
+    const userId = randomUUID();
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
+    serviceMock.uploadAndAnalyzeImages.mockRejectedValue(
+      new ImageProcessingError("Could not process this image. Please try a different photo."),
+    );
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await invoke("token", "client-1");
+
+    expect(response.status).toBe(422);
+    const body = await response.json();
+    expect(body).toEqual({ error: "Could not process this image. Please try a different photo." });
+    expect(body.error).not.toMatch(/vips/i);
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("logs the failure server-side (safe fields only) even though the client only sees the generic message", async () => {
+    const userId = randomUUID();
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
+    serviceMock.uploadAndAnalyzeImages.mockRejectedValue(
+      new ImageProcessingError("Could not process this image. Please try a different photo."),
+    );
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await invoke("token", "client-1");
+
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(1);
+    const logged = JSON.parse(consoleErrorSpy.mock.calls[0][0] as string);
+    expect(logged).toMatchObject({ gate: "IMAGE_UPLOAD", status: "FAILED", errorName: "ImageProcessingError" });
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("still returns 400 (unchanged status) for a pre-existing validation error, e.g. an unsupported format", async () => {
+    const userId = randomUUID();
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
+    serviceMock.uploadAndAnalyzeImages.mockRejectedValue(new Error("Unsupported format: image/gif"));
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await invoke("token", "client-1");
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body).toEqual({ error: "Unsupported format: image/gif" });
+    consoleErrorSpy.mockRestore();
   });
 
   it("accepts a valid Postgres-backed cookie session (M31 GO-4 dual resolver)", async () => {

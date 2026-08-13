@@ -235,8 +235,8 @@ describe("GeminiImageAnalysisProvider", () => {
     await expect(provider.analyze(analysisOptions())).rejects.toMatchObject({ code: "TIMEOUT", retryable: true });
   });
 
-  it("defaults the timeout to 20 seconds when not overridden", () => {
-    expect(GEMINI_DEFAULT_TIMEOUT_MS).toBe(20_000);
+  it("defaults the timeout to 45 seconds when not overridden -- realistic for a real (non-mocked) Gemini vision call", () => {
+    expect(GEMINI_DEFAULT_TIMEOUT_MS).toBe(45_000);
   });
 
   it("classifies a 401/403 as an authentication (NOT_CONFIGURED) failure, non-retryable", async () => {

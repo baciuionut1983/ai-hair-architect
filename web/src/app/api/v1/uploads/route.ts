@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { uploadAndAnalyzeImages } from '@/lib/image-analysis-service';
+import { ImageProcessingError } from '@/lib/image-normalizer';
 import { checkRateLimit, getRateLimitStatus } from '@/lib/rate-limiter';
 import { checkRole } from '@/lib/auth-role';
 import { resolvePipelineAuth } from '@/lib/image-pipeline-auth';
@@ -69,10 +70,27 @@ export async function POST(req: NextRequest) {
       }
     );
   } catch (err) {
+    // Structured, safe-fields-only log for every upload failure (no image
+    // bytes, no secrets) -- this is what makes VipsJpeg/S3/Prisma failures
+    // diagnosable from Deploy Logs instead of only surfacing in the UI.
+    console.error(
+      JSON.stringify({
+        gate: 'IMAGE_UPLOAD',
+        status: 'FAILED',
+        errorName: err instanceof Error ? err.name : 'unknown',
+        errorMessage: err instanceof Error ? err.message : String(err),
+      })
+    );
+
+    // ImageProcessingError (image-normalizer.ts) always carries a safe,
+    // generic message already -- the raw sharp/libvips detail was logged
+    // above, never returned to the client. Every other Error thrown by
+    // uploadAndAnalyzeImages (validation/magic-byte checks) is also a
+    // safe, self-constructed message, not raw library/SDK output.
     const error = err instanceof Error ? err.message : 'Upload failed';
     return NextResponse.json(
       { error },
-      { status: 400 }
+      { status: err instanceof ImageProcessingError ? 422 : 400 }
     );
   }
 }

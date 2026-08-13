@@ -9,7 +9,14 @@ import {
 } from "./image-analysis-provider";
 
 export const GEMINI_PROVIDER_NAME = "gemini";
-export const GEMINI_DEFAULT_TIMEOUT_MS = 20_000;
+// Was 20s -- measurably too tight for a real (non-mocked) Gemini vision call
+// in production: base64-encoding and uploading a multi-MB photo, plus the
+// model's own inference time, plus normal network latency from Railway to
+// Google's API, routinely exceeds 20s even for a healthy request. This was
+// the confirmed root cause of PROVIDER_TIMEOUT in production. 45s keeps the
+// same fail-closed abort behavior, just with a realistic budget; callers can
+// override it further via AI_ANALYSIS_TIMEOUT_MS (image-analysis-provider-config.ts).
+export const GEMINI_DEFAULT_TIMEOUT_MS = 45_000;
 
 const HAIR_TYPES = ["straight", "wavy", "curly", "coily", "unknown"] as const;
 const DENSITIES = ["low", "medium", "high", "unknown"] as const;

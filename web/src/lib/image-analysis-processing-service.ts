@@ -89,7 +89,7 @@ export type ProcessImageAnalysisResult =
 export interface ProcessImageAnalysisDependencies {
   now?: Date;
   env?: Readonly<Record<string, string | undefined>>;
-  createProvider?: (config: { apiKey: string; model: string }) => ImageAnalysisProvider;
+  createProvider?: (config: { apiKey: string; model: string; timeoutMs: number }) => ImageAnalysisProvider;
   resolveObjectStorage?: ReturnType<typeof createObjectStorageAliasResolver>;
   /** Test-only hook invoked immediately before the atomic GO-1 claim. Never used by the route. */
   beforeClaim?: () => Promise<void>;
@@ -180,6 +180,7 @@ export async function processImageAnalysis(
       buffer = await loadValidatedImageBuffer(asset, resolveObjectStorage);
     } catch (error) {
       if (error instanceof ProcessingPreClaimError) {
+        logStorageReadFailure({ assetId, ownerUserId, storageBackend: asset.storageBackend, code: error.code, error });
         return failure(error.code);
       }
       throw error;
@@ -211,9 +212,10 @@ export async function processImageAnalysis(
 
     // Quota is consumed as of this point (the claim above). Everything from
     // here on is a chargeable attempt, regardless of outcome.
-    const provider = createProvider({ apiKey: config.apiKey, model: config.model });
+    const provider = createProvider({ apiKey: config.apiKey, model: config.model, timeoutMs: config.timeoutMs });
 
     let analyzed: Awaited<ReturnType<ImageAnalysisProvider["analyze"]>>;
+    const providerCallStartedAt = Date.now();
     try {
       analyzed = await provider.analyze({
         imageBuffer: buffer,
@@ -223,6 +225,16 @@ export async function processImageAnalysis(
       });
     } catch (error) {
       const { analysisFailureCode, resultCode } = classifyProviderFailure(error);
+      logProviderFailure({
+        providerName: GEMINI_PROVIDER_NAME,
+        modelVersion: config.model,
+        assetId,
+        analysisId,
+        ownerUserId,
+        durationMs: Date.now() - providerCallStartedAt,
+        resultCode,
+        error,
+      });
       if (dependencies.beforePersist) {
         await dependencies.beforePersist();
       }
@@ -455,8 +467,70 @@ function classifyProviderFailure(
   }
 }
 
-function defaultCreateProvider(config: { apiKey: string; model: string }): ImageAnalysisProvider {
+function defaultCreateProvider(config: { apiKey: string; model: string; timeoutMs: number }): ImageAnalysisProvider {
   return new GeminiImageAnalysisProvider(config);
+}
+
+// Structured, safe-fields-only diagnostic logs (same JSON-record convention
+// as storage-readiness-canary.ts) -- never the image buffer/base64, never
+// the API key. ProviderError.message is always one of the fixed, safe
+// strings GeminiImageAnalysisProvider.classifyError constructs itself
+// (e.g. "Gemini request timed out."), never raw SDK/network internals.
+function logProviderFailure(input: {
+  providerName: string;
+  modelVersion: string;
+  assetId: string;
+  analysisId: string;
+  ownerUserId: string;
+  durationMs: number;
+  resultCode: ProcessingResultCode;
+  error: unknown;
+}): void {
+  const providerError = input.error as Partial<ProviderError> | undefined;
+  console.error(
+    JSON.stringify({
+      gate: "AI_IMAGE_ANALYSIS_PROVIDER",
+      status: "FAILED",
+      resultCode: input.resultCode,
+      providerName: input.providerName,
+      modelVersion: input.modelVersion,
+      assetId: input.assetId,
+      analysisId: input.analysisId,
+      ownerUserId: input.ownerUserId,
+      durationBucket: bucketDurationMs(input.durationMs),
+      providerErrorCode: providerError?.code ?? "unknown",
+      providerErrorMessage: providerError?.message ?? "unknown",
+    }),
+  );
+}
+
+function logStorageReadFailure(input: {
+  assetId: string;
+  ownerUserId: string;
+  storageBackend: string | null;
+  code: ProcessingResultCode;
+  error: unknown;
+}): void {
+  console.error(
+    JSON.stringify({
+      gate: "AI_IMAGE_ANALYSIS_STORAGE_READ",
+      status: "FAILED",
+      resultCode: input.code,
+      storageBackend: input.storageBackend ?? "legacy_local",
+      assetId: input.assetId,
+      ownerUserId: input.ownerUserId,
+      errorName: input.error instanceof Error ? input.error.name : "unknown",
+    }),
+  );
+}
+
+function bucketDurationMs(ms: number): string {
+  if (ms < 1000) return "<1s";
+  if (ms < 5000) return "1-5s";
+  if (ms < 15000) return "5-15s";
+  if (ms < 30000) return "15-30s";
+  if (ms < 60000) return "30-60s";
+  return ">=60s";
 }
 
 function sanitizeAnalysis(row: {
