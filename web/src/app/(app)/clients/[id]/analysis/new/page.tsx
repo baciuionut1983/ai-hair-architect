@@ -3,9 +3,9 @@
 import { ArrowLeft, Upload, Users } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { ColorPlanView, TechnicalCutPlanView, TreatmentPlanView } from "@/components/analysis";
+import { AnalysisOriginalPhoto, ColorPlanView, TechnicalCutPlanView, TreatmentPlanView } from "@/components/analysis";
 import { Alert, Button, Card, ErrorState, Input, LoadingState, Select, Tabs, Textarea } from "@/components/ui";
 import {
   DENSITY_OPTIONS,
@@ -89,9 +89,29 @@ export default function NewAnalysisPage() {
 
   const [photoStep, setPhotoStep] = useState<PhotoStep>("pick");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [assetId, setAssetId] = useState<string | null>(null);
+
+  // Local preview only, before the file is uploaded -- never confused with
+  // the persisted asset: once assetId exists, AnalysisOriginalPhoto (backed
+  // by /api/v1/image-assets/{assetId}/content) takes over as the source of
+  // truth. Revokes the previous object URL whenever selectedFile changes or
+  // this component unmounts, so no blob URL is ever leaked.
+  useEffect(() => {
+    if (!selectedFile) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronizing with an external resource (the object URL), not deriving state; no async boundary exists to defer this past (see milestone2-analysis-panel.tsx for the same precedent)
+      setPreviewUrl(null);
+      return;
+    }
+
+    const url = URL.createObjectURL(selectedFile);
+    setPreviewUrl(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [selectedFile]);
 
   const [consentChecked, setConsentChecked] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
@@ -544,6 +564,14 @@ export default function NewAnalysisPage() {
                 onChange={(event) => setSelectedFile(event.target.files?.[0] ?? null)}
                 className="text-sm text-foreground"
               />
+              {previewUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element -- local blob preview of a not-yet-uploaded File, never a build-time-known asset
+                <img
+                  src={previewUrl}
+                  alt="Selected photo preview"
+                  className="w-full max-h-[420px] rounded-lg object-cover"
+                />
+              ) : null}
               {uploadError ? <Alert variant="error">{uploadError}</Alert> : null}
               <Button type="button" onClick={handleUploadPhoto} loading={uploadBusy} disabled={!selectedFile}>
                 <Upload className="mr-2 h-4 w-4" aria-hidden="true" />
@@ -554,6 +582,7 @@ export default function NewAnalysisPage() {
 
           {photoStep === "consent" ? (
             <>
+              <AnalysisOriginalPhoto imageAssetId={assetId} />
               <p className="text-sm text-foreground">Photo uploaded. AI analysis requires explicit consent.</p>
               <label className="flex items-start gap-2 text-sm text-foreground">
                 <input
@@ -573,6 +602,7 @@ export default function NewAnalysisPage() {
 
           {photoStep === "review" && photoPayload ? (
             <>
+              <AnalysisOriginalPhoto imageAssetId={assetId} />
               <h2 className="text-sm font-semibold text-foreground">What the AI detected</h2>
               <ul className="list-inside list-disc text-sm text-muted">
                 {photoPayload.hairType ? <li>Hair texture: {photoPayload.hairType}</li> : null}
@@ -659,6 +689,8 @@ export default function NewAnalysisPage() {
               ? "Analysis ready."
               : "More information is needed before this analysis is ready."}
           </Alert>
+
+          <AnalysisOriginalPhoto imageAssetId={analysisResult.imageAssetId} />
 
           {analysisResult.phase === "pending_questions" && analysisResult.followUpQuestions.length > 0 ? (
             <Card className="flex flex-col gap-4">

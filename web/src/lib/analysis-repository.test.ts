@@ -108,6 +108,27 @@ describe("analysis-repository", () => {
     expect(data.m8DraftCreatedAt).toBeInstanceOf(Date);
   });
 
+  it("returns imageAssetId on the created AnalysisState itself, not just on the Prisma write payload (sub-milestone 1: this is what the API routes read to expose the photo)", async () => {
+    prismaMocks.clientFindFirst.mockResolvedValue({ id: "client-1" });
+    prismaMocks.analysisCreate.mockResolvedValue(analysisRow({ imageAssetId: "asset-1" }));
+
+    const created = await createAnalysisForOwner("owner-1", "client-1", {
+      ...createInput(),
+      imageAssetId: "asset-1",
+      imageAnalysisId: "image-analysis-1",
+    });
+
+    expect(created.imageAssetId).toBe("asset-1");
+  });
+
+  it("findAnalysisForOwner also returns imageAssetId on the returned AnalysisState (used by GET /api/v1/analysis/[id]/result -- View full analysis)", async () => {
+    prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({ imageAssetId: "asset-1" }));
+
+    const found = await findAnalysisForOwner("owner-1", "analysis-1");
+
+    expect(found?.imageAssetId).toBe("asset-1");
+  });
+
   it("rejects missing or soft-deleted Clients without creating an Analysis", async () => {
     prismaMocks.clientFindFirst.mockResolvedValue(null);
 

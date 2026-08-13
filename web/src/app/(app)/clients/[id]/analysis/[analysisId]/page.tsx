@@ -4,7 +4,13 @@ import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 
-import { ColorPlanView, getConfidenceBadgeVariant, TechnicalCutPlanView, TreatmentPlanView } from "@/components/analysis";
+import {
+  AnalysisOriginalPhoto,
+  ColorPlanView,
+  getConfidenceBadgeVariant,
+  TechnicalCutPlanView,
+  TreatmentPlanView
+} from "@/components/analysis";
 import { Alert, Badge, Card, ErrorState, LoadingState } from "@/components/ui";
 
 import { formatOverallConfidenceLabel } from "./analysis-result-logic";
@@ -55,6 +61,8 @@ export default function AnalysisResultPage() {
         {backLink}
         <h1 className="mt-2 text-2xl font-semibold text-foreground">Analysis result</h1>
       </div>
+
+      <AnalysisOriginalPhoto imageAssetId={result.imageAssetId} />
 
       <Card className="flex flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">

@@ -113,7 +113,21 @@ describe("POST /api/v1/analysis/[id]/clarify", () => {
       followUpQuestions: [],
       recommendations: ["Document the service."],
       safetyNotes: ["Perform a strand test."],
+      imageAssetId: null,
     });
+  });
+
+  it("preserves imageAssetId through a clarification round for a photo-derived analysis", async () => {
+    repositoryMock.clarifyAnalysisForOwner.mockResolvedValue({
+      ...analysisRecord(),
+      imageAssetId: "asset-1",
+    });
+
+    const response = await invoke("analysis-1", { answers: ["no"] });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.imageAssetId).toBe("asset-1");
   });
 
   it.each([

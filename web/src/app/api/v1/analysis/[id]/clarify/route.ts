@@ -61,7 +61,8 @@ export async function POST(
     safetyNotes: updated.safetyNotes,
     technicalCutPlan: updated.technicalCutPlan,
     colorPlan: updated.colorPlan,
-    treatmentPlan: updated.treatmentPlan
+    treatmentPlan: updated.treatmentPlan,
+    imageAssetId: updated.imageAssetId ?? null
   };
 
   return NextResponse.json(response, { status: 200 });

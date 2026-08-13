@@ -267,6 +267,12 @@ export interface AnalysisResponse {
   technicalCutPlan?: TechnicalCutPlan;
   colorPlan?: ColorPlan;
   treatmentPlan?: TreatmentPlan;
+  // Sub-milestone 1 (AI Visual Analysis): the id of the ImageAsset this
+  // analysis was derived from, or null for a manual analysis with no photo.
+  // Never a storage key/path/bucket/URL -- the frontend must always fetch
+  // the actual image through the existing authenticated
+  // GET /api/v1/image-assets/{imageAssetId}/content endpoint.
+  imageAssetId?: string | null;
 }
 
 export interface AnalysisClarifyRequest {

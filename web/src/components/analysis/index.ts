@@ -1,6 +1,10 @@
 export { getConfidenceBadgeVariant, RecommendationPlanBase } from "./plan-base";
 export type { RecommendationPlanBaseProps } from "./plan-base";
 
+export { AnalysisOriginalPhoto } from "./analysis-original-photo";
+export type { AnalysisOriginalPhotoProps } from "./analysis-original-photo";
+export { buildOriginalPhotoSrc } from "./analysis-original-photo-logic";
+
 export { ColorPlanView } from "./color-plan-view";
 export type { ColorPlanViewProps } from "./color-plan-view";
 

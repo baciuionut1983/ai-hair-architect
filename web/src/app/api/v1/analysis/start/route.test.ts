@@ -199,7 +199,16 @@ describe("POST /api/v1/analysis/start", () => {
         "Save follow-up protocol in client timeline for safer next visit.",
       ],
       safetyNotes: ["Perform strand test before high-lift or correction services."],
+      imageAssetId: null,
     });
+  });
+
+  it("a manual analysis (no photo) always returns imageAssetId: null, never omitted or undefined", async () => {
+    const response = await POST(startRequest(validPayload()));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.imageAssetId).toBeNull();
   });
 
   it("passes the authenticated owner and maps an invalid Client to the existing 404", async () => {

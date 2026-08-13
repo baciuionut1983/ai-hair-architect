@@ -80,6 +80,7 @@ export async function GET(
     colorPlan: analysis.colorPlan ?? undefined,
     treatmentPlan: analysis.treatmentPlan ?? undefined,
     clarificationAnswers: analysis.clarificationAnswers,
+    imageAssetId: analysis.imageAssetId ?? null,
     createdAt: analysis.createdAt,
     updatedAt: analysis.updatedAt
   };

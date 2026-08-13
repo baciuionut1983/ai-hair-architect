@@ -69,9 +69,28 @@ describe("GET /api/v1/analysis/[id]/result", () => {
       recommendations: ["Document the service."],
       safetyNotes: ["Perform a strand test."],
       clarificationAnswers: [],
+      imageAssetId: null,
       createdAt: "2026-07-26T10:00:00.000Z",
       updatedAt: "2026-07-26T10:00:00.000Z",
     });
+  });
+
+  it("returns the original photo's imageAssetId when the Analysis was derived from a photo", async () => {
+    repositoryMock.findAnalysisForOwner.mockResolvedValue({ ...analysisRecord(), imageAssetId: "asset-1" });
+
+    const response = await invoke("analysis-1");
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.imageAssetId).toBe("asset-1");
+  });
+
+  it("returns null imageAssetId (never omitted) for a manual analysis with no photo", async () => {
+    const response = await invoke("analysis-1");
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.imageAssetId).toBeNull();
   });
 
   it("returns 404 when the Analysis does not exist", async () => {

@@ -202,6 +202,7 @@ export async function POST(
       technicalCutPlan: record.technicalCutPlan,
       colorPlan: record.colorPlan,
       treatmentPlan: record.treatmentPlan,
+      imageAssetId: record.imageAssetId ?? null,
     };
 
     return NextResponse.json({

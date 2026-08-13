@@ -335,6 +335,7 @@ function toAnalysisState(row: PrismaAnalysisRow): AnalysisState {
     ...(technicalCutPlan ? { technicalCutPlan } : {}),
     ...(colorPlan ? { colorPlan } : {}),
     ...(treatmentPlan ? { treatmentPlan } : {}),
+    ...(row.imageAssetId ? { imageAssetId: row.imageAssetId } : {}),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };

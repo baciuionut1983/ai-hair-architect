@@ -375,6 +375,17 @@ describe("POST .../review with finalizeToM8: true (M31 GO-4 single-Analysis-row 
     expect(body.result).toMatchObject({ analysisId: "real-analysis-1", phase: "ready" });
   });
 
+  it("returns the linked imageAssetId in the result, so the frontend can render the original photo", async () => {
+    serviceMock.reviewAnalysis.mockResolvedValue({ id: "image-analysis-1", status: "confirmed", analysisPayload: photoPayload() });
+    repositoryMock.createAnalysisForOwner.mockResolvedValue(analysisRecord({ imageAssetId: ASSET_ID }));
+
+    const response = await invoke(ASSET_ID, "token", { corrections: {}, finalizeToM8: true, goal: "refresh", hairType: "fine" });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.result.imageAssetId).toBe(ASSET_ID);
+  });
+
   it("maps the photo's texture-shaped hairType field to hairTexture, never to the engine's hairType (thickness)", async () => {
     serviceMock.reviewAnalysis.mockResolvedValue({
       id: "image-analysis-1",
