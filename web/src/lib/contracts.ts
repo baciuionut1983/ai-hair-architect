@@ -321,6 +321,65 @@ export interface AnalysisResultResponse extends AnalysisResponse {
   updatedAt: string;
 }
 
+// Conversational Professional AI milestone -- data provenance and
+// structured correction. Mirrors the Prisma AnalysisFieldSource enum
+// exactly (see prisma/schema.prisma); kept as a plain string union here so
+// contracts.ts never depends on @prisma/client.
+export type AnalysisFieldSource = "visual_ai" | "stylist_confirmed" | "client_reported" | "historical" | "assumed";
+
+// Only these two sources are ever accepted from an API caller -- "visual_ai"
+// (the photo pipeline), "historical" (a prior consultation), and "assumed"
+// (the engine's own fallback) are system-derived provenance, never
+// something a human request is allowed to directly assert.
+export type HumanCorrectionSource = "stylist_confirmed" | "client_reported";
+
+export interface AnalysisCorrectionRequest {
+  field: string;
+  value: string;
+  source: HumanCorrectionSource;
+  reason?: string;
+}
+
+export interface AnalysisCorrectionRecord {
+  id: string;
+  analysisId: string;
+  fieldName: string;
+  previousValue: unknown;
+  newValue: unknown;
+  source: AnalysisFieldSource;
+  reason: string | null;
+  createdAt: string;
+}
+
+export interface AnalysisCorrectionApplyResponse {
+  analysis: AnalysisResponse;
+  correction: AnalysisCorrectionRecord;
+}
+
+export interface ConsultationChatRequest {
+  message: string;
+}
+
+export interface ConsultationChatProposedCorrection {
+  field: string;
+  value: string;
+  reason: string;
+  source: HumanCorrectionSource;
+}
+
+export interface ConsultationMessageRecord {
+  id: string;
+  role: "stylist" | "assistant";
+  content: string;
+  proposedCorrection?: ConsultationChatProposedCorrection;
+  createdAt: string;
+}
+
+export interface ConsultationChatResponse {
+  reply: ConsultationMessageRecord;
+  needsClarification: boolean;
+}
+
 export interface ConsultationCreateRequest {
   clientId: string;
   analysisId: string;

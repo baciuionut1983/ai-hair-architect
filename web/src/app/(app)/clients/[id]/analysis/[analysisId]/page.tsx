@@ -11,6 +11,7 @@ import {
   TechnicalCutPlanView,
   TreatmentPlanView
 } from "@/components/analysis";
+import { ConsultationChat } from "@/components/consultation";
 import { Alert, Badge, Card, ErrorState, LoadingState } from "@/components/ui";
 
 import { formatOverallConfidenceLabel } from "./analysis-result-logic";
@@ -20,7 +21,7 @@ export default function AnalysisResultPage() {
   const params = useParams<{ id: string; analysisId: string }>();
   const clientId = params.id;
   const analysisId = params.analysisId;
-  const state = useAnalysisResult(analysisId);
+  const [state, reload] = useAnalysisResult(analysisId);
 
   const backLink = (
     <Link href={`/clients/${clientId}`} className="inline-flex items-center gap-1 text-sm text-muted hover:text-foreground">
@@ -98,6 +99,8 @@ export default function AnalysisResultPage() {
       {result.technicalCutPlan ? <TechnicalCutPlanView plan={result.technicalCutPlan} /> : null}
       {result.colorPlan ? <ColorPlanView plan={result.colorPlan} /> : null}
       {result.treatmentPlan ? <TreatmentPlanView plan={result.treatmentPlan} /> : null}
+
+      <ConsultationChat clientId={clientId} analysisId={analysisId} onCorrectionApplied={reload} />
     </div>
   );
 }

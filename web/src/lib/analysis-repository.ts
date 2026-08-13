@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 
-import { Prisma, type Analysis as PrismaAnalysisRow } from "@prisma/client";
+import { Prisma, type Analysis as PrismaAnalysisRow, type AnalysisFieldSource } from "@prisma/client";
 
 import type {
   AnalysisGoal,
@@ -39,8 +39,9 @@ import type {
   TreatmentPlan,
   TreatmentStep,
 } from "@/lib/contracts";
-import type { AnalysisCreateRecordInput, AnalysisState } from "@/lib/milestone2-types";
+import type { AnalysisCreateRecordInput, AnalysisEngineInput, AnalysisState } from "@/lib/milestone2-types";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
+import { recomputePlans } from "@/lib/analysis-engine";
 
 export const ANALYSIS_PERSISTENCE_ERROR_CODE = "ANALYSIS_PERSISTENCE_UNAVAILABLE";
 const MAX_ANALYSIS_TRANSACTION_ATTEMPTS = 3;
@@ -109,7 +110,84 @@ export type AnalysisTransition = (
   current: AnalysisState,
 ) => Omit<AnalysisState, "id" | "clientId" | "createdByUserId" | "createdAt" | "updatedAt">;
 
-type AnalysisTransaction = Pick<Prisma.TransactionClient, "analysis" | "client">;
+type AnalysisTransaction = Pick<Prisma.TransactionClient, "analysis" | "client" | "analysisCorrection">;
+
+// Conversational Professional AI milestone: the fields a correction (manual
+// or conversational) is ever allowed to change. Deliberately excludes
+// "goal" -- changing the fundamental service goal is a new analysis, not a
+// correction to an existing one.
+export const CORRECTABLE_ANALYSIS_FIELDS = [
+  "hairType",
+  "density",
+  "porosity",
+  "faceShape",
+  "headShape",
+  "hairLength",
+  "hairTexture",
+  "hairCondition",
+  "growthPattern",
+  "targetShape",
+  "desiredColorResult",
+  "grayPercentage",
+  "scalpCondition",
+  "treatmentGoalDetail",
+] as const;
+export type CorrectableAnalysisField = (typeof CORRECTABLE_ANALYSIS_FIELDS)[number];
+
+const CORRECTABLE_FIELD_ENUMS: Record<CorrectableAnalysisField, readonly string[]> = {
+  hairType: HAIR_TYPES,
+  density: LEVELS,
+  porosity: LEVELS,
+  faceShape: FACE_SHAPES,
+  headShape: HEAD_SHAPES,
+  hairLength: HAIR_LENGTHS,
+  hairTexture: HAIR_TEXTURES,
+  hairCondition: HAIR_CONDITIONS,
+  growthPattern: GROWTH_PATTERNS,
+  targetShape: TARGET_SHAPES,
+  desiredColorResult: DESIRED_COLOR_RESULTS,
+  grayPercentage: GRAY_PERCENTAGES,
+  scalpCondition: SCALP_CONDITIONS,
+  treatmentGoalDetail: TREATMENT_GOAL_DETAILS,
+};
+
+// A human caller (a form edit or a conversational message the stylist
+// confirmed) can only ever claim one of these two sources -- "visual_ai",
+// "historical", and "assumed" are system-derived provenance values, never
+// something an API caller is allowed to assert about their own input.
+export type HumanCorrectionSource = "stylist_confirmed" | "client_reported";
+
+export class AnalysisCorrectionValidationError extends Error {
+  constructor(
+    readonly code: "ANALYSIS_CORRECTION_INVALID_FIELD" | "ANALYSIS_CORRECTION_INVALID_VALUE",
+    message: string,
+  ) {
+    super(message);
+    this.name = "AnalysisCorrectionValidationError";
+  }
+}
+
+export function isCorrectableAnalysisField(field: string): field is CorrectableAnalysisField {
+  return (CORRECTABLE_ANALYSIS_FIELDS as readonly string[]).includes(field);
+}
+
+export interface ApplyAnalysisCorrectionInput {
+  field: CorrectableAnalysisField;
+  value: string;
+  source: HumanCorrectionSource;
+  reason?: string;
+}
+
+export interface AnalysisCorrectionRecord {
+  id: string;
+  analysisId: string;
+  fieldName: string;
+  previousValue: unknown;
+  newValue: unknown;
+  source: AnalysisFieldSource;
+  reason: string | null;
+  createdAt: string;
+}
 
 export async function createAnalysisForOwner(
   ownerUserId: string,
@@ -219,11 +297,153 @@ export async function clarifyAnalysisForOwner(
           ? (next.treatmentPlan as unknown as Prisma.InputJsonValue)
           : Prisma.JsonNull,
         clarificationAnswers: next.clarificationAnswers,
+        // Conversational AI milestone: analyzeWithClarifications can now
+        // derive hairCondition from the answers (see
+        // deriveHairConditionFromClarifications in analysis-engine.ts) --
+        // previously these profile fields were "write-once" (only ever set
+        // at creation) because no transition ever legitimately changed them.
+        // Persisting the full set here, not just hairCondition, closes that
+        // whole class of "engine computed a new value but the repository
+        // silently dropped it" gap rather than patching one field.
+        goal: next.goal,
+        hairType: next.hairType,
+        density: next.density,
+        porosity: next.porosity,
+        faceShape: next.faceShape ?? null,
+        headShape: next.headShape ?? null,
+        hairLength: next.hairLength ?? null,
+        hairTexture: next.hairTexture ?? null,
+        hairCondition: next.hairCondition ?? null,
+        growthPattern: next.growthPattern ?? null,
+        targetShape: next.targetShape ?? null,
+        desiredColorResult: next.desiredColorResult ?? null,
+        grayPercentage: next.grayPercentage ?? null,
+        scalpCondition: next.scalpCondition ?? null,
+        treatmentGoalDetail: next.treatmentGoalDetail ?? null,
       },
     });
 
     return toAnalysisState(updated);
   }));
+}
+
+// Conversational Professional AI milestone: "AI trebuie să poată fi
+// contrazis" -- a stylist (directly via a form, or via the conversational
+// endpoint proposing a change the stylist then confirms) can override any
+// single visually-observed or historical field. Every correction is
+// recorded as an AnalysisCorrection row (provenance: what changed, from
+// what, to what, why, and under what source) in the SAME transaction as the
+// Analysis update, and the plan is recomputed through recomputePlans --
+// the exact same deterministic engines analyzeInitial/analyzeWithClarifications
+// use, never a second implementation. Never silent: the correction row is
+// the permanent, queryable trace of "who said what changed and when."
+export async function applyAnalysisCorrection(
+  ownerUserId: string,
+  analysisId: string,
+  input: ApplyAnalysisCorrectionInput,
+): Promise<AnalysisState | null> {
+  const allowedValues = CORRECTABLE_FIELD_ENUMS[input.field];
+  if (!allowedValues.includes(input.value)) {
+    throw new AnalysisCorrectionValidationError(
+      "ANALYSIS_CORRECTION_INVALID_VALUE",
+      `"${input.value}" is not a valid value for ${input.field}.`,
+    );
+  }
+
+  return runAnalysisQuery(() => runSerializableTransaction(async (tx) => {
+    const row = await tx.analysis.findFirst({
+      where: m2AnalysisWhere(ownerUserId, analysisId),
+    });
+    if (!row) return null;
+
+    const current = toAnalysisState(row);
+    const previousValue = (current as unknown as Record<CorrectableAnalysisField, unknown>)[input.field] ?? null;
+
+    const updatedInput: AnalysisEngineInput = {
+      goal: current.goal,
+      hairType: current.hairType,
+      density: current.density,
+      porosity: current.porosity,
+      faceShape: current.faceShape,
+      headShape: current.headShape,
+      hairLength: current.hairLength,
+      hairTexture: current.hairTexture,
+      hairCondition: current.hairCondition,
+      growthPattern: current.growthPattern,
+      targetShape: current.targetShape,
+      desiredColorResult: current.desiredColorResult,
+      grayPercentage: current.grayPercentage,
+      scalpCondition: current.scalpCondition,
+      treatmentGoalDetail: current.treatmentGoalDetail,
+      [input.field]: input.value,
+    };
+
+    const { technicalCutPlan, colorPlan, treatmentPlan, recommendations, safetyNotes } = recomputePlans(updatedInput);
+
+    await tx.analysisCorrection.create({
+      data: {
+        id: randomUUID(),
+        analysisId: row.id,
+        ownerUserId,
+        clientId: row.clientId,
+        fieldName: input.field,
+        previousValue: (previousValue ?? Prisma.JsonNull) as Prisma.InputJsonValue,
+        newValue: input.value,
+        source: input.source,
+        reason: input.reason?.trim() || null,
+      },
+    });
+
+    const updated = await tx.analysis.update({
+      where: { id: row.id },
+      data: {
+        hairType: updatedInput.hairType,
+        density: updatedInput.density,
+        porosity: updatedInput.porosity,
+        faceShape: updatedInput.faceShape ?? null,
+        headShape: updatedInput.headShape ?? null,
+        hairLength: updatedInput.hairLength ?? null,
+        hairTexture: updatedInput.hairTexture ?? null,
+        hairCondition: updatedInput.hairCondition ?? null,
+        growthPattern: updatedInput.growthPattern ?? null,
+        targetShape: updatedInput.targetShape ?? null,
+        desiredColorResult: updatedInput.desiredColorResult ?? null,
+        grayPercentage: updatedInput.grayPercentage ?? null,
+        scalpCondition: updatedInput.scalpCondition ?? null,
+        treatmentGoalDetail: updatedInput.treatmentGoalDetail ?? null,
+        recommendations,
+        safetyNotes,
+        technicalCutPlan: technicalCutPlan ? (technicalCutPlan as unknown as Prisma.InputJsonValue) : Prisma.JsonNull,
+        colorPlan: colorPlan ? (colorPlan as unknown as Prisma.InputJsonValue) : Prisma.JsonNull,
+        treatmentPlan: treatmentPlan ? (treatmentPlan as unknown as Prisma.InputJsonValue) : Prisma.JsonNull,
+      },
+    });
+
+    return toAnalysisState(updated);
+  }));
+}
+
+export async function listAnalysisCorrections(
+  ownerUserId: string,
+  analysisId: string,
+): Promise<AnalysisCorrectionRecord[]> {
+  return runAnalysisQuery(async () => {
+    const rows = await prisma.analysisCorrection.findMany({
+      where: { analysisId, ownerUserId },
+      orderBy: { createdAt: "asc" },
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      analysisId: row.analysisId,
+      fieldName: row.fieldName,
+      previousValue: row.previousValue,
+      newValue: row.newValue,
+      source: row.source,
+      reason: row.reason,
+      createdAt: row.createdAt.toISOString(),
+    }));
+  });
 }
 
 export function isAnalysisPersistenceError(error: unknown): error is AnalysisPersistenceError {

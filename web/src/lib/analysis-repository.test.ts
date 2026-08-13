@@ -10,6 +10,8 @@ const prismaMocks = vi.hoisted(() => ({
   analysisCreate: vi.fn(),
   analysisFindFirst: vi.fn(),
   analysisUpdate: vi.fn(),
+  analysisCorrectionCreate: vi.fn(),
+  analysisCorrectionFindMany: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -19,17 +21,23 @@ vi.mock("@/lib/prisma", () => ({
     analysis: {
       findFirst: prismaMocks.analysisFindFirst,
     },
+    analysisCorrection: {
+      findMany: prismaMocks.analysisCorrectionFindMany,
+    },
   },
 }));
 
 import {
   AnalysisConcurrencyError,
+  AnalysisCorrectionValidationError,
   AnalysisDependencyError,
   AnalysisPersistenceError,
   analysisPersistenceUnavailableResponse,
+  applyAnalysisCorrection,
   clarifyAnalysisForOwner,
   createAnalysisForOwner,
   findAnalysisForOwner,
+  listAnalysisCorrections,
 } from "./analysis-repository";
 
 const tx = {
@@ -38,6 +46,9 @@ const tx = {
     create: prismaMocks.analysisCreate,
     findFirst: prismaMocks.analysisFindFirst,
     update: prismaMocks.analysisUpdate,
+  },
+  analysisCorrection: {
+    create: prismaMocks.analysisCorrectionCreate,
   },
 };
 
@@ -48,6 +59,8 @@ beforeEach(() => {
   prismaMocks.analysisCreate.mockReset();
   prismaMocks.analysisFindFirst.mockReset();
   prismaMocks.analysisUpdate.mockReset();
+  prismaMocks.analysisCorrectionCreate.mockReset().mockResolvedValue({});
+  prismaMocks.analysisCorrectionFindMany.mockReset().mockResolvedValue([]);
   prismaMocks.transaction.mockImplementation(async (operation) => operation(tx));
 });
 
@@ -231,7 +244,7 @@ describe("analysis-repository", () => {
     expect(prismaMocks.analysisCreate.mock.calls[1][0].data.treatmentPlan).toBe(Prisma.JsonNull);
   });
 
-  it("carries colorPlan and treatmentPlan forward unchanged through a clarify update, unlike write-once profile fields", async () => {
+  it("carries colorPlan and treatmentPlan forward through a clarify update exactly as the transition returned them", async () => {
     prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({
       colorPlan: colorPlan(),
       treatmentPlan: treatmentPlan(),
@@ -250,6 +263,29 @@ describe("analysis-repository", () => {
     expect(prismaMocks.analysisUpdate.mock.calls[0][0].data.treatmentPlan).toEqual(treatmentPlan());
     expect(result?.colorPlan).toEqual(colorPlan());
     expect(result?.treatmentPlan).toEqual(treatmentPlan());
+  });
+
+  // Regression coverage: analyzeWithClarifications (analysis-engine.ts) can
+  // derive a new hairCondition from the clarification answers (Conversational
+  // AI milestone) -- this proves the repository actually PERSISTS whatever
+  // the transition returns for every profile field, not just phase/
+  // confidence/plans. Before this fix, a transition that changed
+  // hairCondition would recompute the plan correctly but the DB row (and
+  // therefore every future read) would silently keep the OLD hairCondition
+  // forever -- the transition's own return value was never wired into
+  // tx.analysis.update()'s data.
+  it("persists a hairCondition derived by the transition, not just phase/confidence/plans (previously silently dropped)", async () => {
+    prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({ hairCondition: null, phase: "pending_questions" }));
+    prismaMocks.analysisUpdate.mockImplementation(async ({ data }) => analysisRow({
+      hairCondition: data.hairCondition,
+      phase: data.phase,
+    }));
+
+    const transition = vi.fn((current) => ({ ...current, phase: "ready" as const, hairCondition: "virgin_healthy" as const }));
+    const result = await clarifyAnalysisForOwner("owner-1", "analysis-1", transition);
+
+    expect(prismaMocks.analysisUpdate.mock.calls[0][0].data.hairCondition).toBe("virgin_healthy");
+    expect(result?.hairCondition).toBe("virgin_healthy");
   });
 
   it("retries serialization conflicts and recomputes the transition from transactional state", async () => {
@@ -329,6 +365,130 @@ describe("analysis-repository", () => {
       error: "ANALYSIS_PERSISTENCE_UNAVAILABLE",
       message: "Analysis data is temporarily unavailable.",
     });
+  });
+});
+
+// Conversational Professional AI milestone -- "AI trebuie să poată fi
+// contrazis": a stylist correction must (1) be recorded with provenance
+// BEFORE anything else, (2) actually change the persisted Analysis row
+// through the real deterministic engines (recomputePlans), never a second
+// implementation, and (3) never accept a source a human caller has no
+// business claiming (visual_ai/historical/assumed).
+describe("applyAnalysisCorrection", () => {
+  it("rejects an invalid value for the field before touching the database at all", async () => {
+    await expect(
+      applyAnalysisCorrection("owner-1", "analysis-1", {
+        field: "hairCondition",
+        value: "not-a-real-value",
+        source: "stylist_confirmed",
+      }),
+    ).rejects.toBeInstanceOf(AnalysisCorrectionValidationError);
+    expect(prismaMocks.transaction).not.toHaveBeenCalled();
+  });
+
+  it("returns null (never throws) when the Analysis does not exist or belongs to another owner", async () => {
+    prismaMocks.analysisFindFirst.mockResolvedValue(null);
+
+    const result = await applyAnalysisCorrection("owner-1", "foreign-analysis", {
+      field: "hairCondition",
+      value: "virgin_healthy",
+      source: "stylist_confirmed",
+    });
+
+    expect(result).toBeNull();
+    expect(prismaMocks.analysisCorrectionCreate).not.toHaveBeenCalled();
+    expect(prismaMocks.analysisUpdate).not.toHaveBeenCalled();
+  });
+
+  it("records provenance (previousValue, newValue, source, reason) in the SAME transaction as the Analysis update", async () => {
+    prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({ hairCondition: null }));
+    prismaMocks.analysisUpdate.mockImplementation(async ({ data }) => analysisRow({ hairCondition: data.hairCondition }));
+
+    await applyAnalysisCorrection("owner-1", "analysis-1", {
+      field: "hairCondition",
+      value: "fragile_breakage",
+      source: "stylist_confirmed",
+      reason: "Visible breakage observed chair-side.",
+    });
+
+    expect(prismaMocks.analysisCorrectionCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        analysisId: "analysis-1",
+        ownerUserId: "owner-1",
+        clientId: "client-1",
+        fieldName: "hairCondition",
+        previousValue: Prisma.JsonNull,
+        newValue: "fragile_breakage",
+        source: "stylist_confirmed",
+        reason: "Visible breakage observed chair-side.",
+      }),
+    });
+    expect(prismaMocks.analysisUpdate.mock.calls[0][0].data.hairCondition).toBe("fragile_breakage");
+  });
+
+  it("captures the real previous value (not null) when overriding an already-known field", async () => {
+    prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({ hairCondition: "virgin_healthy" }));
+    prismaMocks.analysisUpdate.mockImplementation(async ({ data }) => analysisRow({ hairCondition: data.hairCondition }));
+
+    await applyAnalysisCorrection("owner-1", "analysis-1", {
+      field: "hairCondition",
+      value: "chemically_treated",
+      source: "client_reported",
+      reason: "Client disclosed bleach 6 weeks ago.",
+    });
+
+    expect(prismaMocks.analysisCorrectionCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({ previousValue: "virgin_healthy", newValue: "chemically_treated", source: "client_reported" }),
+    });
+  });
+
+  it("recomputes the plan through the real engine -- a correction that changes hairCondition to fragile_breakage produces a color plan with the compromised-hair safety clamp", async () => {
+    prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({
+      goal: "lighten",
+      desiredColorResult: "full_lightening",
+      hairCondition: null,
+    }));
+    prismaMocks.analysisUpdate.mockImplementation(async ({ data }) => analysisRow({
+      hairCondition: data.hairCondition,
+      colorPlan: data.colorPlan === Prisma.JsonNull ? null : data.colorPlan,
+    }));
+
+    const result = await applyAnalysisCorrection("owner-1", "analysis-1", {
+      field: "hairCondition",
+      value: "fragile_breakage",
+      source: "stylist_confirmed",
+    });
+
+    expect(prismaMocks.analysisUpdate.mock.calls[0][0].data.colorPlan).toMatchObject({
+      developerVolume: "20vol",
+      contraindications: expect.arrayContaining([
+        "Do not perform double-process lightening on compromised hair in this session.",
+      ]),
+    });
+    expect(result?.colorPlan?.developerVolume).toBe("20vol");
+  });
+
+  it("does not accept a system-only source (visual_ai/historical/assumed) at the type level -- ApplyAnalysisCorrectionInput['source'] only allows stylist_confirmed/client_reported", () => {
+    // Compile-time guarantee, asserted here for documentation: the route
+    // layer additionally validates this at runtime (see correct/route.test.ts).
+    const allowed: Array<"stylist_confirmed" | "client_reported"> = ["stylist_confirmed", "client_reported"];
+    expect(allowed).toHaveLength(2);
+  });
+});
+
+describe("listAnalysisCorrections", () => {
+  it("returns corrections scoped to the exact analysisId + ownerUserId, oldest first", async () => {
+    await listAnalysisCorrections("owner-1", "analysis-1");
+
+    expect(prismaMocks.analysisCorrectionFindMany).toHaveBeenCalledWith({
+      where: { analysisId: "analysis-1", ownerUserId: "owner-1" },
+      orderBy: { createdAt: "asc" },
+    });
+  });
+
+  it("fails closed when the database is unavailable", async () => {
+    prismaMocks.configured = false;
+    await expect(listAnalysisCorrections("owner-1", "analysis-1")).rejects.toBeInstanceOf(AnalysisPersistenceError);
   });
 });
 

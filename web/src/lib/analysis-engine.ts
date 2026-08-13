@@ -71,14 +71,36 @@ function buildRecommendationsAndSafetyNotes(
   return { recommendations, safetyNotes };
 }
 
-export function analyzeInitial(input: AnalysisEngineInput): AnalysisCreateRecordInput {
-  const lowConfidence = isLikelyLowConfidence(input);
-  const confidenceScore = lowConfidence ? 0.62 : 0.87;
+export interface RecomputedPlans {
+  technicalCutPlan?: TechnicalCutPlan;
+  colorPlan?: ColorPlan;
+  treatmentPlan?: TreatmentPlan;
+  recommendations: string[];
+  safetyNotes: string[];
+}
+
+// The single place every deterministic engine is ever invoked from. Reused
+// by analyzeInitial, analyzeWithClarifications, and the Conversational AI
+// milestone's structured-correction flow (analysis-correction-repository.ts)
+// -- whatever changed the input (first computation, a clarification answer,
+// an explicit stylist correction, or a future input channel), the plan is
+// always derived through this exact same path. Never a second, parallel
+// implementation of "what plan does this profile produce."
+export function recomputePlans(input: AnalysisEngineInput): RecomputedPlans {
   const technicalCutPlan = shouldGenerateTechnicalCutPlan(input)
     ? generateTechnicalCutPlan(input)
     : undefined;
   const colorPlan = shouldGenerateColorPlan(input) ? generateColorPlan(input) : undefined;
   const treatmentPlan = shouldGenerateTreatmentPlan(input) ? generateTreatmentPlan(input) : undefined;
+  const { recommendations, safetyNotes } = buildRecommendationsAndSafetyNotes(technicalCutPlan, colorPlan, treatmentPlan);
+
+  return { technicalCutPlan, colorPlan, treatmentPlan, recommendations, safetyNotes };
+}
+
+export function analyzeInitial(input: AnalysisEngineInput): AnalysisCreateRecordInput {
+  const lowConfidence = isLikelyLowConfidence(input);
+  const confidenceScore = lowConfidence ? 0.62 : 0.87;
+  const { technicalCutPlan, colorPlan, treatmentPlan, recommendations, safetyNotes } = recomputePlans(input);
   const uncertaintyReasons = lowConfidence
     ? [
         "High-risk combination detected for target service.",
@@ -91,8 +113,6 @@ export function analyzeInitial(input: AnalysisEngineInput): AnalysisCreateRecord
         "Is there visible breakage or strong elasticity loss?"
       ]
     : [];
-
-  const { recommendations, safetyNotes } = buildRecommendationsAndSafetyNotes(technicalCutPlan, colorPlan, treatmentPlan);
 
   return {
     ...input,
@@ -217,13 +237,7 @@ export function analyzeWithClarifications(
     treatmentGoalDetail: current.treatmentGoalDetail
   };
 
-  const technicalCutPlan = shouldGenerateTechnicalCutPlan(updatedInput)
-    ? generateTechnicalCutPlan(updatedInput)
-    : undefined;
-  const colorPlan = shouldGenerateColorPlan(updatedInput) ? generateColorPlan(updatedInput) : undefined;
-  const treatmentPlan = shouldGenerateTreatmentPlan(updatedInput) ? generateTreatmentPlan(updatedInput) : undefined;
-
-  const { recommendations, safetyNotes } = buildRecommendationsAndSafetyNotes(technicalCutPlan, colorPlan, treatmentPlan);
+  const { technicalCutPlan, colorPlan, treatmentPlan, recommendations, safetyNotes } = recomputePlans(updatedInput);
 
   return {
     ...updatedInput,

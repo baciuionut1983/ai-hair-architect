@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import type { AnalysisResultResponse } from "@/lib/contracts";
 
@@ -12,9 +12,13 @@ export type AnalysisResultState =
 
 // Mirrors useClientProfile's fetch-effect shape (same directory pattern one
 // level up) so this stays consistent with how every other client-scoped
-// detail page in this app resolves its data.
-export function useAnalysisResult(analysisId: string): AnalysisResultState {
+// detail page in this app resolves its data. Also exposes a `reload` so a
+// correction applied via the consultation chat panel (which always goes
+// through the real POST /api/v1/analysis/{id}/correct endpoint, never this
+// hook) can trigger a refetch of the now-recomputed plan.
+export function useAnalysisResult(analysisId: string): [AnalysisResultState, () => void] {
   const [state, setState] = useState<AnalysisResultState>({ status: "loading" });
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -42,7 +46,9 @@ export function useAnalysisResult(analysisId: string): AnalysisResultState {
     return () => {
       cancelled = true;
     };
-  }, [analysisId]);
+  }, [analysisId, reloadToken]);
 
-  return state;
+  const reload = useCallback(() => setReloadToken((token) => token + 1), []);
+
+  return [state, reload];
 }

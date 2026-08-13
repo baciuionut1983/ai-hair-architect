@@ -156,6 +156,8 @@ model User {
   clientPhotos                  ClientPhoto[]
   clientFormulas                ClientFormula[]
   clientTreatments              ClientTreatment[]
+  analysisCorrections           AnalysisCorrection[]
+  consultationMessages          ConsultationMessage[]
 }
 
 model Session {
@@ -195,29 +197,31 @@ model AuthToken {
 }
 
 model Client {
-  id               String            @id @default(uuid())
-  ownerUserId      String
-  fullName         String            @db.VarChar(200)
-  email            String?           @db.VarChar(320)
-  phone            String?           @db.VarChar(40)
-  notes            String?           @db.VarChar(4000)
-  deletedAt        DateTime?         @db.Timestamp(6)
-  createdAt        DateTime          @default(now()) @db.Timestamp(6)
-  updatedAt        DateTime          @updatedAt @db.Timestamp(6)
-  owner            User              @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
-  analyses         Analysis[]
-  consultations    Consultation[]
-  appointments     Appointment[]
-  clientPhotos     ClientPhoto[]
-  clientFormulas   ClientFormula[]
-  clientTreatments ClientTreatment[]
+  id                   String                @id @default(uuid())
+  ownerUserId          String
+  fullName             String                @db.VarChar(200)
+  email                String?               @db.VarChar(320)
+  phone                String?               @db.VarChar(40)
+  notes                String?               @db.VarChar(4000)
+  deletedAt            DateTime?             @db.Timestamp(6)
+  createdAt            DateTime              @default(now()) @db.Timestamp(6)
+  updatedAt            DateTime              @updatedAt @db.Timestamp(6)
+  owner                User                  @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  analyses             Analysis[]
+  consultations        Consultation[]
+  appointments         Appointment[]
+  clientPhotos         ClientPhoto[]
+  clientFormulas       ClientFormula[]
+  clientTreatments     ClientTreatment[]
+  analysisCorrections  AnalysisCorrection[]
+  consultationMessages ConsultationMessage[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
 }
 
 model Analysis {
-  id                   String            @id
+  id                   String                @id
   clientId             String
   ownerUserId          String
   goal                 String
@@ -250,15 +254,17 @@ model Analysis {
   imageAnalysisId      String?
   m8DraftCreatedAt     DateTime?
   m8FinalizedAt        DateTime?
-  createdAt            DateTime          @default(now())
-  updatedAt            DateTime          @updatedAt
-  owner                User              @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  client               Client            @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
-  imageAsset           ImageAsset?       @relation(fields: [imageAssetId], references: [id], onDelete: SetNull)
-  imageAnalysis        ImageAnalysis?    @relation(fields: [imageAnalysisId], references: [id], onDelete: SetNull)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  owner                User                  @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client               Client                @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  imageAsset           ImageAsset?           @relation(fields: [imageAssetId], references: [id], onDelete: SetNull)
+  imageAnalysis        ImageAnalysis?        @relation(fields: [imageAnalysisId], references: [id], onDelete: SetNull)
   consultations        Consultation[]
   sourcedFormulas      ClientFormula[]
   sourcedTreatments    ClientTreatment[]
+  corrections          AnalysisCorrection[]
+  consultationMessages ConsultationMessage[]
 
   @@unique([id, ownerUserId, clientId])
   @@index([ownerUserId])
@@ -336,6 +342,76 @@ model ClientTreatment {
 
   @@index([clientId, ownerUserId, createdAt, id])
   @@index([sourceAnalysisId])
+}
+
+enum AnalysisFieldSource {
+  visual_ai
+  stylist_confirmed
+  client_reported
+  historical
+  assumed
+}
+
+// Conversational Professional AI milestone: an append-only, never-mutated
+// audit trail of every structured field correction ever applied to an
+// Analysis -- whoever/whatever triggered it (a manual form edit, a
+// conversational message the stylist confirmed, a future input channel).
+// Distinct from ImageAnalysisReview (M18), which is scoped to the pre-M8
+// draft ImageAnalysis stage before a real Analysis exists; this is scoped
+// to the final Analysis (post-clarification, with technicalCutPlan/
+// colorPlan/treatmentPlan). No correctedByUserId: this product has no real
+// multi-stylist workspace today (see WorkspaceRecord in contracts.ts --
+// legacy/in-memory only, no Prisma model), so ownerUserId is always the
+// acting user; adding a separate attribution column now would model a
+// capability that does not actually exist yet.
+model AnalysisCorrection {
+  id            String              @id @default(uuid())
+  analysisId    String
+  ownerUserId   String
+  clientId      String
+  fieldName     String              @db.VarChar(64)
+  previousValue Json?
+  newValue      Json
+  source        AnalysisFieldSource
+  reason        String?             @db.VarChar(2000)
+  createdAt     DateTime            @default(now()) @db.Timestamp(6)
+
+  owner    User     @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client   Client   @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  analysis Analysis @relation(fields: [analysisId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([analysisId, ownerUserId, clientId, createdAt])
+  @@index([ownerUserId, createdAt])
+}
+
+enum ConsultationMessageRole {
+  stylist
+  assistant
+}
+
+// Conversational AI history -- client-scoped rather than strictly
+// analysis-scoped (a conversation may start before a specific Analysis
+// exists, e.g. discussing goals before the first photo). Append-only, never
+// mutated. proposedCorrection is a suggestion only, exactly as returned by
+// the AI provider -- it is never applied automatically; only an explicit
+// call to POST /api/v1/analysis/{id}/correct (creating a real
+// AnalysisCorrection row) ever changes professional data.
+model ConsultationMessage {
+  id                 String                  @id @default(uuid())
+  ownerUserId        String
+  clientId           String
+  analysisId         String?
+  role               ConsultationMessageRole
+  content            String                  @db.VarChar(4000)
+  proposedCorrection Json?
+  createdAt          DateTime                @default(now()) @db.Timestamp(6)
+
+  owner    User      @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client   Client    @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  analysis Analysis? @relation(fields: [analysisId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([ownerUserId, clientId, createdAt])
+  @@index([analysisId, ownerUserId, clientId])
 }
 
 model Consultation {

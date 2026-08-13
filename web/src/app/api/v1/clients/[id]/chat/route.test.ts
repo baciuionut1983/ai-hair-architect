@@ -1,0 +1,207 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
+const clientRepoMock = vi.hoisted(() => ({ resolveOwnedClient: vi.fn() }));
+const serviceMock = vi.hoisted(() => ({
+  CONSULTATION_CHAT_RESULT_HTTP_STATUS: {
+    PROCESSING_DISABLED: 503,
+    PROVIDER_CONFIGURATION_INVALID: 503,
+    ANALYSIS_NOT_FOUND: 404,
+    PROVIDER_TIMEOUT: 504,
+    PROVIDER_UNAVAILABLE: 503,
+    PROVIDER_AUTHENTICATION_FAILURE: 502,
+    MALFORMED_PROVIDER_RESPONSE: 502,
+    PERSISTENCE_FAILURE: 500,
+    INTERNAL_PROCESSING_FAILURE: 500,
+  },
+  sendConsultationMessage: vi.fn(),
+}));
+const messageRepoMock = vi.hoisted(() => ({
+  isConsultationMessagePersistenceError: vi.fn(() => false),
+  listRecentConsultationMessages: vi.fn(),
+}));
+const hardeningMock = vi.hoisted(() => ({
+  checkRateLimit: vi.fn(),
+  ensureRequestId: vi.fn(),
+}));
+
+vi.mock("@/lib/session-request-auth", () => authMock);
+vi.mock("@/lib/client-repository", () => clientRepoMock);
+vi.mock("@/lib/consultation-chat-service", () => serviceMock);
+vi.mock("@/lib/consultation-message-repository", () => messageRepoMock);
+vi.mock("@/lib/hardening", () => hardeningMock);
+
+import { GET, POST } from "./route";
+
+const OWNER = { id: "owner-1", email: "owner@example.com", role: "professional", locale: "en" };
+const CLIENT = { id: "client-1", ownerUserId: "owner-1", fullName: "Jane Doe", email: "", phone: "", notes: "", createdAt: "", updatedAt: "" };
+
+function invoke(id: string, body: unknown): Promise<Response> {
+  return POST(
+    new Request(`http://localhost/api/v1/clients/${id}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+    { params: Promise.resolve({ id }) },
+  );
+}
+
+function invokeGet(id: string): Promise<Response> {
+  return GET(new Request(`http://localhost/api/v1/clients/${id}/chat`), { params: Promise.resolve({ id }) });
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  authMock.authenticateSessionRequest.mockResolvedValue(OWNER);
+  clientRepoMock.resolveOwnedClient.mockResolvedValue(CLIENT);
+  hardeningMock.checkRateLimit.mockReturnValue({ allowed: true, remaining: 29 });
+  hardeningMock.ensureRequestId.mockReturnValue("req-fixed");
+  serviceMock.sendConsultationMessage.mockResolvedValue({
+    outcome: "succeeded",
+    reply: { id: "msg-2", role: "assistant", content: "Got it!", proposedCorrection: null, createdAt: "2026-08-14T10:00:00.000Z" },
+    needsClarification: false,
+  });
+  messageRepoMock.listRecentConsultationMessages.mockResolvedValue([]);
+});
+
+describe("POST /api/v1/clients/[id]/chat", () => {
+  it("returns 401 without a cookie, never touching the client repository or the service", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    expect(response.status).toBe(401);
+    expect(clientRepoMock.resolveOwnedClient).not.toHaveBeenCalled();
+    expect(serviceMock.sendConsultationMessage).not.toHaveBeenCalled();
+  });
+
+  it("returns 429 when the rate limit is exceeded, never touching the service", async () => {
+    hardeningMock.checkRateLimit.mockReturnValue({ allowed: false, remaining: 0 });
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    expect(response.status).toBe(429);
+    expect(serviceMock.sendConsultationMessage).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when the client does not exist or belongs to another owner -- P: cross-owner isolation enforced before any chat logic runs", async () => {
+    clientRepoMock.resolveOwnedClient.mockResolvedValue(null);
+
+    const response = await invoke("foreign-client", { message: "hi" });
+
+    expect(response.status).toBe(404);
+    expect(serviceMock.sendConsultationMessage).not.toHaveBeenCalled();
+  });
+
+  it("passes through a persistence-unavailable Response from resolveOwnedClient unchanged", async () => {
+    const persistenceResponse = Response.json({ error: "CLIENT_PERSISTENCE_UNAVAILABLE" }, { status: 503 });
+    clientRepoMock.resolveOwnedClient.mockResolvedValue(persistenceResponse);
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    expect(response.status).toBe(503);
+    expect(serviceMock.sendConsultationMessage).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when message is missing or blank", async () => {
+    const response = await invoke("client-1", { message: "   " });
+    expect(response.status).toBe(400);
+    expect(serviceMock.sendConsultationMessage).not.toHaveBeenCalled();
+  });
+
+  it("passes the authenticated owner, resolved client, trimmed message, and optional analysisId to the service", async () => {
+    await invoke("client-1", { message: "  Her density is low  ", analysisId: "analysis-1" });
+
+    expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
+      "owner-1",
+      CLIENT,
+      "Her density is low",
+      "analysis-1",
+    );
+  });
+
+  it("maps every failed outcome code to its documented HTTP status", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({ outcome: "failed", code: "PROVIDER_TIMEOUT" });
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    expect(response.status).toBe(504);
+    const body = await response.json();
+    expect(body.error).toBe("PROVIDER_TIMEOUT");
+  });
+
+  it("H: does not fabricate a reply when the provider is unavailable/misconfigured", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({ outcome: "failed", code: "PROCESSING_DISABLED" });
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toEqual({ error: "PROCESSING_DISABLED" });
+  });
+
+  it("on success, returns the assistant's reply and needsClarification", async () => {
+    const response = await invoke("client-1", { message: "hi" });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({
+      reply: { id: "msg-2", role: "assistant", content: "Got it!", createdAt: "2026-08-14T10:00:00.000Z" },
+      needsClarification: false,
+    });
+  });
+
+  it("includes proposedCorrection in the response when the reply carries one -- E: the correction is visible to the caller as a proposal, never marked as applied", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({
+      outcome: "succeeded",
+      reply: {
+        id: "msg-2",
+        role: "assistant",
+        content: "Noted.",
+        proposedCorrection: { field: "density", value: "low", reason: "Stylist observation.", source: "stylist_confirmed" },
+        createdAt: "2026-08-14T10:00:00.000Z",
+      },
+      needsClarification: false,
+    });
+
+    const response = await invoke("client-1", { message: "Her density is low" });
+
+    const body = await response.json();
+    expect(body.reply.proposedCorrection).toEqual({ field: "density", value: "low", reason: "Stylist observation.", source: "stylist_confirmed" });
+  });
+});
+
+describe("GET /api/v1/clients/[id]/chat (history)", () => {
+  it("returns 401 without a cookie", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await invokeGet("client-1");
+
+    expect(response.status).toBe(401);
+    expect(messageRepoMock.listRecentConsultationMessages).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 for a foreign/nonexistent client -- P: cross-owner isolation", async () => {
+    clientRepoMock.resolveOwnedClient.mockResolvedValue(null);
+
+    const response = await invokeGet("foreign-client");
+
+    expect(response.status).toBe(404);
+    expect(messageRepoMock.listRecentConsultationMessages).not.toHaveBeenCalled();
+  });
+
+  it("F: client memory survives -- returns persisted history for the owned client", async () => {
+    messageRepoMock.listRecentConsultationMessages.mockResolvedValue([
+      { id: "msg-1", role: "stylist", content: "Hi", proposedCorrection: null, createdAt: "2026-08-14T09:00:00.000Z" },
+      { id: "msg-2", role: "assistant", content: "Hello!", proposedCorrection: null, createdAt: "2026-08-14T09:01:00.000Z" },
+    ]);
+
+    const response = await invokeGet("client-1");
+
+    expect(response.status).toBe(200);
+    expect(messageRepoMock.listRecentConsultationMessages).toHaveBeenCalledWith("owner-1", "client-1", 30);
+    const body = await response.json();
+    expect(body.messages).toHaveLength(2);
+  });
+});

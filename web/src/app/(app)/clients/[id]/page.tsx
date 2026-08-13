@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
+import { ConsultationChat } from "@/components/consultation";
 import { Alert, Button, Card, EmptyState, ErrorState, LoadingState, Tabs } from "@/components/ui";
 import type { TabItem } from "@/components/ui";
 import type {
@@ -33,7 +34,8 @@ const TAB_ITEMS: TabItem[] = [
   { value: "overview", label: "Overview" },
   { value: "history", label: "History" },
   { value: "appointments", label: "Appointments" },
-  { value: "ai-analysis", label: "AI Analysis" }
+  { value: "ai-analysis", label: "AI Analysis" },
+  { value: "consult", label: "Consult AI" }
 ];
 
 function formatDate(iso: string): string {
@@ -171,6 +173,7 @@ export default function ClientDetailPage() {
           consultations={historyState.status === "ready" ? historyState.consultations : []}
         />
       ) : null}
+      {activeTab === "consult" ? <ConsultationChat clientId={clientId} /> : null}
     </div>
   );
 }
