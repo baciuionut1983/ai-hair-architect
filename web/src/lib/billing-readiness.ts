@@ -126,7 +126,7 @@ function validateStripeSecretKey(env: NodeJS.ProcessEnv): BillingReadinessResult
   return null;
 }
 
-function validateStripeWebhookSecret(env: NodeJS.ProcessEnv): BillingReadinessResult | null {
+export function validateStripeWebhookSecret(env: NodeJS.ProcessEnv): BillingReadinessResult | null {
   const value = String(env.STRIPE_WEBHOOK_SECRET ?? "").trim();
   if (!value) return fail("BILLING_READINESS_WEBHOOK_SECRET_MISSING");
   if (!WEBHOOK_SECRET_PATTERN.test(value)) return fail("BILLING_READINESS_WEBHOOK_SECRET_MALFORMED");

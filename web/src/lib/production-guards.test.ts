@@ -14,7 +14,7 @@ describe("production guards", () => {
     expect(isProductionRuntime({ NODE_ENV: "development" })).toBe(false);
   });
 
-  it("blocks billing webhook unconditionally in production", () => {
+  it("blocks billing webhook in production when STRIPE_WEBHOOK_SECRET is missing", () => {
     const error = getBillingWebhookProductionError({ NODE_ENV: "production" });
 
     expect(error).toMatchObject({
@@ -23,7 +23,28 @@ describe("production guards", () => {
     });
   });
 
-  it("does not block billing webhook in non-production", () => {
+  it("blocks billing webhook in production when STRIPE_WEBHOOK_SECRET is present but malformed", () => {
+    const error = getBillingWebhookProductionError({
+      NODE_ENV: "production",
+      STRIPE_WEBHOOK_SECRET: "not-a-real-webhook-secret",
+    });
+
+    expect(error).toMatchObject({
+      code: PRODUCTION_POLICY_ERROR_CODES.BILLING_WEBHOOK_DISABLED,
+      httpStatus: 503,
+    });
+  });
+
+  it("does not block billing webhook in production once STRIPE_WEBHOOK_SECRET is present and correctly formatted -- the real Stripe signature check runs next, unchanged", () => {
+    const error = getBillingWebhookProductionError({
+      NODE_ENV: "production",
+      STRIPE_WEBHOOK_SECRET: "whsec_test1234567890ABCDEFGHIJKLM",
+    });
+
+    expect(error).toBeNull();
+  });
+
+  it("does not block billing webhook in non-production, regardless of STRIPE_WEBHOOK_SECRET", () => {
     const error = getBillingWebhookProductionError({ NODE_ENV: "test" });
     expect(error).toBeNull();
   });

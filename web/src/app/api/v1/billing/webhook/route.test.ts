@@ -24,6 +24,7 @@ import { POST } from "./route";
 
 const mutableEnv = process.env as Record<string, string | undefined>;
 const originalNodeEnv = process.env.NODE_ENV;
+const originalStripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
 beforeEach(() => {
   hardeningMock.checkRateLimit.mockReset().mockReturnValue({ allowed: true, remaining: 59 });
@@ -34,6 +35,7 @@ beforeEach(() => {
 
 afterEach(() => {
   mutableEnv.NODE_ENV = originalNodeEnv;
+  mutableEnv.STRIPE_WEBHOOK_SECRET = originalStripeWebhookSecret;
 });
 
 function buildRequest(options: {
@@ -53,8 +55,9 @@ function buildRequest(options: {
 }
 
 describe("billing webhook route", () => {
-  it("blocks endpoint unconditionally in production without touching rate limiting or the processor", async () => {
+  it("blocks endpoint in production when STRIPE_WEBHOOK_SECRET is missing, without touching rate limiting or the processor", async () => {
     mutableEnv.NODE_ENV = "production";
+    mutableEnv.STRIPE_WEBHOOK_SECRET = undefined;
 
     const response = await POST(buildRequest());
 
@@ -64,6 +67,50 @@ describe("billing webhook route", () => {
     });
     expect(hardeningMock.checkRateLimit).not.toHaveBeenCalled();
     expect(processorMock.processBillingWebhookRequest).not.toHaveBeenCalled();
+  });
+
+  it("blocks endpoint in production when STRIPE_WEBHOOK_SECRET is malformed, without touching rate limiting or the processor", async () => {
+    mutableEnv.NODE_ENV = "production";
+    mutableEnv.STRIPE_WEBHOOK_SECRET = "not-a-real-webhook-secret";
+
+    const response = await POST(buildRequest());
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "PRODUCTION_POLICY_BILLING_WEBHOOK_DISABLED",
+    });
+    expect(hardeningMock.checkRateLimit).not.toHaveBeenCalled();
+    expect(processorMock.processBillingWebhookRequest).not.toHaveBeenCalled();
+  });
+
+  it("in production, once STRIPE_WEBHOOK_SECRET is present and correctly formatted, the request reaches the real processor -- provider authenticity verification (Stripe signature check) decides pass/fail from there, unchanged", async () => {
+    mutableEnv.NODE_ENV = "production";
+    mutableEnv.STRIPE_WEBHOOK_SECRET = "whsec_test1234567890ABCDEFGHIJKLM";
+    processorMock.processBillingWebhookRequest.mockResolvedValue({
+      httpStatus: 200,
+      code: "BILLING_WEBHOOK_EVENT_PROCESSED",
+    });
+
+    const response = await POST(buildRequest());
+
+    expect(response.status).toBe(200);
+    expect(processorMock.processBillingWebhookRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("in production with a valid STRIPE_WEBHOOK_SECRET, a request the processor rejects as an invalid signature is still rejected -- the new guard grants no bypass of the existing cryptographic check", async () => {
+    mutableEnv.NODE_ENV = "production";
+    mutableEnv.STRIPE_WEBHOOK_SECRET = "whsec_test1234567890ABCDEFGHIJKLM";
+    processorMock.processBillingWebhookRequest.mockResolvedValue({
+      httpStatus: 400,
+      code: "BILLING_WEBHOOK_SIGNATURE_INVALID",
+    });
+
+    const response = await POST(buildRequest());
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "BILLING_WEBHOOK_SIGNATURE_INVALID",
+    });
   });
 
   it("reads the raw body exactly once and forwards it with the Stripe-Signature header to the processor", async () => {

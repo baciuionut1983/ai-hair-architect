@@ -1,5 +1,5 @@
 import { evaluateCheckoutReadiness } from "@/lib/billing-checkout-readiness";
-import { evaluateBillingReadiness } from "@/lib/billing-readiness";
+import { evaluateBillingReadiness, validateStripeWebhookSecret } from "@/lib/billing-readiness";
 import {
   validateRuntimeProductionEnvironment,
   type EnvValidationIssue,
@@ -58,6 +58,19 @@ export function isProductionRuntime(env: NodeJS.ProcessEnv = process.env): boole
   return String(env.NODE_ENV ?? "").trim() === "production";
 }
 
+// Provider authenticity verification (Stripe signature check via
+// stripe.webhooks.constructEvent, in billing-webhook-processor.ts) is
+// implemented and tested -- this guard no longer blocks unconditionally.
+// It now fails closed on exactly one precondition: a present,
+// correctly-formatted STRIPE_WEBHOOK_SECRET, reusing the same validation
+// billing-readiness.ts's readiness report already applies, so the two can
+// never drift apart. When that precondition holds, the request proceeds to
+// the real cryptographic signature verification unchanged -- this guard
+// grants no bypass of it. Deliberately does NOT also require a live-mode
+// STRIPE_SECRET_KEY: that is a separate, already-existing readiness signal
+// (BILLING_WEBHOOK_AUTHENTICITY_READY can still report it), not a
+// hard block here, so a deliberate Stripe Sandbox/TEST-mode production
+// trial (as opposed to no verification at all) is not itself prevented.
 export function getBillingWebhookProductionError(
   env: NodeJS.ProcessEnv = process.env
 ): ProductionPolicyError | null {
@@ -65,12 +78,15 @@ export function getBillingWebhookProductionError(
     return null;
   }
 
-  return {
-    code: PRODUCTION_POLICY_ERROR_CODES.BILLING_WEBHOOK_DISABLED,
-    message:
-      "Billing webhook is disabled in production until provider authenticity verification is implemented.",
-    httpStatus: 503
-  };
+  if (validateStripeWebhookSecret(env)) {
+    return {
+      code: PRODUCTION_POLICY_ERROR_CODES.BILLING_WEBHOOK_DISABLED,
+      message: "Billing webhook is disabled in production: STRIPE_WEBHOOK_SECRET is not configured or not valid.",
+      httpStatus: 503
+    };
+  }
+
+  return null;
 }
 
 export async function evaluateReadiness(input: {
