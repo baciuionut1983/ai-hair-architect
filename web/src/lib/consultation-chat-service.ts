@@ -68,9 +68,31 @@ export async function sendConsultationMessage(
     const env = dependencies.env ?? process.env;
     const config = resolveImageAnalysisProviderConfig(env);
     if (config.status === "disabled") {
+      // Distinct from "invalid" -- disabled means AI_ANALYSIS_PROVIDER is
+      // simply unset, a deliberate/expected state (e.g. a preview
+      // environment), not a misconfiguration. No issue codes to log.
+      logConsultationChatFailure({
+        stage: "config_check",
+        resultCode: "PROCESSING_DISABLED",
+        ownerUserId,
+        clientId: client.id,
+        analysisId,
+        durationMs: Date.now() - startedAt,
+      });
       return failure("PROCESSING_DISABLED");
     }
     if (config.status === "invalid") {
+      logConsultationChatFailure({
+        stage: "config_check",
+        resultCode: "PROVIDER_CONFIGURATION_INVALID",
+        ownerUserId,
+        clientId: client.id,
+        analysisId,
+        durationMs: Date.now() - startedAt,
+        // Safe: only the env variable NAME and a fixed issue code (e.g.
+        // "AI_ANALYSIS_API_KEY_REQUIRED") -- never the variable's value.
+        configIssueCodes: config.issues.map((issue) => issue.code).join(","),
+      });
       return failure("PROVIDER_CONFIGURATION_INVALID");
     }
 
@@ -321,6 +343,7 @@ function failure(code: ConsultationChatResultCode): SendConsultationMessageResul
 // application-level one from Railway logs alone.
 function logConsultationChatFailure(input: {
   stage:
+    | "config_check"
     | "analysis_lookup"
     | "history_read"
     | "stylist_message_write"
@@ -337,6 +360,7 @@ function logConsultationChatFailure(input: {
   providerModelVersion?: string;
   providerErrorCode?: string;
   providerErrorStatus?: number;
+  configIssueCodes?: string;
   errorName?: string;
 }): void {
   console.error(
@@ -353,6 +377,7 @@ function logConsultationChatFailure(input: {
       providerModelVersion: input.providerModelVersion ?? null,
       providerErrorCode: input.providerErrorCode ?? null,
       providerErrorStatus: input.providerErrorStatus ?? null,
+      configIssueCodes: input.configIssueCodes ?? null,
       errorName: input.errorName ?? null,
     }),
   );

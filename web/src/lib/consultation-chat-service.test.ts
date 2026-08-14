@@ -109,6 +109,44 @@ describe("sendConsultationMessage", () => {
     expect(messageRepoMock.recordConsultationMessage).not.toHaveBeenCalled();
   });
 
+  // Observability regression: PROCESSING_DISABLED and
+  // PROVIDER_CONFIGURATION_INVALID both map to the same 503 a stylist sees
+  // as "not available right now" -- but until now, neither branch emitted
+  // a structured log line at all, so a production 503 caused by a
+  // config problem (as opposed to a real Gemini-side failure) would leave
+  // zero trace in Railway logs. Both now log via the same
+  // gate:"CONSULTATION_CHAT" convention as every other failure stage.
+  it("logs a structured, safe-fields diagnostic for PROCESSING_DISABLED (no provider configured)", async () => {
+    const logSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: {} });
+
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('"gate":"CONSULTATION_CHAT"'),
+    );
+    const logged = JSON.parse(logSpy.mock.calls[0][0] as string);
+    expect(logged).toMatchObject({ stage: "config_check", resultCode: "PROCESSING_DISABLED", ownerUserId: "owner-1", clientId: "client-a" });
+    logSpy.mockRestore();
+  });
+
+  it("logs the specific (non-secret) config issue codes for PROVIDER_CONFIGURATION_INVALID (e.g. provider set but no API key)", async () => {
+    const logSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, {
+      env: { AI_ANALYSIS_PROVIDER: "gemini" }, // model/API key deliberately missing
+    });
+
+    expect(result).toEqual({ outcome: "failed", code: "PROVIDER_CONFIGURATION_INVALID" });
+    const logged = JSON.parse(logSpy.mock.calls[0][0] as string);
+    expect(logged.stage).toBe("config_check");
+    expect(logged.resultCode).toBe("PROVIDER_CONFIGURATION_INVALID");
+    expect(logged.configIssueCodes).toContain("AI_ANALYSIS_API_KEY_REQUIRED");
+    expect(logged.configIssueCodes).toContain("AI_ANALYSIS_MODEL_REQUIRED");
+    // Never the key/model value itself, only fixed issue codes.
+    expect(JSON.stringify(logged)).not.toContain("key");
+    logSpy.mockRestore();
+  });
+
   it("returns ANALYSIS_NOT_FOUND when an analysisId is given but does not belong to this owner/client", async () => {
     analysisRepoMock.findAnalysisForOwner.mockResolvedValue(null);
 
