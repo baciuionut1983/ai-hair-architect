@@ -110,9 +110,24 @@ export interface ConsultationChatProposedCorrection {
   source: "stylist_confirmed" | "client_reported";
 }
 
+// A candidate ProfessionalMemory the AI recognized in this message --
+// ALWAYS only a suggestion, exactly like proposedCorrection. `action`
+// reuses professional-memory-repository.ts's MEMORY_PROPOSAL_ACTIONS
+// vocabulary directly (imported by the Gemini provider for its schema
+// enum), so what the model is even allowed to propose can never drift from
+// what POST /api/v1/clients/{id}/memories actually accepts. Nothing
+// implementing this interface is ever allowed to create the memory itself
+// -- only an explicit, separate confirm call does that.
+export interface ConsultationChatProposedMemory {
+  action: "save_client_memory" | "save_professional_rule" | "mark_preference" | "save_outcome";
+  content: string;
+  reason: string;
+}
+
 export interface ConsultationChatResult {
   reply: string;
   proposedCorrection?: ConsultationChatProposedCorrection;
+  proposedMemory?: ConsultationChatProposedMemory;
   needsClarification: boolean;
 }
 

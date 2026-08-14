@@ -193,6 +193,7 @@ export async function sendConsultationMessage(
         role: "assistant",
         content: result.reply,
         proposedCorrection: result.proposedCorrection ?? undefined,
+        proposedMemory: result.proposedMemory ?? undefined,
       });
     } catch {
       logConsultationChatFailure({

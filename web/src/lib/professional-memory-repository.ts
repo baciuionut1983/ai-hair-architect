@@ -48,6 +48,35 @@ export interface MemoryRecord {
   createdAt: string;
 }
 
+export interface MemoryProposalActionConfig {
+  scope: ProfessionalMemoryScope;
+  kind: ProfessionalMemoryKind;
+}
+
+// The single source of truth for what a "memory proposal" is allowed to be
+// -- both POST /api/v1/clients/[id]/memories (the manual Teach-AI panel)
+// and the Gemini chat provider's proposedMemory schema import this exact
+// map, so the two can never drift out of sync. Deliberately excludes
+// "shared_knowledge" scope and "ai_observation" kind: nothing in this
+// product creates either today -- a professional observation the AI
+// recognizes in conversation is always attributed to the stylist who
+// confirms it (client_specific/fact or stylist_specific/professional_rule
+// or preference), never invented as if the AI itself observed it.
+export const MEMORY_PROPOSAL_ACTIONS = {
+  save_client_memory: { scope: "client_specific", kind: "fact" },
+  save_professional_rule: { scope: "stylist_specific", kind: "professional_rule" },
+  mark_preference: { scope: "stylist_specific", kind: "preference" },
+  save_outcome: { scope: "client_specific", kind: "outcome" },
+} as const satisfies Record<string, MemoryProposalActionConfig>;
+
+export type MemoryProposalAction = keyof typeof MEMORY_PROPOSAL_ACTIONS;
+
+export const MEMORY_PROPOSAL_ACTION_KEYS = Object.keys(MEMORY_PROPOSAL_ACTIONS) as MemoryProposalAction[];
+
+export function isMemoryProposalAction(value: string): value is MemoryProposalAction {
+  return Object.prototype.hasOwnProperty.call(MEMORY_PROPOSAL_ACTIONS, value);
+}
+
 async function runMemoryQuery<T>(operation: () => Promise<T>): Promise<T> {
   if (!isDatabaseConfigured()) throw new ProfessionalMemoryPersistenceError();
 

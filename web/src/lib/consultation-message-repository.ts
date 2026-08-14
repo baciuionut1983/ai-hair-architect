@@ -24,6 +24,7 @@ export interface ConsultationMessageRow {
   role: ConsultationMessageRole;
   content: string;
   proposedCorrection: unknown;
+  proposedMemory: unknown;
   createdAt: string;
 }
 
@@ -34,6 +35,7 @@ export interface RecordConsultationMessageInput {
   role: ConsultationMessageRole;
   content: string;
   proposedCorrection?: unknown;
+  proposedMemory?: unknown;
 }
 
 async function runQuery<T>(operation: () => Promise<T>): Promise<T> {
@@ -64,6 +66,7 @@ export async function recordConsultationMessage(input: RecordConsultationMessage
         role: input.role,
         content: input.content,
         proposedCorrection: input.proposedCorrection == null ? undefined : (input.proposedCorrection as never),
+        proposedMemory: input.proposedMemory == null ? undefined : (input.proposedMemory as never),
       },
     });
 
@@ -95,6 +98,7 @@ function toRow(row: {
   role: ConsultationMessageRole;
   content: string;
   proposedCorrection: unknown;
+  proposedMemory: unknown;
   createdAt: Date;
 }): ConsultationMessageRow {
   return {
@@ -102,6 +106,7 @@ function toRow(row: {
     role: row.role,
     content: row.content,
     proposedCorrection: row.proposedCorrection,
+    proposedMemory: row.proposedMemory,
     createdAt: row.createdAt.toISOString(),
   };
 }

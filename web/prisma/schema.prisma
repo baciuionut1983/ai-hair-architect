@@ -409,6 +409,12 @@ model ConsultationMessage {
   role               ConsultationMessageRole
   content            String                  @db.VarChar(4000)
   proposedCorrection Json?
+  // A suggested ProfessionalMemory candidate, exactly as returned by the AI
+  // provider -- like proposedCorrection, this is ALWAYS only a suggestion.
+  // Nothing here ever creates a ProfessionalMemory row automatically; only
+  // an explicit, separate call to POST /api/v1/clients/{id}/memories (with
+  // confirmed: true) does that.
+  proposedMemory     Json?
   createdAt          DateTime                @default(now()) @db.Timestamp(6)
 
   owner    User      @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)

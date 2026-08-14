@@ -136,6 +136,66 @@ describe("GeminiConsultationChatProvider", () => {
     await expect(provider.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({ code: "INVALID_FORMAT" });
   });
 
+  // A: the AI can recognize a "remember this" professional observation and
+  // propose it as a memory candidate -- never create it itself.
+  it("parses a reply with a proposed memory candidate, never applying anything itself", async () => {
+    const response = JSON.stringify({
+      reply: "Got it -- I'll note that as a professional observation for her file.",
+      needsClarification: false,
+      proposedMemory: {
+        action: "save_client_memory",
+        content: "Low density in the temporal areas; preserve more weight around the perimeter.",
+        reason: "Stylist confirmed this chair-side and asked it to be remembered without changing the analysis.",
+      },
+    });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    const result = await provider.respond("Remember this as a professional observation for this client.", context(), new AbortController().signal);
+
+    expect(result.proposedMemory).toEqual({
+      action: "save_client_memory",
+      content: "Low density in the temporal areas; preserve more weight around the perimeter.",
+      reason: "Stylist confirmed this chair-side and asked it to be remembered without changing the analysis.",
+    });
+    expect(result.proposedCorrection).toBeUndefined();
+  });
+
+  it("a reply can propose both a correction and a memory when the message genuinely contains both", async () => {
+    const response = JSON.stringify({
+      reply: "Noted both.",
+      needsClarification: false,
+      proposedCorrection: { field: "density", value: "low", reason: "Chair-side observation.", source: "stylist_confirmed" },
+      proposedMemory: { action: "mark_preference", content: "Prefers to preserve perimeter weight.", reason: "Stated preference." },
+    });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    const result = await provider.respond("msg", context(), new AbortController().signal);
+
+    expect(result.proposedCorrection).toBeDefined();
+    expect(result.proposedMemory).toBeDefined();
+  });
+
+  it("rejects a proposed memory with an unrecognized action", async () => {
+    const response = JSON.stringify({
+      reply: "...",
+      needsClarification: false,
+      proposedMemory: { action: "delete_everything", content: "x", reason: "x" },
+    });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    await expect(provider.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({ code: "INVALID_FORMAT" });
+  });
+
+  it("rejects a proposed memory with no content or no reason", async () => {
+    const noContent = JSON.stringify({ reply: "...", needsClarification: false, proposedMemory: { action: "save_client_memory", content: "", reason: "x" } });
+    const provider1 = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(noContent));
+    await expect(provider1.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({ code: "INVALID_FORMAT" });
+
+    const noReason = JSON.stringify({ reply: "...", needsClarification: false, proposedMemory: { action: "save_client_memory", content: "x", reason: "" } });
+    const provider2 = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(noReason));
+    await expect(provider2.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({ code: "INVALID_FORMAT" });
+  });
+
   it("rejects a response missing reply or needsClarification", async () => {
     const provider1 = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(JSON.stringify({ needsClarification: false })));
     await expect(provider1.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({ code: "INVALID_FORMAT" });
@@ -208,6 +268,19 @@ describe("GeminiConsultationChatProvider", () => {
     await provider.respond("hi", context(), new AbortController().signal);
 
     expect(sink.input?.prompt).toContain("NEVER say you don't have a baseline analysis loaded");
+  });
+
+  it("the system instruction explicitly tells the model to propose a memory candidate for a 'remember this' observation, never create it directly", async () => {
+    const sink: { input?: GeminiChatGenerateInput } = {};
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+    );
+
+    await provider.respond("hi", context(), new AbortController().signal);
+
+    expect(sink.input?.prompt).toContain("propose a memory candidate via proposedMemory");
+    expect(sink.input?.prompt).toContain("NEVER create the memory yourself");
   });
 
   it("renders the chosen technique, assumptions, contraindications, safety notes, and clarification answers for the real Scissor Over Comb scenario", async () => {

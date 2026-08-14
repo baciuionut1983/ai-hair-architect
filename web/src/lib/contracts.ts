@@ -367,11 +367,24 @@ export interface ConsultationChatProposedCorrection {
   source: HumanCorrectionSource;
 }
 
+// A candidate ProfessionalMemory the AI recognized in conversation --
+// ALWAYS only a suggestion, exactly like ConsultationChatProposedCorrection.
+// `action` matches professional-memory-repository.ts's MEMORY_PROPOSAL_ACTIONS
+// keys exactly -- the same vocabulary POST /api/v1/clients/{id}/memories
+// accepts, so confirming this candidate is a direct pass-through, not a
+// remapping. Nothing in this shape ever creates the memory itself.
+export interface ConsultationChatProposedMemory {
+  action: "save_client_memory" | "save_professional_rule" | "mark_preference" | "save_outcome";
+  content: string;
+  reason: string;
+}
+
 export interface ConsultationMessageRecord {
   id: string;
   role: "stylist" | "assistant";
   content: string;
   proposedCorrection?: ConsultationChatProposedCorrection;
+  proposedMemory?: ConsultationChatProposedMemory;
   createdAt: string;
 }
 

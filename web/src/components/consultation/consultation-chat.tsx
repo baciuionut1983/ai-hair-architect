@@ -27,6 +27,13 @@ export interface ConsultationChatProps {
 
 type HistoryStatus = "loading" | "ready" | "error";
 
+const MEMORY_ACTION_LABELS: Record<string, string> = {
+  save_client_memory: "Save to client memory",
+  save_professional_rule: "Save as professional rule",
+  mark_preference: "Save as preference",
+  save_outcome: "Save as outcome"
+};
+
 export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: ConsultationChatProps) {
   const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("loading");
   const [messages, setMessages] = useState<ConsultationMessageRecord[]>([]);
@@ -35,6 +42,16 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   const [sendError, setSendError] = useState<string | null>(null);
   const [appliedCorrectionIds, setAppliedCorrectionIds] = useState<Set<string>>(new Set());
   const [applyingId, setApplyingId] = useState<string | null>(null);
+  // Proposed-memory review state, keyed by the assistant message id that
+  // carried the proposal -- purely client-side until Confirm is clicked.
+  // Reject never calls the API at all: the memory candidate simply never
+  // gets persisted, which is already the fail-closed default.
+  const [confirmedMemoryIds, setConfirmedMemoryIds] = useState<Set<string>>(new Set());
+  const [rejectedMemoryIds, setRejectedMemoryIds] = useState<Set<string>>(new Set());
+  const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
+  const [memoryDrafts, setMemoryDrafts] = useState<Record<string, string>>({});
+  const [confirmingMemoryId, setConfirmingMemoryId] = useState<string | null>(null);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -133,6 +150,54 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     }
   }
 
+  function handleStartEditMemory(message: ConsultationMessageRecord) {
+    if (!message.proposedMemory) return;
+    setMemoryDrafts((prev) => ({ ...prev, [message.id]: prev[message.id] ?? message.proposedMemory!.content }));
+    setEditingMemoryId(message.id);
+  }
+
+  function handleRejectMemory(message: ConsultationMessageRecord) {
+    setRejectedMemoryIds((prev) => new Set(prev).add(message.id));
+    setEditingMemoryId((current) => (current === message.id ? null : current));
+  }
+
+  async function handleConfirmMemory(message: ConsultationMessageRecord) {
+    if (!message.proposedMemory || confirmingMemoryId) {
+      return;
+    }
+
+    const content = (memoryDrafts[message.id] ?? message.proposedMemory.content).trim();
+    if (!content) {
+      return;
+    }
+
+    setConfirmingMemoryId(message.id);
+    setMemoryError(null);
+    try {
+      const response = await fetch(`/api/v1/clients/${clientId}/memories`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: message.proposedMemory.action,
+          content,
+          confirmed: true,
+          sourceMessageId: message.id
+        })
+      });
+
+      if (response.ok) {
+        setConfirmedMemoryIds((prev) => new Set(prev).add(message.id));
+        setEditingMemoryId((current) => (current === message.id ? null : current));
+      } else {
+        setMemoryError("This memory could not be saved. Please try again.");
+      }
+    } catch {
+      setMemoryError("This memory could not be saved. Please try again.");
+    } finally {
+      setConfirmingMemoryId(null);
+    }
+  }
+
   return (
     <Card className="flex flex-col gap-4">
       <div className="flex items-center gap-2">
@@ -167,6 +232,15 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
                 applied={appliedCorrectionIds.has(message.id)}
                 applying={applyingId === message.id}
                 onApply={() => handleApplyCorrection(message)}
+                memoryConfirmed={confirmedMemoryIds.has(message.id)}
+                memoryRejected={rejectedMemoryIds.has(message.id)}
+                memoryEditing={editingMemoryId === message.id}
+                memoryDraft={memoryDrafts[message.id]}
+                memoryConfirming={confirmingMemoryId === message.id}
+                onEditMemory={() => handleStartEditMemory(message)}
+                onDraftMemoryChange={(value) => setMemoryDrafts((prev) => ({ ...prev, [message.id]: value }))}
+                onConfirmMemory={() => handleConfirmMemory(message)}
+                onRejectMemory={() => handleRejectMemory(message)}
               />
             ))
           )}
@@ -175,6 +249,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
       ) : null}
 
       {sendError ? <Alert variant="error">{sendError}</Alert> : null}
+      {memoryError ? <Alert variant="error">{memoryError}</Alert> : null}
 
       <form onSubmit={handleSubmit} className="flex items-end gap-2">
         <div className="flex-1">
@@ -207,13 +282,31 @@ function ChatBubble({
   analysisId,
   applied,
   applying,
-  onApply
+  onApply,
+  memoryConfirmed,
+  memoryRejected,
+  memoryEditing,
+  memoryDraft,
+  memoryConfirming,
+  onEditMemory,
+  onDraftMemoryChange,
+  onConfirmMemory,
+  onRejectMemory
 }: {
   message: ConsultationMessageRecord;
   analysisId: string | undefined;
   applied: boolean;
   applying: boolean;
   onApply: () => void;
+  memoryConfirmed: boolean;
+  memoryRejected: boolean;
+  memoryEditing: boolean;
+  memoryDraft: string | undefined;
+  memoryConfirming: boolean;
+  onEditMemory: () => void;
+  onDraftMemoryChange: (value: string) => void;
+  onConfirmMemory: () => void;
+  onRejectMemory: () => void;
 }) {
   const isStylist = message.role === "stylist";
 
@@ -252,6 +345,51 @@ function ChatBubble({
             <p className="mt-2 text-xs text-muted">
               Start this conversation from a specific analysis to apply this correction directly.
             </p>
+          )}
+        </div>
+      ) : null}
+
+      {message.proposedMemory ? (
+        <div className="mt-1 max-w-[85%] rounded-xl border border-border bg-surface p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge variant="warning">Proposed memory</Badge>
+            <span className="text-xs text-muted">
+              {MEMORY_ACTION_LABELS[message.proposedMemory.action] ?? message.proposedMemory.action}
+            </span>
+          </div>
+
+          {memoryEditing ? (
+            <Textarea
+              className="mt-2"
+              rows={2}
+              value={memoryDraft ?? message.proposedMemory.content}
+              onChange={(event) => onDraftMemoryChange(event.target.value)}
+            />
+          ) : (
+            <p className="mt-2 text-sm text-foreground">{memoryDraft ?? message.proposedMemory.content}</p>
+          )}
+          <p className="mt-1 text-xs text-muted">{message.proposedMemory.reason}</p>
+
+          {memoryConfirmed ? (
+            <Badge variant="success" className="mt-2">
+              Saved to professional memory
+            </Badge>
+          ) : memoryRejected ? (
+            <Badge variant="neutral" className="mt-2">
+              Dismissed -- not saved
+            </Badge>
+          ) : (
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button type="button" loading={memoryConfirming} onClick={onConfirmMemory}>
+                Confirm
+              </Button>
+              <Button type="button" variant="secondary" onClick={onEditMemory}>
+                Edit
+              </Button>
+              <Button type="button" variant="ghost" onClick={onRejectMemory}>
+                Reject
+              </Button>
+            </div>
           )}
         </div>
       ) : null}

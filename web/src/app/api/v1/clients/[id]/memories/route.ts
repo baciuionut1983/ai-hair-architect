@@ -4,29 +4,15 @@ import { resolveOwnedClient } from "@/lib/client-repository";
 import { checkRateLimit } from "@/lib/hardening";
 import {
   createConfirmedMemory,
+  isMemoryProposalAction,
   isProfessionalMemoryPersistenceError,
+  MEMORY_PROPOSAL_ACTIONS,
   professionalMemoryPersistenceUnavailableResponse,
   ProfessionalMemoryValidationError,
   revokeMemory,
 } from "@/lib/professional-memory-repository";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
-import type { ProfessionalMemoryKind, ProfessionalMemoryScope, ProfessionalMemorySource } from "@prisma/client";
-
-interface MemoryActionConfig {
-  scope: ProfessionalMemoryScope;
-  kind: ProfessionalMemoryKind;
-  source: ProfessionalMemorySource;
-}
-
-// Every action here writes only after the caller has explicitly confirmed
-// (body.confirmed === true, enforced below) -- there is no action that
-// silently promotes free-text or a voice transcript into memory on its own.
-const MEMORY_ACTIONS: Record<string, MemoryActionConfig> = {
-  save_client_memory: { scope: "client_specific", kind: "fact", source: "typed" },
-  save_professional_rule: { scope: "stylist_specific", kind: "professional_rule", source: "typed" },
-  mark_preference: { scope: "stylist_specific", kind: "preference", source: "typed" },
-  save_outcome: { scope: "client_specific", kind: "outcome", source: "outcome_feedback" },
-};
+import type { ProfessionalMemorySource } from "@prisma/client";
 
 const MAX_MEMORY_CONTENT_LENGTH = 4000;
 
@@ -48,8 +34,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json({ error: "Client not found." }, { status: 404 });
   }
 
-  const body = (await request.json()) as { action?: string; content?: string; confirmed?: boolean; transcriptId?: string };
-  const actionConfig = body.action ? MEMORY_ACTIONS[body.action] : undefined;
+  const body = (await request.json()) as {
+    action?: string;
+    content?: string;
+    confirmed?: boolean;
+    transcriptId?: string;
+    sourceMessageId?: string;
+  };
+  const actionConfig = body.action && isMemoryProposalAction(body.action) ? MEMORY_PROPOSAL_ACTIONS[body.action] : undefined;
   const content = typeof body.content === "string" ? body.content.trim() : "";
 
   if (!actionConfig || !content || content.length > MAX_MEMORY_CONTENT_LENGTH) {
@@ -58,13 +50,21 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // The explicit-confirm gate: nothing in this route ever persists memory
   // without the caller asserting confirmed === true. The stylist has
   // already seen and approved this exact content before this request is
-  // ever sent -- see TeachAiPanel's window.confirm before calling save().
+  // ever sent -- see TeachAiPanel's window.confirm before calling save(),
+  // and ConsultationChat's Confirm button on a proposed-memory card.
   if (body.confirmed !== true) {
     return NextResponse.json({ error: "Explicit confirmation is required to save this as memory." }, { status: 409 });
   }
 
   const transcriptId = typeof body.transcriptId === "string" && body.transcriptId.trim() ? body.transcriptId.trim() : undefined;
-  const source: ProfessionalMemorySource = transcriptId ? "voice_transcript" : actionConfig.source;
+  const sourceMessageId = typeof body.sourceMessageId === "string" && body.sourceMessageId.trim() ? body.sourceMessageId.trim() : undefined;
+  // outcome_feedback is its own source regardless of channel (a result
+  // being logged, not a note being typed/spoken/proposed); otherwise the
+  // channel that produced the content -- voice transcript, an AI-proposed
+  // chat candidate the stylist confirmed, or plain typing -- is what's
+  // recorded as the source.
+  const source: ProfessionalMemorySource =
+    actionConfig.kind === "outcome" ? "outcome_feedback" : transcriptId ? "voice_transcript" : "typed";
 
   try {
     const memory = await createConfirmedMemory({
@@ -74,7 +74,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       kind: actionConfig.kind,
       source,
       content,
-      provenance: { channel: transcriptId ? "voice" : "text", transcriptId: transcriptId ?? null, explicitAction: body.action },
+      provenance: {
+        channel: transcriptId ? "voice" : sourceMessageId ? "chat" : "text",
+        transcriptId: transcriptId ?? null,
+        sourceMessageId: sourceMessageId ?? null,
+        explicitAction: body.action,
+      },
     });
     return NextResponse.json({ memory }, { status: 201 });
   } catch (error) {

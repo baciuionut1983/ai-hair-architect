@@ -1,6 +1,7 @@
 import { GoogleGenAI, Type, type Schema } from "@google/genai";
 
 import { CORRECTABLE_ANALYSIS_FIELDS } from "./analysis-repository";
+import { MEMORY_PROPOSAL_ACTION_KEYS, isMemoryProposalAction } from "./professional-memory-repository";
 import {
   ConsultationChatProvider,
   type ChatProviderError,
@@ -42,6 +43,21 @@ export const RESPONSE_SCHEMA: Schema = {
       },
       required: ["field", "value", "reason", "source"],
     },
+    // Independent of proposedCorrection -- a message can warrant either,
+    // both, or neither. `action` reuses MEMORY_PROPOSAL_ACTIONS' exact
+    // vocabulary (imported, not re-listed) so what the model may propose
+    // can never drift from what POST /api/v1/clients/{id}/memories accepts.
+    // No `nullable: true` here either, for the same reason proposedCorrection
+    // omits it -- see the comment there.
+    proposedMemory: {
+      type: Type.OBJECT,
+      properties: {
+        action: { type: Type.STRING, enum: [...MEMORY_PROPOSAL_ACTION_KEYS] },
+        content: { type: Type.STRING },
+        reason: { type: Type.STRING },
+      },
+      required: ["action", "content", "reason"],
+    },
   },
   required: ["reply", "needsClarification"],
 };
@@ -68,27 +84,39 @@ const SYSTEM_INSTRUCTION =
   "observation/judgment, \"client_reported\" only when the stylist is explicitly relaying something the " +
   "client said, e.g. bleach/chemical history). Never propose a correction for something the message did not " +
   "actually state.\n" +
-  "2. If a decision-relevant field the client's plan needs is missing (most importantly targetShape/desired " +
+  "2. If the stylist states a professional observation, preference, or note they want remembered for later -- " +
+  "especially when they explicitly say something like \"remember this\", \"note this for her file\", or " +
+  "\"do not change the analysis, just note it\" -- propose a memory candidate via proposedMemory instead of a " +
+  "correction: use action \"save_client_memory\" for something specific to this one client (e.g. a chair-side " +
+  "observation, a disliked result, a styling habit), \"save_professional_rule\" for a general technique rule " +
+  "the stylist wants applied broadly, \"mark_preference\" for a stylist preference, or \"save_outcome\" only " +
+  "for feedback about how a completed service actually turned out. Write a short, precise, professional " +
+  "content string (what should be remembered) and a brief reason. NEVER create the memory yourself -- this is " +
+  "always only a proposal; the stylist must explicitly confirm it before it becomes real, and it never " +
+  "changes the analysis. If the stylist's message is really about correcting a specific analysis field " +
+  "instead (per rule 1), propose that correction, not a memory -- do not propose both for the same statement " +
+  "unless the message genuinely contains two distinct, separate pieces of information.\n" +
+  "3. If a decision-relevant field the client's plan needs is missing (most importantly targetShape/desired " +
   "result) and the conversation seems ready to move toward finalizing a plan, proactively and warmly ask for " +
   "it -- never invent it yourself.\n" +
-  "3. If the stylist disagrees with or questions a chosen technique (e.g. \"I don't think scissor over comb " +
+  "4. If the stylist disagrees with or questions a chosen technique (e.g. \"I don't think scissor over comb " +
   "is right here\"), explain WHY the engine chose it using the plan's own professional reasoning above, then " +
   "discuss alternatives in terms of which underlying attribute would need to be different for the engine to " +
   "choose something else (e.g. a different hairCondition or targetShape) -- propose THAT as a correction " +
   "(per rule 1) rather than just declaring a different technique yourself, since the technique is the " +
   "engine's own output, never something you assign directly. Only discuss the plan already loaded; never " +
   "modify it in this reply.\n" +
-  "4. Otherwise, just reply conversationally and helpfully.\n" +
-  "5. Set needsClarification to true only when you are explicitly asking the stylist a question you need " +
+  "5. Otherwise, just reply conversationally and helpfully.\n" +
+  "6. Set needsClarification to true only when you are explicitly asking the stylist a question you need " +
   "answered before you can usefully continue (e.g. asking for the target result).\n" +
-  "6. NEVER invent facts not present in the provided context or this message: no chemical/treatment history, " +
+  "7. NEVER invent facts not present in the provided context or this message: no chemical/treatment history, " +
   "no visual facts you were not told, no guaranteed outcomes. If you are not sure, say so and ask. Assumptions " +
   "listed above are the engine's own professional defaults, not confirmed observations -- if you reference one, " +
   "call it an assumption, never state it as a settled fact.\n" +
-  "7. Professional memory is scoped evidence, not model training. Prefer an explicit stylist professional_rule " +
+  "8. Professional memory is scoped evidence, not model training. Prefer an explicit stylist professional_rule " +
   "or preference over a conflicting ai_observation, mention uncertainty when appropriate, and use confirmed outcome " +
   "feedback to improve the next recommendation. Never treat one stylist's rule as global knowledge.\n" +
-  "8. Respond with strict JSON matching the provided schema only -- no markdown, no commentary outside the " +
+  "9. Respond with strict JSON matching the provided schema only -- no markdown, no commentary outside the " +
   "JSON fields.";
 
 export interface GeminiConsultationChatProviderOptions {
@@ -175,11 +203,13 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
     }
 
     const proposedCorrection = this.parseProposedCorrection(parsed.proposedCorrection);
+    const proposedMemory = this.parseProposedMemory(parsed.proposedMemory);
 
     return {
       reply: parsed.reply.trim(),
       needsClarification: parsed.needsClarification,
       ...(proposedCorrection ? { proposedCorrection } : {}),
+      ...(proposedMemory ? { proposedMemory } : {}),
     };
   }
 
@@ -210,6 +240,32 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
       value: correctionValue.trim(),
       reason: reason.trim(),
       source: source as "stylist_confirmed" | "client_reported",
+    };
+  }
+
+  private parseProposedMemory(value: unknown): ConsultationChatResult["proposedMemory"] {
+    if (value === null || value === undefined) {
+      return undefined;
+    }
+    if (!isPlainObject(value)) {
+      throw this.createProviderError("INVALID_FORMAT", "Gemini response has a malformed proposedMemory.");
+    }
+
+    const { action, content, reason } = value;
+    if (typeof action !== "string" || !isMemoryProposalAction(action)) {
+      throw this.createProviderError("INVALID_FORMAT", "Gemini proposed a memory with an unrecognized action.");
+    }
+    if (typeof content !== "string" || content.trim().length === 0) {
+      throw this.createProviderError("INVALID_FORMAT", "Gemini proposed a memory with no content.");
+    }
+    if (typeof reason !== "string" || reason.trim().length === 0) {
+      throw this.createProviderError("INVALID_FORMAT", "Gemini proposed a memory with no reason.");
+    }
+
+    return {
+      action,
+      content: content.trim(),
+      reason: reason.trim(),
     };
   }
 

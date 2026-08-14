@@ -37,7 +37,8 @@ export async function GET(
       role: m.role,
       content: m.content,
       createdAt: m.createdAt,
-      ...(isProposedCorrection(m.proposedCorrection) ? { proposedCorrection: m.proposedCorrection } : {})
+      ...(isProposedCorrection(m.proposedCorrection) ? { proposedCorrection: m.proposedCorrection } : {}),
+      ...(isProposedMemory(m.proposedMemory) ? { proposedMemory: m.proposedMemory } : {})
     }));
     return NextResponse.json({ messages: records }, { status: 200 });
   } catch (error) {
@@ -100,6 +101,9 @@ export async function POST(
       createdAt: result.reply.createdAt,
       ...(isProposedCorrection(result.reply.proposedCorrection)
         ? { proposedCorrection: result.reply.proposedCorrection }
+        : {}),
+      ...(isProposedMemory(result.reply.proposedMemory)
+        ? { proposedMemory: result.reply.proposedMemory }
         : {})
     },
     needsClarification: result.needsClarification
@@ -116,5 +120,15 @@ function isProposedCorrection(value: unknown): value is ConsultationChatResponse
     "value" in value &&
     "reason" in value &&
     "source" in value
+  );
+}
+
+function isProposedMemory(value: unknown): value is ConsultationChatResponse["reply"]["proposedMemory"] {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "action" in value &&
+    "content" in value &&
+    "reason" in value
   );
 }

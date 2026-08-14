@@ -12,6 +12,13 @@ const memoryRepoMock = vi.hoisted(() => {
     }
   }
 
+  const MEMORY_PROPOSAL_ACTIONS = {
+    save_client_memory: { scope: "client_specific", kind: "fact" },
+    save_professional_rule: { scope: "stylist_specific", kind: "professional_rule" },
+    mark_preference: { scope: "stylist_specific", kind: "preference" },
+    save_outcome: { scope: "client_specific", kind: "outcome" },
+  } as const;
+
   return {
     createConfirmedMemory: vi.fn(),
     revokeMemory: vi.fn(),
@@ -20,6 +27,8 @@ const memoryRepoMock = vi.hoisted(() => {
       Response.json({ error: "PROFESSIONAL_MEMORY_PERSISTENCE_UNAVAILABLE" }, { status: 503, headers: { "Cache-Control": "no-store" } }),
     ),
     ProfessionalMemoryValidationError,
+    MEMORY_PROPOSAL_ACTIONS,
+    isMemoryProposalAction: (value: string) => Object.prototype.hasOwnProperty.call(MEMORY_PROPOSAL_ACTIONS, value),
   };
 });
 
@@ -151,6 +160,47 @@ describe("POST /api/v1/clients/[id]/memories", () => {
       expect.objectContaining({ source: "voice_transcript", provenance: expect.objectContaining({ channel: "voice", transcriptId: "transcript-1" }) }),
     );
   });
+
+  // Confirm (and Edit -> Confirm) from a Consult AI proposed-memory card:
+  // the confirmed content is a normal, direct call to this same endpoint,
+  // tagged with the originating message so provenance stays traceable back
+  // to the exact AI proposal the stylist reviewed and approved.
+  it("tags the source as typed and records sourceMessageId in provenance for a chat-confirmed memory (Confirm and Edit->Confirm both go through this same path)", async () => {
+    await invokePost("client-1", {
+      action: "save_client_memory",
+      content: "Low density in the temporal areas; preserve more weight around the perimeter.",
+      confirmed: true,
+      sourceMessageId: "message-42",
+    });
+
+    expect(memoryRepoMock.createConfirmedMemory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "typed",
+        content: "Low density in the temporal areas; preserve more weight around the perimeter.",
+        provenance: expect.objectContaining({ channel: "chat", sourceMessageId: "message-42" }),
+      }),
+    );
+  });
+
+  it("Edit->Confirm sends whatever edited content the stylist actually approved, not any original AI text", async () => {
+    await invokePost("client-1", {
+      action: "save_client_memory",
+      content: "Low density at the temples -- keep more weight at the perimeter, confirmed chair-side today.",
+      confirmed: true,
+      sourceMessageId: "message-42",
+    });
+
+    expect(memoryRepoMock.createConfirmedMemory).toHaveBeenCalledWith(
+      expect.objectContaining({ content: "Low density at the temples -- keep more weight at the perimeter, confirmed chair-side today." }),
+    );
+  });
+
+  // Reject: the UI never calls this endpoint at all when the stylist
+  // dismisses a proposal -- so "reject" is proven simply by the absence of
+  // any call, which every other test in this file already establishes
+  // (createConfirmedMemory is asserted, never assumed). No separate
+  // "rejected" state exists to persist -- nothing was ever proposed to a
+  // server that needs un-proposing.
 
   it("returns 400 with the validation message when the repository rejects the scope/client combination", async () => {
     memoryRepoMock.createConfirmedMemory.mockRejectedValue(new memoryRepoMock.ProfessionalMemoryValidationError("clientId is required."));

@@ -16,7 +16,15 @@ const messageRepoMock = vi.hoisted(() => ({
   listRecentConsultationMessages: vi.fn(),
   recordConsultationMessage: vi.fn(),
 }));
-const memoryRepoMock = vi.hoisted(() => ({ retrieveRelevantMemories: vi.fn().mockResolvedValue([]) }));
+const memoryRepoMock = vi.hoisted(() => ({
+  retrieveRelevantMemories: vi.fn().mockResolvedValue([]),
+  // Real, unmocked values -- consultation-chat-provider-gemini.ts (imported
+  // transitively through the chat service) reads these at module-load time
+  // to build its proposedMemory schema enum, so they must survive this mock.
+  MEMORY_PROPOSAL_ACTION_KEYS: ["save_client_memory", "save_professional_rule", "mark_preference", "save_outcome"],
+  isMemoryProposalAction: (value: string) =>
+    ["save_client_memory", "save_professional_rule", "mark_preference", "save_outcome"].includes(value),
+}));
 const clientContextMock = vi.hoisted(() => ({ buildClientProfessionalMemory: vi.fn().mockResolvedValue({ recentCorrections: [], recentConsultations: [], recentFormulas: [], recentTreatments: [] }) }));
 
 vi.mock("@/lib/analysis-repository", () => analysisRepoMock);
@@ -199,6 +207,45 @@ describe("sendConsultationMessage", () => {
       expect.objectContaining({
         role: "assistant",
         proposedCorrection: { field: "density", value: "low", reason: "Stylist observed it chair-side.", source: "stylist_confirmed" },
+      }),
+    );
+  });
+
+  // The exact scenario from the production report: a "remember this, but
+  // don't change the analysis" message. A provider-proposed memory
+  // candidate is persisted alongside the reply, exactly like a proposed
+  // correction -- never auto-created. sendConsultationMessage does not even
+  // import createConfirmedMemory (only retrieveRelevantMemories), so there
+  // is no code path here through which a memory could ever be created
+  // without the separate, explicit POST /api/v1/clients/{id}/memories call.
+  it("a provider-proposed memory candidate is persisted alongside the reply, never auto-created", async () => {
+    const provider = stubProvider(async () => ({
+      reply: "Got it -- I'll note that as a professional observation, without changing the analysis.",
+      needsClarification: false,
+      proposedMemory: {
+        action: "save_client_memory",
+        content: "Low density in the temporal areas; preserve more weight around the perimeter.",
+        reason: "Stylist confirmed chair-side and asked it to be remembered without changing the analysis.",
+      },
+    }));
+
+    const result = await sendConsultationMessage(
+      "owner-1",
+      CLIENT_A,
+      "For this client, I have confirmed chair-side that the hair has low density in the temporal areas and I want to preserve more weight around the perimeter. Remember this as a professional observation for this client, but do not change the analysis automatically.",
+      undefined,
+      { env: GEMINI_ENV, createProvider: provider },
+    );
+
+    expect(result.outcome).toBe("succeeded");
+    expect(messageRepoMock.recordConsultationMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "assistant",
+        proposedMemory: {
+          action: "save_client_memory",
+          content: "Low density in the temporal areas; preserve more weight around the perimeter.",
+          reason: "Stylist confirmed chair-side and asked it to be remembered without changing the analysis.",
+        },
       }),
     );
   });
