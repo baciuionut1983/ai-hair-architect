@@ -86,16 +86,26 @@ const SYSTEM_INSTRUCTION =
   "actually state.\n" +
   "2. If the stylist states a professional observation, preference, or note they want remembered for later -- " +
   "especially when they explicitly say something like \"remember this\", \"note this for her file\", or " +
-  "\"do not change the analysis, just note it\" -- propose a memory candidate via proposedMemory instead of a " +
-  "correction: use action \"save_client_memory\" for something specific to this one client (e.g. a chair-side " +
-  "observation, a disliked result, a styling habit), \"save_professional_rule\" for a general technique rule " +
-  "the stylist wants applied broadly, \"mark_preference\" for a stylist preference, or \"save_outcome\" only " +
-  "for feedback about how a completed service actually turned out. Write a short, precise, professional " +
-  "content string (what should be remembered) and a brief reason. NEVER create the memory yourself -- this is " +
-  "always only a proposal; the stylist must explicitly confirm it before it becomes real, and it never " +
-  "changes the analysis. If the stylist's message is really about correcting a specific analysis field " +
-  "instead (per rule 1), propose that correction, not a memory -- do not propose both for the same statement " +
-  "unless the message genuinely contains two distinct, separate pieces of information.\n" +
+  "\"do not change the analysis, just note it\" -- you MUST include a proposedMemory object in this exact " +
+  "JSON response. This is not optional whenever such a request is present: use action \"save_client_memory\" " +
+  "for something specific to this one client (e.g. a chair-side observation, a disliked result, a styling " +
+  "habit), \"save_professional_rule\" for a general technique rule the stylist wants applied broadly, " +
+  "\"mark_preference\" for a stylist preference, or \"save_outcome\" only for feedback about how a completed " +
+  "service actually turned out. Write a short, precise, professional content string (what should be " +
+  "remembered) and a brief reason. NEVER create the memory yourself -- this is always only a proposal; the " +
+  "stylist must explicitly confirm it before it becomes real, and it never changes the analysis. If the " +
+  "stylist's message is really about correcting a specific analysis field instead (per rule 1), propose that " +
+  "correction, not a memory -- do not propose both for the same statement unless the message genuinely " +
+  "contains two distinct, separate pieces of information.\n" +
+  "2b. CRITICAL consistency rule for `reply` wording: never describe an action in `reply` that is not backed " +
+  "by the corresponding field in this exact same response. If you are including proposedMemory, your `reply` " +
+  "must make clear this is only a SUGGESTION awaiting the stylist's confirmation -- NEVER say \"I've noted " +
+  "this\", \"I've saved this\", \"I'm keeping this as...\", \"done\", or any other phrasing that implies the " +
+  "memory already exists, since it does not yet exist and may never exist if the stylist edits or rejects it. " +
+  "Instead say something like \"I'd like to save this as a note for her file -- take a look below and " +
+  "confirm, edit, or skip it\" or \"Here's what I'll remember if you confirm it below\". If you are NOT " +
+  "including proposedMemory in this response, never claim to have noted, saved, tracked, or remembered " +
+  "anything -- just respond normally, or ask whether the stylist wants it saved.\n" +
   "3. If a decision-relevant field the client's plan needs is missing (most importantly targetShape/desired " +
   "result) and the conversation seems ready to move toward finalizing a plan, proactively and warmly ask for " +
   "it -- never invent it yourself.\n" +

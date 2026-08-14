@@ -288,6 +288,36 @@ describe("sendConsultationMessage", () => {
     );
   });
 
+  // Observability regression: the production report where the reply talked
+  // about "keeping this as a client memory candidate" but no card appeared
+  // in the UI. This proves that whenever the provider actually returns a
+  // proposal, the success log says so -- so the next time this happens, the
+  // Railway log line alone answers "did Gemini even include one" without
+  // needing database access.
+  it("logs hadProposedMemory: true only when the provider actually included one, and false when it did not", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const withMemory = stubProvider(async () => ({
+      reply: "I'd like to save this as a note for her file -- confirm below.",
+      needsClarification: false,
+      proposedMemory: { action: "save_client_memory", content: "x", reason: "x" },
+    }));
+    await sendConsultationMessage("owner-1", CLIENT_A, "Remember this.", undefined, { env: GEMINI_ENV, createProvider: withMemory });
+    const loggedWithMemory = JSON.parse(logSpy.mock.calls[0][0] as string);
+    expect(loggedWithMemory).toMatchObject({ status: "SUCCEEDED", hadProposedMemory: true, hadProposedCorrection: false });
+
+    logSpy.mockClear();
+    const withoutMemory = stubProvider(async () => ({
+      reply: "Sure, tell me more about her hair.",
+      needsClarification: false,
+    }));
+    await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: withoutMemory });
+    const loggedWithoutMemory = JSON.parse(logSpy.mock.calls[0][0] as string);
+    expect(loggedWithoutMemory).toMatchObject({ status: "SUCCEEDED", hadProposedMemory: false });
+
+    logSpy.mockRestore();
+  });
+
   it("H: fails closed (no fabricated reply) when the real provider call fails, classifying TIMEOUT/RATE_LIMITED/etc. correctly", async () => {
     const timeoutProvider = stubProvider(async () => {
       throw Object.assign(new Error("timed out"), { code: "TIMEOUT", retryable: true });

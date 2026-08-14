@@ -170,6 +170,47 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     const body = await response.json();
     expect(body.reply.proposedCorrection).toEqual({ field: "density", value: "low", reason: "Stylist observation.", source: "stylist_confirmed" });
   });
+
+  // Regression: a production report where Consult AI's reply talked about
+  // "keeping this as a client memory candidate" but the UI showed no
+  // Confirm/Edit/Reject card at all. A full pipeline code audit found every
+  // layer (service, repository, this route, the UI) correctly forwards
+  // proposedMemory when present -- but this exact route had never actually
+  // been asserted to include it in the wire response, so a real regression
+  // here could have slipped through unnoticed. Locks in the wire format.
+  it("includes proposedMemory in the response when the reply carries one -- never marked as confirmed", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({
+      outcome: "succeeded",
+      reply: {
+        id: "msg-2",
+        role: "assistant",
+        content: "I'd like to note this for her file -- take a look below and confirm, edit, or skip it.",
+        proposedMemory: {
+          action: "save_client_memory",
+          content: "Low density in the temporal areas; preserve more weight around the perimeter.",
+          reason: "Stylist confirmed chair-side.",
+        },
+        createdAt: "2026-08-14T10:00:00.000Z",
+      },
+      needsClarification: false,
+    });
+
+    const response = await invoke("client-1", { message: "Remember this as a professional observation." });
+
+    const body = await response.json();
+    expect(body.reply.proposedMemory).toEqual({
+      action: "save_client_memory",
+      content: "Low density in the temporal areas; preserve more weight around the perimeter.",
+      reason: "Stylist confirmed chair-side.",
+    });
+  });
+
+  it("omits proposedMemory from the response entirely when the reply carries none -- the field is absent, not null or empty", async () => {
+    const response = await invoke("client-1", { message: "hi" });
+
+    const body = await response.json();
+    expect(body.reply).not.toHaveProperty("proposedMemory");
+  });
 });
 
 describe("GET /api/v1/clients/[id]/chat (history)", () => {
@@ -203,5 +244,28 @@ describe("GET /api/v1/clients/[id]/chat (history)", () => {
     expect(messageRepoMock.listRecentConsultationMessages).toHaveBeenCalledWith("owner-1", "client-1", 30);
     const body = await response.json();
     expect(body.messages).toHaveLength(2);
+  });
+
+  it("includes proposedMemory in a reloaded conversation's history -- the card must still appear after a page refresh, not just in the live response", async () => {
+    messageRepoMock.listRecentConsultationMessages.mockResolvedValue([
+      { id: "msg-1", role: "stylist", content: "Remember this observation.", proposedCorrection: null, proposedMemory: null, createdAt: "2026-08-14T09:00:00.000Z" },
+      {
+        id: "msg-2",
+        role: "assistant",
+        content: "I'd like to note this for her file -- confirm below.",
+        proposedCorrection: null,
+        proposedMemory: { action: "save_client_memory", content: "Low density in the temporal areas.", reason: "Stylist confirmed chair-side." },
+        createdAt: "2026-08-14T09:01:00.000Z",
+      },
+    ]);
+
+    const response = await invokeGet("client-1");
+
+    const body = await response.json();
+    expect(body.messages[1].proposedMemory).toEqual({
+      action: "save_client_memory",
+      content: "Low density in the temporal areas.",
+      reason: "Stylist confirmed chair-side.",
+    });
   });
 });

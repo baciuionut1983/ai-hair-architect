@@ -231,6 +231,23 @@ export async function sendConsultationMessage(
 
     void stored; // the stylist's own message is already durably persisted above
 
+    // Safe-fields success log -- never the message/reply content, only
+    // whether the provider actually included a proposal in this exact
+    // response. Without this, "the reply talks about noting something but
+    // the UI shows no card" is undiagnosable from Railway logs alone: it
+    // could be a real wiring bug, or -- as this specific stage distinguishes
+    // -- the provider genuinely not having populated the field, which is a
+    // prompt-reliability question, not a code one.
+    logConsultationChatSuccess({
+      ownerUserId,
+      clientId: client.id,
+      analysisId,
+      durationMs: Date.now() - startedAt,
+      hadProposedCorrection: result.proposedCorrection != null,
+      hadProposedMemory: result.proposedMemory != null,
+      needsClarification: result.needsClarification,
+    });
+
     return { outcome: "succeeded", reply: replyRow, needsClarification: result.needsClarification };
   } catch (error) {
     logConsultationChatFailure({
@@ -379,6 +396,37 @@ function logConsultationChatFailure(input: {
       providerErrorStatus: input.providerErrorStatus ?? null,
       configIssueCodes: input.configIssueCodes ?? null,
       errorName: input.errorName ?? null,
+    }),
+  );
+}
+
+// console.log (not .error/.warn), matching storage-readiness-canary.ts's
+// convention that a healthy/successful outcome logs at the "log" level.
+// Same safe-fields-only rule as the failure log: never the message or
+// reply content, only booleans/timing -- but specifically, this answers
+// "did the provider actually include a proposal in this response" for any
+// later report of "the reply talks about noting something but no card
+// appeared", without needing to inspect the database.
+function logConsultationChatSuccess(input: {
+  ownerUserId: string;
+  clientId: string;
+  analysisId?: string;
+  durationMs: number;
+  hadProposedCorrection: boolean;
+  hadProposedMemory: boolean;
+  needsClarification: boolean;
+}): void {
+  console.log(
+    JSON.stringify({
+      gate: "CONSULTATION_CHAT",
+      status: "SUCCEEDED",
+      ownerUserId: input.ownerUserId,
+      clientId: input.clientId,
+      analysisId: input.analysisId ?? null,
+      durationBucket: bucketDurationMs(input.durationMs),
+      hadProposedCorrection: input.hadProposedCorrection,
+      hadProposedMemory: input.hadProposedMemory,
+      needsClarification: input.needsClarification,
     }),
   );
 }

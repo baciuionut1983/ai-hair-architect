@@ -270,7 +270,7 @@ describe("GeminiConsultationChatProvider", () => {
     expect(sink.input?.prompt).toContain("NEVER say you don't have a baseline analysis loaded");
   });
 
-  it("the system instruction explicitly tells the model to propose a memory candidate for a 'remember this' observation, never create it directly", async () => {
+  it("the system instruction explicitly tells the model it MUST include proposedMemory for a 'remember this' observation, never create it directly", async () => {
     const sink: { input?: GeminiChatGenerateInput } = {};
     const provider = new GeminiConsultationChatProvider(
       { apiKey: "key", model: "gemini-3.6-flash" },
@@ -279,8 +279,29 @@ describe("GeminiConsultationChatProvider", () => {
 
     await provider.respond("hi", context(), new AbortController().signal);
 
-    expect(sink.input?.prompt).toContain("propose a memory candidate via proposedMemory");
+    expect(sink.input?.prompt).toContain("you MUST include a proposedMemory object in this exact");
     expect(sink.input?.prompt).toContain("NEVER create the memory yourself");
+  });
+
+  // Regression: a production report where the reply said "I've noted...
+  // I'm keeping this as a client memory candidate" while proposedMemory was
+  // absent -- misleadingly implying the memory already existed. A full code
+  // audit found no bug in parsing/persistence/routing/UI (all correctly
+  // forward proposedMemory when present), so the fix is here: the
+  // instruction must explicitly forbid "already done" phrasing whenever
+  // proposedMemory isn't (or must be) present in the same response.
+  it("the system instruction forbids 'already done' phrasing (I've noted/saved/kept) unless proposedMemory is actually present in the same response", async () => {
+    const sink: { input?: GeminiChatGenerateInput } = {};
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+    );
+
+    await provider.respond("hi", context(), new AbortController().signal);
+
+    const prompt = sink.input?.prompt ?? "";
+    expect(prompt).toContain("NEVER say \"I've noted this\", \"I've saved this\", \"I'm keeping this as...\", \"done\"");
+    expect(prompt).toContain("never claim to have noted, saved, tracked, or remembered anything");
   });
 
   it("renders the chosen technique, assumptions, contraindications, safety notes, and clarification answers for the real Scissor Over Comb scenario", async () => {
