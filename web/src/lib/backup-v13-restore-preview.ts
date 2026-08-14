@@ -791,7 +791,7 @@ function computeSectionImpact<T extends ComparableRow>(backupRows: T[], currentR
   let wouldReplace = 0;
   let wouldDelete = 0;
   let unchanged = 0;
-  let conflictCount = conflicts.filter((item) => item.section === section).length;
+  const conflictCount = conflicts.filter((item) => item.section === section).length;
 
   for (const row of backupRows) {
     const current = currentMap.get(row.id);
