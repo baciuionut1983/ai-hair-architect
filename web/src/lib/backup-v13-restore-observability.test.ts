@@ -45,7 +45,7 @@ function createTx(overrides?: {
   activeMaintenance?: number;
   activeRetention?: number;
   recentFailure24h?: number;
-  durationRows?: Array<{ p50: number | null; p95: number | null }>;
+  durationRows?: Array<{ p50: number | bigint | null; p95: number | bigint | null }>;
   recentFailures?: Array<Record<string, unknown>>;
 }): FakeTx {
   const sequence = {
@@ -294,6 +294,33 @@ describe("backup-v13-restore-observability", () => {
     expect(sql).toContain("CEIL(0.50 * total)");
     expect(sql).toContain("CEIL(0.95 * total)");
     expect(sql).not.toContain("percentile_cont");
+  });
+
+  // Regression: the SQL casts duration_ms to ::bigint (deliberately, to
+  // avoid ::int overflow on an unusually long restore) -- Postgres bigint
+  // columns come back from a real $queryRaw call as native JS BigInt, which
+  // this mock reproduces exactly. Before the fix, JSON.stringify(response)
+  // (exactly what NextResponse.json does in the real route) threw
+  // "TypeError: Do not know how to serialize a BigInt" for any real
+  // dataset with a completed restore in the window -- this test only
+  // caught it once the mock supplied a real bigint instead of a plain
+  // number, which is why it slipped past every prior unit test.
+  it("returns real numbers (not BigInt) for p50/p95 even when the driver returns Postgres bigint values, and the response stays JSON-serializable", async () => {
+    const tx = createTx({ durationRows: [{ p50: BigInt(120), p95: BigInt(240) }] });
+    prismaMock.$transaction.mockImplementation(async (callback: (client: unknown) => unknown) => callback(tx));
+
+    const response = await buildRestoreGovernanceObservability({
+      ownerUserId: "owner-1",
+      requestId: "req-1",
+      window: "24h",
+      recentLimit: 10,
+    });
+
+    expect(response.windowMetrics.restore.restoreP50DurationMs).toBe(120);
+    expect(response.windowMetrics.restore.restoreP95DurationMs).toBe(240);
+    expect(typeof response.windowMetrics.restore.restoreP50DurationMs).toBe("number");
+    expect(typeof response.windowMetrics.restore.restoreP95DurationMs).toBe("number");
+    expect(() => JSON.stringify(response)).not.toThrow();
   });
 
   it("applies health precedence with degraded before warning", async () => {

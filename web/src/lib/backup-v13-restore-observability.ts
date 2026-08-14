@@ -658,9 +658,17 @@ async function getDurationPercentiles(tx: DbClient, ownerUserId: string, windowS
     return { p50: null, p95: null };
   }
 
+  // duration_ms is CAST to ::bigint in the query above (deliberately, to
+  // avoid ::int overflow on an unusually long-running restore) -- Postgres
+  // bigint columns come back from $queryRaw as native JS BigInt, not
+  // number, which JSON.stringify/NextResponse.json cannot serialize. A
+  // millisecond duration is always vastly below Number.MAX_SAFE_INTEGER
+  // (over 285,000 years), so converting here is exact and safe, and keeps
+  // every caller (including this route's real JSON response) working with
+  // a plain number as the type already promised.
   return {
-    p50: rows[0]?.p50 ?? null,
-    p95: rows[0]?.p95 ?? null,
+    p50: rows[0]?.p50 != null ? Number(rows[0].p50) : null,
+    p95: rows[0]?.p95 != null ? Number(rows[0].p95) : null,
   };
 }
 
