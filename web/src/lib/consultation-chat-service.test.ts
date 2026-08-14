@@ -332,6 +332,22 @@ describe("sendConsultationMessage", () => {
     expect(messageRepoMock.recordConsultationMessage).toHaveBeenCalledWith(expect.objectContaining({ role: "stylist" }));
   });
 
+  // The provider-level fail-closed consistency check (reply promises a
+  // memory proposal that proposedMemory doesn't back) throws INVALID_FORMAT
+  // -- this had never been asserted all the way through the service before,
+  // even though the classification logic itself predates this task.
+  it("classifies an INVALID_FORMAT provider error (e.g. the reply/proposedMemory consistency check) as MALFORMED_PROVIDER_RESPONSE, never fabricating a reply", async () => {
+    const inconsistentProvider = stubProvider(async () => {
+      throw Object.assign(new Error("reply referenced a proposal it did not include"), { code: "INVALID_FORMAT", retryable: false });
+    });
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "Remember this.", undefined, { env: GEMINI_ENV, createProvider: inconsistentProvider });
+
+    expect(result).toEqual({ outcome: "failed", code: "MALFORMED_PROVIDER_RESPONSE" });
+    expect(messageRepoMock.recordConsultationMessage).toHaveBeenCalledTimes(1);
+    expect(messageRepoMock.recordConsultationMessage).toHaveBeenCalledWith(expect.objectContaining({ role: "stylist" }));
+  });
+
   it("succeeds with no currentAnalysis context when no analysisId is given -- conversation can start before any analysis exists", async () => {
     const provider = stubProvider(async (_msg, ctx) => {
       expect(ctx).not.toHaveProperty("currentAnalysis");

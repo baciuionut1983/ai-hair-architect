@@ -215,6 +215,23 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
     const proposedCorrection = this.parseProposedCorrection(parsed.proposedCorrection);
     const proposedMemory = this.parseProposedMemory(parsed.proposedMemory);
 
+    // Fail-closed consistency check, added after a live report where the
+    // reply used exactly the template wording the system instruction
+    // suggests for a memory proposal ("take a look below and confirm,
+    // edit, or skip it") while proposedMemory itself was absent -- a
+    // well-formed response by the schema, but a broken experience: the
+    // stylist is told a card exists that never renders. Prompt wording
+    // alone did not reliably guarantee the two stay in sync, so this
+    // rejects the response outright rather than silently returning
+    // internally-inconsistent text -- the caller retries/fails closed
+    // instead of showing something the reply falsely promises exists.
+    if (!proposedMemory && containsMemoryProposalTemplateWording(parsed.reply)) {
+      throw this.createProviderError(
+        "INVALID_FORMAT",
+        "Gemini's reply referenced a memory proposal it did not actually include.",
+      );
+    }
+
     return {
       reply: parsed.reply.trim(),
       needsClarification: parsed.needsClarification,
@@ -384,6 +401,26 @@ function createDefaultGeminiChatClient(apiKey: string, timeoutMs: number): Gemin
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Deliberately narrow: matches only the specific template phrasing this
+// file's own SYSTEM_INSTRUCTION suggests for a memory proposal ("take a
+// look below and confirm, edit, or skip it" / "confirm it below"), not
+// generic language. Low false-positive risk precisely because these are
+// OUR OWN suggested phrases, not arbitrary natural-language patterns --
+// legitimate replies unrelated to a memory proposal have no reason to use
+// this exact "confirm, edit, or skip" grouping.
+const MEMORY_PROPOSAL_TEMPLATE_MARKERS = [
+  "confirm, edit, or skip",
+  "confirm, edit or skip",
+  "take a look below",
+  "confirm it below",
+] as const;
+
+function containsMemoryProposalTemplateWording(reply: unknown): boolean {
+  if (typeof reply !== "string") return false;
+  const normalized = reply.toLocaleLowerCase();
+  return MEMORY_PROPOSAL_TEMPLATE_MARKERS.some((marker) => normalized.includes(marker));
 }
 
 function isChatProviderError(error: unknown): error is ChatProviderError {

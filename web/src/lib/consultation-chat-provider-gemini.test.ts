@@ -160,6 +160,49 @@ describe("GeminiConsultationChatProvider", () => {
     expect(result.proposedCorrection).toBeUndefined();
   });
 
+  // Regression: the exact live production scenario -- the reply used the
+  // system instruction's own suggested template wording for a memory
+  // proposal ("take a look below and confirm, edit, or skip it") while
+  // proposedMemory was absent. This is well-formed JSON (a valid, if
+  // internally inconsistent, response) -- previously it would have
+  // silently succeeded with text promising a card that could never render.
+  // Now it fails closed as a classified, retryable error instead.
+  it("rejects a reply that uses the memory-proposal template wording ('confirm, edit, or skip') when proposedMemory itself is absent", async () => {
+    const response = JSON.stringify({
+      reply: "I would like to save this chair-side observation to her record -- take a look below and confirm, edit, or skip it.",
+      needsClarification: false,
+      // proposedMemory deliberately omitted -- this is the exact bug.
+    });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    await expect(
+      provider.respond("Remember this as a professional observation for this client.", context(), new AbortController().signal),
+    ).rejects.toMatchObject({ code: "INVALID_FORMAT" });
+  });
+
+  it("still succeeds normally when the reply neither uses proposal template wording nor includes a proposal", async () => {
+    const response = JSON.stringify({ reply: "Sure, tell me more about her hair.", needsClarification: false });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    const result = await provider.respond("hi", context(), new AbortController().signal);
+
+    expect(result.reply).toBe("Sure, tell me more about her hair.");
+    expect(result.proposedMemory).toBeUndefined();
+  });
+
+  it("succeeds when the reply uses proposal template wording AND proposedMemory is actually included (the consistent, correct case)", async () => {
+    const response = JSON.stringify({
+      reply: "I would like to save this chair-side observation to her record -- take a look below and confirm, edit, or skip it.",
+      needsClarification: false,
+      proposedMemory: { action: "save_client_memory", content: "Low density in the temporal areas.", reason: "Chair-side observation." },
+    });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    const result = await provider.respond("Remember this.", context(), new AbortController().signal);
+
+    expect(result.proposedMemory).toEqual({ action: "save_client_memory", content: "Low density in the temporal areas.", reason: "Chair-side observation." });
+  });
+
   it("a reply can propose both a correction and a memory when the message genuinely contains both", async () => {
     const response = JSON.stringify({
       reply: "Noted both.",
