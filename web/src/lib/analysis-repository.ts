@@ -262,6 +262,31 @@ export async function findAnalysisForOwner(
   });
 }
 
+// Conversational Professional AI: resolves the client's own most recent
+// analysis when the caller (Consult AI opened from the client page, not a
+// specific analysis page) has no particular analysisId in hand. Owner+client
+// scoped exactly like every other lookup here -- never returns an analysis
+// belonging to a different owner or a different client. Returns null (not
+// an error) when the client genuinely has no analysis yet, which the caller
+// must report honestly rather than inventing one.
+export async function findLatestAnalysisForClient(
+  ownerUserId: string,
+  clientId: string,
+): Promise<AnalysisState | null> {
+  return runAnalysisQuery(async () => {
+    const row = await prisma.analysis.findFirst({
+      where: {
+        clientId,
+        ownerUserId,
+        goal: { in: [...ANALYSIS_GOALS] },
+        phase: { in: [...ANALYSIS_PHASES] },
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    });
+    return row ? toAnalysisState(row) : null;
+  });
+}
+
 export async function clarifyAnalysisForOwner(
   ownerUserId: string,
   analysisId: string,

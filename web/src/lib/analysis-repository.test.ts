@@ -37,6 +37,7 @@ import {
   clarifyAnalysisForOwner,
   createAnalysisForOwner,
   findAnalysisForOwner,
+  findLatestAnalysisForClient,
   listAnalysisCorrections,
 } from "./analysis-repository";
 
@@ -150,6 +151,51 @@ describe("analysis-repository", () => {
       httpStatus: 404,
     });
     expect(prismaMocks.analysisCreate).not.toHaveBeenCalled();
+  });
+
+  // Conversational Professional AI: Consult AI opened from the client page
+  // (not a specific analysis page) has no analysisId in hand -- this is
+  // what it uses to find the client's own baseline analysis automatically,
+  // instead of a stylist having to re-describe a hair profile the platform
+  // already has on file (the exact production bug this closes).
+  describe("findLatestAnalysisForClient", () => {
+    it("queries owner+client scoped, newest first, restricted to real M2 goal/phase values", async () => {
+      prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow());
+
+      await findLatestAnalysisForClient("owner-1", "client-1");
+
+      expect(prismaMocks.analysisFindFirst).toHaveBeenCalledWith({
+        where: {
+          clientId: "client-1",
+          ownerUserId: "owner-1",
+          goal: { in: ["refresh", "cover", "lighten", "correct", "reshape", "treat"] },
+          phase: { in: ["pending_questions", "ready"] },
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      });
+    });
+
+    it("returns null, not an error, when this client genuinely has no analysis yet", async () => {
+      prismaMocks.analysisFindFirst.mockResolvedValue(null);
+
+      const found = await findLatestAnalysisForClient("owner-1", "client-1");
+
+      expect(found).toBeNull();
+    });
+
+    it("returns the real AnalysisState (including its plans) for the client's newest row", async () => {
+      prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({ id: "analysis-latest" }));
+
+      const found = await findLatestAnalysisForClient("owner-1", "client-1");
+
+      expect(found?.id).toBe("analysis-latest");
+    });
+
+    it("fails closed when the database is unavailable", async () => {
+      prismaMocks.configured = false;
+
+      await expect(findLatestAnalysisForClient("owner-1", "client-1")).rejects.toBeInstanceOf(AnalysisPersistenceError);
+    });
   });
 
   it("finds only owner-scoped M2 rows and excludes M8 goal and phase values", async () => {

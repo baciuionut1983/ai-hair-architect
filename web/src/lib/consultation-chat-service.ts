@@ -1,5 +1,5 @@
 import type { AnalysisState } from "@/lib/milestone2-types";
-import { findAnalysisForOwner } from "@/lib/analysis-repository";
+import { findAnalysisForOwner, findLatestAnalysisForClient } from "@/lib/analysis-repository";
 import type { ClientRecord } from "@/lib/contracts";
 import {
   listRecentConsultationMessages,
@@ -9,6 +9,8 @@ import {
 import { GeminiConsultationChatProvider } from "@/lib/consultation-chat-provider-gemini";
 import type { ChatProviderError, ConsultationChatContext, ConsultationChatProvider } from "@/lib/consultation-chat-provider";
 import { resolveImageAnalysisProviderConfig } from "@/lib/image-analysis-provider-config";
+import { retrieveRelevantMemories } from "@/lib/professional-memory-repository";
+import { buildClientProfessionalMemory } from "@/lib/consultation-client-context";
 
 export type ConsultationChatResultCode =
   | "PROCESSING_DISABLED"
@@ -73,11 +75,31 @@ export async function sendConsultationMessage(
     }
 
     let analysis: AnalysisState | null = null;
-    if (analysisId) {
-      analysis = await findAnalysisForOwner(ownerUserId, analysisId);
-      if (!analysis) {
-        return failure("ANALYSIS_NOT_FOUND");
+    try {
+      if (analysisId) {
+        analysis = await findAnalysisForOwner(ownerUserId, analysisId);
+        if (!analysis || analysis.clientId !== client.id) {
+          return failure("ANALYSIS_NOT_FOUND");
+        }
+      } else {
+        // No explicit analysisId (Consult AI opened from the client page,
+        // not a specific analysis page) -- auto-resolve the client's own
+        // most recent analysis so the AI has real baseline context without
+        // the stylist having to re-describe a hair profile the platform
+        // already has on file. null here is a legitimate, honest "this
+        // client has no analysis yet", not an error.
+        analysis = await findLatestAnalysisForClient(ownerUserId, client.id);
       }
+    } catch {
+      logConsultationChatFailure({
+        stage: "analysis_lookup",
+        resultCode: "PERSISTENCE_FAILURE",
+        ownerUserId,
+        clientId: client.id,
+        analysisId,
+        durationMs: Date.now() - startedAt,
+      });
+      return failure("PERSISTENCE_FAILURE");
     }
 
     let priorMessages;
@@ -118,7 +140,27 @@ export async function sendConsultationMessage(
 
     const createProvider = dependencies.createProvider ?? defaultCreateProvider;
     const provider = createProvider({ apiKey: config.apiKey, model: config.model });
-    const context = buildChatContext(client, analysis, priorMessages);
+
+    let memories: Awaited<ReturnType<typeof retrieveRelevantMemories>>;
+    let clientMemory: Awaited<ReturnType<typeof buildClientProfessionalMemory>>;
+    try {
+      [memories, clientMemory] = await Promise.all([
+        retrieveRelevantMemories(ownerUserId, client.id, message),
+        buildClientProfessionalMemory(ownerUserId, client.id, analysis?.id ?? null),
+      ]);
+    } catch {
+      logConsultationChatFailure({
+        stage: "professional_memory_read",
+        resultCode: "PERSISTENCE_FAILURE",
+        ownerUserId,
+        clientId: client.id,
+        analysisId,
+        durationMs: Date.now() - startedAt,
+      });
+      return failure("PERSISTENCE_FAILURE");
+    }
+
+    const context = buildChatContext(client, analysis, priorMessages, memories, clientMemory);
 
     const controller = new AbortController();
     let result;
@@ -185,6 +227,8 @@ function buildChatContext(
   client: ClientRecord,
   analysis: AnalysisState | null,
   priorMessages: ConsultationMessageRow[],
+  memories: Awaited<ReturnType<typeof retrieveRelevantMemories>>,
+  clientMemory: Awaited<ReturnType<typeof buildClientProfessionalMemory>>,
 ): ConsultationChatContext {
   return {
     clientFullName: client.fullName,
@@ -192,6 +236,8 @@ function buildChatContext(
       role: m.role,
       content: m.content,
     })),
+    professionalMemory: memories.map(({ scope, kind, content, source, confidence }) => ({ scope, kind, content, source, confidence })),
+    clientProfessionalMemory: clientMemory,
     ...(analysis
       ? {
           currentAnalysis: {
@@ -207,7 +253,14 @@ function buildChatContext(
             growthPattern: analysis.growthPattern,
             targetShape: analysis.targetShape,
             confidenceScore: analysis.confidenceScore,
-            missingData: collectMissingData(analysis),
+            missingData: collectPlanField(analysis, "missingData"),
+            assumptions: collectPlanField(analysis, "assumptions"),
+            contraindications: collectPlanField(analysis, "contraindications"),
+            safetyNotes: analysis.safetyNotes,
+            clarificationAnswers: analysis.clarificationAnswers,
+            cuttingTechnique: analysis.technicalCutPlan?.cuttingTechnique,
+            colorFormulaDirection: analysis.colorPlan?.formulaDirection,
+            treatmentCategory: analysis.treatmentPlan?.treatmentCategory,
             planSummary: analysis.recommendations.length > 0 ? analysis.recommendations.join(" ") : undefined,
           },
         }
@@ -215,15 +268,15 @@ function buildChatContext(
   };
 }
 
-// Merges missingData from whichever plan(s) actually exist -- never
-// re-derives it independently, so it can never drift from what the real
-// deterministic engines (cutting/color/treatment-plan-engine.ts) already
-// computed.
-function collectMissingData(analysis: AnalysisState): string[] {
+// Merges one string[] field (missingData/assumptions/contraindications)
+// from whichever plan(s) actually exist -- never re-derived independently,
+// so it can never drift from what the real deterministic engines
+// (cutting/color/treatment-plan-engine.ts) already computed.
+function collectPlanField(analysis: AnalysisState, field: "missingData" | "assumptions" | "contraindications"): string[] {
   const merged = new Set<string>();
   for (const plan of [analysis.technicalCutPlan, analysis.colorPlan, analysis.treatmentPlan]) {
-    for (const field of plan?.missingData ?? []) {
-      merged.add(field);
+    for (const value of plan?.[field] ?? []) {
+      merged.add(value);
     }
   }
   return [...merged];
@@ -266,7 +319,14 @@ function failure(code: ConsultationChatResultCode): SendConsultationMessageResul
 // tell a genuine Gemini-side failure apart from a database or
 // application-level one from Railway logs alone.
 function logConsultationChatFailure(input: {
-  stage: "history_read" | "stylist_message_write" | "provider_call" | "reply_write" | "unexpected";
+  stage:
+    | "analysis_lookup"
+    | "history_read"
+    | "stylist_message_write"
+    | "professional_memory_read"
+    | "provider_call"
+    | "reply_write"
+    | "unexpected";
   resultCode: ConsultationChatResultCode;
   ownerUserId: string;
   clientId: string;

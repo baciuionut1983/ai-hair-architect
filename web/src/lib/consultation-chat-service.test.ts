@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const analysisRepoMock = vi.hoisted(() => ({
   findAnalysisForOwner: vi.fn(),
+  findLatestAnalysisForClient: vi.fn().mockResolvedValue(null),
   // Real, unmocked value -- consultation-chat-provider-gemini.ts (imported
   // transitively through the chat service) reads this at module-load time
   // to build its response schema's enum, so it must survive this mock.
@@ -15,9 +16,13 @@ const messageRepoMock = vi.hoisted(() => ({
   listRecentConsultationMessages: vi.fn(),
   recordConsultationMessage: vi.fn(),
 }));
+const memoryRepoMock = vi.hoisted(() => ({ retrieveRelevantMemories: vi.fn().mockResolvedValue([]) }));
+const clientContextMock = vi.hoisted(() => ({ buildClientProfessionalMemory: vi.fn().mockResolvedValue({ recentCorrections: [], recentConsultations: [], recentFormulas: [], recentTreatments: [] }) }));
 
 vi.mock("@/lib/analysis-repository", () => analysisRepoMock);
 vi.mock("@/lib/consultation-message-repository", () => messageRepoMock);
+vi.mock("@/lib/professional-memory-repository", () => memoryRepoMock);
+vi.mock("@/lib/consultation-client-context", () => clientContextMock);
 
 import { sendConsultationMessage } from "./consultation-chat-service";
 import type { ConsultationChatProvider } from "./consultation-chat-provider";
@@ -65,11 +70,23 @@ function fakeStoredMessage(input: { role: string; content: string; proposedCorre
 beforeEach(() => {
   vi.clearAllMocks();
   messageIdCounter = 0;
+  // vi.clearAllMocks() only clears call history, not a mock's configured
+  // return/reject value -- every mock a test might reconfigure must get an
+  // explicit, sane default here, or a later test silently inherits
+  // whatever the previous test last set it to.
   analysisRepoMock.findAnalysisForOwner.mockResolvedValue(null);
+  analysisRepoMock.findLatestAnalysisForClient.mockResolvedValue(null);
   messageRepoMock.listRecentConsultationMessages.mockResolvedValue([]);
   messageRepoMock.recordConsultationMessage.mockImplementation(async (input: Parameters<typeof fakeStoredMessage>[0]) =>
     fakeStoredMessage(input),
   );
+  memoryRepoMock.retrieveRelevantMemories.mockResolvedValue([]);
+  clientContextMock.buildClientProfessionalMemory.mockResolvedValue({
+    recentCorrections: [],
+    recentConsultations: [],
+    recentFormulas: [],
+    recentTreatments: [],
+  });
 });
 
 function stubProvider(respond: (message: string, ctx: unknown, signal: AbortSignal) => Promise<unknown>) {
@@ -212,5 +229,175 @@ describe("sendConsultationMessage", () => {
     });
 
     expect(result.outcome).toBe("succeeded");
+  });
+
+  // 1: this is the exact production bug ("we don't have a baseline analysis
+  // loaded") -- Consult AI opened from the client page has no analysisId in
+  // hand. The service must auto-resolve the client's own most recent
+  // analysis instead of leaving currentAnalysis empty.
+  it("1: auto-loads the client's latest analysis when no analysisId is given, and it reaches the provider", async () => {
+    analysisRepoMock.findLatestAnalysisForClient.mockResolvedValue(analysisState({
+      technicalCutPlan: { cuttingTechnique: "scissor_over_comb", missingData: [] },
+    }));
+    let capturedContext: unknown;
+    const provider = stubProvider(async (_msg, ctx) => {
+      capturedContext = ctx;
+      return { reply: "ok", needsClarification: false };
+    });
+
+    await sendConsultationMessage("owner-1", CLIENT_A, "I disagree with scissor over comb here.", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+    expect(analysisRepoMock.findLatestAnalysisForClient).toHaveBeenCalledWith("owner-1", "client-a");
+    expect(analysisRepoMock.findAnalysisForOwner).not.toHaveBeenCalled();
+    expect(capturedContext).toMatchObject({
+      currentAnalysis: expect.objectContaining({ cuttingTechnique: "scissor_over_comb" }),
+    });
+  });
+
+  // 2: an explicit analysisId (e.g. the stylist opened Consult AI from a
+  // specific past analysis page) must win over "latest" -- the platform
+  // must never silently swap in a newer analysis the stylist did not ask
+  // to discuss right now.
+  it("2: an explicit analysisId still pins to that exact analysis, never falling back to 'latest'", async () => {
+    analysisRepoMock.findAnalysisForOwner.mockResolvedValue(analysisState({ id: "analysis-old", clientId: "client-a" }));
+    const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+
+    await sendConsultationMessage("owner-1", CLIENT_A, "hi", "analysis-old", { env: GEMINI_ENV, createProvider: provider });
+
+    expect(analysisRepoMock.findAnalysisForOwner).toHaveBeenCalledWith("owner-1", "analysis-old");
+    expect(analysisRepoMock.findLatestAnalysisForClient).not.toHaveBeenCalled();
+  });
+
+  // 4: a client with genuinely no analysis on file must be reported
+  // honestly (no currentAnalysis section at all), never a fabricated one.
+  it("4: a client with no analysis at all gets an honest absence, not an error and not a fabricated analysis", async () => {
+    analysisRepoMock.findLatestAnalysisForClient.mockResolvedValue(null);
+    const provider = stubProvider(async (_msg, ctx) => {
+      expect(ctx).not.toHaveProperty("currentAnalysis");
+      return { reply: "We haven't run an analysis for this client yet -- want to start one?", needsClarification: false };
+    });
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "What's her hair like?", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+    expect(result.outcome).toBe("succeeded");
+  });
+
+  // 5/6/7: confirmed ProfessionalMemory (already scoped/filtered to
+  // status="active" by the repository) reaches the provider; this function
+  // never re-filters it -- unconfirmed/revoked memories are excluded
+  // upstream, at the query, and simply never appear in what this mock
+  // returns for that case.
+  it("5: confirmed professional memory reaches the provider context, mapped to its prompt shape", async () => {
+    memoryRepoMock.retrieveRelevantMemories.mockResolvedValue([
+      { id: "m1", scope: "stylist_specific", kind: "professional_rule", content: "Prefer texturizing over scissor-over-comb on fine hair.", confidence: 1, source: "typed", clientId: null, createdAt: "2026-08-01T00:00:00.000Z" },
+    ]);
+    let capturedContext: unknown;
+    const provider = stubProvider(async (_msg, ctx) => {
+      capturedContext = ctx;
+      return { reply: "ok", needsClarification: false };
+    });
+
+    await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+    expect(memoryRepoMock.retrieveRelevantMemories).toHaveBeenCalledWith("owner-1", "client-a", "hi");
+    expect(capturedContext).toMatchObject({
+      professionalMemory: [
+        { scope: "stylist_specific", kind: "professional_rule", content: "Prefer texturizing over scissor-over-comb on fine hair.", source: "typed", confidence: 1 },
+      ],
+    });
+  });
+
+  it("professional memory is an explicit empty array (not omitted) when there is none, so the model sees a real empty state", async () => {
+    let capturedContext: unknown;
+    const provider = stubProvider(async (_msg, ctx) => {
+      capturedContext = ctx;
+      return { reply: "ok", needsClarification: false };
+    });
+
+    await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+    expect(capturedContext).toMatchObject({
+      professionalMemory: [],
+      clientProfessionalMemory: { recentCorrections: [], recentConsultations: [], recentFormulas: [], recentTreatments: [] },
+    });
+  });
+
+  // Regression, same class as the earlier history_read fix: a failure
+  // resolving the analysis (either branch) must classify as
+  // PERSISTENCE_FAILURE, not fall through to the generic
+  // INTERNAL_PROCESSING_FAILURE.
+  it("classifies a failed latest-analysis lookup as PERSISTENCE_FAILURE", async () => {
+    analysisRepoMock.findLatestAnalysisForClient.mockRejectedValue(new Error("db down"));
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV });
+
+    expect(result).toEqual({ outcome: "failed", code: "PERSISTENCE_FAILURE" });
+    expect(messageRepoMock.recordConsultationMessage).not.toHaveBeenCalled();
+  });
+
+  it("classifies a failed explicit-analysis lookup as PERSISTENCE_FAILURE", async () => {
+    analysisRepoMock.findAnalysisForOwner.mockRejectedValue(new Error("db down"));
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", "analysis-1", { env: GEMINI_ENV });
+
+    expect(result).toEqual({ outcome: "failed", code: "PERSISTENCE_FAILURE" });
+  });
+
+  it("classifies a failed professional-memory read as PERSISTENCE_FAILURE, and never calls the provider", async () => {
+    clientContextMock.buildClientProfessionalMemory.mockRejectedValue(new Error("db down"));
+    const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+    expect(result).toEqual({ outcome: "failed", code: "PERSISTENCE_FAILURE" });
+  });
+
+  // 16/17: assumptions and missingData must stay distinct, labeled
+  // categories in the context handed to the provider -- never merged into
+  // the plain confirmed fields above them.
+  it("16/17: merges assumptions/contraindications/missingData/safetyNotes/clarificationAnswers from the real plans, kept as their own distinct fields", async () => {
+    analysisRepoMock.findLatestAnalysisForClient.mockResolvedValue(analysisState({
+      safetyNotes: ["Perform a strand test before lightening."],
+      clarificationAnswers: ["No known allergies.", "Bleached six weeks ago."],
+      technicalCutPlan: {
+        cuttingTechnique: "scissor_over_comb",
+        missingData: ["headShape"],
+        assumptions: ["Assumed even density across the crown."],
+        contraindications: ["Avoid double-process lightening this session."],
+      },
+    }));
+    let capturedContext: unknown;
+    const provider = stubProvider(async (_msg, ctx) => {
+      capturedContext = ctx;
+      return { reply: "ok", needsClarification: false };
+    });
+
+    await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+    expect(capturedContext).toMatchObject({
+      currentAnalysis: expect.objectContaining({
+        missingData: ["headShape"],
+        assumptions: ["Assumed even density across the crown."],
+        contraindications: ["Avoid double-process lightening this session."],
+        safetyNotes: ["Perform a strand test before lightening."],
+        clarificationAnswers: ["No known allergies.", "Bleached six weeks ago."],
+      }),
+    });
+  });
+
+  it("B (extended): professional memory retrieval and client memory are also scoped strictly per client", async () => {
+    const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+
+    await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+    expect(memoryRepoMock.retrieveRelevantMemories).toHaveBeenCalledWith("owner-1", "client-a", "hi");
+    expect(clientContextMock.buildClientProfessionalMemory).toHaveBeenCalledWith("owner-1", "client-a", null);
+
+    vi.clearAllMocks();
+    messageRepoMock.recordConsultationMessage.mockImplementation(async (input: Parameters<typeof fakeStoredMessage>[0]) =>
+      fakeStoredMessage(input),
+    );
+    await sendConsultationMessage("owner-1", CLIENT_B, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+    expect(memoryRepoMock.retrieveRelevantMemories).toHaveBeenCalledWith("owner-1", "client-b", "hi");
+    expect(memoryRepoMock.retrieveRelevantMemories).not.toHaveBeenCalledWith("owner-1", "client-a", expect.anything());
   });
 });

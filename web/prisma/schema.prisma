@@ -158,6 +158,9 @@ model User {
   clientTreatments              ClientTreatment[]
   analysisCorrections           AnalysisCorrection[]
   consultationMessages          ConsultationMessage[]
+  professionalMemories          ProfessionalMemory[]         @relation("MemoryOwner")
+  professionalMemoryAudits      ProfessionalMemoryAudit[]    @relation("MemoryAuditActor")
+  voiceTranscripts              VoiceTranscript[]
 }
 
 model Session {
@@ -215,6 +218,8 @@ model Client {
   clientTreatments     ClientTreatment[]
   analysisCorrections  AnalysisCorrection[]
   consultationMessages ConsultationMessage[]
+  professionalMemories ProfessionalMemory[]
+  voiceTranscripts     VoiceTranscript[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -412,6 +417,96 @@ model ConsultationMessage {
 
   @@index([ownerUserId, clientId, createdAt])
   @@index([analysisId, ownerUserId, clientId])
+}
+
+enum ProfessionalMemoryScope {
+  client_specific
+  stylist_specific
+  shared_knowledge
+}
+
+enum ProfessionalMemoryKind {
+  fact
+  professional_rule
+  preference
+  outcome
+  ai_observation
+}
+
+enum ProfessionalMemoryStatus {
+  pending
+  active
+  revoked
+}
+
+enum ProfessionalMemorySource {
+  typed
+  voice_transcript
+  consultation
+  analysis
+  outcome_feedback
+  import
+}
+
+// A single, owner-scoped knowledge ledger shared by Consult AI and its
+// agents. "workspace" currently equals ownerUserId because the product has
+// no persisted multi-user Workspace model. Nothing becomes active without
+// an explicit confirm action; personal rules are never promoted globally.
+model ProfessionalMemory {
+  id              String                   @id @default(uuid())
+  ownerUserId     String
+  clientId        String?
+  scope           ProfessionalMemoryScope
+  kind            ProfessionalMemoryKind
+  status          ProfessionalMemoryStatus @default(pending)
+  source          ProfessionalMemorySource
+  content         String                   @db.VarChar(4000)
+  provenance      Json
+  confidence      Float                    @default(1)
+  createdByUserId String
+  confirmedAt     DateTime?                @db.Timestamp(6)
+  revokedAt       DateTime?                @db.Timestamp(6)
+  createdAt       DateTime                 @default(now()) @db.Timestamp(6)
+  updatedAt       DateTime                 @updatedAt @db.Timestamp(6)
+
+  owner  User    @relation("MemoryOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  client Client? @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict)
+  audits ProfessionalMemoryAudit[]
+
+  @@index([ownerUserId, status, scope, updatedAt])
+  @@index([ownerUserId, clientId, status, updatedAt])
+}
+
+model ProfessionalMemoryAudit {
+  id          String   @id @default(uuid())
+  memoryId    String
+  ownerUserId String
+  actorUserId String
+  action      String   @db.VarChar(32)
+  details     Json
+  createdAt   DateTime @default(now()) @db.Timestamp(6)
+
+  memory ProfessionalMemory @relation(fields: [memoryId], references: [id], onDelete: Restrict)
+  actor  User               @relation("MemoryAuditActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+
+  @@index([ownerUserId, memoryId, createdAt])
+}
+
+// Transcription is a draft input channel, not memory. A separate explicit
+// POST to the memory endpoint is required to create/confirm knowledge.
+model VoiceTranscript {
+  id              String   @id @default(uuid())
+  ownerUserId     String
+  clientId        String?
+  transcript      String   @db.VarChar(4000)
+  provider        String   @db.VarChar(64)
+  providerRequest String?  @db.VarChar(200)
+  createdAt       DateTime @default(now()) @db.Timestamp(6)
+
+  owner  User    @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  client Client? @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict)
+
+  @@index([ownerUserId, clientId, createdAt])
 }
 
 model Consultation {

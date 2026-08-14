@@ -12,6 +12,7 @@ import type {
 } from "@/lib/contracts";
 
 import { describeSendFailure, formatMessageTime, isSendableMessage, resolveConsultationHistoryLoadStatus } from "./consultation-chat-logic";
+import { TeachAiPanel } from "./teach-ai-panel";
 
 export interface ConsultationChatProps {
   clientId: string;
@@ -196,6 +197,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
           Send
         </Button>
       </form>
+      <TeachAiPanel clientId={clientId} />
     </Card>
   );
 }

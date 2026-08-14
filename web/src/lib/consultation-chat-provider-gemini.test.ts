@@ -14,6 +14,8 @@ function context(overrides: Partial<ConsultationChatContext> = {}): Consultation
   return {
     clientFullName: "Jane Doe",
     recentMessages: [],
+    professionalMemory: [],
+    clientProfessionalMemory: { recentCorrections: [], recentConsultations: [], recentFormulas: [], recentTreatments: [] },
     ...overrides,
   };
 }
@@ -175,6 +177,10 @@ describe("GeminiConsultationChatProvider", () => {
         porosity: "medium",
         confidenceScore: 0.76,
         missingData: ["targetShape"],
+        assumptions: [],
+        contraindications: [],
+        safetyNotes: [],
+        clarificationAnswers: [],
       },
       recentMessages: [{ role: "stylist", content: "Previous message" }],
     }), new AbortController().signal);
@@ -185,6 +191,83 @@ describe("GeminiConsultationChatProvider", () => {
     expect(sink.input?.prompt).toContain("targetShape");
     expect(sink.input?.prompt).toContain("Previous message");
     expect(sink.input?.prompt).toContain("Her density is low");
+  });
+
+  // Regression: the exact production bug ("we don't have a baseline
+  // analysis loaded" even though the client had a real, existing analysis)
+  // was a prompt-level gap as much as a data-loading one -- the model was
+  // never told, in the system instruction itself, that the platform
+  // auto-loads this context and that it must never claim otherwise.
+  it("the system instruction explicitly forbids claiming no baseline analysis is loaded when one is present", async () => {
+    const sink: { input?: GeminiChatGenerateInput } = {};
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+    );
+
+    await provider.respond("hi", context(), new AbortController().signal);
+
+    expect(sink.input?.prompt).toContain("NEVER say you don't have a baseline analysis loaded");
+  });
+
+  it("renders the chosen technique, assumptions, contraindications, safety notes, and clarification answers for the real Scissor Over Comb scenario", async () => {
+    const sink: { input?: GeminiChatGenerateInput } = {};
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+    );
+
+    await provider.respond("I disagree with scissor over comb for this client.", context({
+      currentAnalysis: {
+        goal: "reshape",
+        hairType: "medium",
+        density: "medium",
+        porosity: "medium",
+        confidenceScore: 0.82,
+        missingData: [],
+        assumptions: ["Assumed even density across the crown."],
+        contraindications: ["Avoid double-process lightening this session."],
+        safetyNotes: ["Perform a strand test before lightening."],
+        clarificationAnswers: ["No known allergies."],
+        cuttingTechnique: "scissor_over_comb",
+        planSummary: "Structural technique: internal layering with cutting technique scissor over comb.",
+      },
+    }), new AbortController().signal);
+
+    const prompt = sink.input?.prompt ?? "";
+    expect(prompt).toContain("scissor_over_comb");
+    expect(prompt).toContain("Assumed even density across the crown.");
+    expect(prompt).toContain("Avoid double-process lightening this session.");
+    expect(prompt).toContain("Perform a strand test before lightening.");
+    expect(prompt).toContain("No known allergies.");
+  });
+
+  it("renders confirmed professional memory and verified client history distinctly from the live conversation", async () => {
+    const sink: { input?: GeminiChatGenerateInput } = {};
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+    );
+
+    await provider.respond("hi", context({
+      professionalMemory: [
+        { scope: "stylist_specific", kind: "professional_rule", content: "Prefer texturizing over scissor-over-comb on fine hair.", source: "typed", confidence: 1 },
+      ],
+      clientProfessionalMemory: {
+        recentCorrections: [{ fieldName: "hairCondition", newValue: "fragile_breakage", source: "stylist_confirmed", reason: "Bleached six weeks ago.", createdAt: "2026-08-01T00:00:00.000Z" }],
+        recentConsultations: [{ summary: "First visit, discussed color correction.", nextSteps: ["Strand test next time."], createdAt: "2026-08-01T00:00:00.000Z" }],
+        recentFormulas: [{ name: "Root touch-up 6N", details: "20vol, 30 min.", createdAt: "2026-08-01T00:00:00.000Z" }],
+        recentTreatments: [{ name: "Bond repair", details: "Olaplex #2", createdAt: "2026-08-01T00:00:00.000Z" }],
+      },
+    }), new AbortController().signal);
+
+    const prompt = sink.input?.prompt ?? "";
+    expect(prompt).toContain("Prefer texturizing over scissor-over-comb on fine hair.");
+    expect(prompt).toContain("hairCondition=");
+    expect(prompt).toContain("Bleached six weeks ago.");
+    expect(prompt).toContain("First visit, discussed color correction.");
+    expect(prompt).toContain("Root touch-up 6N");
+    expect(prompt).toContain("Bond repair");
   });
 
   it("times out after the configured duration and classifies as TIMEOUT/retryable", async () => {

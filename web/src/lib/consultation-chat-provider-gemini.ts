@@ -52,7 +52,14 @@ const SYSTEM_INSTRUCTION =
   "technical manual -- while remaining professionally credible. You are talking to a licensed hairstylist " +
   "(not the end client), so you may use correct technical terminology.\n\n" +
   "You are given the CURRENT structured analysis for one client (if any exists yet), and the recent " +
-  "conversation history. Your job:\n" +
+  "conversation history. The platform ALWAYS auto-loads this client's own most recent analysis for you before " +
+  "you ever see a message, whether or not the stylist mentioned it -- so if a '=== CURRENT BASELINE ANALYSIS " +
+  "===' section appears below, that IS this client's real, existing analysis from the platform right now. " +
+  "Use it directly and immediately. NEVER say you don't have a baseline analysis loaded, and NEVER ask the " +
+  "stylist to re-describe hair attributes, a technique, or a plan that section already gives you -- doing so " +
+  "wastes the stylist's time re-typing data the platform already has. Only say an analysis is missing when " +
+  "that section is genuinely and explicitly absent (replaced by 'No analysis exists yet for this client'). " +
+  "Your job:\n" +
   "1. If the stylist's message states a correction, disagreement, or contradiction about a specific " +
   "observed/assumed attribute (e.g. \"her density is actually low\", \"that's not her natural texture\", " +
   "\"she had bleach six weeks ago\", \"I want to preserve more perimeter\" implying a targetShape change), " +
@@ -64,12 +71,24 @@ const SYSTEM_INSTRUCTION =
   "2. If a decision-relevant field the client's plan needs is missing (most importantly targetShape/desired " +
   "result) and the conversation seems ready to move toward finalizing a plan, proactively and warmly ask for " +
   "it -- never invent it yourself.\n" +
-  "3. Otherwise, just reply conversationally and helpfully.\n" +
-  "4. Set needsClarification to true only when you are explicitly asking the stylist a question you need " +
+  "3. If the stylist disagrees with or questions a chosen technique (e.g. \"I don't think scissor over comb " +
+  "is right here\"), explain WHY the engine chose it using the plan's own professional reasoning above, then " +
+  "discuss alternatives in terms of which underlying attribute would need to be different for the engine to " +
+  "choose something else (e.g. a different hairCondition or targetShape) -- propose THAT as a correction " +
+  "(per rule 1) rather than just declaring a different technique yourself, since the technique is the " +
+  "engine's own output, never something you assign directly. Only discuss the plan already loaded; never " +
+  "modify it in this reply.\n" +
+  "4. Otherwise, just reply conversationally and helpfully.\n" +
+  "5. Set needsClarification to true only when you are explicitly asking the stylist a question you need " +
   "answered before you can usefully continue (e.g. asking for the target result).\n" +
-  "5. NEVER invent facts not present in the provided context or this message: no chemical/treatment history, " +
-  "no visual facts you were not told, no guaranteed outcomes. If you are not sure, say so and ask.\n" +
-  "6. Respond with strict JSON matching the provided schema only -- no markdown, no commentary outside the " +
+  "6. NEVER invent facts not present in the provided context or this message: no chemical/treatment history, " +
+  "no visual facts you were not told, no guaranteed outcomes. If you are not sure, say so and ask. Assumptions " +
+  "listed above are the engine's own professional defaults, not confirmed observations -- if you reference one, " +
+  "call it an assumption, never state it as a settled fact.\n" +
+  "7. Professional memory is scoped evidence, not model training. Prefer an explicit stylist professional_rule " +
+  "or preference over a conflicting ai_observation, mention uncertainty when appropriate, and use confirmed outcome " +
+  "feedback to improve the next recommendation. Never treat one stylist's rule as global knowledge.\n" +
+  "8. Respond with strict JSON matching the provided schema only -- no markdown, no commentary outside the " +
   "JSON fields.";
 
 export interface GeminiConsultationChatProviderOptions {
@@ -223,24 +242,54 @@ function buildPrompt(message: string, context: ConsultationChatContext): string 
     const a = context.currentAnalysis;
     lines.push(
       "",
-      "Current analysis (each value's provenance is not repeated here, but treat every value as already " +
-        "established -- only propose a correction if THIS message actually contradicts one):",
+      "=== CURRENT BASELINE ANALYSIS (real, already loaded from the platform for this exact client -- this " +
+        "IS the baseline; never claim no baseline analysis is loaded while this section is present) ===",
+      "Each value below is already established -- only propose a correction if THIS message actually " +
+        "contradicts one:",
       `goal=${a.goal}, hairType=${a.hairType}, density=${a.density}, porosity=${a.porosity}`,
       `faceShape=${a.faceShape ?? "unknown"}, headShape=${a.headShape ?? "unknown"}, hairLength=${a.hairLength ?? "unknown"}`,
       `hairTexture=${a.hairTexture ?? "unknown"}, hairCondition=${a.hairCondition ?? "unknown"}, growthPattern=${a.growthPattern ?? "unknown"}`,
       `targetShape=${a.targetShape ?? "not yet decided"}`,
       `confidenceScore=${a.confidenceScore}, missingData=[${a.missingData.join(", ")}]`,
     );
-    if (a.planSummary) lines.push(`Current plan: ${a.planSummary}`);
+    if (a.cuttingTechnique) lines.push(`Chosen cutting technique: ${a.cuttingTechnique}`);
+    if (a.colorFormulaDirection) lines.push(`Chosen color formula direction: ${a.colorFormulaDirection}`);
+    if (a.treatmentCategory) lines.push(`Chosen treatment category: ${a.treatmentCategory}`);
+    if (a.planSummary) lines.push(`Current plan (technique + professional reasoning): ${a.planSummary}`);
+    if (a.assumptions.length > 0) lines.push(`Assumptions the engine fell back on (NOT confirmed facts): ${a.assumptions.join(" | ")}`);
+    if (a.contraindications.length > 0) lines.push(`Contraindications: ${a.contraindications.join(" | ")}`);
+    if (a.safetyNotes.length > 0) lines.push(`Safety notes / warnings: ${a.safetyNotes.join(" | ")}`);
+    if (a.clarificationAnswers.length > 0) lines.push(`Stylist's clarification answers on file: ${a.clarificationAnswers.join(" | ")}`);
   } else {
-    lines.push("", "No analysis exists yet for this client in this conversation.");
+    lines.push("", "=== No analysis exists yet for this client -- this is genuinely true, not a data-loading gap. ===");
   }
 
   if (context.recentMessages.length > 0) {
-    lines.push("", "Recent conversation:");
+    lines.push("", "Recent conversation (this conversation's own history -- distinct from confirmed professional memory below):");
     for (const entry of context.recentMessages) {
       lines.push(`${entry.role}: ${entry.content}`);
     }
+  }
+
+  if (context.professionalMemory.length > 0) {
+    lines.push("", "Confirmed professional memory (bounded, provenance-labelled, already explicitly confirmed by a stylist -- never something typed earlier in this same conversation):");
+    for (const item of context.professionalMemory) {
+      lines.push(`- [${item.scope}/${item.kind}; source=${item.source}; confidence=${item.confidence}] ${item.content}`);
+    }
+  }
+
+  const memory = context.clientProfessionalMemory;
+  if (
+    memory.recentCorrections.length > 0 ||
+    memory.recentConsultations.length > 0 ||
+    memory.recentFormulas.length > 0 ||
+    memory.recentTreatments.length > 0
+  ) {
+    lines.push("", "Verified client history (explicitly saved, newest/relevant and bounded):");
+    for (const item of memory.recentCorrections) lines.push(`- correction [${item.source}] ${item.fieldName}=${JSON.stringify(item.newValue)}${item.reason ? `; ${item.reason}` : ""}`);
+    for (const item of memory.recentConsultations) lines.push(`- consultation: ${item.summary}; next=${item.nextSteps.join(" | ")}`);
+    for (const item of memory.recentFormulas) lines.push(`- formula: ${item.name}; ${item.details}`);
+    for (const item of memory.recentTreatments) lines.push(`- treatment: ${item.name}; ${item.details}`);
   }
 
   lines.push("", `stylist: ${message}`);
