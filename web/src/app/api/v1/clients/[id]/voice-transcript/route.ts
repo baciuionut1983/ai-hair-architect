@@ -60,8 +60,20 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // Parsing the body unconditionally, immediately, drains the full upload
   // first, regardless of which check subsequently rejects the request --
   // the audio itself is still validated at its original point below.
-  const form = await request.formData();
-  const audio = form.get("audio");
+  //
+  // A request with no body/no valid multipart Content-Type at all (never
+  // sent by finishRecording, which always constructs a real FormData, but
+  // possible from a bare/malformed request) makes formData() itself throw
+  // -- caught here so that case still fails closed with the existing 400
+  // "Invalid audio." response, never an uncaught 500.
+  let audio: FormDataEntryValue | null;
+  try {
+    const form = await request.formData();
+    audio = form.get("audio");
+  } catch {
+    logVoiceTranscript("FAILED", "invalid_audio", { resultCode: "INVALID_AUDIO", reason: "form_data_parse_threw" });
+    return NextResponse.json({ error: "Invalid audio." }, { status: 400 });
+  }
 
   const user = await authenticateSessionRequest();
   if (!user) {

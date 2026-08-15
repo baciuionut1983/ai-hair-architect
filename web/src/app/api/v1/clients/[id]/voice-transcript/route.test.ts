@@ -87,6 +87,23 @@ describe("POST /api/v1/clients/[id]/voice-transcript", () => {
     expect(formDataSpy).toHaveBeenCalledTimes(1);
   });
 
+  // Regression I found myself while verifying the fix above against
+  // production directly: a request with no body/no valid multipart
+  // Content-Type at all (never sent by the real Speak to AI flow, which
+  // always constructs a proper FormData -- but possible from a bare or
+  // malformed request) makes formData() itself throw. Reading it
+  // unconditionally without a try/catch turned that into an uncaught,
+  // unhandled 500 instead of the existing, controlled 400 response.
+  it("fails closed with the existing 400 'Invalid audio.' response (never a raw 500) when the body isn't valid multipart form data at all", async () => {
+    const request = new Request("http://localhost/api/v1/clients/client-1/voice-transcript", { method: "POST" });
+
+    const response = await POST(request, { params: Promise.resolve({ id: "client-1" }) });
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body).toEqual({ error: "Invalid audio." });
+  });
+
   it("returns 429 when the rate limit is exceeded", async () => {
     hardeningMock.checkRateLimit.mockReturnValue({ allowed: false, remaining: 0 });
 
