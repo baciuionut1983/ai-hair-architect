@@ -26,7 +26,12 @@ import {
   isConsultationPersistenceError,
   listConsultationsForClient,
 } from "@/lib/consultation-repository";
-import type { ClientTimelineResponse, TimelineEntry } from "@/lib/contracts";
+import type { ClientPhotoRecord, ClientTimelineResponse, TimelineEntry } from "@/lib/contracts";
+import {
+  imageAssetPersistenceUnavailableResponse,
+  isImageAssetPersistenceError,
+  listImageAssetPhotosForClient,
+} from "@/lib/image-asset-repository";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
 export async function GET(
@@ -47,13 +52,20 @@ export async function GET(
       return NextResponse.json({ error: "Client not found." }, { status: 404 });
     }
 
-    const [consultations, appointments, photos, formulas, treatments] = await Promise.all([
+    const [consultations, appointments, clientPhotos, imageAssetPhotos, formulas, treatments] = await Promise.all([
       listConsultationsForClient(sessionUser.id, id),
       listAppointmentsForOwner(sessionUser.id, id),
       listClientPhotosForOwner(sessionUser.id, id),
+      listImageAssetPhotosForClient(sessionUser.id, id),
       listClientFormulasForOwner(sessionUser.id, id),
       listClientTreatmentsForOwner(sessionUser.id, id),
     ]);
+    // Two disjoint tables (see image-asset-repository.ts) merged into one
+    // newest-first list -- never the same photo twice, since ClientPhoto
+    // and ImageAsset rows never share an id.
+    const photos: ClientPhotoRecord[] = [...clientPhotos, ...imageAssetPhotos].sort(
+      (left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id),
+    );
     const legacyTimeline: TimelineEntry[] = [
       ...photos.map((item) => ({
         id: item.id,
@@ -110,6 +122,7 @@ export async function GET(
     if (isAppointmentPersistenceError(error)) return appointmentPersistenceUnavailableResponse();
     if (isConsultationPersistenceError(error)) return consultationPersistenceUnavailableResponse();
     if (isClientPhotoPersistenceError(error)) return clientPhotoPersistenceUnavailableResponse();
+    if (isImageAssetPersistenceError(error)) return imageAssetPersistenceUnavailableResponse();
     if (isClientFormulaPersistenceError(error)) return clientFormulaPersistenceUnavailableResponse();
     if (isClientTreatmentPersistenceError(error)) return clientTreatmentPersistenceUnavailableResponse();
     throw error;
