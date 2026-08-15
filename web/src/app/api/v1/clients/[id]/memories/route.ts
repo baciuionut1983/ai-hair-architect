@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { resolveOwnedClient } from "@/lib/client-repository";
+import { markConsultationMessageMemoryDecision } from "@/lib/consultation-message-repository";
 import { checkRateLimit } from "@/lib/hardening";
 import {
   createConfirmedMemory,
@@ -81,6 +82,21 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         explicitAction: body.action,
       },
     });
+
+    // Best-effort, deliberately not part of the memory's own success/failure:
+    // the memory itself is already durably saved by this point, so a failure
+    // marking the source message's decision (e.g. sourceMessageId pointing
+    // at a message that doesn't exist) must never turn an already-successful
+    // save into an error response -- worst case is a stale reload, not a
+    // silent memory loss.
+    if (sourceMessageId) {
+      try {
+        await markConsultationMessageMemoryDecision(user.id, id, sourceMessageId, "confirmed");
+      } catch {
+        // Non-fatal -- see comment above.
+      }
+    }
+
     return NextResponse.json({ memory }, { status: 201 });
   } catch (error) {
     if (error instanceof ProfessionalMemoryValidationError) {

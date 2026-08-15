@@ -379,12 +379,20 @@ export interface ConsultationChatProposedMemory {
   reason: string;
 }
 
+// The real, persisted outcome of a proposedMemory card -- absent while
+// still pending (may show Confirm/Edit/Reject), "confirmed"/"rejected" once
+// decided. Reconstructed from the database on every history reload, never
+// re-derived client-side, so a decision made in an earlier session is never
+// forgotten or re-offered.
+export type ConsultationMemoryDecision = "confirmed" | "rejected";
+
 export interface ConsultationMessageRecord {
   id: string;
   role: "stylist" | "assistant";
   content: string;
   proposedCorrection?: ConsultationChatProposedCorrection;
   proposedMemory?: ConsultationChatProposedMemory;
+  proposedMemoryDecision?: ConsultationMemoryDecision;
   createdAt: string;
 }
 

@@ -415,6 +415,19 @@ model ConsultationMessage {
   // an explicit, separate call to POST /api/v1/clients/{id}/memories (with
   // confirmed: true) does that.
   proposedMemory     Json?
+  // Regression: Confirm/Edit/Reject reappeared as active buttons on
+  // already-decided proposedMemory cards after every reload, because the
+  // decision (confirmedMemoryIds/rejectedMemoryIds in consultation-chat.tsx)
+  // lived only in React state, reset to empty on every mount -- Reject made
+  // no API call at all, and Confirm's own POST /api/v1/clients/{id}/memories
+  // never wrote anything back onto this row. null = no decision yet
+  // ("pending", may show the buttons); "confirmed"/"rejected" = the real,
+  // persisted, final state, reconstructed on every reload instead of a
+  // client-side guess. Never set directly on create -- only via
+  // markConsultationMessageMemoryDecision, and only once (the write is
+  // WHERE proposedMemoryDecision IS NULL, so a decision can never be
+  // silently overwritten by a later, unrelated call).
+  proposedMemoryDecision String?
   createdAt          DateTime                @default(now()) @db.Timestamp(6)
 
   owner    User      @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)

@@ -19,12 +19,15 @@ export function isConsultationMessagePersistenceError(error: unknown): error is 
   return error instanceof ConsultationMessagePersistenceError;
 }
 
+export type ConsultationMemoryDecision = "confirmed" | "rejected";
+
 export interface ConsultationMessageRow {
   id: string;
   role: ConsultationMessageRole;
   content: string;
   proposedCorrection: unknown;
   proposedMemory: unknown;
+  proposedMemoryDecision: ConsultationMemoryDecision | null;
   createdAt: string;
 }
 
@@ -93,12 +96,50 @@ export async function listRecentConsultationMessages(
   });
 }
 
+// Regression: Confirm/Edit/Reject reappeared as active buttons on
+// already-decided proposedMemory cards after every reload -- the decision
+// lived only in transient React state (consultation-chat.tsx), never
+// persisted anywhere, and Reject made no API call at all. This is the one
+// place a decision is ever written: read-then-conditionally-write, so it
+// can only ever apply to a row that (a) actually carries a proposedMemory
+// and (b) has no decision yet -- the final `updateMany`'s own WHERE clause
+// re-asserts proposedMemoryDecision: null, closing the race window between
+// the read and the write, so two concurrent decisions on the same message
+// can never both succeed. Returns false (a safe, ownership-hiding no-op)
+// for a message that doesn't exist, isn't owned by this owner/client,
+// carries no proposal, or was already decided -- the caller maps that to a
+// generic 404, exactly like resolveOwnedClient's own existence-hiding
+// convention elsewhere in this codebase.
+export async function markConsultationMessageMemoryDecision(
+  ownerUserId: string,
+  clientId: string,
+  messageId: string,
+  decision: ConsultationMemoryDecision,
+): Promise<boolean> {
+  return runQuery(async () => {
+    const existing = await prisma.consultationMessage.findFirst({
+      where: { id: messageId, ownerUserId, clientId },
+      select: { proposedMemory: true, proposedMemoryDecision: true },
+    });
+    if (!existing || existing.proposedMemory == null || existing.proposedMemoryDecision != null) {
+      return false;
+    }
+
+    const result = await prisma.consultationMessage.updateMany({
+      where: { id: messageId, ownerUserId, clientId, proposedMemoryDecision: null },
+      data: { proposedMemoryDecision: decision },
+    });
+    return result.count === 1;
+  });
+}
+
 function toRow(row: {
   id: string;
   role: ConsultationMessageRole;
   content: string;
   proposedCorrection: unknown;
   proposedMemory: unknown;
+  proposedMemoryDecision: string | null;
   createdAt: Date;
 }): ConsultationMessageRow {
   return {
@@ -107,6 +148,7 @@ function toRow(row: {
     content: row.content,
     proposedCorrection: row.proposedCorrection,
     proposedMemory: row.proposedMemory,
+    proposedMemoryDecision: row.proposedMemoryDecision === "confirmed" || row.proposedMemoryDecision === "rejected" ? row.proposedMemoryDecision : null,
     createdAt: row.createdAt.toISOString(),
   };
 }

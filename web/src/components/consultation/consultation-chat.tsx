@@ -11,7 +11,7 @@ import type {
   ConsultationMessageRecord
 } from "@/lib/contracts";
 
-import { describeSendFailure, formatMessageTime, isSendableMessage, resolveConsultationHistoryLoadStatus } from "./consultation-chat-logic";
+import { describeSendFailure, extractMemoryDecisionIds, formatMessageTime, isSendableMessage, resolveConsultationHistoryLoadStatus } from "./consultation-chat-logic";
 import { TeachAiPanel } from "./teach-ai-panel";
 
 export interface ConsultationChatProps {
@@ -43,14 +43,16 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   const [appliedCorrectionIds, setAppliedCorrectionIds] = useState<Set<string>>(new Set());
   const [applyingId, setApplyingId] = useState<string | null>(null);
   // Proposed-memory review state, keyed by the assistant message id that
-  // carried the proposal -- purely client-side until Confirm is clicked.
-  // Reject never calls the API at all: the memory candidate simply never
-  // gets persisted, which is already the fail-closed default.
+  // carried the proposal. confirmedMemoryIds/rejectedMemoryIds are seeded
+  // from each message's own persisted proposedMemoryDecision on every
+  // history load below -- the database is the source of truth for whether
+  // a card is still pending, not a Set that resets to empty on every mount.
   const [confirmedMemoryIds, setConfirmedMemoryIds] = useState<Set<string>>(new Set());
   const [rejectedMemoryIds, setRejectedMemoryIds] = useState<Set<string>>(new Set());
   const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
   const [memoryDrafts, setMemoryDrafts] = useState<Record<string, string>>({});
   const [confirmingMemoryId, setConfirmingMemoryId] = useState<string | null>(null);
+  const [rejectingMemoryId, setRejectingMemoryId] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
 
@@ -70,6 +72,9 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
 
         const payload = (await response.json()) as { messages: ConsultationMessageRecord[] };
         setMessages(payload.messages);
+        const { confirmed, rejected } = extractMemoryDecisionIds(payload.messages);
+        setConfirmedMemoryIds(confirmed);
+        setRejectedMemoryIds(rejected);
         setHistoryStatus("ready");
       } catch {
         if (!cancelled) {
@@ -156,9 +161,29 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     setEditingMemoryId(message.id);
   }
 
-  function handleRejectMemory(message: ConsultationMessageRecord) {
-    setRejectedMemoryIds((prev) => new Set(prev).add(message.id));
-    setEditingMemoryId((current) => (current === message.id ? null : current));
+  async function handleRejectMemory(message: ConsultationMessageRecord) {
+    if (!message.proposedMemory || rejectingMemoryId) {
+      return;
+    }
+
+    setRejectingMemoryId(message.id);
+    setMemoryError(null);
+    try {
+      const response = await fetch(`/api/v1/clients/${clientId}/chat/messages/${message.id}/reject-memory`, {
+        method: "POST"
+      });
+
+      if (response.ok) {
+        setRejectedMemoryIds((prev) => new Set(prev).add(message.id));
+        setEditingMemoryId((current) => (current === message.id ? null : current));
+      } else {
+        setMemoryError("This proposal could not be dismissed. Please try again.");
+      }
+    } catch {
+      setMemoryError("This proposal could not be dismissed. Please try again.");
+    } finally {
+      setRejectingMemoryId(null);
+    }
   }
 
   async function handleConfirmMemory(message: ConsultationMessageRecord) {
@@ -237,6 +262,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
                 memoryEditing={editingMemoryId === message.id}
                 memoryDraft={memoryDrafts[message.id]}
                 memoryConfirming={confirmingMemoryId === message.id}
+                memoryRejecting={rejectingMemoryId === message.id}
                 onEditMemory={() => handleStartEditMemory(message)}
                 onDraftMemoryChange={(value) => setMemoryDrafts((prev) => ({ ...prev, [message.id]: value }))}
                 onConfirmMemory={() => handleConfirmMemory(message)}
@@ -288,6 +314,7 @@ function ChatBubble({
   memoryEditing,
   memoryDraft,
   memoryConfirming,
+  memoryRejecting,
   onEditMemory,
   onDraftMemoryChange,
   onConfirmMemory,
@@ -303,6 +330,7 @@ function ChatBubble({
   memoryEditing: boolean;
   memoryDraft: string | undefined;
   memoryConfirming: boolean;
+  memoryRejecting: boolean;
   onEditMemory: () => void;
   onDraftMemoryChange: (value: string) => void;
   onConfirmMemory: () => void;
@@ -386,7 +414,7 @@ function ChatBubble({
               <Button type="button" variant="secondary" onClick={onEditMemory}>
                 Edit
               </Button>
-              <Button type="button" variant="ghost" onClick={onRejectMemory}>
+              <Button type="button" variant="ghost" loading={memoryRejecting} onClick={onRejectMemory}>
                 Reject
               </Button>
             </div>

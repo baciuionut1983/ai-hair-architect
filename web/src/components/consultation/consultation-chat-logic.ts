@@ -12,6 +12,28 @@ export function isSendableMessage(value: string): boolean {
   return value.trim().length > 0;
 }
 
+// Regression: reopening Consult AI (or reloading the page) showed active
+// Confirm/Edit/Reject buttons again on proposedMemory cards the stylist had
+// already decided on -- the decision lived only in transient React state,
+// reset to empty on every mount. This derives the real, persisted decision
+// sets directly from the loaded history (each message's own
+// proposedMemoryDecision, written by the backend on Confirm/Reject), so a
+// decision made in an earlier session is never forgotten or re-offered.
+export function extractMemoryDecisionIds(
+  messages: { id: string; proposedMemoryDecision?: "confirmed" | "rejected" }[],
+): { confirmed: Set<string>; rejected: Set<string> } {
+  const confirmed = new Set<string>();
+  const rejected = new Set<string>();
+  for (const message of messages) {
+    if (message.proposedMemoryDecision === "confirmed") {
+      confirmed.add(message.id);
+    } else if (message.proposedMemoryDecision === "rejected") {
+      rejected.add(message.id);
+    }
+  }
+  return { confirmed, rejected };
+}
+
 // Maps a failed send's HTTP status to a short, honest explanation -- never
 // implies the AI understood and silently failed; always states plainly what
 // happened so the stylist knows whether to retry, wait, or that nothing was

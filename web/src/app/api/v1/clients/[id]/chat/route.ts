@@ -38,7 +38,8 @@ export async function GET(
       content: m.content,
       createdAt: m.createdAt,
       ...(isProposedCorrection(m.proposedCorrection) ? { proposedCorrection: m.proposedCorrection } : {}),
-      ...(isProposedMemory(m.proposedMemory) ? { proposedMemory: m.proposedMemory } : {})
+      ...(isProposedMemory(m.proposedMemory) ? { proposedMemory: m.proposedMemory } : {}),
+      ...(m.proposedMemoryDecision ? { proposedMemoryDecision: m.proposedMemoryDecision } : {})
     }));
     return NextResponse.json({ messages: records }, { status: 200 });
   } catch (error) {

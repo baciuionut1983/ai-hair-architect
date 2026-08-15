@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const clientRepoMock = vi.hoisted(() => ({ resolveOwnedClient: vi.fn() }));
 const hardeningMock = vi.hoisted(() => ({ checkRateLimit: vi.fn() }));
+const messageRepoMock = vi.hoisted(() => ({ markConsultationMessageMemoryDecision: vi.fn() }));
 const memoryRepoMock = vi.hoisted(() => {
   class ProfessionalMemoryValidationError extends Error {
     readonly code = "PROFESSIONAL_MEMORY_VALIDATION_FAILED";
@@ -36,6 +37,7 @@ vi.mock("@/lib/session-request-auth", () => authMock);
 vi.mock("@/lib/client-repository", () => clientRepoMock);
 vi.mock("@/lib/hardening", () => hardeningMock);
 vi.mock("@/lib/professional-memory-repository", () => memoryRepoMock);
+vi.mock("@/lib/consultation-message-repository", () => messageRepoMock);
 
 import { DELETE, POST } from "./route";
 
@@ -75,6 +77,7 @@ beforeEach(() => {
   });
   memoryRepoMock.revokeMemory.mockResolvedValue(true);
   memoryRepoMock.isProfessionalMemoryPersistenceError.mockReturnValue(false);
+  messageRepoMock.markConsultationMessageMemoryDecision.mockResolvedValue(true);
 });
 
 describe("POST /api/v1/clients/[id]/memories", () => {
@@ -196,11 +199,45 @@ describe("POST /api/v1/clients/[id]/memories", () => {
   });
 
   // Reject: the UI never calls this endpoint at all when the stylist
-  // dismisses a proposal -- so "reject" is proven simply by the absence of
-  // any call, which every other test in this file already establishes
-  // (createConfirmedMemory is asserted, never assumed). No separate
-  // "rejected" state exists to persist -- nothing was ever proposed to a
-  // server that needs un-proposing.
+  // dismisses a proposal -- POST /api/v1/clients/{id}/chat/messages/{id}/
+  // reject-memory is the dedicated route for that (its own test file).
+
+  // Regression: reopening Consult AI after a Confirm showed the same card
+  // again with active buttons, because nothing ever recorded the decision
+  // on the source message -- only the ProfessionalMemory row itself was
+  // ever created. This closes that gap: a successful confirm now also
+  // marks the originating message as decided.
+  it("marks the source message as confirmed when sourceMessageId is provided and the memory is created successfully", async () => {
+    await invokePost("client-1", {
+      action: "save_client_memory",
+      content: "Low density in the temporal areas.",
+      confirmed: true,
+      sourceMessageId: "message-42",
+    });
+
+    expect(messageRepoMock.markConsultationMessageMemoryDecision).toHaveBeenCalledWith("owner-1", "client-1", "message-42", "confirmed");
+  });
+
+  it("never attempts to mark a decision when no sourceMessageId is provided (e.g. a typed or voice-transcript memory with no chat origin)", async () => {
+    await invokePost("client-1", { action: "save_client_memory", content: "Uses 6% developer.", confirmed: true });
+
+    expect(messageRepoMock.markConsultationMessageMemoryDecision).not.toHaveBeenCalled();
+  });
+
+  it("still returns 201 with the created memory even if marking the source message's decision fails -- the memory itself is already safely saved", async () => {
+    messageRepoMock.markConsultationMessageMemoryDecision.mockRejectedValue(new Error("db down"));
+
+    const response = await invokePost("client-1", {
+      action: "save_client_memory",
+      content: "Low density in the temporal areas.",
+      confirmed: true,
+      sourceMessageId: "message-42",
+    });
+
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.memory.id).toBe("memory-1");
+  });
 
   it("returns 400 with the validation message when the repository rejects the scope/client combination", async () => {
     memoryRepoMock.createConfirmedMemory.mockRejectedValue(new memoryRepoMock.ProfessionalMemoryValidationError("clientId is required."));

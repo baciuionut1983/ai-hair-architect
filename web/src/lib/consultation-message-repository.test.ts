@@ -4,6 +4,8 @@ const prismaMocks = vi.hoisted(() => ({
   configured: true,
   create: vi.fn(),
   findMany: vi.fn(),
+  findFirst: vi.fn(),
+  updateMany: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -12,6 +14,8 @@ vi.mock("@/lib/prisma", () => ({
     consultationMessage: {
       create: prismaMocks.create,
       findMany: prismaMocks.findMany,
+      findFirst: prismaMocks.findFirst,
+      updateMany: prismaMocks.updateMany,
     },
   },
 }));
@@ -20,6 +24,7 @@ import {
   ConsultationMessagePersistenceError,
   isConsultationMessagePersistenceError,
   listRecentConsultationMessages,
+  markConsultationMessageMemoryDecision,
   recordConsultationMessage,
 } from "./consultation-message-repository";
 
@@ -41,6 +46,8 @@ beforeEach(() => {
   prismaMocks.configured = true;
   prismaMocks.create.mockReset().mockResolvedValue(row());
   prismaMocks.findMany.mockReset().mockResolvedValue([]);
+  prismaMocks.findFirst.mockReset();
+  prismaMocks.updateMany.mockReset();
 });
 
 describe("recordConsultationMessage", () => {
@@ -98,5 +105,89 @@ describe("listRecentConsultationMessages", () => {
     const result = await listRecentConsultationMessages("owner-1", "client-1");
 
     expect(result.map((m) => m.id)).toEqual(["oldest", "middle", "newest"]);
+  });
+
+  it("surfaces proposedMemoryDecision when present, and null when the row has never been decided", async () => {
+    prismaMocks.findMany.mockResolvedValue([
+      row({ id: "confirmed-one", proposedMemoryDecision: "confirmed" }),
+      row({ id: "rejected-one", proposedMemoryDecision: "rejected" }),
+      row({ id: "pending-one", proposedMemoryDecision: null }),
+    ]);
+
+    const result = await listRecentConsultationMessages("owner-1", "client-1");
+
+    expect(result.find((m) => m.id === "confirmed-one")?.proposedMemoryDecision).toBe("confirmed");
+    expect(result.find((m) => m.id === "rejected-one")?.proposedMemoryDecision).toBe("rejected");
+    expect(result.find((m) => m.id === "pending-one")?.proposedMemoryDecision).toBeNull();
+  });
+});
+
+// Regression: reopening Consult AI (or reloading the page) showed active
+// Confirm/Edit/Reject buttons again on proposedMemory cards the stylist had
+// already decided on -- confirmedMemoryIds/rejectedMemoryIds lived only in
+// React state, reset to empty on every mount, and Reject never called any
+// API at all. This is the one function that ever writes a decision.
+describe("markConsultationMessageMemoryDecision", () => {
+  it("marks a pending proposal as decided, scoped to the exact owner + client + message", async () => {
+    prismaMocks.findFirst.mockResolvedValue({ proposedMemory: { action: "save_client_memory" }, proposedMemoryDecision: null });
+    prismaMocks.updateMany.mockResolvedValue({ count: 1 });
+
+    const result = await markConsultationMessageMemoryDecision("owner-1", "client-1", "msg-1", "rejected");
+
+    expect(result).toBe(true);
+    expect(prismaMocks.findFirst).toHaveBeenCalledWith({
+      where: { id: "msg-1", ownerUserId: "owner-1", clientId: "client-1" },
+      select: { proposedMemory: true, proposedMemoryDecision: true },
+    });
+    expect(prismaMocks.updateMany).toHaveBeenCalledWith({
+      where: { id: "msg-1", ownerUserId: "owner-1", clientId: "client-1", proposedMemoryDecision: null },
+      data: { proposedMemoryDecision: "rejected" },
+    });
+  });
+
+  it("returns false without writing anything when the message does not exist or isn't owned by this owner/client", async () => {
+    prismaMocks.findFirst.mockResolvedValue(null);
+
+    const result = await markConsultationMessageMemoryDecision("owner-1", "client-1", "missing", "confirmed");
+
+    expect(result).toBe(false);
+    expect(prismaMocks.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("returns false without writing anything when the message carries no proposedMemory at all", async () => {
+    prismaMocks.findFirst.mockResolvedValue({ proposedMemory: null, proposedMemoryDecision: null });
+
+    const result = await markConsultationMessageMemoryDecision("owner-1", "client-1", "msg-1", "confirmed");
+
+    expect(result).toBe(false);
+    expect(prismaMocks.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("returns false without writing anything when a decision was already made -- never overwrites an existing decision", async () => {
+    prismaMocks.findFirst.mockResolvedValue({ proposedMemory: { action: "save_client_memory" }, proposedMemoryDecision: "confirmed" });
+
+    const result = await markConsultationMessageMemoryDecision("owner-1", "client-1", "msg-1", "rejected");
+
+    expect(result).toBe(false);
+    expect(prismaMocks.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("returns false if a concurrent decision wins the race between the read and the write", async () => {
+    prismaMocks.findFirst.mockResolvedValue({ proposedMemory: { action: "save_client_memory" }, proposedMemoryDecision: null });
+    // The WHERE clause's own proposedMemoryDecision: null re-check loses the
+    // race -- another request decided first, so 0 rows match.
+    prismaMocks.updateMany.mockResolvedValue({ count: 0 });
+
+    const result = await markConsultationMessageMemoryDecision("owner-1", "client-1", "msg-1", "confirmed");
+
+    expect(result).toBe(false);
+  });
+
+  it("fails closed when the database is unavailable", async () => {
+    prismaMocks.configured = false;
+    await expect(markConsultationMessageMemoryDecision("owner-1", "client-1", "msg-1", "confirmed")).rejects.toBeInstanceOf(
+      ConsultationMessagePersistenceError,
+    );
+    expect(prismaMocks.findFirst).not.toHaveBeenCalled();
   });
 });

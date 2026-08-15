@@ -268,4 +268,45 @@ describe("GET /api/v1/clients/[id]/chat (history)", () => {
       reason: "Stylist confirmed chair-side.",
     });
   });
+
+  // Regression: reopening Consult AI (or reloading the page) showed active
+  // Confirm/Edit/Reject buttons again on cards the stylist had already
+  // decided on, because the wire response never carried the real, persisted
+  // decision -- only proposedMemory itself. Locks in that the decision
+  // reaches the browser too, not just the proposal.
+  it("includes proposedMemoryDecision in history when the proposal was already confirmed or rejected", async () => {
+    messageRepoMock.listRecentConsultationMessages.mockResolvedValue([
+      {
+        id: "msg-confirmed", role: "assistant", content: "Noted.", proposedCorrection: null,
+        proposedMemory: { action: "save_client_memory", content: "x", reason: "y" }, proposedMemoryDecision: "confirmed",
+        createdAt: "2026-08-14T09:00:00.000Z",
+      },
+      {
+        id: "msg-rejected", role: "assistant", content: "Noted.", proposedCorrection: null,
+        proposedMemory: { action: "save_client_memory", content: "x", reason: "y" }, proposedMemoryDecision: "rejected",
+        createdAt: "2026-08-14T09:01:00.000Z",
+      },
+    ]);
+
+    const response = await invokeGet("client-1");
+    const body = await response.json();
+
+    expect(body.messages[0].proposedMemoryDecision).toBe("confirmed");
+    expect(body.messages[1].proposedMemoryDecision).toBe("rejected");
+  });
+
+  it("omits proposedMemoryDecision entirely for a still-pending proposal -- absent, not null", async () => {
+    messageRepoMock.listRecentConsultationMessages.mockResolvedValue([
+      {
+        id: "msg-pending", role: "assistant", content: "Noted.", proposedCorrection: null,
+        proposedMemory: { action: "save_client_memory", content: "x", reason: "y" }, proposedMemoryDecision: null,
+        createdAt: "2026-08-14T09:00:00.000Z",
+      },
+    ]);
+
+    const response = await invokeGet("client-1");
+    const body = await response.json();
+
+    expect(body.messages[0]).not.toHaveProperty("proposedMemoryDecision");
+  });
 });
