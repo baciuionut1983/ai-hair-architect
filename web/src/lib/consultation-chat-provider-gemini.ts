@@ -181,7 +181,7 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
         model: this.model,
         signal: controller.signal,
       });
-      return this.parseAndValidate(rawText);
+      return this.parseAndValidate(rawText, message);
     } catch (error) {
       throw this.classifyError(error, controller.signal);
     } finally {
@@ -190,7 +190,7 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
     }
   }
 
-  private parseAndValidate(rawText: string | undefined): ConsultationChatResult {
+  private parseAndValidate(rawText: string | undefined, stylistMessage: string): ConsultationChatResult {
     if (!rawText || rawText.trim().length === 0) {
       throw this.createProviderError("INVALID_FORMAT", "Gemini returned an empty response.");
     }
@@ -215,16 +215,29 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
     const proposedCorrection = this.parseProposedCorrection(parsed.proposedCorrection);
     const proposedMemory = this.parseProposedMemory(parsed.proposedMemory);
 
-    // Fail-closed consistency check, added after a live report where the
-    // reply used exactly the template wording the system instruction
-    // suggests for a memory proposal ("take a look below and confirm,
-    // edit, or skip it") while proposedMemory itself was absent -- a
-    // well-formed response by the schema, but a broken experience: the
-    // stylist is told a card exists that never renders. Prompt wording
-    // alone did not reliably guarantee the two stay in sync, so this
-    // rejects the response outright rather than silently returning
-    // internally-inconsistent text -- the caller retries/fails closed
-    // instead of showing something the reply falsely promises exists.
+    // PRIMARY fail-closed check, deterministic: whether proposedMemory is
+    // required for this turn is decided from the STYLIST'S OWN message
+    // (messageRequestsMemoryProposal), which this app controls and can test
+    // exhaustively -- never from Gemini's freely-chosen reply wording. A
+    // live production report showed a reply using exactly the suggested
+    // template phrasing ("take a look below and confirm, edit, or skip it")
+    // while proposedMemory was absent; that response's authenticity depended
+    // entirely on Gemini keeping its own reply text and its own structured
+    // output in sync, which prompt wording alone did not reliably guarantee.
+    // Keying the requirement off the stylist's input instead removes that
+    // dependency: the same trigger phrase can never appear differently
+    // worded by the model, because the model never generates it.
+    if (!proposedMemory && messageRequestsMemoryProposal(stylistMessage)) {
+      throw this.createProviderError(
+        "INVALID_FORMAT",
+        "The stylist explicitly asked to remember/save this, but the response did not include a proposedMemory.",
+      );
+    }
+
+    // SECONDARY, defense-in-depth check: catches a reply that spontaneously
+    // claims a memory proposal exists (e.g. Gemini offers to remember
+    // something unprompted) even when the stylist's own message didn't match
+    // the phrases above. Deliberately narrow -- see containsMemoryProposalTemplateWording.
     if (!proposedMemory && containsMemoryProposalTemplateWording(parsed.reply)) {
       throw this.createProviderError(
         "INVALID_FORMAT",
@@ -376,6 +389,16 @@ function buildPrompt(message: string, context: ConsultationChatContext): string 
   }
 
   lines.push("", `stylist: ${message}`);
+
+  if (messageRequestsMemoryProposal(message)) {
+    lines.push(
+      "",
+      "REMINDER: this exact message matched this app's own detection of an explicit remember/save/note " +
+        "request. If so, you MUST include a proposedMemory object in this response (per rule 2) -- the backend " +
+        "will reject this response outright if it is missing.",
+    );
+  }
+
   return lines.join("\n");
 }
 
@@ -421,6 +444,41 @@ function containsMemoryProposalTemplateWording(reply: unknown): boolean {
   if (typeof reply !== "string") return false;
   const normalized = reply.toLocaleLowerCase();
   return MEMORY_PROPOSAL_TEMPLATE_MARKERS.some((marker) => normalized.includes(marker));
+}
+
+// Deterministic, backend-owned intent detection on the STYLIST'S OWN
+// message -- the fixed text this app sent to Gemini, not anything Gemini
+// generated. This is what makes the proposedMemory requirement structural:
+// whether this turn needs a proposal is decided before the model ever
+// responds, from input this app fully controls and can unit-test
+// exhaustively, rather than inferred after the fact from the model's own
+// freely-chosen paraphrase of its own action. A miss here only means the
+// requirement isn't force-strengthened for this turn (Gemini may still
+// propose on its own, unchanged from before); a match with no resulting
+// proposedMemory is treated as a hard failure by parseAndValidate, never a
+// silently broken promise.
+const MEMORY_REQUEST_PHRASES = [
+  "remember this",
+  "remember that",
+  "please remember",
+  "save this",
+  "note this",
+  "make a note",
+  "keep a note",
+  "keep this in mind",
+  "keep note of",
+  "add this to her file",
+  "add this to his file",
+  "add this to their file",
+  "add this to her profile",
+  "add this to his profile",
+  "add this to their profile",
+  "record this observation",
+] as const;
+
+function messageRequestsMemoryProposal(message: string): boolean {
+  const normalized = message.toLocaleLowerCase();
+  return MEMORY_REQUEST_PHRASES.some((phrase) => normalized.includes(phrase));
 }
 
 function isChatProviderError(error: unknown): error is ChatProviderError {

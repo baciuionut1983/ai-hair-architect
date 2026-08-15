@@ -203,6 +203,55 @@ describe("GeminiConsultationChatProvider", () => {
     expect(result.proposedMemory).toEqual({ action: "save_client_memory", content: "Low density in the temporal areas.", reason: "Chair-side observation." });
   });
 
+  // Regression: a live production retest AFTER the wording-only check shipped
+  // still showed the exact same broken symptom (a reply naming the template
+  // phrase verbatim, no card, no error) -- root-caused via Railway logs as a
+  // stale deployment, not a logic bug, but it confirmed the wording-only
+  // check was never structurally safe: it depends entirely on Gemini
+  // re-using OUR suggested phrasing. A semantically equivalent reply using
+  // completely different words could have slipped through undetected. This
+  // closes that gap by keying the requirement off the STYLIST's own message
+  // instead, which this app controls and Gemini never generates.
+  it("rejects a reply with completely different wording (no template phrase match at all) when the stylist explicitly asked to remember/save this and proposedMemory is absent -- closes the semantic-bypass gap", async () => {
+    const response = JSON.stringify({
+      reply: "Sure thing, that's now on her file for next time.",
+      needsClarification: false,
+      // proposedMemory deliberately omitted, and the reply text matches none
+      // of MEMORY_PROPOSAL_TEMPLATE_MARKERS -- the old wording-only check
+      // alone would have let this through.
+    });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    await expect(
+      provider.respond("Please remember this for her file going forward.", context(), new AbortController().signal),
+    ).rejects.toMatchObject({ code: "INVALID_FORMAT" });
+  });
+
+  it("succeeds when the stylist did not ask to remember/save anything, even though the reply is casual and proposedMemory is absent", async () => {
+    const response = JSON.stringify({ reply: "Sure thing, that's now on her file for next time.", needsClarification: false });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    const result = await provider.respond("What technique would you use here?", context(), new AbortController().signal);
+
+    expect(result.reply).toBe("Sure thing, that's now on her file for next time.");
+    expect(result.proposedMemory).toBeUndefined();
+  });
+
+  it("recognizes multiple phrasings of an explicit remember/save request, not just 'remember this'", async () => {
+    const response = JSON.stringify({ reply: "...", needsClarification: false });
+    const phrasings = [
+      "Please save this for her file.",
+      "Make a note that she prefers looser curls.",
+      "Add this to her profile: allergic to sulfates.",
+      "Keep this in mind for next time.",
+    ];
+
+    for (const message of phrasings) {
+      const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+      await expect(provider.respond(message, context(), new AbortController().signal)).rejects.toMatchObject({ code: "INVALID_FORMAT" });
+    }
+  });
+
   it("a reply can propose both a correction and a memory when the message genuinely contains both", async () => {
     const response = JSON.stringify({
       reply: "Noted both.",
@@ -345,6 +394,37 @@ describe("GeminiConsultationChatProvider", () => {
     const prompt = sink.input?.prompt ?? "";
     expect(prompt).toContain("NEVER say \"I've noted this\", \"I've saved this\", \"I'm keeping this as...\", \"done\"");
     expect(prompt).toContain("never claim to have noted, saved, tracked, or remembered anything");
+  });
+
+  it("adds a dynamic reminder to the prompt when the stylist's message matches an explicit remember/save request", async () => {
+    const sink: { input?: GeminiChatGenerateInput } = {};
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      recordingClient(
+        sink,
+        JSON.stringify({
+          reply: "ok",
+          needsClarification: false,
+          proposedMemory: { action: "save_client_memory", content: "x", reason: "y" },
+        }),
+      ),
+    );
+
+    await provider.respond("Remember this observation for her file.", context(), new AbortController().signal);
+
+    expect(sink.input?.prompt).toContain("this exact message matched this app's own detection");
+  });
+
+  it("does not add the reminder to the prompt for an ordinary message with no remember/save request", async () => {
+    const sink: { input?: GeminiChatGenerateInput } = {};
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+    );
+
+    await provider.respond("What technique would you use here?", context(), new AbortController().signal);
+
+    expect(sink.input?.prompt).not.toContain("this exact message matched this app's own detection");
   });
 
   it("renders the chosen technique, assumptions, contraindications, safety notes, and clarification answers for the real Scissor Over Comb scenario", async () => {
