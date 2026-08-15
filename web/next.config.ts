@@ -10,7 +10,14 @@ const nextConfig: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "no-referrer" },
-          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+          // microphone=(self): the "Speak to AI" voice-note feature
+          // (teach-ai-panel.tsx) calls getUserMedia({ audio: true }) from
+          // this app's own pages. A blanket microphone=() blocked that
+          // call with a Permissions-Policy violation before the browser
+          // ever consulted the user's own site/OS microphone permission --
+          // camera and geolocation stay fully disabled since nothing in
+          // this app uses them.
+          { key: "Permissions-Policy", value: "camera=(), microphone=(self), geolocation=()" },
           { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
           { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
           {
