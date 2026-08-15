@@ -3,6 +3,7 @@
 import { Brain, Mic, Square } from "lucide-react";
 import { useRef, useState } from "react";
 import { Alert, Button, Textarea } from "@/components/ui";
+import { finishRecording } from "./teach-ai-panel-logic";
 
 type Action = "save_client_memory" | "save_professional_rule" | "mark_preference" | "save_outcome";
 
@@ -37,8 +38,11 @@ export function TeachAiPanel({ clientId }: { clientId: string }) {
 
   async function toggleRecording() {
     if (recording) {
+      // Recording/status resets happen in onstop below (the single source
+      // of truth for "the recorder actually stopped"), not here -- so a
+      // stop triggered by the browser/OS ending the track itself (not just
+      // this button) always resets the UI too, not only a manual click.
       recorder.current?.stop();
-      setRecording(false);
       return;
     }
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
@@ -54,22 +58,19 @@ export function TeachAiPanel({ clientId }: { clientId: string }) {
       media.ondataavailable = (event) => {
         if (event.data.size) chunks.current.push(event.data);
       };
-      media.onstop = async () => {
-        stream.getTracks().forEach((track) => track.stop());
-        const blob = new Blob(chunks.current, { type: media.mimeType || "audio/webm" });
-        const form = new FormData();
-        form.append("audio", blob, "note.webm");
-
-        const response = await fetch(`/api/v1/clients/${clientId}/voice-transcript`, { method: "POST", body: form });
-        const payload = (await response.json()) as { transcript?: string; transcriptId?: string; message?: string };
-        if (!response.ok) {
-          setStatus(payload.message || "Voice transcription failed. You can still type your note.");
-          return;
-        }
-
-        setDraft(payload.transcript ?? "");
-        setTranscriptId(payload.transcriptId);
-        setStatus("Transcript ready for review. It has not been saved as memory.");
+      media.onstop = () => {
+        void finishRecording(stream, chunks.current, media.mimeType, clientId, {
+          onStopped: () => {
+            setRecording(false);
+            setStatus("Transcribing...");
+          },
+          onFailure: (message) => setStatus(message),
+          onSuccess: (transcript, id) => {
+            setDraft(transcript);
+            setTranscriptId(id);
+            setStatus("Transcript ready for review. It has not been saved as memory.");
+          },
+        }, { fetch });
       };
       media.start();
       setRecording(true);
