@@ -1,6 +1,6 @@
 "use client";
 
-import { MessageCircle, Send, Sparkles } from "lucide-react";
+import { MessageCircle, Send, Sparkles, Volume2, VolumeX } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
@@ -12,6 +12,7 @@ import type {
 } from "@/lib/contracts";
 
 import { describeSendFailure, extractMemoryDecisionIds, formatMessageTime, isSendableMessage, resolveConsultationHistoryLoadStatus } from "./consultation-chat-logic";
+import { isSpeechSynthesisSupported, speakReply, stopSpeaking, type SpeechSynthesisLike, type SpeechUtteranceLike } from "./consultation-chat-tts-logic";
 import { TeachAiPanel } from "./teach-ai-panel";
 
 export interface ConsultationChatProps {
@@ -54,7 +55,36 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   const [confirmingMemoryId, setConfirmingMemoryId] = useState<string | null>(null);
   const [rejectingMemoryId, setRejectingMemoryId] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
+  // AI Voice Reply (optional, OFF by default): reads the AI's own text
+  // reply aloud via the browser's native speech synthesis -- never a
+  // second, separately-generated response (speakReply only ever reads
+  // `content`, the exact text already rendered below). speechSupported
+  // starts false and is only set after mount (never read during SSR) to
+  // avoid a hydration mismatch; a browser without the Web Speech API just
+  // never shows the toggle, degrading honestly to text-only.
+  const [speechSupported, setSpeechSupported] = useState(false);
+  const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    // Unavoidable: whether the Web Speech API exists is only knowable
+    // client-side, and must be synced into state after mount (starting at
+    // false, matching what SSR renders) to avoid a hydration mismatch --
+    // the same pattern already used elsewhere in this codebase (see
+    // milestone2-analysis-panel.tsx) for the same class of browser-only
+    // capability check.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSpeechSupported(isSpeechSynthesisSupported(typeof window === "undefined" ? undefined : window));
+    // Cleanup: never leave the browser still reading a reply aloud after
+    // this component unmounts (e.g. navigating away mid-speech).
+    return () => {
+      if (typeof window !== "undefined" && window.speechSynthesis) {
+        stopSpeaking(window.speechSynthesis as unknown as SpeechSynthesisLike);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,6 +130,10 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
 
     const outgoing = draft.trim();
     const optimistic: ConsultationMessageRecord = {
+      // Pre-existing, unrelated to Voice Reply: safe here because this
+      // runs only inside a user-triggered event handler, never during
+      // render -- the "purity" rule can't distinguish the two.
+      // eslint-disable-next-line react-hooks/purity
       id: `pending-${Date.now()}`,
       role: "stylist",
       content: outgoing,
@@ -126,11 +160,59 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
 
       const payload = (await response.json()) as ConsultationChatResponse;
       setMessages((prev) => [...prev, payload.reply]);
+      if (voiceReplyEnabled) {
+        speakMessage(payload.reply);
+      }
     } catch {
       setSendError(describeSendFailure(0));
     } finally {
       setSending(false);
     }
+  }
+
+  // Reads exactly the reply text already shown in the bubble below --
+  // never a second, separately-generated response. Never touches
+  // proposedMemory/Confirm/Edit/Reject in any way: Voice Reply is purely
+  // an optional way to hear this same content, not a new data flow.
+  function speakMessage(message: ConsultationMessageRecord) {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+
+    setVoiceError(null);
+    speakReply(
+      message.content,
+      {
+        synth: window.speechSynthesis as unknown as SpeechSynthesisLike,
+        createUtterance: (text) => new SpeechSynthesisUtterance(text) as unknown as SpeechUtteranceLike,
+      },
+      {
+        onStart: () => setSpeakingMessageId(message.id),
+        onEnd: () => setSpeakingMessageId((current) => (current === message.id ? null : current)),
+        onError: (errorMessage) => {
+          setSpeakingMessageId((current) => (current === message.id ? null : current));
+          setVoiceError(errorMessage);
+        },
+      },
+    );
+  }
+
+  function handleStopSpeaking() {
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      stopSpeaking(window.speechSynthesis as unknown as SpeechSynthesisLike);
+    }
+    setSpeakingMessageId(null);
+  }
+
+  function handleToggleVoiceReply() {
+    setVoiceReplyEnabled((current) => {
+      const next = !current;
+      // Turning Voice Reply off must silence it immediately -- "revenire
+      // oricând la Text Only" is not honored if a reply keeps talking
+      // after the stylist just turned it off.
+      if (!next) {
+        handleStopSpeaking();
+      }
+      return next;
+    });
   }
 
   async function handleApplyCorrection(message: ConsultationMessageRecord) {
@@ -225,9 +307,25 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
 
   return (
     <Card className="flex flex-col gap-4">
-      <div className="flex items-center gap-2">
-        <Sparkles className="h-4 w-4 text-accent" aria-hidden="true" />
-        <h2 className="text-sm font-semibold text-foreground">Consult AI</h2>
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-accent" aria-hidden="true" />
+          <h2 className="text-sm font-semibold text-foreground">Consult AI</h2>
+        </div>
+        {speechSupported ? (
+          <div className="flex items-center gap-2">
+            {speakingMessageId ? (
+              <Button type="button" variant="ghost" onClick={handleStopSpeaking}>
+                <VolumeX className="h-4 w-4" aria-hidden="true" />
+                Stop
+              </Button>
+            ) : null}
+            <Button type="button" variant="secondary" onClick={handleToggleVoiceReply}>
+              {voiceReplyEnabled ? <Volume2 className="h-4 w-4" aria-hidden="true" /> : <VolumeX className="h-4 w-4" aria-hidden="true" />}
+              Voice Reply: {voiceReplyEnabled ? "On" : "Off"}
+            </Button>
+          </div>
+        ) : null}
       </div>
 
       {historyStatus === "loading" ? <LoadingState label="Loading conversation..." /> : null}
@@ -276,6 +374,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
 
       {sendError ? <Alert variant="error">{sendError}</Alert> : null}
       {memoryError ? <Alert variant="error">{memoryError}</Alert> : null}
+      {voiceError ? <Alert variant="error">{voiceError}</Alert> : null}
 
       <form onSubmit={handleSubmit} className="flex items-end gap-2">
         <div className="flex-1">
