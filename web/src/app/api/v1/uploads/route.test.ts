@@ -12,8 +12,19 @@ vi.mock("@/lib/prisma", () => ({
   prisma: { session: { findUnique: prismaMock.sessionFindUnique } },
 }));
 
+const { ObjectStorageWriteModeRequiredError } = vi.hoisted(() => {
+  class ObjectStorageWriteModeRequiredError extends Error {
+    constructor() {
+      super("Image storage is not configured for persistent uploads.");
+      this.name = "ObjectStorageWriteModeRequiredError";
+    }
+  }
+  return { ObjectStorageWriteModeRequiredError };
+});
+
 vi.mock("@/lib/image-analysis-service", () => ({
   uploadAndAnalyzeImages: serviceMock.uploadAndAnalyzeImages,
+  ObjectStorageWriteModeRequiredError,
 }));
 
 import { POST } from "./route";
@@ -207,6 +218,26 @@ describe("POST /api/v1/uploads", () => {
 
     expect(response.status).toBe(200);
     expect(serviceMock.uploadAndAnalyzeImages).toHaveBeenCalledWith(userId, "client-1", expect.any(Array));
+  });
+
+  // Regression: a stylist's uploaded photo silently vanished after a
+  // routine production redeploy, because uploads silently fell back to
+  // this container's own ephemeral local filesystem. image-analysis-
+  // service.ts now fails closed in production instead -- this locks in
+  // that the route surfaces it as a clear 503 (a server configuration
+  // problem, never the caller's fault), not a misleading 400/422.
+  it("returns a fail-closed 503 (never 400/422) when the service refuses to persist to ephemeral storage in production", async () => {
+    const userId = randomUUID();
+    prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
+    serviceMock.uploadAndAnalyzeImages.mockRejectedValue(new ObjectStorageWriteModeRequiredError());
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await invoke("token", "client-1");
+
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body).toEqual({ error: "Image storage is not configured for persistent uploads." });
+    consoleErrorSpy.mockRestore();
   });
 
   it("rejects an expired cookie session with no fallback to the in-memory session store", async () => {

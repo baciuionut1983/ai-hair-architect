@@ -11,6 +11,7 @@ import { Alert, Button, Card, EmptyState, ErrorState, LoadingState, Tabs } from 
 import type { TabItem } from "@/components/ui";
 import type {
   AppointmentRecord,
+  ClientPhotoRecord,
   ClientRecord,
   ClientTimelineResponse,
   ConsultationRecord
@@ -279,16 +280,7 @@ function HistoryTab({ state, clientId }: { state: HistoryState; clientId: string
       <HistorySection icon={Camera} title="Photos" isEmpty={photos.length === 0} emptyLabel="No photos yet.">
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           {photos.map((photo) => (
-            <Card key={photo.id} className="flex flex-col gap-2 p-2">
-              {/* eslint-disable-next-line @next/next/no-img-element -- external, owner-supplied URLs, not a build-time-known asset set for next/image */}
-              <img
-                src={photo.imageUrl}
-                alt={photo.caption || "Client photo"}
-                className="aspect-square w-full rounded-lg object-cover"
-              />
-              {photo.caption ? <p className="text-xs text-muted">{photo.caption}</p> : null}
-              <p className="text-xs text-muted">{formatDate(photo.createdAt)}</p>
-            </Card>
+            <HistoryPhotoCard key={photo.id} photo={photo} />
           ))}
         </div>
       </HistorySection>
@@ -317,6 +309,39 @@ function HistoryTab({ state, clientId }: { state: HistoryState; clientId: string
         </div>
       </HistorySection>
     </div>
+  );
+}
+
+// Regression: a photo whose underlying bytes no longer exist (an old
+// asset written to this app's ephemeral local storage before the
+// OBJECT_STORAGE_WRITE_MODE=enabled fix, wiped by a later redeploy) showed
+// a raw broken-image icon with no explanation. This never modifies or
+// hides the underlying ClientPhotoRecord -- it only reacts to the actual
+// <img> load failure and swaps to an honest message, matching the same
+// pattern already used by AnalysisOriginalPhoto for the same class of
+// problem. There is no way to recover bytes that no longer exist anywhere
+// -- this is a truthful fallback, never a fabricated recovery.
+function HistoryPhotoCard({ photo }: { photo: ClientPhotoRecord }) {
+  const [failed, setFailed] = useState(false);
+
+  return (
+    <Card className="flex flex-col gap-2 p-2">
+      {failed ? (
+        <div className="flex aspect-square w-full items-center justify-center rounded-lg bg-surface-alt p-2 text-center text-xs text-muted">
+          Photo is no longer available.
+        </div>
+      ) : (
+        // eslint-disable-next-line @next/next/no-img-element -- served through an authenticated API route or an external URL, not a build-time-known asset set for next/image
+        <img
+          src={photo.imageUrl}
+          alt={photo.caption || "Client photo"}
+          className="aspect-square w-full rounded-lg object-cover"
+          onError={() => setFailed(true)}
+        />
+      )}
+      {photo.caption ? <p className="text-xs text-muted">{photo.caption}</p> : null}
+      <p className="text-xs text-muted">{formatDate(photo.createdAt)}</p>
+    </Card>
   );
 }
 

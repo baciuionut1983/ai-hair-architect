@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { PRISMA_MOCK, RESOLVE_STORAGE_MOCK } = vi.hoisted(() => ({
   PRISMA_MOCK: {
@@ -45,7 +45,7 @@ vi.mock('@/lib/object-storage-config', () => ({
   validateObjectStorageWriteMode: vi.fn(),
 }));
 
-import { uploadAndAnalyzeImages } from './image-analysis-service';
+import { ObjectStorageWriteModeRequiredError, uploadAndAnalyzeImages } from './image-analysis-service';
 import { saveImageFile } from '@/lib/image-storage';
 import { loadObjectStorageConfig, validateObjectStorageWriteMode } from '@/lib/object-storage-config';
 
@@ -319,5 +319,64 @@ describe('uploadAndAnalyzeImages', () => {
 
     expect(result[0].analysis.providerName).toBe('manual-only');
     expect((result[0].analysis.analysisPayload as { hairType: string }).hairType).toBe('unknown');
+  });
+
+  // Regression: a stylist's uploaded photo silently vanished after a
+  // routine redeploy in production, because OBJECT_STORAGE_WRITE_MODE was
+  // never set there, so every upload silently fell back to this
+  // container's own ephemeral local filesystem -- nothing failed at
+  // upload time, the photo just stopped existing later. These lock in
+  // that production now refuses such an upload outright instead of
+  // silently accepting one it can't actually keep, while development/test
+  // keep today's local-disk fallback unchanged.
+  describe('production storage fail-closed gate', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('12. production + write mode disabled: rejects the upload outright, never touches Prisma or local disk', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.mocked(validateObjectStorageWriteMode).mockReturnValue({ mode: 'disabled', issues: [] });
+
+      await expect(
+        uploadAndAnalyzeImages(OWNER_ID, CLIENT_ID, [fakeFile('photo.jpg', 'image/jpeg', 'hello')]),
+      ).rejects.toBeInstanceOf(ObjectStorageWriteModeRequiredError);
+
+      expect(PRISMA_MOCK.imageAsset.create).not.toHaveBeenCalled();
+      expect(saveImageFile).not.toHaveBeenCalled();
+    });
+
+    it('13. production + write mode enabled: proceeds normally to S3, no fail-closed rejection', async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.mocked(validateObjectStorageWriteMode).mockReturnValue({ mode: 'enabled', issues: [] });
+      vi.mocked(loadObjectStorageConfig).mockReturnValue(S3_CONFIG);
+      const storage = fakeStorage();
+      RESOLVE_STORAGE_MOCK.mockResolvedValue(storage);
+
+      const result = await uploadAndAnalyzeImages(OWNER_ID, CLIENT_ID, [fakeFile('photo.jpg', 'image/jpeg', 'hello')]);
+
+      expect(result).toHaveLength(1);
+      expect(storage.put).toHaveBeenCalled();
+      expect(saveImageFile).not.toHaveBeenCalled();
+    });
+
+    it('14. development, write mode disabled: local-disk fallback still allowed, matching the existing dev workflow', async () => {
+      vi.stubEnv('NODE_ENV', 'development');
+      vi.mocked(validateObjectStorageWriteMode).mockReturnValue({ mode: 'disabled', issues: [] });
+
+      const result = await uploadAndAnalyzeImages(OWNER_ID, CLIENT_ID, [fakeFile('photo.jpg', 'image/jpeg', 'hello')]);
+
+      expect(saveImageFile).toHaveBeenCalled();
+      expect(result).toHaveLength(1);
+    });
+
+    it("15. never includes any storage/env detail in the thrown error's own message (safe to surface to the client)", async () => {
+      vi.stubEnv('NODE_ENV', 'production');
+      vi.mocked(validateObjectStorageWriteMode).mockReturnValue({ mode: 'disabled', issues: [] });
+
+      await expect(
+        uploadAndAnalyzeImages(OWNER_ID, CLIENT_ID, [fakeFile('photo.jpg', 'image/jpeg', 'hello')]),
+      ).rejects.toMatchObject({ message: 'Image storage is not configured for persistent uploads.' });
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { uploadAndAnalyzeImages } from '@/lib/image-analysis-service';
+import { ObjectStorageWriteModeRequiredError, uploadAndAnalyzeImages } from '@/lib/image-analysis-service';
 import { ImageProcessingError } from '@/lib/image-normalizer';
 import { checkRateLimit, getRateLimitStatus } from '@/lib/rate-limiter';
 import { checkRole } from '@/lib/auth-role';
@@ -81,6 +81,13 @@ export async function POST(req: NextRequest) {
         errorMessage: err instanceof Error ? err.message : String(err),
       })
     );
+
+    // A missing OBJECT_STORAGE_WRITE_MODE in production is a server
+    // configuration problem, never something the caller's request could
+    // have avoided -- 503, not 400/422, and never silently accepted.
+    if (err instanceof ObjectStorageWriteModeRequiredError) {
+      return NextResponse.json({ error: err.message }, { status: 503 });
+    }
 
     // ImageProcessingError (image-normalizer.ts) always carries a safe,
     // generic message already -- the raw sharp/libvips detail was logged

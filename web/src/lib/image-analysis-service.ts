@@ -23,6 +23,25 @@ export interface UploadedAsset {
   analysis: ImageAnalysis;
 }
 
+// Regression: a stylist's uploaded photo silently vanished after a routine
+// redeploy. Root cause: OBJECT_STORAGE_WRITE_MODE was never set in
+// production, so resolveObjectStorageWriteTarget() always returned null and
+// every upload -- despite AWS_ACCESS_KEY_ID/OBJECT_STORAGE_BUCKET etc. being
+// fully configured -- silently fell back to this container's own local
+// filesystem (image-storage.ts's saveImageFile), which Railway wipes on
+// every deploy/restart. Nothing failed at upload time; the photo just
+// stopped existing later, with no warning anyone could have acted on.
+// Local-disk fallback stays correct for development/test (no persistent
+// filesystem is expected there, and requiring S3 credentials just to run
+// `npm run dev` would be an unreasonable barrier) -- this only closes the
+// gap for a real production deploy.
+export class ObjectStorageWriteModeRequiredError extends Error {
+  constructor() {
+    super('Image storage is not configured for persistent uploads.');
+    this.name = 'ObjectStorageWriteModeRequiredError';
+  }
+}
+
 // Deliberately not imported from any backup/restore module (this is the live
 // upload path, not a backup consumer) -- matches createObjectStorageAliasResolver's
 // own real return type exactly.
@@ -126,6 +145,10 @@ export async function uploadAndAnalyzeImages(
   }
 
   const objectStorageTarget = resolveObjectStorageWriteTarget();
+
+  if (!objectStorageTarget && resolveRuntimeMode(process.env.NODE_ENV) === 'production') {
+    throw new ObjectStorageWriteModeRequiredError();
+  }
 
   const results: UploadedAsset[] = [];
 
