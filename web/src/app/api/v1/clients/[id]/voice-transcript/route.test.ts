@@ -181,3 +181,134 @@ describe("POST /api/v1/clients/[id]/voice-transcript", () => {
     expect(body.error).toBe("VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE");
   });
 });
+
+// Regression: a live report ("Voice transcription failed. You can still
+// type your note.") could not be root-caused because this route had zero
+// diagnostic logging on any branch -- every failure was silent from
+// Railway's perspective. These lock in that every branch now logs enough
+// to distinguish, e.g., a bad audio MIME type from an auth/quota problem,
+// while never logging the audio bytes, the transcript content, or the API
+// key (only ever in the request URL, never read back for logging).
+describe("production diagnostics logging", () => {
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    errorSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  function loggedLine(spy: ReturnType<typeof vi.spyOn>, index = 0): Record<string, unknown> {
+    return JSON.parse(spy.mock.calls[index][0] as string);
+  }
+
+  it("logs config_check FAILED with a specific reason when SPEECH_TO_TEXT_PROVIDER is unset", async () => {
+    delete process.env.SPEECH_TO_TEXT_PROVIDER;
+
+    await invoke(audioForm());
+
+    expect(loggedLine(errorSpy)).toMatchObject({ gate: "VOICE_TRANSCRIPT", status: "FAILED", stage: "config_check", reason: "provider_not_gemini" });
+  });
+
+  it("logs config_check FAILED with a specific reason when the API key is missing", async () => {
+    delete process.env.AI_ANALYSIS_API_KEY;
+
+    await invoke(audioForm());
+
+    expect(loggedLine(errorSpy)).toMatchObject({ gate: "VOICE_TRANSCRIPT", status: "FAILED", stage: "config_check", reason: "api_key_missing" });
+  });
+
+  it("logs invalid_audio FAILED with the mime type and size, never the audio bytes themselves", async () => {
+    await invoke(audioForm({ type: "text/plain" }));
+
+    const logged = loggedLine(errorSpy);
+    expect(logged).toMatchObject({ gate: "VOICE_TRANSCRIPT", status: "FAILED", stage: "invalid_audio", mimeType: "text/plain" });
+    expect(JSON.stringify(logged)).not.toContain("bytes");
+  });
+
+  it("logs provider_call FAILED with the real error name/message when the fetch itself throws", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+
+    await invoke(audioForm());
+
+    expect(loggedLine(errorSpy)).toMatchObject({
+      gate: "VOICE_TRANSCRIPT", status: "FAILED", stage: "provider_call", reason: "fetch_threw",
+      errorName: "TypeError", errorMessage: "Failed to fetch",
+    });
+  });
+
+  // The key diagnostic this fix exists for: distinguishing e.g. a rejected
+  // audio MIME type from an auth/quota/model problem requires the
+  // provider's own HTTP status and error body, not just "it failed".
+  it("logs provider_call FAILED with the provider's real HTTP status and a bounded excerpt of its error body when the response is not ok", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      Response.json({ error: { code: 400, message: "Invalid value at 'contents[0].parts[1].inline_data.mime_type'", status: "INVALID_ARGUMENT" } }, { status: 400 }),
+    ));
+
+    await invoke(audioForm({ type: "audio/webm" }));
+
+    const logged = loggedLine(errorSpy);
+    expect(logged).toMatchObject({
+      gate: "VOICE_TRANSCRIPT", status: "FAILED", stage: "provider_call", reason: "provider_response_not_ok",
+      providerHttpStatus: 400, audioMimeType: "audio/webm",
+    });
+    expect(String(logged.providerErrorBody)).toContain("INVALID_ARGUMENT");
+  });
+
+  it("truncates an unexpectedly large provider error body instead of logging it in full", async () => {
+    const hugeMessage = "x".repeat(10_000);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: { message: hugeMessage } }, { status: 500 })));
+
+    await invoke(audioForm());
+
+    const logged = loggedLine(errorSpy);
+    expect(String(logged.providerErrorBody).length).toBeLessThanOrEqual(500);
+  });
+
+  it("never logs the API key anywhere, on any branch", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "bad request" }, { status: 400 })));
+
+    await invoke(audioForm());
+
+    const logged = JSON.stringify(errorSpy.mock.calls);
+    expect(logged).not.toContain("key");
+  });
+
+  it("logs provider_call FAILED with reason empty_transcript when the provider returns no usable text", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ candidates: [] }, { status: 200 })));
+
+    await invoke(audioForm());
+
+    expect(loggedLine(errorSpy)).toMatchObject({ gate: "VOICE_TRANSCRIPT", status: "FAILED", stage: "provider_call", reason: "empty_transcript" });
+  });
+
+  it("logs persistence FAILED with reason database_not_configured", async () => {
+    prismaMocks.configured = false;
+
+    await invoke(audioForm());
+
+    expect(loggedLine(errorSpy)).toMatchObject({ gate: "VOICE_TRANSCRIPT", status: "FAILED", stage: "persistence", reason: "database_not_configured" });
+  });
+
+  it("logs persistence FAILED with reason prisma_create_threw", async () => {
+    prismaMocks.create.mockRejectedValue(new Error("db down"));
+
+    await invoke(audioForm());
+
+    expect(loggedLine(errorSpy)).toMatchObject({ gate: "VOICE_TRANSCRIPT", status: "FAILED", stage: "persistence", reason: "prisma_create_threw" });
+  });
+
+  it("logs a SUCCEEDED line on success (console.log, not console.error), with safe fields but never the transcript content", async () => {
+    await invoke(audioForm({ type: "audio/webm" }));
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    const logged = loggedLine(logSpy);
+    expect(logged).toMatchObject({ gate: "VOICE_TRANSCRIPT", status: "SUCCEEDED", stage: "complete", audioMimeType: "audio/webm" });
+    expect(JSON.stringify(logged)).not.toContain("She had bleach");
+  });
+});
