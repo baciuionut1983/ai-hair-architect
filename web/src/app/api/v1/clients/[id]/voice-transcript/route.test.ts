@@ -307,8 +307,26 @@ describe("production diagnostics logging", () => {
     await invoke(audioForm({ type: "audio/webm" }));
 
     expect(errorSpy).not.toHaveBeenCalled();
-    const logged = loggedLine(logSpy);
-    expect(logged).toMatchObject({ gate: "VOICE_TRANSCRIPT", status: "SUCCEEDED", stage: "complete", audioMimeType: "audio/webm" });
-    expect(JSON.stringify(logged)).not.toContain("She had bleach");
+    const loggedLines = logSpy.mock.calls.map((call) => JSON.parse(call[0] as string));
+    const completeLine = loggedLines.find((line) => line.stage === "complete");
+    expect(completeLine).toMatchObject({ gate: "VOICE_TRANSCRIPT", status: "SUCCEEDED", stage: "complete", audioMimeType: "audio/webm" });
+    expect(JSON.stringify(loggedLines)).not.toContain("She had bleach");
+  });
+
+  // Regression: a live retest reproduced the failure with ZERO
+  // VOICE_TRANSCRIPT lines anywhere in Deploy Logs, leaving genuine
+  // ambiguity about whether the request had even reached this route
+  // handler. This is deliberately the very first statement in POST,
+  // before auth or any other check, so it fires unconditionally --
+  // locking in that the NEXT live retest can settle that question with
+  // certainty regardless of how the request ultimately fails.
+  it("logs endpoint_entered as the very first line, unconditionally, even before authentication is checked", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+
+    const response = await invoke(audioForm());
+
+    expect(response.status).toBe(401);
+    const firstLine = JSON.parse(logSpy.mock.calls[0][0] as string);
+    expect(firstLine).toMatchObject({ gate: "VOICE_TRANSCRIPT", status: "INFO", stage: "endpoint_entered" });
   });
 });

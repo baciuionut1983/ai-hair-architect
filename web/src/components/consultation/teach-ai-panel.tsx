@@ -3,7 +3,7 @@
 import { Brain, Mic, Square } from "lucide-react";
 import { useRef, useState } from "react";
 import { Alert, Button, Textarea } from "@/components/ui";
-import { finishRecording } from "./teach-ai-panel-logic";
+import { finishRecording, logClient } from "./teach-ai-panel-logic";
 
 type Action = "save_client_memory" | "save_professional_rule" | "mark_preference" | "save_outcome";
 
@@ -75,7 +75,12 @@ export function TeachAiPanel({ clientId }: { clientId: string }) {
       media.start();
       setRecording(true);
       setStatus("Listening...");
-    } catch {
+      logClient("recording_started", { mimeType: media.mimeType || null });
+    } catch (error) {
+      logClient("recording_start_failed", {
+        errorName: error instanceof Error ? error.name : "unknown",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
       setStatus("Microphone access was not available. You can still type your note.");
     }
   }

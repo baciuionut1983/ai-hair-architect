@@ -31,6 +31,24 @@ export interface FinishRecordingDeps {
 
 const GENERIC_TRANSCRIPTION_FAILURE_MESSAGE = "Voice transcription failed. You can still type your note.";
 
+// Regression: a live report showed this exact generic message with no
+// further clue, and -- critically -- Railway's Deploy Logs showed zero
+// VOICE_TRANSCRIPT lines at all after reproducing it, meaning the request
+// may never have reached the backend's route handler in the first place.
+// Without client-side visibility, "fetch threw before ever reaching the
+// server" and "server rejected the request" were indistinguishable. These
+// logs (safe fields only -- never audio bytes, never transcript text,
+// never any token/cookie) let a single browser-console read settle which
+// one actually happened.
+const CLIENT_LOG_TAG = "VOICE_TRANSCRIPT_CLIENT";
+
+// Exported so teach-ai-panel.tsx can log the one step that happens before
+// finishRecording is ever called (recording actually starting) with the
+// exact same tag/shape.
+export function logClient(event: string, details: Record<string, unknown> = {}): void {
+  console.log(JSON.stringify({ tag: CLIENT_LOG_TAG, event, ...details }));
+}
+
 export async function finishRecording(
   stream: VoiceNoteStreamLike,
   chunks: Blob[],
@@ -41,22 +59,66 @@ export async function finishRecording(
 ): Promise<void> {
   stream.getTracks().forEach((track) => track.stop());
   callbacks.onStopped();
+  logClient("recording_stopped");
 
   try {
     const blob = new Blob(chunks, { type: mimeType || "audio/webm" });
+    logClient("blob_created", { mimeType: blob.type, sizeBytes: blob.size });
+
     const form = new FormData();
     form.append("audio", blob, "note.webm");
 
-    const response = await deps.fetch(`/api/v1/clients/${clientId}/voice-transcript`, { method: "POST", body: form });
-    const payload = (await response.json()) as { transcript?: string; transcriptId?: string; message?: string };
+    let response: Response;
+    try {
+      logClient("request_initiated");
+      response = await deps.fetch(`/api/v1/clients/${clientId}/voice-transcript`, { method: "POST", body: form });
+      logClient("response_received", { status: response.status, ok: response.ok });
+    } catch (error) {
+      // The exact previously-invisible failure mode: fetch itself throwing
+      // (a network error, a CORS/CSP rejection, or the request never
+      // leaving the browser at all) means the backend's own VOICE_TRANSCRIPT
+      // logging (added separately) can never fire, no matter how thorough
+      // it is -- this is the only place that failure is observable.
+      logClient("fetch_threw", {
+        errorName: error instanceof Error ? error.name : "unknown",
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
+      callbacks.onFailure(GENERIC_TRANSCRIPTION_FAILURE_MESSAGE);
+      return;
+    }
+
+    let payload: { transcript?: string; transcriptId?: string; message?: string };
+    try {
+      payload = await response.json();
+    } catch (error) {
+      // Distinct from fetch_threw: the request DID reach some server (a
+      // response with a real status came back), but its body wasn't valid
+      // JSON -- e.g. an HTML error page from an edge/proxy layer in front
+      // of the Next.js app, never the app's own route handler at all.
+      logClient("response_json_parse_threw", {
+        status: response.status,
+        errorName: error instanceof Error ? error.name : "unknown",
+      });
+      callbacks.onFailure(GENERIC_TRANSCRIPTION_FAILURE_MESSAGE);
+      return;
+    }
 
     if (!response.ok) {
+      logClient("response_not_ok", { status: response.status, hasMessage: Boolean(payload.message) });
       callbacks.onFailure(payload.message || GENERIC_TRANSCRIPTION_FAILURE_MESSAGE);
       return;
     }
 
+    logClient("success", { transcriptLength: (payload.transcript ?? "").length });
     callbacks.onSuccess(payload.transcript ?? "", payload.transcriptId);
-  } catch {
+  } catch (error) {
+    // Defensive catch-all preserving the original fix's own guarantee:
+    // nothing here can ever leave the UI stuck on "Listening...", even an
+    // unexpected failure in Blob/FormData construction itself.
+    logClient("unexpected_error", {
+      errorName: error instanceof Error ? error.name : "unknown",
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
     callbacks.onFailure(GENERIC_TRANSCRIPTION_FAILURE_MESSAGE);
   }
 }

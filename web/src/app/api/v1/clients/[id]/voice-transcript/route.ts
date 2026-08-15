@@ -22,7 +22,7 @@ const MAX_TRANSCRIPT_LENGTH = 4000;
 // a bad audio MIME type apart from an auth/quota/model problem.
 const MAX_LOGGED_PROVIDER_ERROR_LENGTH = 500;
 
-function logVoiceTranscript(status: "SUCCEEDED" | "FAILED", stage: string, details: Record<string, unknown> = {}): void {
+function logVoiceTranscript(status: "SUCCEEDED" | "FAILED" | "INFO", stage: string, details: Record<string, unknown> = {}): void {
   const line = JSON.stringify({ gate: "VOICE_TRANSCRIPT", status, stage, ...details });
   if (status === "FAILED") {
     console.error(line);
@@ -39,6 +39,14 @@ function logVoiceTranscript(status: "SUCCEEDED" | "FAILED", stage: string, detai
 // abstraction for a single call site. If SPEECH_TO_TEXT_PROVIDER is unset,
 // this is honestly reported as unavailable -- never silently faked.
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  // Deliberately the very first statement, before auth or anything else --
+  // a live report reproduced the failure with zero VOICE_TRANSCRIPT lines
+  // anywhere in Deploy Logs afterward, leaving genuine ambiguity about
+  // whether the request ever reached this route handler at all (versus an
+  // edge/proxy layer, or the browser's own fetch call, rejecting it
+  // earlier). This line settles that question unconditionally.
+  logVoiceTranscript("INFO", "endpoint_entered");
+
   const user = await authenticateSessionRequest();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
