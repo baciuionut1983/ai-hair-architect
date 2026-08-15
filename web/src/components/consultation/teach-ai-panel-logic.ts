@@ -49,6 +49,23 @@ export function logClient(event: string, details: Record<string, unknown> = {}):
   console.log(JSON.stringify({ tag: CLIENT_LOG_TAG, event, ...details }));
 }
 
+// Regression: the demonstrated root cause of the live "Voice transcription
+// failed" report. `{ fetch }` (object shorthand for `{ fetch: fetch }`)
+// stores the bare global function reference as a plain object's property.
+// A real browser's native fetch is a *branded* method -- it requires
+// `this` to be exactly the window/global object it's defined on. Calling
+// it later as `deps.fetch(...)` invokes it with `this === deps` (plain
+// method-call syntax always binds `this` to the object before the dot),
+// which throws "TypeError: Failed to execute 'fetch' on 'Window': Illegal
+// invocation" -- synchronously, before any network request is ever made.
+// This was invisible in every test because a mocked fetch (vi.fn()) never
+// checks `this` at all; only a real browser's native implementation does.
+// bindFetch fixes this at the one place a real fetch reference is ever
+// captured, so it works correctly no matter how it's later invoked.
+export function bindFetch(nativeFetch: typeof fetch): typeof fetch {
+  return nativeFetch.bind(globalThis);
+}
+
 export async function finishRecording(
   stream: VoiceNoteStreamLike,
   chunks: Blob[],

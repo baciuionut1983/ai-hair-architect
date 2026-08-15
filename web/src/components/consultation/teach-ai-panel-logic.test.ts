@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { finishRecording, type VoiceNoteStreamLike } from "./teach-ai-panel-logic";
+import { bindFetch, finishRecording, type VoiceNoteStreamLike } from "./teach-ai-panel-logic";
 
 function fakeStream(): { stream: VoiceNoteStreamLike; stopped: boolean[] } {
   const stopped: boolean[] = [];
@@ -282,5 +282,59 @@ describe("finishRecording client-side diagnostics", () => {
     expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.");
     expect(loggedEvents(logSpy).some((e) => e.event === "unexpected_error")).toBe(true);
     logSpy.mockRestore();
+  });
+});
+
+// Regression: the demonstrated live production cause. `{ fetch }` (the
+// bare global reference) stored as a plain object's property throws when
+// a REAL browser's native fetch is later invoked as `deps.fetch(...)`:
+// "TypeError: Failed to execute 'fetch' on 'Window': Illegal invocation".
+// This reproduces the browser's actual `this`-binding requirement with a
+// test double, since a mocked fetch (vi.fn(), used by every other test in
+// this file) never checks `this` at all -- which is exactly why the bug
+// reached production invisibly despite full test coverage of
+// finishRecording itself.
+describe("bindFetch", () => {
+  // Simulates a real browser's native fetch: it only works when called
+  // with `this === globalThis` (the actual window object in a browser) --
+  // exactly the constraint bindFetch.bind(globalThis) satisfies. Any other
+  // receiver (e.g. a plain `deps` object storing the bare reference) is
+  // rejected, matching the real "Illegal invocation" error.
+  function brandedFetchDouble(): typeof fetch {
+    function fetchLike(this: unknown) {
+      if (this !== globalThis) {
+        throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+      }
+      return Promise.resolve(new Response("{}"));
+    }
+    return fetchLike as unknown as typeof fetch;
+  }
+
+  it("reproduces the exact production bug: a bare extracted reference throws Illegal invocation when called as a plain object's method", () => {
+    const nativeFetch = brandedFetchDouble();
+
+    // This is exactly `{ fetch }` from teach-ai-panel.tsx before the fix:
+    // the bare reference, called through a plain object, so `this` is
+    // that object, not globalThis.
+    const buggyDeps = { fetch: nativeFetch };
+
+    expect(() => buggyDeps.fetch("/api/v1/clients/client-1/voice-transcript")).toThrow(/Illegal invocation/);
+  });
+
+  it("fixes it: the bound function works correctly when called as a plain object's method", () => {
+    const nativeFetch = brandedFetchDouble();
+
+    const fixedDeps = { fetch: bindFetch(nativeFetch) };
+
+    expect(() => fixedDeps.fetch("/api/v1/clients/client-1/voice-transcript")).not.toThrow();
+  });
+
+  it("still calls through to the real underlying fetch (not a no-op stub)", async () => {
+    const nativeFetch = brandedFetchDouble();
+
+    const bound = bindFetch(nativeFetch);
+    const response = await bound("/api/v1/clients/client-1/voice-transcript");
+
+    expect(response).toBeInstanceOf(Response);
   });
 });
