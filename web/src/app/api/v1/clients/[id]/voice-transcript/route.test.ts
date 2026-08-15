@@ -64,6 +64,29 @@ describe("POST /api/v1/clients/[id]/voice-transcript", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  // Regression: a live retest showed the client receiving a corrupted
+  // response for a real ~150KB audio upload -- a real HTTP status arrived
+  // (401/503), but the body never fully did (net::ERR_HTTP2_PROTOCOL_ERROR,
+  // response.json() throwing). Reproduced independently against production
+  // with a large multipart body against this exact 401 path. Root cause:
+  // this route used to return its rejection BEFORE ever reading the
+  // incoming multipart body -- fine for a tiny/empty body, but for a real,
+  // still-uploading audio file, ending the response while the client is
+  // mid-upload can corrupt delivery of the response itself. This proves
+  // the request body is now read before the earliest possible rejection
+  // (401), so the full upload is always drained regardless of outcome.
+  it("still reads (drains) the full request body even when authentication fails, so a large in-flight upload is never left unconsumed", async () => {
+    authMock.authenticateSessionRequest.mockResolvedValue(null);
+    const formDataSpy = vi.fn(() => Promise.resolve(audioForm()));
+    const request = new Request("http://localhost/api/v1/clients/client-1/voice-transcript", { method: "POST" });
+    Object.defineProperty(request, "formData", { value: formDataSpy });
+
+    const response = await POST(request, { params: Promise.resolve({ id: "client-1" }) });
+
+    expect(response.status).toBe(401);
+    expect(formDataSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("returns 429 when the rate limit is exceeded", async () => {
     hardeningMock.checkRateLimit.mockReturnValue({ allowed: false, remaining: 0 });
 

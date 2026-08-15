@@ -47,6 +47,22 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // earlier). This line settles that question unconditionally.
   logVoiceTranscript("INFO", "endpoint_entered");
 
+  // Regression: a live retest showed the client receiving a corrupted
+  // response -- a real HTTP status (401/503) arrived, but the body never
+  // did (net::ERR_HTTP2_PROTOCOL_ERROR, response.json() throwing). Root
+  // cause, reproduced independently against production with a request
+  // matching the real audio size (~150KB): every early-rejection branch
+  // below (auth, rate limit, client lookup, config) used to return BEFORE
+  // this route ever read the incoming multipart body. For a small/empty
+  // body that's harmless, but for a real, still-uploading ~150KB audio
+  // file, ending the response while the client is mid-upload can tear
+  // down the connection before the response body is fully delivered.
+  // Parsing the body unconditionally, immediately, drains the full upload
+  // first, regardless of which check subsequently rejects the request --
+  // the audio itself is still validated at its original point below.
+  const form = await request.formData();
+  const audio = form.get("audio");
+
   const user = await authenticateSessionRequest();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -82,8 +98,6 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     );
   }
 
-  const form = await request.formData();
-  const audio = form.get("audio");
   if (!(audio instanceof File) || audio.size === 0 || audio.size > MAX_AUDIO_BYTES || !audio.type.startsWith("audio/")) {
     logVoiceTranscript("FAILED", "invalid_audio", {
       resultCode: "INVALID_AUDIO",
