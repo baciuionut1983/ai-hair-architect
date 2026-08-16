@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 
 import type { Locale, UserRole } from "@/lib/contracts";
+import { parseLanguageCode } from "@/lib/language-registry";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 
 interface PersistenceUser {
@@ -13,8 +14,13 @@ interface PersistenceUser {
   emailVerifiedAt: string | null;
 }
 
+// Regression risk this replaces: an earlier version hardcoded
+// `value === "ro" ? "ro" : "en"`, which would have silently coerced any
+// OTHER real language (e.g. a stored "ar") back to "en" on every single
+// read -- an account's chosen language "reverting" itself on next login.
+// parseLanguageCode validates against the full registry instead.
 function toLocale(value: string): Locale {
-  return value === "ro" ? "ro" : "en";
+  return parseLanguageCode(value);
 }
 
 export class AuthPersistenceUnavailableError extends Error {

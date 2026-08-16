@@ -9,10 +9,9 @@ import type {
   AuthSessionResponse,
   ClientCreateRequest,
   ClientRecord,
-  Locale,
   UserRole
 } from "@/lib/contracts";
-import { dictionary, resolveLocale } from "@/lib/i18n";
+import { dictionary, resolveLocale, type SupportedLocale } from "@/lib/i18n";
 
 const LOCALE_STORAGE_KEY = "aha-locale";
 
@@ -43,7 +42,7 @@ const defaultClientForm: ClientForm = {
 };
 
 export function Milestone1FoundationPanel() {
-  const [locale, setLocale] = useState<Locale>(() => {
+  const [locale, setLocale] = useState<SupportedLocale>(() => {
     if (typeof window === "undefined") {
       return "en";
     }

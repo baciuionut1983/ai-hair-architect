@@ -10,6 +10,8 @@ import type {
   ConsultationChatResponse,
   ConsultationMessageRecord
 } from "@/lib/contracts";
+import { conversationSupportedLanguages, getLanguageDefinition, type LanguageCode } from "@/lib/language-registry";
+import { useUiLanguage } from "@/lib/ui-language-context";
 
 import {
   buildChatLanguageFields,
@@ -18,7 +20,6 @@ import {
   formatMessageTime,
   isSendableMessage,
   LANGUAGE_SELECTION_STORAGE_KEY,
-  languageSelectionToSpeechLocale,
   parseStoredLanguageSelection,
   resolveConsultationHistoryLoadStatus,
   resolveSttLanguageHint,
@@ -26,11 +27,11 @@ import {
 } from "./consultation-chat-logic";
 import {
   isSpeechSynthesisSupported,
-  resolveReplySpeechLocale,
+  languageToSpeechLocale,
+  resolveReplyLanguage,
   speakReply,
   stopSpeaking,
   type LanguagePreference,
-  type SpeechLocale,
   type SpeechSynthesisLike,
   type SpeechUtteranceLike
 } from "./consultation-chat-tts-logic";
@@ -50,11 +51,6 @@ export interface ConsultationChatProps {
 
 type HistoryStatus = "loading" | "ready" | "error";
 
-const LOCALE_LABELS: Record<SpeechLocale, string> = {
-  "ro-RO": "Romanian",
-  "en-US": "English",
-};
-
 const MEMORY_ACTION_LABELS: Record<string, string> = {
   save_client_memory: "Save to client memory",
   save_professional_rule: "Save as professional rule",
@@ -63,6 +59,13 @@ const MEMORY_ACTION_LABELS: Record<string, string> = {
 };
 
 export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: ConsultationChatProps) {
+  // The app's GLOBAL UI language (see (app)/layout.tsx) -- for this
+  // component's own static chrome (Voice Reply/Stop/Send/composer
+  // placeholder) only. Deliberately independent of languageSelection
+  // below, which is the CONVERSATION's own language (point 2 of the
+  // requirement: UI language and conversation language must be able to
+  // differ, e.g. a Romanian UI with an Italian conversation).
+  const { t } = useUiLanguage();
   const [historyStatus, setHistoryStatus] = useState<HistoryStatus>("loading");
   const [messages, setMessages] = useState<ConsultationMessageRecord[]>([]);
   const [draft, setDraft] = useState("");
@@ -99,22 +102,26 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   // failure. Never silently implies the requested language's voice was
   // used when it wasn't (see selectVoiceForLocale's own regression note).
   const [voiceUnavailableNotice, setVoiceUnavailableNotice] = useState<string | null>(null);
-  // The conversation's own "Language" selector (Auto/English/Romanian) --
-  // distinct from the account/UI locale on purpose (see
-  // consultation-chat-service.ts's ConsultationChatLanguageHint): a
-  // concrete choice here is a hard override for this conversation only,
-  // never something the app-wide UI language forces onto it. Starts "auto"
-  // (matching SSR) and is hydrated from localStorage after mount, same
-  // hydration-safe pattern as speechSupported above.
+  // The conversation's own "Language" selector -- Auto plus every
+  // conversation-supported registry language (see language-registry.ts),
+  // not a hardcoded Auto/English/Romanian list. Distinct from the
+  // account/UI locale on purpose (see consultation-chat-service.ts's
+  // ConsultationChatLanguageHint): a concrete choice here is a hard
+  // override for this conversation only, never something the app-wide UI
+  // language forces onto it. Starts "auto" (matching SSR) and is hydrated
+  // from localStorage after mount, same hydration-safe pattern as
+  // speechSupported above.
   const [languageSelection, setLanguageSelection] = useState<LanguageSelection>("auto");
-  // The conversation's own currently-established spoken language, updated
-  // whenever an AI reply is confidently detected (see resolveReplySpeechLocale)
-  // -- used only as a soft fallback (STT hint, ambiguous-reply TTS/reply
-  // language), never a forced value.
-  const [conversationLocale, setConversationLocale] = useState<SpeechLocale | null>(null);
+  // The conversation's own currently-established language (a LanguageCode
+  // -- the SAME currency as the STT hint and the AI-reply-language hint,
+  // never a separately-tracked BCP-47 speech tag), updated whenever an AI
+  // reply is confidently detected (see resolveReplyLanguage) -- used only
+  // as a soft fallback (STT hint, ambiguous-reply TTS/reply language),
+  // never a forced value.
+  const [conversationLanguage, setConversationLanguage] = useState<LanguageCode | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
 
-  const sttLanguageHint = resolveSttLanguageHint(languageSelection, conversationLocale);
+  const sttLanguageHint = resolveSttLanguageHint(languageSelection, conversationLanguage);
   const {
     recording: chatRecording,
     processing: chatProcessing,
@@ -231,10 +238,10 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     setSendError(null);
 
     try {
-      const body: ConsultationChatRequest & { analysisId?: string; languagePreference?: "en" | "ro"; conversationLanguage?: "en" | "ro" } = {
+      const body: ConsultationChatRequest & { analysisId?: string; languagePreference?: LanguageCode; conversationLanguage?: LanguageCode } = {
         message: outgoing,
         ...(analysisId ? { analysisId } : {}),
-        ...buildChatLanguageFields(languageSelection, conversationLocale),
+        ...buildChatLanguageFields(languageSelection, conversationLanguage),
       };
       const response = await fetch(`/api/v1/clients/${clientId}/chat`, {
         method: "POST",
@@ -275,27 +282,24 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     setVoiceUnavailableNotice(null);
     // A concrete selector value always wins outright. Otherwise, prefer
     // message.replyLanguage -- the backend's own single canonical language
-    // decision for this exact reply (see consultation-chat-service.ts),
-    // computed once there and never re-guessed here. Only when that is
-    // genuinely absent (e.g. an older cached response) does this fall back
-    // to resolveReplySpeechLocale's own text detection -- so this reply
-    // language, the AI's own reply, and the STT hint that led to it are
-    // never three independent detectors that could disagree.
+    // decision for this exact reply (see consultation-chat-service.ts,
+    // itself preferring Gemini's own self-reported replyLanguageCode over
+    // any local re-detection), computed once there and never re-guessed
+    // here. Only when that is genuinely absent (e.g. an older cached
+    // response) does this fall back to resolveReplyLanguage's own text
+    // detection -- so the STT hint, the AI's reply, and the voice that
+    // reads it are never three independent detectors that could disagree.
     const effectivePreference: LanguagePreference =
-      languageSelection !== "auto"
-        ? languageSelectionToSpeechLocale(languageSelection)
-        : message.replyLanguage
-          ? languageSelectionToSpeechLocale(message.replyLanguage)
-          : "auto";
-    const { locale, conversationLocale: nextConversationLocale } = resolveReplySpeechLocale(
+      languageSelection !== "auto" ? languageSelection : message.replyLanguage ?? "auto";
+    const { language, conversationLanguage: nextConversationLanguage } = resolveReplyLanguage(
       message.content,
       effectivePreference,
-      conversationLocale,
+      conversationLanguage,
     );
-    setConversationLocale(nextConversationLocale);
+    setConversationLanguage(nextConversationLanguage);
     speakReply(
       message.content,
-      locale,
+      languageToSpeechLocale(language),
       {
         synth: window.speechSynthesis as unknown as SpeechSynthesisLike,
         createUtterance: (text: string) => new SpeechSynthesisUtterance(text) as unknown as SpeechUtteranceLike,
@@ -307,9 +311,13 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
           setSpeakingMessageId((current) => (current === message.id ? null : current));
           setVoiceError(errorMessage);
         },
-        onVoiceUnavailable: (unavailableLocale) => {
+        // Generic for any registry language -- never hardcoded to a fixed
+        // pair, so "No Arabic voice is installed..." reads exactly like
+        // "No Romanian voice is installed..." would have.
+        onVoiceUnavailable: () => {
+          const label = getLanguageDefinition(language)?.label ?? language;
           setVoiceUnavailableNotice(
-            `No ${LOCALE_LABELS[unavailableLocale]} voice is installed on this device -- reading with the browser's default voice instead.`,
+            `No ${label} voice is installed on this device -- reading with the browser's default voice instead.`,
           );
         },
       },
@@ -451,13 +459,13 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   // state transitions. Priority order matches the real sequence of
   // events; only one of these is ever true-ish at a time in practice.
   const voiceFlowStatus = chatRecording
-    ? "Listening..."
+    ? t("consultAi.listening")
     : chatProcessing
-      ? "Processing..."
+      ? t("consultAi.processing")
       : sending
-        ? "AI responding..."
+        ? t("consultAi.aiResponding")
         : speakingMessageId
-          ? "Speaking..."
+          ? t("consultAi.speaking")
           : null;
 
   return (
@@ -475,8 +483,11 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
               onChange={(event) => handleLanguageSelectionChange(event.target.value as LanguageSelection)}
             >
               <option value="auto">Language: Auto</option>
-              <option value="en">Language: English</option>
-              <option value="ro">Language: Romanian</option>
+              {conversationSupportedLanguages().map((entry) => (
+                <option key={entry.code} value={entry.code}>
+                  Language: {entry.label}
+                </option>
+              ))}
             </Select>
           </div>
           {speechSupported ? (
@@ -484,12 +495,12 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
               {speakingMessageId ? (
                 <Button type="button" variant="ghost" onClick={handleStopSpeaking}>
                   <VolumeX className="h-4 w-4" aria-hidden="true" />
-                  Stop
+                  {t("consultAi.stop")}
                 </Button>
               ) : null}
               <Button type="button" variant="secondary" onClick={handleToggleVoiceReply}>
                 {voiceReplyEnabled ? <Volume2 className="h-4 w-4" aria-hidden="true" /> : <VolumeX className="h-4 w-4" aria-hidden="true" />}
-                Voice Reply: {voiceReplyEnabled ? "On" : "Off"}
+                {t("consultAi.voiceReply")}: {voiceReplyEnabled ? t("common.on") : t("common.off")}
               </Button>
             </>
           ) : null}
@@ -552,7 +563,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
           <Textarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder="Type a message..."
+            placeholder={t("consultAi.typeMessage")}
             rows={2}
             disabled={sending}
             onKeyDown={(event) => {
@@ -575,7 +586,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
         </Button>
         <Button type="submit" loading={sending} disabled={!isSendableMessage(draft)}>
           <Send className="h-4 w-4" aria-hidden="true" />
-          Send
+          {t("consultAi.send")}
         </Button>
       </form>
       <TeachAiPanel clientId={clientId} />

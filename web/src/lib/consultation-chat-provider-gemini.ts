@@ -2,6 +2,7 @@ import { GoogleGenAI, Type, type Schema } from "@google/genai";
 
 import { CORRECTABLE_ANALYSIS_FIELDS } from "./analysis-repository";
 import { MEMORY_PROPOSAL_ACTION_KEYS, isMemoryProposalAction } from "./professional-memory-repository";
+import { conversationSupportedLanguages, getLanguageDefinition, isConversationLanguageCode, type LanguageCode } from "./language-registry";
 import {
   ConsultationChatProvider,
   type ChatProviderError,
@@ -14,14 +15,22 @@ export const GEMINI_CHAT_DEFAULT_TIMEOUT_MS = 30_000;
 
 const CORRECTION_SOURCES = ["stylist_confirmed", "client_reported"] as const;
 
-// Mirrors contracts.ts's Locale ("en" | "ro") -- used only to render a
-// human-readable name into the prompt text (Gemini's REST API has no
-// dedicated language-hint config field, so this is necessarily prompt text,
-// same technique as the memory-proposal reminder line below).
-const LANGUAGE_NAMES: Record<"en" | "ro", string> = {
-  en: "English",
-  ro: "Romanian",
-};
+// The exact set of codes Gemini is allowed to report replyLanguageCode as
+// -- language-registry.ts's own conversationSupportedLanguages(), never a
+// hand-typed list, so this can never drift from what the rest of the app
+// (STT hint, TTS voice selection) actually treats as a real conversation
+// language.
+const CONVERSATION_LANGUAGE_CODES = conversationSupportedLanguages().map((entry) => entry.code);
+
+// Renders a human-readable name into the prompt text (Gemini's REST API
+// has no dedicated language-hint config field, so this is necessarily
+// prompt text, same technique as the memory-proposal reminder line
+// below) -- reads language-registry.ts directly rather than a hardcoded
+// name map, so it stays correct for every registry language, not just
+// the original en/ro.
+function languageLabel(code: LanguageCode): string {
+  return getLanguageDefinition(code)?.label ?? code;
+}
 
 // Kept in sync with analysis-repository.ts's CORRECTABLE_ANALYSIS_FIELDS by
 // importing it directly rather than re-listing the fields -- if that list
@@ -42,6 +51,13 @@ export const RESPONSE_SCHEMA: Schema = {
   properties: {
     reply: { type: Type.STRING },
     needsClarification: { type: Type.BOOLEAN },
+    // The model's own classification of what language `reply` is written
+    // in, restricted to language-registry.ts's own conversation-supported
+    // codes -- required (not just optional/inferred) so the app always
+    // has an authoritative, single source for the reply's language
+    // instead of re-detecting it locally after the fact (see
+    // consultation-chat-service.ts's replyLanguage computation).
+    replyLanguageCode: { type: Type.STRING, enum: [...CONVERSATION_LANGUAGE_CODES] },
     proposedCorrection: {
       type: Type.OBJECT,
       properties: {
@@ -68,7 +84,7 @@ export const RESPONSE_SCHEMA: Schema = {
       required: ["action", "content", "reason"],
     },
   },
-  required: ["reply", "needsClarification"],
+  required: ["reply", "needsClarification", "replyLanguageCode"],
 };
 
 const SYSTEM_INSTRUCTION =
@@ -138,15 +154,20 @@ const SYSTEM_INSTRUCTION =
   "9. Respond with strict JSON matching the provided schema only -- no markdown, no commentary outside the " +
   "JSON fields.\n" +
   "10. Language: by default, write `reply` in EXACTLY the same language as the stylist's CURRENT message -- " +
-  "if it's written in Romanian, reply in Romanian; if English, reply in English; matching whatever language " +
-  "this specific message uses, regardless of what language earlier messages in this conversation used. If a " +
-  "'FORCED REPLY LANGUAGE' line appears below, ignore the message's own language entirely and always reply in " +
-  "that language instead -- the stylist has explicitly fixed the conversation's language. If no forced language " +
-  "is given and the current message's own language is genuinely ambiguous (e.g. just a name, a number, or too " +
-  "short to tell), and a 'fallback reply language if ambiguous' line appears below, use that; otherwise use your " +
-  "own best judgment. This rule applies to `reply` only -- field names, enum values (e.g. proposedCorrection." +
-  "field, proposedMemory.action/source), and technical terms you're already told to use in English stay in " +
-  "English regardless of reply language.";
+  "matching whatever language this specific message uses (this platform supports many languages, not just " +
+  "English/Romanian -- Arabic, Italian, French, German, Spanish, and others; always match the message's real " +
+  "language, never default to English just because it's common), regardless of what language earlier messages " +
+  "in this conversation used. If a 'FORCED REPLY LANGUAGE' line appears below, ignore the message's own " +
+  "language entirely and always reply in that language instead -- the stylist has explicitly fixed the " +
+  "conversation's language. If no forced language is given and the current message's own language is " +
+  "genuinely ambiguous (e.g. just a name, a number, or too short to tell), and a 'fallback reply language if " +
+  "ambiguous' line appears below, use that; otherwise use your own best judgment. This rule applies to `reply` " +
+  "only -- field names, enum values (e.g. proposedCorrection.field, proposedMemory.action/source), and " +
+  "technical terms you're already told to use in English stay in English regardless of reply language.\n" +
+  "11. replyLanguageCode: ALWAYS set this to the short language code (e.g. \"en\", \"ro\", \"ar\", \"it\", " +
+  "\"fr\", \"de\", \"es\") that matches whatever language you actually wrote `reply` in for THIS response -- " +
+  "this must always agree with rule 10 above (the forced language if one was given, otherwise the language " +
+  "you actually used). Never leave this as a guess disconnected from `reply`'s real language.";
 
 export interface GeminiConsultationChatProviderOptions {
   apiKey: string;
@@ -264,11 +285,23 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
       );
     }
 
+    // Soft, not hard-required: unlike reply/needsClarification, an
+    // invalid/missing replyLanguageCode never fails the whole response --
+    // it's a valuable signal when present, but consultation-chat-service.ts
+    // already has a full fallback chain (forced hint -> this field ->
+    // local text detection -> soft account fallback) for exactly the case
+    // where it's absent, so losing an otherwise-good reply over this
+    // sub-field alone would be disproportionate.
+    const replyLanguageCode = typeof parsed.replyLanguageCode === "string" && isConversationLanguageCode(parsed.replyLanguageCode)
+      ? parsed.replyLanguageCode
+      : undefined;
+
     return {
       reply: parsed.reply.trim(),
       needsClarification: parsed.needsClarification,
       ...(proposedCorrection ? { proposedCorrection } : {}),
       ...(proposedMemory ? { proposedMemory } : {}),
+      ...(replyLanguageCode ? { replyLanguageCode } : {}),
     };
   }
 
@@ -413,14 +446,14 @@ function buildPrompt(message: string, context: ConsultationChatContext): string 
   if (context.forcedReplyLanguage) {
     lines.push(
       "",
-      `FORCED REPLY LANGUAGE: ${LANGUAGE_NAMES[context.forcedReplyLanguage]} (${context.forcedReplyLanguage}) -- ` +
+      `FORCED REPLY LANGUAGE: ${languageLabel(context.forcedReplyLanguage)} (${context.forcedReplyLanguage}) -- ` +
         "the stylist has explicitly fixed the conversation's language. Reply in this language regardless of what " +
         "language the message below is written in.",
     );
   } else if (context.fallbackReplyLanguage) {
     lines.push(
       "",
-      `Fallback reply language if ambiguous: ${LANGUAGE_NAMES[context.fallbackReplyLanguage]} (${context.fallbackReplyLanguage}).`,
+      `Fallback reply language if ambiguous: ${languageLabel(context.fallbackReplyLanguage)} (${context.fallbackReplyLanguage}).`,
     );
   }
 

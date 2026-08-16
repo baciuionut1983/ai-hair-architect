@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import type { ConsultationChatRequest, ConsultationChatResponse, ConsultationMessageRecord } from "@/lib/contracts";
+import { isConversationLanguageCode, type LanguageCode } from "@/lib/language-registry";
 import { resolveOwnedClient } from "@/lib/client-repository";
 import {
   CONSULTATION_CHAT_RESULT_HTTP_STATUS,
@@ -96,14 +97,18 @@ export async function POST(
     return NextResponse.json({ error: "message is required." }, { status: 400 });
   }
 
-  const forcedReplyLanguage = toLocaleOrUndefined(body.languagePreference);
+  const forcedReplyLanguage = toConversationLanguageOrUndefined(body.languagePreference);
   // Ambiguous-message fallback only, never a forced override (see
   // ConsultationChatLanguageHint): the conversation's own established
   // language first, then the stylist's account locale as a last resort --
   // this must NEVER be promoted to `forced`, or a Romanian UI/account
   // setting would force Romanian replies onto a conversation held in a
-  // different language, which is explicitly disallowed.
-  const fallbackReplyLanguage = toLocaleOrUndefined(body.conversationLanguage) ?? sessionUser.locale;
+  // different language, which is explicitly disallowed. The account
+  // locale itself is validated too -- it's the full LanguageCode registry
+  // (any of the world languages a stylist could pick for their account),
+  // but only a conversation-capable one is usable as an AI-reply fallback.
+  const fallbackReplyLanguage =
+    toConversationLanguageOrUndefined(body.conversationLanguage) ?? toConversationLanguageOrUndefined(sessionUser.locale);
 
   const result = await sendConsultationMessage(sessionUser.id, client, message, analysisId, {}, {
     forced: forcedReplyLanguage,
@@ -158,6 +163,6 @@ function isProposedMemory(value: unknown): value is ConsultationChatResponse["re
   );
 }
 
-function toLocaleOrUndefined(value: string | undefined): "en" | "ro" | undefined {
-  return value === "en" || value === "ro" ? value : undefined;
+function toConversationLanguageOrUndefined(value: string | undefined): LanguageCode | undefined {
+  return value && isConversationLanguageCode(value) ? value : undefined;
 }

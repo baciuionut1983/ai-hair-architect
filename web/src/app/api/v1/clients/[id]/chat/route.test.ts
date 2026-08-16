@@ -154,7 +154,19 @@ describe("POST /api/v1/clients/[id]/chat", () => {
   });
 
   it("ignores a garbage/unsupported languagePreference or conversationLanguage value instead of forwarding it", async () => {
-    await invoke("client-1", { message: "hi", languagePreference: "auto", conversationLanguage: "fr" });
+    await invoke("client-1", { message: "hi", languagePreference: "auto", conversationLanguage: "xx" });
+
+    expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
+      "owner-1", CLIENT, "hi", undefined, {},
+      { forced: undefined, fallback: "en" },
+    );
+  });
+
+  // "pt" is a real language-registry entry (see language-registry.ts) but
+  // not yet conversation-supported -- it must be rejected here exactly
+  // like a nonsense string, not accepted just because it's a known code.
+  it("ignores a registry language that is not yet conversation-supported", async () => {
+    await invoke("client-1", { message: "hi", languagePreference: "pt" });
 
     expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
       "owner-1", CLIENT, "hi", undefined, {},

@@ -1,16 +1,14 @@
-import { languageToSpeechLocale, speechLocaleToLanguage, type SpeechLocale } from "./consultation-chat-tts-logic";
+import { isConversationLanguageCode, type LanguageCode } from "@/lib/language-registry";
 
 export type ConsultationHistoryLoadStatus = "ready" | "error";
 
 // The Consult AI "Language" selector's own state: "auto" follows the
 // conversation (per-message detection, see consultation-chat-tts-logic.ts's
-// resolveReplySpeechLocale); a concrete value explicitly fixes it. Distinct
-// from SpeechLocale ("ro-RO"/"en-US", a BCP-47 tag needed for
-// SpeechSynthesisUtterance.lang) -- this uses contracts.ts's own Locale
-// vocabulary ("en"/"ro") since it is also what's sent to the backend
-// (forcedReplyLanguage/fallbackReplyLanguage) and persisted to the
-// account's User.locale.
-export type LanguageSelection = "auto" | "en" | "ro";
+// resolveReplyLanguage); a concrete LanguageCode explicitly fixes it --
+// the SAME currency used for the STT hint, the AI-reply-language hint,
+// and (via languageToSpeechLocale) the TTS voice, so there is exactly one
+// language identity per turn, never three independently-tracked ones.
+export type LanguageSelection = "auto" | LanguageCode;
 
 // localStorage key for the selector -- a per-browser preference so the
 // stylist never has to reselect on every page/session (persists
@@ -20,20 +18,12 @@ export type LanguageSelection = "auto" | "en" | "ro";
 export const LANGUAGE_SELECTION_STORAGE_KEY = "aha:consult-ai:language-selection";
 
 export function parseStoredLanguageSelection(value: string | null): LanguageSelection {
-  return value === "en" || value === "ro" ? value : "auto";
+  return value && isConversationLanguageCode(value) ? value : "auto";
 }
 
-// Both delegate to the app's single canonical "en"/"ro" <-> SpeechLocale
-// mapping (consultation-chat-tts-logic.ts) rather than maintaining a
-// second copy -- kept as named exports here since callers throughout this
-// file/consultation-chat.tsx already refer to the "LanguageSelection"
-// framing of this mapping.
-export const languageSelectionToSpeechLocale = languageToSpeechLocale;
-export const speechLocaleToLanguageSelection = speechLocaleToLanguage;
-
 export interface ChatLanguageFields {
-  languagePreference?: "en" | "ro";
-  conversationLanguage?: "en" | "ro";
+  languagePreference?: LanguageCode;
+  conversationLanguage?: LanguageCode;
 }
 
 // Computes exactly the two optional language fields a chat POST body sends,
@@ -42,12 +32,12 @@ export interface ChatLanguageFields {
 // selector value is always a hard override (languagePreference); "auto"
 // sends only the conversation's own currently-tracked language, if any, as
 // a soft, ambiguous-message-only fallback -- never a forced one.
-export function buildChatLanguageFields(selection: LanguageSelection, conversationLocale: SpeechLocale | null): ChatLanguageFields {
+export function buildChatLanguageFields(selection: LanguageSelection, conversationLanguage: LanguageCode | null): ChatLanguageFields {
   if (selection !== "auto") {
     return { languagePreference: selection };
   }
-  if (conversationLocale) {
-    return { conversationLanguage: speechLocaleToLanguageSelection(conversationLocale) };
+  if (conversationLanguage) {
+    return { conversationLanguage };
   }
   return {};
 }
@@ -56,11 +46,11 @@ export function buildChatLanguageFields(selection: LanguageSelection, conversati
 // finishRecording's trailing optional param): a concrete selector value
 // always wins; "auto" falls back to the conversation's own currently
 // tracked language, if any is established yet.
-export function resolveSttLanguageHint(selection: LanguageSelection, conversationLocale: SpeechLocale | null): "en" | "ro" | undefined {
+export function resolveSttLanguageHint(selection: LanguageSelection, conversationLanguage: LanguageCode | null): LanguageCode | undefined {
   if (selection !== "auto") {
     return selection;
   }
-  return conversationLocale ? speechLocaleToLanguageSelection(conversationLocale) : undefined;
+  return conversationLanguage ?? undefined;
 }
 
 export function resolveConsultationHistoryLoadStatus(response: { ok: boolean }): ConsultationHistoryLoadStatus {

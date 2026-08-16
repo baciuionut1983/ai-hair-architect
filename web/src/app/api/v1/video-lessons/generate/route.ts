@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import type { VideoLessonGenerateRequest, VideoLessonRecord } from "@/lib/contracts";
+import { parseLanguageCode } from "@/lib/language-registry";
 import { findRecommendedLessonIds, sanitize } from "@/lib/milestone1-store";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
 import { createVideoLessonRecord, isVideoLessonPersistenceError } from "@/lib/video-lesson-repository";
@@ -20,7 +21,10 @@ export async function POST(request: Request) {
 
   const level =
     body.level === "beginner" || body.level === "advanced" ? body.level : "intermediate";
-  const locale = body.locale === "ro" ? "ro" : "en";
+  // Regression risk this avoids: `body.locale === "ro" ? "ro" : "en"`
+  // would have silently narrowed any real, non-ro registry locale back to
+  // "en" -- parseLanguageCode validates against the full registry instead.
+  const locale = parseLanguageCode(body.locale);
 
   const recommendedLessonIds = findRecommendedLessonIds(topic);
 

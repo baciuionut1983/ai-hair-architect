@@ -40,11 +40,11 @@ describe("POST /api/v1/account/locale", () => {
     expect(prismaMocks.update).not.toHaveBeenCalled();
   });
 
-  it("returns 400 for a missing or unsupported locale value, never touching persistence", async () => {
+  it("returns 400 for a missing, unrecognized, or 'auto' locale value, never touching persistence", async () => {
     const missing = await invoke({});
     expect(missing.status).toBe(400);
 
-    const garbage = await invoke({ locale: "fr" });
+    const garbage = await invoke({ locale: "xx" });
     expect(garbage.status).toBe(400);
 
     const autoValue = await invoke({ locale: "auto" });
@@ -62,11 +62,24 @@ describe("POST /api/v1/account/locale", () => {
     expect(body).toEqual({ locale: "ro" });
   });
 
-  it("accepts English too", async () => {
-    const response = await invoke({ locale: "en" });
+  it("accepts every one of the seven active conversation languages, not just en/ro", async () => {
+    for (const locale of ["en", "ar", "it", "fr", "de", "es"]) {
+      const response = await invoke({ locale });
+      expect(response.status).toBe(200);
+      expect(prismaMocks.update).toHaveBeenCalledWith({ where: { id: "owner-1" }, data: { locale } });
+    }
+  });
+
+  // "pt" is a real registry entry (see language-registry.ts) that isn't
+  // conversation- or UI-supported yet -- the account's own persisted
+  // locale is a broader concept than either of those (e.g. a browser-
+  // language guess at registration could set it), so it must still be
+  // accepted here.
+  it("accepts a registry language that isn't conversation-supported yet", async () => {
+    const response = await invoke({ locale: "pt" });
 
     expect(response.status).toBe(200);
-    expect(prismaMocks.update).toHaveBeenCalledWith({ where: { id: "owner-1" }, data: { locale: "en" } });
+    expect(prismaMocks.update).toHaveBeenCalledWith({ where: { id: "owner-1" }, data: { locale: "pt" } });
   });
 
   it("fails closed with 503 when the database is not configured", async () => {

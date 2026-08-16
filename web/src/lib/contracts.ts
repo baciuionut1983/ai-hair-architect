@@ -1,9 +1,16 @@
 import type { M15V1ObjectReference } from "./object-storage-runtime";
 import type { BaseRecommendationPlan } from "./recommendation-engine-shared";
+import type { LanguageCode } from "./language-registry";
 
 export type UserRole = "professional" | "salon" | "consumer";
 
-export type Locale = "en" | "ro";
+// Alias, not a second type: every language User.locale can ever hold is
+// defined once in language-registry.ts's LANGUAGE_REGISTRY. Kept as a
+// distinct exported name here (rather than having every caller import
+// LanguageCode directly) since this specific meaning -- "the account's
+// own persisted language" -- predates the registry and is what most of
+// the auth/session code already imports.
+export type Locale = LanguageCode;
 
 export interface AuthRegisterRequest {
   email: string;
@@ -400,7 +407,7 @@ export interface ConsultationMessageRecord {
   // exact reply (see consultation-chat-service.ts's replyLanguage), so
   // Voice Reply's TTS locale can defer to it directly instead of
   // re-detecting the reply text a second time.
-  replyLanguage?: "en" | "ro";
+  replyLanguage?: LanguageCode;
 }
 
 export interface ConsultationChatResponse {

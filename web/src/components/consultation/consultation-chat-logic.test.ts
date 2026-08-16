@@ -5,11 +5,9 @@ import {
   describeSendFailure,
   extractMemoryDecisionIds,
   isSendableMessage,
-  languageSelectionToSpeechLocale,
   parseStoredLanguageSelection,
   resolveConsultationHistoryLoadStatus,
-  resolveSttLanguageHint,
-  speechLocaleToLanguageSelection
+  resolveSttLanguageHint
 } from "./consultation-chat-logic";
 
 describe("resolveConsultationHistoryLoadStatus", () => {
@@ -97,54 +95,57 @@ describe("describeSendFailure", () => {
 });
 
 describe("parseStoredLanguageSelection", () => {
-  it("accepts the two concrete stored values", () => {
-    expect(parseStoredLanguageSelection("en")).toBe("en");
-    expect(parseStoredLanguageSelection("ro")).toBe("ro");
+  it("accepts any conversation-supported registry language, not just en/ro", () => {
+    for (const code of ["en", "ro", "ar", "it", "fr", "de", "es"]) {
+      expect(parseStoredLanguageSelection(code)).toBe(code);
+    }
   });
 
-  it("defaults to auto for null, garbage, or an explicit 'auto' value", () => {
+  it("defaults to auto for null, garbage, a registry-but-not-conversation-supported code, or an explicit 'auto' value", () => {
     expect(parseStoredLanguageSelection(null)).toBe("auto");
-    expect(parseStoredLanguageSelection("fr")).toBe("auto");
+    expect(parseStoredLanguageSelection("xx")).toBe("auto");
+    // "pt" is a real registry entry (see language-registry.ts) but not yet
+    // conversation-supported -- the selector must not offer it as if it
+    // were usable.
+    expect(parseStoredLanguageSelection("pt")).toBe("auto");
     expect(parseStoredLanguageSelection("auto")).toBe("auto");
     expect(parseStoredLanguageSelection("")).toBe("auto");
   });
 });
 
-describe("languageSelectionToSpeechLocale / speechLocaleToLanguageSelection", () => {
-  it("round-trips both directions", () => {
-    expect(languageSelectionToSpeechLocale("ro")).toBe("ro-RO");
-    expect(languageSelectionToSpeechLocale("en")).toBe("en-US");
-    expect(speechLocaleToLanguageSelection("ro-RO")).toBe("ro");
-    expect(speechLocaleToLanguageSelection("en-US")).toBe("en");
-  });
-});
-
 describe("buildChatLanguageFields", () => {
-  it("sends languagePreference as a forced override for a concrete selection, regardless of conversation locale", () => {
-    expect(buildChatLanguageFields("ro", "en-US")).toEqual({ languagePreference: "ro" });
+  it("sends languagePreference as a forced override for a concrete selection, regardless of conversation language", () => {
+    expect(buildChatLanguageFields("ro", "en")).toEqual({ languagePreference: "ro" });
     expect(buildChatLanguageFields("ro", null)).toEqual({ languagePreference: "ro" });
   });
 
-  it("sends conversationLanguage as a fallback only when auto and a conversation locale is already established", () => {
-    expect(buildChatLanguageFields("auto", "ro-RO")).toEqual({ conversationLanguage: "ro" });
+  it("works for every registry language, not just en/ro", () => {
+    expect(buildChatLanguageFields("ar", null)).toEqual({ languagePreference: "ar" });
+    expect(buildChatLanguageFields("fr", null)).toEqual({ languagePreference: "fr" });
   });
 
-  it("sends neither field when auto and no conversation locale has been established yet", () => {
+  it("sends conversationLanguage as a fallback only when auto and a conversation language is already established", () => {
+    expect(buildChatLanguageFields("auto", "ro")).toEqual({ conversationLanguage: "ro" });
+    expect(buildChatLanguageFields("auto", "ar")).toEqual({ conversationLanguage: "ar" });
+  });
+
+  it("sends neither field when auto and no conversation language has been established yet", () => {
     expect(buildChatLanguageFields("auto", null)).toEqual({});
   });
 });
 
 describe("resolveSttLanguageHint", () => {
   it("a concrete selection always wins", () => {
-    expect(resolveSttLanguageHint("ro", "en-US")).toBe("ro");
+    expect(resolveSttLanguageHint("ro", "en")).toBe("ro");
     expect(resolveSttLanguageHint("en", null)).toBe("en");
+    expect(resolveSttLanguageHint("ar", null)).toBe("ar");
   });
 
-  it("auto falls back to the established conversation locale", () => {
-    expect(resolveSttLanguageHint("auto", "ro-RO")).toBe("ro");
+  it("auto falls back to the established conversation language", () => {
+    expect(resolveSttLanguageHint("auto", "ro")).toBe("ro");
   });
 
-  it("auto with no established conversation locale yet returns undefined (no hint sent)", () => {
+  it("auto with no established conversation language yet returns undefined (no hint sent)", () => {
     expect(resolveSttLanguageHint("auto", null)).toBeUndefined();
   });
 });

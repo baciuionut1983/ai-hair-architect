@@ -228,6 +228,19 @@ describe("POST /api/v1/clients/[id]/voice-transcript", () => {
     expect(promptText).toContain("most likely speaking English");
   });
 
+  it("appends an Arabic language hint too -- not just the original two languages", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(geminiTranscriptResponse("مرحبا"));
+    vi.stubGlobal("fetch", fetchMock);
+    const form = audioForm();
+    form.append("language", "ar");
+
+    await invoke(form);
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    const promptText = requestBody.contents[0].parts[0].text as string;
+    expect(promptText).toContain("most likely speaking Arabic");
+  });
+
   it("sends the original, unhinted prompt when no language field is present at all", async () => {
     const fetchMock = vi.fn().mockResolvedValue(geminiTranscriptResponse("She had bleach six weeks ago."));
     vi.stubGlobal("fetch", fetchMock);
@@ -244,7 +257,24 @@ describe("POST /api/v1/clients/[id]/voice-transcript", () => {
     const fetchMock = vi.fn().mockResolvedValue(geminiTranscriptResponse("Bonjour."));
     vi.stubGlobal("fetch", fetchMock);
     const form = audioForm();
-    form.append("language", "fr");
+    form.append("language", "xx");
+
+    await invoke(form);
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    const promptText = requestBody.contents[0].parts[0].text as string;
+    expect(promptText).not.toContain("most likely speaking");
+  });
+
+  // "pt" is a real language-registry entry (see language-registry.ts) but
+  // not yet conversation-supported -- it must fall back to the unhinted
+  // prompt exactly like a nonsense string, not be accepted as a hint just
+  // because it's a known registry code.
+  it("ignores a registry language that is not yet conversation-supported", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(geminiTranscriptResponse("Ola."));
+    vi.stubGlobal("fetch", fetchMock);
+    const form = audioForm();
+    form.append("language", "pt");
 
     await invoke(form);
 

@@ -12,65 +12,62 @@
 // key/cost/new Railway variable, and it works on both desktop and mobile
 // browsers that implement the standard.
 
-import { detectMessageLanguage, type MessageLanguage } from "@/lib/message-language-detector";
+import { detectMessageLanguage } from "@/lib/message-language-detector";
+import { getLanguageDefinition, type LanguageCode } from "@/lib/language-registry";
 
-// This app supports exactly two locales today (see src/lib/i18n.ts /
-// contracts.ts's Locale = "en" | "ro") -- detection is scoped to exactly
-// that, not a general-purpose language identifier.
-export type SpeechLocale = "ro-RO" | "en-US";
+// A BCP-47 tag suitable for SpeechSynthesisUtterance.lang / voice
+// matching -- distinct from LanguageCode (the short registry identity
+// shared with STT hints and AI-reply-language, e.g. "ro", "ar") in name
+// only, to keep call sites self-documenting about which one they're
+// holding. Deliberately `string`, not a closed union -- see
+// language-registry.ts's own LanguageCode for why (a real global product
+// adds languages via registry data, not type declarations).
+export type SpeechLocale = string;
 
-export function languageToSpeechLocale(language: MessageLanguage): SpeechLocale {
-  return language === "ro" ? "ro-RO" : "en-US";
-}
-
-export function speechLocaleToLanguage(locale: SpeechLocale): MessageLanguage {
-  return locale === "ro-RO" ? "ro" : "en";
-}
-
-// Thin wrapper over the app's ONE canonical language detector
-// (src/lib/message-language-detector.ts), which the backend also uses
-// (consultation-chat-service.ts, to compute
-// ConsultationMessageRecord.replyLanguage) -- so the AI's reply language
-// and the voice that reads it aloud are never two independent guesses
-// that could disagree; this only ever re-maps the SAME result into a
-// BCP-47 speech locale.
-export function detectSpeechLocale(text: string): SpeechLocale | null {
-  const language = detectMessageLanguage(text);
-  return language ? languageToSpeechLocale(language) : null;
+export function languageToSpeechLocale(language: LanguageCode): SpeechLocale {
+  return getLanguageDefinition(language)?.speechLocale ?? "en-US";
 }
 
 // The stylist's own choice: "auto" follows the conversation (see
-// resolveReplySpeechLocale below); a concrete value fixes the language
+// resolveReplyLanguage below); a concrete LanguageCode fixes the language
 // deterministically, overriding detection entirely -- "Selectorul manual
 // trebuie să poată fixa limba atunci când utilizatorul dorește asta."
-export type LanguagePreference = "auto" | SpeechLocale;
+export type LanguagePreference = "auto" | LanguageCode;
 
-// Priority chain, exactly as specified: explicit user selection -> the
-// conversation's own established language (so a single short/ambiguous
-// reply mid-conversation doesn't randomly flip voices) -> fresh detection
-// of THIS text as a fallback -> a safe, hardcoded default as the last
-// resort. Returns the locale to speak in AND the conversation's language
-// going forward (updated only when this call had a real signal to offer,
-// so an ambiguous message never erases a previously-established language).
-export function resolveReplySpeechLocale(
+// Priority chain, exactly as specified: explicit user selection -> fresh
+// detection of THIS reply's own text -> the conversation's own
+// established language (so a single short/ambiguous reply mid-conversation
+// doesn't randomly flip voices) -> a safe, hardcoded default as the last
+// resort. Returns the LANGUAGE to speak in (a LanguageCode, the same
+// currency the STT hint and AI-reply-language hint use -- see
+// consultation-chat-logic.ts's resolveSttLanguageHint/
+// buildChatLanguageFields) AND the conversation's language going forward
+// (updated only when this call had a real signal to offer, so an
+// ambiguous message never erases a previously-established language).
+// Callers map the returned language to an actual speech locale via
+// languageToSpeechLocale right before constructing an utterance -- kept
+// as a separate step so "which language is this conversation in" (shared
+// across STT/AI-reply/TTS) and "which exact BCP-47 tag to hand the
+// browser" (a TTS-only concern) never get conflated into one type again.
+export function resolveReplyLanguage(
   text: string,
   preference: LanguagePreference,
-  conversationLocale: SpeechLocale | null,
-): { locale: SpeechLocale; conversationLocale: SpeechLocale | null } {
+  conversationLanguage: LanguageCode | null,
+): { language: LanguageCode; conversationLanguage: LanguageCode | null } {
   if (preference !== "auto") {
-    return { locale: preference, conversationLocale: preference };
+    return { language: preference, conversationLanguage: preference };
   }
 
-  const detected = detectSpeechLocale(text);
+  const detected = detectMessageLanguage(text);
   if (detected) {
-    return { locale: detected, conversationLocale: detected };
+    return { language: detected, conversationLanguage: detected };
   }
 
-  if (conversationLocale) {
-    return { locale: conversationLocale, conversationLocale };
+  if (conversationLanguage) {
+    return { language: conversationLanguage, conversationLanguage };
   }
 
-  return { locale: "en-US", conversationLocale: null };
+  return { language: "en", conversationLanguage: null };
 }
 
 export interface SpeechVoiceLike {
@@ -80,12 +77,14 @@ export interface SpeechVoiceLike {
 }
 
 // Picks a voice for a target BCP-47 locale: an exact lang match first,
-// then a language-only match (e.g. any "ro-*" voice for "ro-RO"). Returns
-// null when the device has NO voice for this language at all -- unlike an
-// earlier version of this function, it never falls back to the browser's
-// "default" voice or simply the first available one, because that default
-// is very often an unrelated-language voice (e.g. an en-* voice on an
-// English-OS install).
+// then a language-only match (e.g. any "ar-*" voice for "ar-SA", any
+// "fr-*" voice for "fr-FR"). Returns null when the device has NO voice
+// for this language at all -- unlike an earlier version of this
+// function, it never falls back to the browser's "default" voice or
+// simply the first available one, because that default is very often an
+// unrelated-language voice (e.g. an en-* voice on an English-OS install).
+// This logic was already fully generic (never hardcoded to ro/en); it
+// works unchanged for every registry language.
 //
 // Regression: a live test with Language: Romanian selected showed the
 // reply's TEXT correctly in Romanian, but read aloud with an English
@@ -97,7 +96,7 @@ export interface SpeechVoiceLike {
 // fallback. Returning null here leaves utterance.voice unset, so the
 // browser is free to use utterance.lang on its own -- see speakReply's
 // onVoiceUnavailable callback for how the caller is told about this case.
-export function selectVoiceForLocale<T extends SpeechVoiceLike>(voices: T[], targetLocale: string): T | null {
+export function selectVoiceForLocale<T extends SpeechVoiceLike>(voices: T[], targetLocale: SpeechLocale): T | null {
   if (voices.length === 0) return null;
 
   const exact = voices.find((voice) => voice.lang.toLowerCase() === targetLocale.toLowerCase());
@@ -145,7 +144,10 @@ export interface SpeakReplyCallbacks {
   // installed voice matching the requested locale at all -- speech still
   // proceeds best-effort (via utterance.lang alone, with no voice
   // assigned), but the caller must tell the stylist plainly rather than
-  // silently implying the requested language played correctly.
+  // silently implying the requested language played correctly. The
+  // caller renders this generically for whatever language was requested
+  // (e.g. "No Arabic voice is installed on this device"), never
+  // hardcoded to a fixed pair of languages.
   onVoiceUnavailable?: (locale: SpeechLocale) => void;
 }
 
@@ -154,6 +156,7 @@ export const VOICE_REPLY_FAILURE_MESSAGE = "Voice reply failed. The text reply a
 // Temporary, safe-fields-only diagnostics for the live voice-selection
 // bug -- never the reply text itself, only locale/voice names, matching
 // this codebase's existing logClient (teach-ai-panel-logic.ts) convention.
+// Kept until multilingual voice selection has been retested live.
 const VOICE_REPLY_CLIENT_LOG_TAG = "VOICE_REPLY_CLIENT";
 
 function logVoiceReplyClient(event: string, details: Record<string, unknown> = {}): void {
@@ -170,10 +173,10 @@ function logVoiceReplyClient(event: string, details: Record<string, unknown> = {
 // this app never has two AI voice replies audible at once, regardless of
 // how quickly successive replies arrive.
 //
-// `locale` is the caller's already-resolved locale (via
-// resolveReplySpeechLocale) -- this function only ever speaks in exactly
-// the locale it's given, never re-derives one, so the priority chain
-// lives in exactly one place.
+// `locale` is the caller's already-resolved BCP-47 speech locale (via
+// resolveReplyLanguage + languageToSpeechLocale) -- this function only
+// ever speaks in exactly the locale it's given, never re-derives one, so
+// the priority chain lives in exactly one place.
 export function speakReply(text: string, locale: SpeechLocale, deps: SpeakReplyDeps, callbacks: SpeakReplyCallbacks): void {
   deps.synth.cancel();
   deps.synth.resume();
@@ -196,7 +199,7 @@ export function speakReply(text: string, locale: SpeechLocale, deps: SpeakReplyD
     selectedVoiceLang: voice?.lang ?? null,
     voiceCount: voices.length,
     // Distinct langs only (deduped) -- confirms live, on the actual
-    // device, whether ANY ro-*/en-* voice is even installed at all,
+    // device, whether ANY matching voice is even installed at all,
     // rather than assuming from voiceCount alone.
     availableVoiceLangs: [...new Set(voices.map((v) => v.lang))],
   });

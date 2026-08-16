@@ -12,6 +12,7 @@ import { resolveImageAnalysisProviderConfig } from "@/lib/image-analysis-provide
 import { retrieveRelevantMemories } from "@/lib/professional-memory-repository";
 import { buildClientProfessionalMemory } from "@/lib/consultation-client-context";
 import { detectMessageLanguage } from "@/lib/message-language-detector";
+import type { LanguageCode } from "@/lib/language-registry";
 
 export type ConsultationChatResultCode =
   | "PROCESSING_DISABLED"
@@ -42,15 +43,16 @@ export type SendConsultationMessageResult =
       reply: ConsultationMessageRow;
       needsClarification: boolean;
       // The ONE canonical language decision for this exact reply -- forced
-      // selection, else the same detectMessageLanguage the frontend's own
-      // TTS locale mapping wraps (see consultation-chat-tts-logic.ts), else
-      // the soft fallback. Computed here, once, so the AI's reply language
-      // and the voice that reads it aloud can never independently disagree
-      // (previously two separate detectors: Gemini's own prompt-following,
-      // and a second re-detection purely on the frontend). null only when
-      // truly nothing -- forced, fallback, or a detectable signal in the
-      // reply text itself -- was available.
-      replyLanguage: "en" | "ro" | null;
+      // selection, else Gemini's own self-reported replyLanguageCode (see
+      // consultation-chat-provider.ts's ConsultationChatResult -- the
+      // model's own multilingual understanding, far more reliable than a
+      // hand-rolled detector for arbitrary registry languages), else the
+      // local detectMessageLanguage fallback (also what the frontend's TTS
+      // locale mapping wraps, see consultation-chat-tts-logic.ts), else the
+      // soft account fallback. Computed here, once, so the AI's reply
+      // language and the voice that reads it aloud can never independently
+      // disagree. null only when truly nothing was available.
+      replyLanguage: LanguageCode | null;
     }
   | { outcome: "failed"; code: ConsultationChatResultCode };
 
@@ -67,8 +69,8 @@ export interface SendConsultationMessageDependencies {
 // override (so a Romanian UI/account locale can never force a reply
 // language on its own -- see the route for where this is populated).
 export interface ConsultationChatLanguageHint {
-  forced?: "en" | "ro";
-  fallback?: "en" | "ro";
+  forced?: LanguageCode;
+  fallback?: LanguageCode;
 }
 
 /**
@@ -258,13 +260,17 @@ export async function sendConsultationMessage(
 
     void stored; // the stylist's own message is already durably persisted above
 
-    // The ONE canonical language decision for this reply: the same
-    // priority chain buildPrompt already told the model to follow
-    // (forced override wins outright; otherwise, detect what language the
-    // reply actually came back in; otherwise fall back to the soft
-    // ambiguous-message hint) -- computed once here, not re-guessed a
-    // second time on the frontend.
-    const replyLanguage = languageHint.forced ?? detectMessageLanguage(result.reply) ?? languageHint.fallback ?? null;
+    // The ONE canonical language decision for this reply: forced override
+    // wins outright; otherwise prefer Gemini's own self-reported
+    // replyLanguageCode (see SYSTEM_INSTRUCTION rule 11 -- the model's own
+    // multilingual understanding, reliable for arbitrary registry
+    // languages, not just the ones a hand-rolled detector was built for);
+    // otherwise fall back to the local text detector (defensive, for the
+    // rare case the model didn't populate it); otherwise the soft
+    // ambiguous-message hint. Computed once here, not re-guessed a second
+    // time on the frontend.
+    const replyLanguage =
+      languageHint.forced ?? result.replyLanguageCode ?? detectMessageLanguage(result.reply) ?? languageHint.fallback ?? null;
 
     // Safe-fields success log -- never the message/reply content, only
     // whether the provider actually included a proposal in this exact

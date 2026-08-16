@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { isLanguageCode } from "@/lib/language-registry";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
@@ -9,8 +10,14 @@ import { authenticateSessionRequest } from "@/lib/session-request-auth";
 // non-"auto" selector value is the only thing ever sent here: "Auto" is a
 // purely client-side/local preference (see consultation-chat-logic.ts's
 // LANGUAGE_SELECTION_STORAGE_KEY), never written to the account, since
-// there is no "auto" value in the Locale type to persist. Mirrors
-// push/preferences's POST self-upsert shape and
+// there is no "auto" value in the Locale type to persist. Validated
+// against the FULL language-registry.ts (isLanguageCode), not narrowed
+// to only UI- or conversation-supported codes -- the global selector in
+// (app)/layout.tsx only ever offers uiSupportedLanguages() in practice,
+// but the account's own persisted language is a broader concept than
+// either of those (e.g. a browser-language guess at registration, see
+// register/page.tsx, may set a "prepared" code with no UI translation
+// yet). Mirrors push/preferences's POST self-upsert shape and
 // updatePersistencePasswordHash's single-field prisma.user.update pattern.
 export async function POST(request: Request) {
   const sessionUser = await authenticateSessionRequest();
@@ -19,8 +26,8 @@ export async function POST(request: Request) {
   }
 
   const body = (await request.json().catch(() => ({}))) as { locale?: string };
-  if (body.locale !== "en" && body.locale !== "ro") {
-    return NextResponse.json({ error: "locale must be \"en\" or \"ro\"." }, { status: 400 });
+  if (typeof body.locale !== "string" || !isLanguageCode(body.locale)) {
+    return NextResponse.json({ error: "locale must be a recognized language code." }, { status: 400 });
   }
 
   // Same fail-closed convention as voice-transcript/route.ts: a persistence

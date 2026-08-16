@@ -601,7 +601,7 @@ describe("GeminiConsultationChatProvider", () => {
   // no validation power and is never reintroduced.
   it("never marks any schema property as nullable -- optionality comes only from omission in `required`", () => {
     expect(hasNullable(RESPONSE_SCHEMA)).toBe(false);
-    expect(RESPONSE_SCHEMA.required).toEqual(["reply", "needsClarification"]);
+    expect(RESPONSE_SCHEMA.required).toEqual(["reply", "needsClarification", "replyLanguageCode"]);
   });
 
   it("never includes the api key in any thrown error message", async () => {

@@ -1,4 +1,5 @@
 import type { Locale, UserRole } from "@/lib/contracts";
+import { parseLanguageCode } from "@/lib/language-registry";
 import { prisma } from "@/lib/prisma";
 
 const BEARER_PREFIX = "Bearer ";
@@ -45,6 +46,9 @@ export async function authenticateSessionUser(
   }
 }
 
+// Regression risk this replaces: an earlier version hardcoded
+// `value === "ro" ? "ro" : "en"`, which would have silently coerced any
+// OTHER real language (e.g. a stored "ar") back to "en" on every read.
 function toLocale(value: string): Locale {
-  return value === "ro" ? "ro" : "en";
+  return parseLanguageCode(value);
 }

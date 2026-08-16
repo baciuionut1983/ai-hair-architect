@@ -27,6 +27,9 @@ export type { ErrorStateProps } from "./error-state";
 export { getInputClasses, Input } from "./input";
 export type { InputProps } from "./input";
 
+export { LanguageSelector } from "./language-selector";
+export type { LanguageSelectorProps } from "./language-selector";
+
 export { getSelectClasses, Select } from "./select";
 export type { SelectProps } from "./select";
 

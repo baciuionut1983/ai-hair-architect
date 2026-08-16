@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  detectSpeechLocale,
   isSpeechSynthesisSupported,
-  resolveReplySpeechLocale,
+  languageToSpeechLocale,
+  resolveReplyLanguage,
   selectVoiceForLocale,
   speakReply,
   stopSpeaking,
@@ -12,72 +12,77 @@ import {
   type SpeechUtteranceLike,
 } from "./consultation-chat-tts-logic";
 
-describe("detectSpeechLocale", () => {
-  it("detects Romanian from diacritics anywhere in the text", () => {
-    expect(detectSpeechLocale("Clienta vrea să își păstreze părul lung.")).toBe("ro-RO");
-    expect(detectSpeechLocale("Ședința e programată mâine.")).toBe("ro-RO");
+// detectMessageLanguage itself is exhaustively tested in
+// src/lib/message-language-detector.test.ts (the app's one canonical
+// detector) -- these tests focus on resolveReplyLanguage's own priority
+// chain and languageToSpeechLocale's registry-driven mapping.
+describe("languageToSpeechLocale", () => {
+  it("maps every conversation-supported language to its registry speech locale", () => {
+    expect(languageToSpeechLocale("ro")).toBe("ro-RO");
+    expect(languageToSpeechLocale("en")).toBe("en-US");
+    expect(languageToSpeechLocale("ar")).toBe("ar-SA");
+    expect(languageToSpeechLocale("it")).toBe("it-IT");
+    expect(languageToSpeechLocale("fr")).toBe("fr-FR");
+    expect(languageToSpeechLocale("de")).toBe("de-DE");
+    expect(languageToSpeechLocale("es")).toBe("es-ES");
   });
 
-  it("detects English from common English stopwords", () => {
-    expect(detectSpeechLocale("The client wants to keep her hair long with volume on top.")).toBe("en-US");
-  });
-
-  // Regression: the exact live bug -- a Romanian reply pronounced as
-  // English, because the original detector only checked diacritics.
-  it("detects Romanian even with NO diacritics at all, via stopwords", () => {
-    expect(detectSpeechLocale("Clienta vrea sa pastreze parul lung cu volum in partea de sus.")).toBe("ro-RO");
-    expect(detectSpeechLocale("Nu cred ca este o idee buna pentru acest client.")).toBe("ro-RO");
-  });
-
-  it("is case-insensitive for both diacritics and stopwords", () => {
-    expect(detectSpeechLocale("PĂRUL ei este lung")).toBe("ro-RO");
-    expect(detectSpeechLocale("SI CLIENTA vrea asta")).toBe("ro-RO");
-  });
-
-  it("returns null (genuinely ambiguous) for text with no signal for either language", () => {
-    expect(detectSpeechLocale("")).toBeNull();
-    expect(detectSpeechLocale("42")).toBeNull();
-    expect(detectSpeechLocale("Maria Popescu")).toBeNull();
+  it("falls back to en-US for an unrecognized code rather than throwing", () => {
+    expect(languageToSpeechLocale("xx")).toBe("en-US");
   });
 });
 
-describe("resolveReplySpeechLocale", () => {
+describe("resolveReplyLanguage", () => {
   it("an explicit (non-auto) preference always wins, ignoring the text entirely", () => {
-    const result = resolveReplySpeechLocale("This is clearly English text.", "ro-RO", null);
-    expect(result.locale).toBe("ro-RO");
-    expect(result.conversationLocale).toBe("ro-RO");
+    const result = resolveReplyLanguage("This is clearly English text.", "ro", null);
+    expect(result.language).toBe("ro");
+    expect(result.conversationLanguage).toBe("ro");
   });
 
-  it("auto mode: a confident detection of THIS text wins over any prior conversation locale", () => {
-    const result = resolveReplySpeechLocale("Bună ziua, cum vă pot ajuta?", "auto", "en-US");
-    expect(result.locale).toBe("ro-RO");
-    expect(result.conversationLocale).toBe("ro-RO");
+  it("an explicit preference works for every registry language, not just en/ro", () => {
+    expect(resolveReplyLanguage("hello", "ar", null).language).toBe("ar");
+    expect(resolveReplyLanguage("hello", "it", null).language).toBe("it");
+    expect(resolveReplyLanguage("hello", "fr", null).language).toBe("fr");
+    expect(resolveReplyLanguage("hello", "de", null).language).toBe("de");
+    expect(resolveReplyLanguage("hello", "es", null).language).toBe("es");
   });
 
-  it("auto mode: falls back to the established conversation locale when this text is ambiguous", () => {
-    const result = resolveReplySpeechLocale("42", "auto", "ro-RO");
-    expect(result.locale).toBe("ro-RO");
-    expect(result.conversationLocale).toBe("ro-RO");
+  it("auto mode: a confident detection of THIS text wins over any prior conversation language", () => {
+    const result = resolveReplyLanguage("Bună ziua, cum vă pot ajuta?", "auto", "en");
+    expect(result.language).toBe("ro");
+    expect(result.conversationLanguage).toBe("ro");
   });
 
-  it("auto mode: falls back to a safe default (en-US) when there's no signal and no prior conversation locale yet", () => {
-    const result = resolveReplySpeechLocale("42", "auto", null);
-    expect(result.locale).toBe("en-US");
-    expect(result.conversationLocale).toBeNull();
+  it("auto mode: detects Arabic script text directly, same priority chain as every other language", () => {
+    const result = resolveReplyLanguage("مرحبا، كيف يمكنني مساعدتك؟", "auto", null);
+    expect(result.language).toBe("ar");
+    expect(result.conversationLanguage).toBe("ar");
   });
 
-  it("auto mode: an ambiguous message never erases a previously-established conversation locale", () => {
-    const result = resolveReplySpeechLocale("OK.", "auto", "ro-RO");
-    expect(result.conversationLocale).toBe("ro-RO");
+  it("auto mode: falls back to the established conversation language when this text is ambiguous", () => {
+    const result = resolveReplyLanguage("42", "auto", "ro");
+    expect(result.language).toBe("ro");
+    expect(result.conversationLanguage).toBe("ro");
   });
 
-  it("switches the conversation locale going forward once a new confident detection arrives", () => {
-    const first = resolveReplySpeechLocale("Bună, cum te pot ajuta?", "auto", null);
-    expect(first.conversationLocale).toBe("ro-RO");
+  it("auto mode: falls back to a safe default (en) when there's no signal and no prior conversation language yet", () => {
+    const result = resolveReplyLanguage("42", "auto", null);
+    expect(result.language).toBe("en");
+    expect(result.conversationLanguage).toBeNull();
+  });
 
-    const second = resolveReplySpeechLocale("Actually, let's continue in English.", "auto", first.conversationLocale);
-    expect(second.locale).toBe("en-US");
-    expect(second.conversationLocale).toBe("en-US");
+  it("auto mode: an ambiguous message never erases a previously-established conversation language", () => {
+    const result = resolveReplyLanguage("OK.", "auto", "ro");
+    expect(result.conversationLanguage).toBe("ro");
+  });
+
+  it("switches the conversation language going forward once a new confident detection arrives", () => {
+    const first = resolveReplyLanguage("Bună, cum te pot ajuta?", "auto", null);
+    expect(first.conversationLanguage).toBe("ro");
+
+    const second = resolveReplyLanguage("Actually, let's continue in English.", "auto", first.conversationLanguage);
+    expect(second.language).toBe("en");
+    expect(second.conversationLanguage).toBe("en");
   });
 });
 
@@ -125,6 +130,21 @@ describe("selectVoiceForLocale", () => {
       { lang: "de-DE", name: "German" },
     ];
     expect(selectVoiceForLocale(voices, "ro-RO")).toBeNull();
+  });
+
+  // This logic was already fully generic (never hardcoded to ro/en) --
+  // these pin that down explicitly for two of the newly registry-driven
+  // languages, matching the exact behavior already proven for Romanian.
+  it("works identically for Arabic: exact match, family match, and honest null when unavailable", () => {
+    expect(selectVoiceForLocale([{ lang: "ar-SA", name: "Arabic (Saudi Arabia)" }], "ar-SA")?.name).toBe("Arabic (Saudi Arabia)");
+    expect(selectVoiceForLocale([{ lang: "ar-EG", name: "Arabic (Egypt)" }], "ar-SA")?.name).toBe("Arabic (Egypt)");
+    expect(selectVoiceForLocale([{ lang: "en-US", name: "English", default: true }], "ar-SA")).toBeNull();
+  });
+
+  it("works identically for French: exact match, family match, and honest null when unavailable", () => {
+    expect(selectVoiceForLocale([{ lang: "fr-FR", name: "French (France)" }], "fr-FR")?.name).toBe("French (France)");
+    expect(selectVoiceForLocale([{ lang: "fr-CA", name: "French (Canada)" }], "fr-FR")?.name).toBe("French (Canada)");
+    expect(selectVoiceForLocale([{ lang: "de-DE", name: "German", default: true }], "fr-FR")).toBeNull();
   });
 });
 

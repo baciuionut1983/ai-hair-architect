@@ -15,6 +15,8 @@
 // OS ending the track itself -- and (b) wraps the entire transcription
 // request in a try/catch so no failure path can ever leave the UI stuck.
 
+import type { LanguageCode } from "@/lib/language-registry";
+
 export interface VoiceNoteStreamLike {
   getTracks(): { stop(): void }[];
 }
@@ -78,7 +80,7 @@ export async function finishRecording(
   // straight through to voice-transcript/route.ts's own optional "language"
   // form field -- see that route for why this can only be a prompt-text
   // hint, never a real provider config option.
-  language?: "en" | "ro",
+  language?: LanguageCode,
 ): Promise<void> {
   stream.getTracks().forEach((track) => track.stop());
   callbacks.onStopped();

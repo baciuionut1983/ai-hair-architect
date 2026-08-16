@@ -129,6 +129,24 @@ describe("findPersistenceUserByEmail", () => {
 
     expect(result).toBeNull();
   });
+
+  // Regression: an earlier version of this file's toLocale hardcoded
+  // `value === "ro" ? "ro" : "en"`, which would have silently coerced any
+  // OTHER real language (e.g. a stored "ar") back to "en" on every read
+  // -- an account's chosen language "reverting" itself on next login.
+  it("passes through any real registry locale stored on the user row, not just en/ro", async () => {
+    for (const locale of ["ar", "fr", "de", "es", "it"]) {
+      prismaMocks.userFindUnique.mockResolvedValue({ ...ROW, locale });
+      const result = await findPersistenceUserByEmail("user@example.com");
+      expect(result?.locale).toBe(locale);
+    }
+  });
+
+  it("falls back to en for a genuinely unrecognized stored locale value", async () => {
+    prismaMocks.userFindUnique.mockResolvedValue({ ...ROW, locale: "xx" });
+    const result = await findPersistenceUserByEmail("user@example.com");
+    expect(result?.locale).toBe("en");
+  });
 });
 
 describe("findPersistenceUserBySessionToken", () => {
@@ -188,6 +206,17 @@ describe("findPersistenceUserBySessionToken", () => {
     const result = await findPersistenceUserBySessionToken("any-token");
 
     expect(result).toBeNull();
+  });
+
+  it("passes through any real registry locale on the session's user row, not just en/ro", async () => {
+    prismaMocks.sessionFindUnique.mockResolvedValue({
+      expiresAt: new Date(Date.now() + 60_000),
+      user: { ...USER_ROW, locale: "ar" },
+    });
+
+    const result = await findPersistenceUserBySessionToken("valid-token");
+
+    expect(result?.locale).toBe("ar");
   });
 });
 

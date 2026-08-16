@@ -28,6 +28,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import type { LanguageCode } from "@/lib/language-registry";
+
 import { bindFetch, finishRecording, logClient } from "./teach-ai-panel-logic";
 import { evaluateVadSample, initVadState, shouldAutoSubmitTranscript, type VadState } from "./voice-activity-logic";
 
@@ -42,7 +44,7 @@ export interface UseVoiceRecordingOptions {
   // The current STT language hint (mirrors the conversation's language
   // selector) -- forwarded straight through to finishRecording's own
   // trailing optional param, prompt-text-only, never a forced constraint.
-  language?: "en" | "ro";
+  language?: LanguageCode;
   // Fired ONLY with a real, non-empty transcript -- never for a failed
   // transcription, never for an empty one. The caller is expected to treat
   // this as "the stylist finished speaking a real message" and act on it

@@ -108,9 +108,25 @@ describe("authenticateSessionUser", () => {
     expect(result).not.toHaveProperty("createdAt");
   });
 
-  it("normalizes any non-ro locale to en", async () => {
+  // Regression: an earlier version of toLocale hardcoded
+  // `value === "ro" ? "ro" : "en"`, which would have silently coerced a
+  // real, valid stored locale (e.g. "fr", "ar") back to "en" on every
+  // single read -- an account's chosen language "reverting" itself on
+  // next login. parseLanguageCode (language-registry.ts) validates
+  // against the full registry instead of narrowing to just two values.
+  it("passes through any real registry locale, not just ro/en", async () => {
+    for (const locale of ["fr", "ar", "de", "es", "it"]) {
+      PRISMA_MOCK.session.findUnique.mockResolvedValueOnce(
+        sessionRow({ user: { id: "owner-1", email: "owner@example.com", role: "salon", locale } }),
+      );
+      const result = await authenticateSessionUser(request("Bearer token-1"));
+      expect(result?.locale).toBe(locale);
+    }
+  });
+
+  it("falls back to en for a genuinely unrecognized locale value", async () => {
     PRISMA_MOCK.session.findUnique.mockResolvedValueOnce(
-      sessionRow({ user: { id: "owner-1", email: "owner@example.com", role: "salon", locale: "fr" } }),
+      sessionRow({ user: { id: "owner-1", email: "owner@example.com", role: "salon", locale: "xx" } }),
     );
     const result = await authenticateSessionUser(request("Bearer token-1"));
     expect(result?.locale).toBe("en");

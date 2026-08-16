@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 
 import { resolveOwnedClient } from "@/lib/client-repository";
 import { checkRateLimit } from "@/lib/hardening";
+import { getLanguageDefinition, isConversationLanguageCode } from "@/lib/language-registry";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
@@ -129,7 +130,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   const audioBase64 = Buffer.from(await audio.arrayBuffer()).toString("base64");
 
-  const languageName = languageHint === "ro" ? "Romanian" : languageHint === "en" ? "English" : null;
+  const languageName =
+    typeof languageHint === "string" && isConversationLanguageCode(languageHint)
+      ? getLanguageDefinition(languageHint)?.label ?? null
+      : null;
   const transcriptionInstruction = languageName
     ? `Transcribe this audio faithfully. The speaker is most likely speaking ${languageName} -- prefer that ` +
       "language if the audio is ambiguous, but transcribe whatever language is actually spoken. Return only " +

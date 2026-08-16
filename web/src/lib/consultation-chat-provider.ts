@@ -1,3 +1,5 @@
+import type { LanguageCode } from "./language-registry";
+
 export interface ConsultationChatCurrentAnalysis {
   goal: string;
   hairType: string;
@@ -102,7 +104,13 @@ export interface ConsultationChatContext {
   professionalMemory: ConsultationChatMemoryItem[];
   clientProfessionalMemory: ConsultationChatClientMemory;
   // Two independent language signals, matching the app's own "Auto vs.
-  // fixed language" selector:
+  // fixed language" selector. Both are LanguageCode (see
+  // language-registry.ts) -- always one of conversationSupportedLanguages()
+  // by the time this reaches a provider; never restricted to en/ro at the
+  // type level (that would recreate the exact hardcoded-union problem this
+  // registry replaces), so validation of "is this code actually usable for
+  // a conversation" lives at the one real boundary (the chat route parsing
+  // the request body), not scattered across every consumer.
   // - forcedReplyLanguage: the stylist explicitly picked a language
   //   (selector set to something other than "Auto") -- the model MUST
   //   reply in this language always, even if the stylist's own message
@@ -115,8 +123,8 @@ export interface ConsultationChatContext {
   //   language -- the model is instructed to prefer the message's own
   //   language above this hint. See SYSTEM_INSTRUCTION in
   //   consultation-chat-provider-gemini.ts for the exact rule.
-  forcedReplyLanguage?: "en" | "ro";
-  fallbackReplyLanguage?: "en" | "ro";
+  forcedReplyLanguage?: LanguageCode;
+  fallbackReplyLanguage?: LanguageCode;
 }
 
 export interface ConsultationChatProposedCorrection {
@@ -145,6 +153,17 @@ export interface ConsultationChatResult {
   proposedCorrection?: ConsultationChatProposedCorrection;
   proposedMemory?: ConsultationChatProposedMemory;
   needsClarification: boolean;
+  // The model's OWN classification of what language it just wrote `reply`
+  // in (see consultation-chat-provider-gemini.ts's RESPONSE_SCHEMA) --
+  // Gemini's own multilingual understanding is a far more reliable
+  // "what language is this" signal than a hand-rolled detector could ever
+  // be for arbitrary languages, so consultation-chat-service.ts prefers
+  // this over re-detecting the reply text locally. Optional at this type
+  // level only so a provider that hasn't populated it yet (or a test
+  // double) still type-checks -- the service's own fallback chain
+  // (forced hint -> this field -> local detection -> soft fallback)
+  // covers its absence.
+  replyLanguageCode?: LanguageCode;
 }
 
 export interface ChatProviderError extends Error {

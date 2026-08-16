@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 
 import { Alert, Button, Card, Input, LoadingState, Select } from "@/components/ui";
 import type { AuthRegisterRequest, AuthRegisterResponse, UserRole } from "@/lib/contracts";
-import { resolveLocale } from "@/lib/i18n";
+import { resolveLanguageCodeFromBrowserTag } from "@/lib/language-registry";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -44,7 +44,12 @@ export default function RegisterPage() {
     setError(null);
     setSuccessMessage(null);
     try {
-      const locale = resolveLocale(typeof navigator === "undefined" ? undefined : navigator.language);
+      // Registry-wide guess (any of the world languages the platform
+      // recognizes -- see language-registry.ts), not narrowed to just
+      // en/ro. Purely a one-time initial guess: the account's own
+      // User.locale (or an explicit selector choice) always wins
+      // afterward.
+      const locale = resolveLanguageCodeFromBrowserTag(typeof navigator === "undefined" ? undefined : navigator.language);
       const response = await fetch("/api/v1/auth/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
