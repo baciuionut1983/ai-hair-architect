@@ -198,6 +198,61 @@ describe("POST /api/v1/clients/[id]/voice-transcript", () => {
     expect(body).toEqual({ transcriptId: "transcript-1", transcript: "She had bleach six weeks ago.", persistedAsMemory: false });
   });
 
+  // Gemini's REST API has no dedicated language-hint config field, so
+  // steering it can only be done via prompt text -- these lock in that an
+  // optional "language" form field actually reaches the prompt sent to the
+  // provider, and that its absence leaves the original, unhinted prompt.
+  it("appends a Romanian language hint to the transcription prompt when the form includes language=ro", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(geminiTranscriptResponse("Clienta vrea sa pastreze parul lung."));
+    vi.stubGlobal("fetch", fetchMock);
+    const form = audioForm();
+    form.append("language", "ro");
+
+    await invoke(form);
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    const promptText = requestBody.contents[0].parts[0].text as string;
+    expect(promptText).toContain("most likely speaking Romanian");
+  });
+
+  it("appends an English language hint to the transcription prompt when the form includes language=en", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(geminiTranscriptResponse("The client wants long hair."));
+    vi.stubGlobal("fetch", fetchMock);
+    const form = audioForm();
+    form.append("language", "en");
+
+    await invoke(form);
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    const promptText = requestBody.contents[0].parts[0].text as string;
+    expect(promptText).toContain("most likely speaking English");
+  });
+
+  it("sends the original, unhinted prompt when no language field is present at all", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(geminiTranscriptResponse("She had bleach six weeks ago."));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await invoke(audioForm());
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    const promptText = requestBody.contents[0].parts[0].text as string;
+    expect(promptText).toBe("Transcribe this audio faithfully. Return only the transcript, with no commentary.");
+    expect(promptText).not.toContain("most likely speaking");
+  });
+
+  it("ignores an unrecognized language value, falling back to the unhinted prompt", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(geminiTranscriptResponse("Bonjour."));
+    vi.stubGlobal("fetch", fetchMock);
+    const form = audioForm();
+    form.append("language", "fr");
+
+    await invoke(form);
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    const promptText = requestBody.contents[0].parts[0].text as string;
+    expect(promptText).not.toContain("most likely speaking");
+  });
+
   // Same fail-closed convention as every other repository in this app --
   // even though the real transcription already succeeded, a persistence
   // failure is reported as a clear 503, never a silently degraded 200.

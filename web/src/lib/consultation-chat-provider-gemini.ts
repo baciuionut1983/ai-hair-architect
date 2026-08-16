@@ -14,6 +14,15 @@ export const GEMINI_CHAT_DEFAULT_TIMEOUT_MS = 30_000;
 
 const CORRECTION_SOURCES = ["stylist_confirmed", "client_reported"] as const;
 
+// Mirrors contracts.ts's Locale ("en" | "ro") -- used only to render a
+// human-readable name into the prompt text (Gemini's REST API has no
+// dedicated language-hint config field, so this is necessarily prompt text,
+// same technique as the memory-proposal reminder line below).
+const LANGUAGE_NAMES: Record<"en" | "ro", string> = {
+  en: "English",
+  ro: "Romanian",
+};
+
 // Kept in sync with analysis-repository.ts's CORRECTABLE_ANALYSIS_FIELDS by
 // importing it directly rather than re-listing the fields -- if that list
 // ever changes, this schema (and therefore what the model is even allowed
@@ -127,7 +136,17 @@ const SYSTEM_INSTRUCTION =
   "or preference over a conflicting ai_observation, mention uncertainty when appropriate, and use confirmed outcome " +
   "feedback to improve the next recommendation. Never treat one stylist's rule as global knowledge.\n" +
   "9. Respond with strict JSON matching the provided schema only -- no markdown, no commentary outside the " +
-  "JSON fields.";
+  "JSON fields.\n" +
+  "10. Language: by default, write `reply` in EXACTLY the same language as the stylist's CURRENT message -- " +
+  "if it's written in Romanian, reply in Romanian; if English, reply in English; matching whatever language " +
+  "this specific message uses, regardless of what language earlier messages in this conversation used. If a " +
+  "'FORCED REPLY LANGUAGE' line appears below, ignore the message's own language entirely and always reply in " +
+  "that language instead -- the stylist has explicitly fixed the conversation's language. If no forced language " +
+  "is given and the current message's own language is genuinely ambiguous (e.g. just a name, a number, or too " +
+  "short to tell), and a 'fallback reply language if ambiguous' line appears below, use that; otherwise use your " +
+  "own best judgment. This rule applies to `reply` only -- field names, enum values (e.g. proposedCorrection." +
+  "field, proposedMemory.action/source), and technical terms you're already told to use in English stay in " +
+  "English regardless of reply language.";
 
 export interface GeminiConsultationChatProviderOptions {
   apiKey: string;
@@ -386,6 +405,23 @@ function buildPrompt(message: string, context: ConsultationChatContext): string 
     for (const item of memory.recentConsultations) lines.push(`- consultation: ${item.summary}; next=${item.nextSteps.join(" | ")}`);
     for (const item of memory.recentFormulas) lines.push(`- formula: ${item.name}; ${item.details}`);
     for (const item of memory.recentTreatments) lines.push(`- treatment: ${item.name}; ${item.details}`);
+  }
+
+  // See ConsultationChatContext (consultation-chat-provider.ts) for why
+  // these two are mutually exclusive, and SYSTEM_INSTRUCTION rule 10 above
+  // for exactly how the model is told to use them.
+  if (context.forcedReplyLanguage) {
+    lines.push(
+      "",
+      `FORCED REPLY LANGUAGE: ${LANGUAGE_NAMES[context.forcedReplyLanguage]} (${context.forcedReplyLanguage}) -- ` +
+        "the stylist has explicitly fixed the conversation's language. Reply in this language regardless of what " +
+        "language the message below is written in.",
+    );
+  } else if (context.fallbackReplyLanguage) {
+    lines.push(
+      "",
+      `Fallback reply language if ambiguous: ${LANGUAGE_NAMES[context.fallbackReplyLanguage]} (${context.fallbackReplyLanguage}).`,
+    );
   }
 
   lines.push("", `stylist: ${message}`);

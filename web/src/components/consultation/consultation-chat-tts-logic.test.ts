@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   detectSpeechLocale,
   isSpeechSynthesisSupported,
+  resolveReplySpeechLocale,
   selectVoiceForLocale,
   speakReply,
   stopSpeaking,
@@ -17,16 +18,66 @@ describe("detectSpeechLocale", () => {
     expect(detectSpeechLocale("Ședința e programată mâine.")).toBe("ro-RO");
   });
 
-  it("defaults to English when no Romanian diacritics are present", () => {
+  it("detects English from common English stopwords", () => {
     expect(detectSpeechLocale("The client wants to keep her hair long with volume on top.")).toBe("en-US");
   });
 
-  it("is case-insensitive for diacritics", () => {
-    expect(detectSpeechLocale("PĂRUL ei este lung")).toBe("ro-RO");
+  // Regression: the exact live bug -- a Romanian reply pronounced as
+  // English, because the original detector only checked diacritics.
+  it("detects Romanian even with NO diacritics at all, via stopwords", () => {
+    expect(detectSpeechLocale("Clienta vrea sa pastreze parul lung cu volum in partea de sus.")).toBe("ro-RO");
+    expect(detectSpeechLocale("Nu cred ca este o idee buna pentru acest client.")).toBe("ro-RO");
   });
 
-  it("treats an empty string as English (a safe, non-crashing default)", () => {
-    expect(detectSpeechLocale("")).toBe("en-US");
+  it("is case-insensitive for both diacritics and stopwords", () => {
+    expect(detectSpeechLocale("PĂRUL ei este lung")).toBe("ro-RO");
+    expect(detectSpeechLocale("SI CLIENTA vrea asta")).toBe("ro-RO");
+  });
+
+  it("returns null (genuinely ambiguous) for text with no signal for either language", () => {
+    expect(detectSpeechLocale("")).toBeNull();
+    expect(detectSpeechLocale("42")).toBeNull();
+    expect(detectSpeechLocale("Maria Popescu")).toBeNull();
+  });
+});
+
+describe("resolveReplySpeechLocale", () => {
+  it("an explicit (non-auto) preference always wins, ignoring the text entirely", () => {
+    const result = resolveReplySpeechLocale("This is clearly English text.", "ro-RO", null);
+    expect(result.locale).toBe("ro-RO");
+    expect(result.conversationLocale).toBe("ro-RO");
+  });
+
+  it("auto mode: a confident detection of THIS text wins over any prior conversation locale", () => {
+    const result = resolveReplySpeechLocale("Bună ziua, cum vă pot ajuta?", "auto", "en-US");
+    expect(result.locale).toBe("ro-RO");
+    expect(result.conversationLocale).toBe("ro-RO");
+  });
+
+  it("auto mode: falls back to the established conversation locale when this text is ambiguous", () => {
+    const result = resolveReplySpeechLocale("42", "auto", "ro-RO");
+    expect(result.locale).toBe("ro-RO");
+    expect(result.conversationLocale).toBe("ro-RO");
+  });
+
+  it("auto mode: falls back to a safe default (en-US) when there's no signal and no prior conversation locale yet", () => {
+    const result = resolveReplySpeechLocale("42", "auto", null);
+    expect(result.locale).toBe("en-US");
+    expect(result.conversationLocale).toBeNull();
+  });
+
+  it("auto mode: an ambiguous message never erases a previously-established conversation locale", () => {
+    const result = resolveReplySpeechLocale("OK.", "auto", "ro-RO");
+    expect(result.conversationLocale).toBe("ro-RO");
+  });
+
+  it("switches the conversation locale going forward once a new confident detection arrives", () => {
+    const first = resolveReplySpeechLocale("Bună, cum te pot ajuta?", "auto", null);
+    expect(first.conversationLocale).toBe("ro-RO");
+
+    const second = resolveReplySpeechLocale("Actually, let's continue in English.", "auto", first.conversationLocale);
+    expect(second.locale).toBe("en-US");
+    expect(second.conversationLocale).toBe("en-US");
   });
 });
 
@@ -93,26 +144,28 @@ describe("speakReply", () => {
     const synth = fakeSynth();
     const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn() };
 
-    speakReply("Hello", { synth, createUtterance: fakeUtterance }, callbacks);
+    speakReply("Hello", "en-US", { synth, createUtterance: fakeUtterance }, callbacks);
 
     expect(synth.cancelCalls).toBe(1);
     expect(synth.speakCalls).toHaveLength(1);
   });
 
-  it("sets the utterance's lang to the detected locale of the actual text being spoken", () => {
+  it("speaks in exactly the locale it's given, never re-deriving one from the text itself", () => {
     const synth = fakeSynth();
     const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn() };
 
-    speakReply("Părul ei este lung.", { synth, createUtterance: fakeUtterance }, callbacks);
+    // Deliberately mismatched: English text, but told to speak Romanian --
+    // speakReply must obey the caller, not the text.
+    speakReply("This is English text.", "ro-RO", { synth, createUtterance: fakeUtterance }, callbacks);
 
     expect(synth.speakCalls[0].lang).toBe("ro-RO");
   });
 
-  it("assigns a matching voice when the browser has one installed for the detected locale", () => {
+  it("assigns a matching voice when the browser has one installed for the given locale", () => {
     const synth = fakeSynth({ getVoices: () => [{ lang: "ro-RO", name: "Romanian" }, { lang: "en-US", name: "English" }] });
     const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn() };
 
-    speakReply("Bună ziua.", { synth, createUtterance: fakeUtterance }, callbacks);
+    speakReply("Bună ziua.", "ro-RO", { synth, createUtterance: fakeUtterance }, callbacks);
 
     expect(synth.speakCalls[0].voice).toEqual({ lang: "ro-RO", name: "Romanian" });
   });
@@ -121,7 +174,7 @@ describe("speakReply", () => {
     const synth = fakeSynth({ getVoices: () => [] });
     const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn() };
 
-    speakReply("Hello", { synth, createUtterance: fakeUtterance }, callbacks);
+    speakReply("Hello", "en-US", { synth, createUtterance: fakeUtterance }, callbacks);
 
     expect(synth.speakCalls).toHaveLength(1);
     expect(synth.speakCalls[0].voice).toBeNull();
@@ -131,7 +184,7 @@ describe("speakReply", () => {
     const synth = fakeSynth();
     const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn() };
 
-    speakReply("Hello", { synth, createUtterance: fakeUtterance }, callbacks);
+    speakReply("Hello", "en-US", { synth, createUtterance: fakeUtterance }, callbacks);
     const utterance = synth.speakCalls[0];
     utterance.onstart?.();
     utterance.onend?.();
@@ -147,7 +200,7 @@ describe("speakReply", () => {
     const synth = fakeSynth();
     const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn() };
 
-    speakReply("Hello", { synth, createUtterance: fakeUtterance }, callbacks);
+    speakReply("Hello", "en-US", { synth, createUtterance: fakeUtterance }, callbacks);
     synth.speakCalls[0].onerror?.();
 
     expect(callbacks.onError).toHaveBeenCalledWith(VOICE_REPLY_FAILURE_MESSAGE);
@@ -157,7 +210,7 @@ describe("speakReply", () => {
     const synth = fakeSynth({ speak: () => { throw new Error("synthesis unavailable"); } });
     const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn() };
 
-    expect(() => speakReply("Hello", { synth, createUtterance: fakeUtterance }, callbacks)).not.toThrow();
+    expect(() => speakReply("Hello", "en-US", { synth, createUtterance: fakeUtterance }, callbacks)).not.toThrow();
     expect(callbacks.onError).toHaveBeenCalledWith(VOICE_REPLY_FAILURE_MESSAGE);
   });
 
@@ -165,7 +218,7 @@ describe("speakReply", () => {
     const synth = fakeSynth({ speak: () => { throw new Error("synthesis unavailable"); } });
     const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn() };
 
-    speakReply("Hello", { synth, createUtterance: fakeUtterance }, callbacks);
+    speakReply("Hello", "en-US", { synth, createUtterance: fakeUtterance }, callbacks);
 
     expect(callbacks.onStart).not.toHaveBeenCalled();
     expect(callbacks.onEnd).not.toHaveBeenCalled();
@@ -206,7 +259,7 @@ describe("Voice Reply never touches professional memory", () => {
     const synth = fakeSynth();
     const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn() };
 
-    speakReply("Remember this as a professional observation.", { synth, createUtterance: fakeUtterance }, callbacks);
+    speakReply("Remember this as a professional observation.", "en-US", { synth, createUtterance: fakeUtterance }, callbacks);
 
     expect(fetchSpy).not.toHaveBeenCalled();
     fetchSpy.mockRestore();

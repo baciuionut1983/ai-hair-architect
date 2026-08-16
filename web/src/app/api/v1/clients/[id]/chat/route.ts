@@ -77,7 +77,18 @@ export async function POST(
     return NextResponse.json({ error: "Client not found." }, { status: 404 });
   }
 
-  const body = (await request.json()) as Partial<ConsultationChatRequest> & { analysisId?: string };
+  const body = (await request.json()) as Partial<ConsultationChatRequest> & {
+    analysisId?: string;
+    // The conversation's own "Language: Auto / English / Romanian"
+    // selector state -- a concrete value (not "auto"/absent) means the
+    // stylist explicitly fixed the language, which forces the reply.
+    languagePreference?: string;
+    // The conversation's own currently-established language (set by prior
+    // per-message detection on the frontend), sent only when the selector
+    // is "auto" -- a soft fallback for a genuinely ambiguous message, never
+    // a forced override.
+    conversationLanguage?: string;
+  };
   const message = typeof body.message === "string" ? body.message.trim() : "";
   const analysisId = typeof body.analysisId === "string" && body.analysisId.trim() ? body.analysisId.trim() : undefined;
 
@@ -85,7 +96,19 @@ export async function POST(
     return NextResponse.json({ error: "message is required." }, { status: 400 });
   }
 
-  const result = await sendConsultationMessage(sessionUser.id, client, message, analysisId);
+  const forcedReplyLanguage = toLocaleOrUndefined(body.languagePreference);
+  // Ambiguous-message fallback only, never a forced override (see
+  // ConsultationChatLanguageHint): the conversation's own established
+  // language first, then the stylist's account locale as a last resort --
+  // this must NEVER be promoted to `forced`, or a Romanian UI/account
+  // setting would force Romanian replies onto a conversation held in a
+  // different language, which is explicitly disallowed.
+  const fallbackReplyLanguage = toLocaleOrUndefined(body.conversationLanguage) ?? sessionUser.locale;
+
+  const result = await sendConsultationMessage(sessionUser.id, client, message, analysisId, {}, {
+    forced: forcedReplyLanguage,
+    fallback: fallbackReplyLanguage,
+  });
 
   if (result.outcome === "failed") {
     return NextResponse.json(
@@ -132,4 +155,8 @@ function isProposedMemory(value: unknown): value is ConsultationChatResponse["re
     "content" in value &&
     "reason" in value
   );
+}
+
+function toLocaleOrUndefined(value: string | undefined): "en" | "ro" | undefined {
+  return value === "en" || value === "ro" ? value : undefined;
 }

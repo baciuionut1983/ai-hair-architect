@@ -1,19 +1,40 @@
 "use client";
 
-import { MessageCircle, Send, Sparkles, Volume2, VolumeX } from "lucide-react";
+import { MessageCircle, Mic, Send, Sparkles, Square, Volume2, VolumeX } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
-import { Alert, Badge, Button, Card, LoadingState, Textarea } from "@/components/ui";
+import { Alert, Badge, Button, Card, LoadingState, Select, Textarea } from "@/components/ui";
 import type {
   ConsultationChatRequest,
   ConsultationChatResponse,
   ConsultationMessageRecord
 } from "@/lib/contracts";
 
-import { describeSendFailure, extractMemoryDecisionIds, formatMessageTime, isSendableMessage, resolveConsultationHistoryLoadStatus } from "./consultation-chat-logic";
-import { isSpeechSynthesisSupported, speakReply, stopSpeaking, type SpeechSynthesisLike, type SpeechUtteranceLike } from "./consultation-chat-tts-logic";
+import {
+  buildChatLanguageFields,
+  describeSendFailure,
+  extractMemoryDecisionIds,
+  formatMessageTime,
+  isSendableMessage,
+  LANGUAGE_SELECTION_STORAGE_KEY,
+  languageSelectionToSpeechLocale,
+  parseStoredLanguageSelection,
+  resolveConsultationHistoryLoadStatus,
+  resolveSttLanguageHint,
+  type LanguageSelection
+} from "./consultation-chat-logic";
+import {
+  isSpeechSynthesisSupported,
+  resolveReplySpeechLocale,
+  speakReply,
+  stopSpeaking,
+  type SpeechLocale,
+  type SpeechSynthesisLike,
+  type SpeechUtteranceLike
+} from "./consultation-chat-tts-logic";
 import { TeachAiPanel } from "./teach-ai-panel";
+import { useVoiceRecording } from "./use-voice-recording";
 
 export interface ConsultationChatProps {
   clientId: string;
@@ -66,7 +87,30 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  // The conversation's own "Language" selector (Auto/English/Romanian) --
+  // distinct from the account/UI locale on purpose (see
+  // consultation-chat-service.ts's ConsultationChatLanguageHint): a
+  // concrete choice here is a hard override for this conversation only,
+  // never something the app-wide UI language forces onto it. Starts "auto"
+  // (matching SSR) and is hydrated from localStorage after mount, same
+  // hydration-safe pattern as speechSupported above.
+  const [languageSelection, setLanguageSelection] = useState<LanguageSelection>("auto");
+  // The conversation's own currently-established spoken language, updated
+  // whenever an AI reply is confidently detected (see resolveReplySpeechLocale)
+  // -- used only as a soft fallback (STT hint, ambiguous-reply TTS/reply
+  // language), never a forced value.
+  const [conversationLocale, setConversationLocale] = useState<SpeechLocale | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
+
+  const sttLanguageHint = resolveSttLanguageHint(languageSelection, conversationLocale);
+  const { recording: chatRecording, status: chatVoiceStatus, toggleRecording: toggleChatRecording } = useVoiceRecording({
+    clientId,
+    language: sttLanguageHint,
+    // Populates ONLY the normal chat composer's own draft -- this hook has
+    // no knowledge of Teach the AI's state at all, so a chat-composer voice
+    // note can structurally never reach it or trigger a memory proposal.
+    onTranscript: (transcript) => setDraft(transcript),
+  });
 
   useEffect(() => {
     // Unavoidable: whether the Web Speech API exists is only knowable
@@ -77,6 +121,11 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     // capability check.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSpeechSupported(isSpeechSynthesisSupported(typeof window === "undefined" ? undefined : window));
+    // Same hydration-safe reasoning as speechSupported above -- the stored
+    // selection is only knowable client-side.
+    if (typeof window !== "undefined") {
+      setLanguageSelection(parseStoredLanguageSelection(window.localStorage.getItem(LANGUAGE_SELECTION_STORAGE_KEY)));
+    }
     // Cleanup: never leave the browser still reading a reply aloud after
     // this component unmounts (e.g. navigating away mid-speech).
     return () => {
@@ -146,7 +195,11 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     setSendError(null);
 
     try {
-      const body: ConsultationChatRequest & { analysisId?: string } = { message: outgoing, ...(analysisId ? { analysisId } : {}) };
+      const body: ConsultationChatRequest & { analysisId?: string; languagePreference?: "en" | "ro"; conversationLanguage?: "en" | "ro" } = {
+        message: outgoing,
+        ...(analysisId ? { analysisId } : {}),
+        ...buildChatLanguageFields(languageSelection, conversationLocale),
+      };
       const response = await fetch(`/api/v1/clients/${clientId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -178,16 +231,29 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     if (typeof window === "undefined" || !window.speechSynthesis) return;
 
     setVoiceError(null);
+    // Regression: a live test showed a Romanian reply pronounced in
+    // English -- resolveReplySpeechLocale applies the same
+    // selector-override-first, then-detection, then-established-locale,
+    // then-safe-default priority chain used for the AI's own reply
+    // language on the backend (see SYSTEM_INSTRUCTION rule 10), so TTS and
+    // the reply text can never disagree about which language is "current."
+    const { locale, conversationLocale: nextConversationLocale } = resolveReplySpeechLocale(
+      message.content,
+      languageSelection === "auto" ? "auto" : languageSelectionToSpeechLocale(languageSelection),
+      conversationLocale,
+    );
+    setConversationLocale(nextConversationLocale);
     speakReply(
       message.content,
+      locale,
       {
         synth: window.speechSynthesis as unknown as SpeechSynthesisLike,
-        createUtterance: (text) => new SpeechSynthesisUtterance(text) as unknown as SpeechUtteranceLike,
+        createUtterance: (text: string) => new SpeechSynthesisUtterance(text) as unknown as SpeechUtteranceLike,
       },
       {
         onStart: () => setSpeakingMessageId(message.id),
         onEnd: () => setSpeakingMessageId((current) => (current === message.id ? null : current)),
-        onError: (errorMessage) => {
+        onError: (errorMessage: string) => {
           setSpeakingMessageId((current) => (current === message.id ? null : current));
           setVoiceError(errorMessage);
         },
@@ -213,6 +279,25 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
       }
       return next;
     });
+  }
+
+  function handleLanguageSelectionChange(next: LanguageSelection) {
+    setLanguageSelection(next);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(LANGUAGE_SELECTION_STORAGE_KEY, next);
+    }
+    if (next !== "auto") {
+      // Best-effort cross-device sync of a concrete choice only -- "auto"
+      // has no equivalent value in the account's Locale field, and this
+      // must never block or fail the UI if the request doesn't succeed
+      // (the localStorage write above already persisted it for this
+      // browser regardless).
+      void fetch("/api/v1/account/locale", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ locale: next }),
+      }).catch(() => {});
+    }
   }
 
   async function handleApplyCorrection(message: ConsultationMessageRecord) {
@@ -307,25 +392,38 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
 
   return (
     <Card className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Sparkles className="h-4 w-4 text-accent" aria-hidden="true" />
           <h2 className="text-sm font-semibold text-foreground">Consult AI</h2>
         </div>
-        {speechSupported ? (
-          <div className="flex items-center gap-2">
-            {speakingMessageId ? (
-              <Button type="button" variant="ghost" onClick={handleStopSpeaking}>
-                <VolumeX className="h-4 w-4" aria-hidden="true" />
-                Stop
-              </Button>
-            ) : null}
-            <Button type="button" variant="secondary" onClick={handleToggleVoiceReply}>
-              {voiceReplyEnabled ? <Volume2 className="h-4 w-4" aria-hidden="true" /> : <VolumeX className="h-4 w-4" aria-hidden="true" />}
-              Voice Reply: {voiceReplyEnabled ? "On" : "Off"}
-            </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="w-44">
+            <Select
+              aria-label="Language"
+              value={languageSelection}
+              onChange={(event) => handleLanguageSelectionChange(event.target.value as LanguageSelection)}
+            >
+              <option value="auto">Language: Auto</option>
+              <option value="en">Language: English</option>
+              <option value="ro">Language: Romanian</option>
+            </Select>
           </div>
-        ) : null}
+          {speechSupported ? (
+            <>
+              {speakingMessageId ? (
+                <Button type="button" variant="ghost" onClick={handleStopSpeaking}>
+                  <VolumeX className="h-4 w-4" aria-hidden="true" />
+                  Stop
+                </Button>
+              ) : null}
+              <Button type="button" variant="secondary" onClick={handleToggleVoiceReply}>
+                {voiceReplyEnabled ? <Volume2 className="h-4 w-4" aria-hidden="true" /> : <VolumeX className="h-4 w-4" aria-hidden="true" />}
+                Voice Reply: {voiceReplyEnabled ? "On" : "Off"}
+              </Button>
+            </>
+          ) : null}
+        </div>
       </div>
 
       {historyStatus === "loading" ? <LoadingState label="Loading conversation..." /> : null}
@@ -375,6 +473,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
       {sendError ? <Alert variant="error">{sendError}</Alert> : null}
       {memoryError ? <Alert variant="error">{memoryError}</Alert> : null}
       {voiceError ? <Alert variant="error">{voiceError}</Alert> : null}
+      {chatVoiceStatus ? <p className="text-xs text-muted">{chatVoiceStatus}</p> : null}
 
       <form onSubmit={handleSubmit} className="flex items-end gap-2">
         <div className="flex-1">
@@ -392,6 +491,15 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
             }}
           />
         </div>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={toggleChatRecording}
+          disabled={sending}
+          aria-label={chatRecording ? "Stop voice input" : "Voice input"}
+        >
+          {chatRecording ? <Square className="h-4 w-4" aria-hidden="true" /> : <Mic className="h-4 w-4" aria-hidden="true" />}
+        </Button>
         <Button type="submit" loading={sending} disabled={!isSendableMessage(draft)}>
           <Send className="h-4 w-4" aria-hidden="true" />
           Send

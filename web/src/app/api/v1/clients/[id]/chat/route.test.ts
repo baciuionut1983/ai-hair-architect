@@ -118,6 +118,47 @@ describe("POST /api/v1/clients/[id]/chat", () => {
       CLIENT,
       "Her density is low",
       "analysis-1",
+      {},
+      expect.any(Object),
+    );
+  });
+
+  // OWNER.locale is "en" -- with no explicit selector/conversation language
+  // sent by the frontend, the account locale is used only as the soft
+  // ambiguous-message fallback, never as a forced override.
+  it("defaults the language hint to the stylist's own account locale as a fallback only, when the frontend sends nothing", async () => {
+    await invoke("client-1", { message: "hi" });
+
+    expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
+      "owner-1", CLIENT, "hi", undefined, {},
+      { forced: undefined, fallback: "en" },
+    );
+  });
+
+  it("forwards an explicit languagePreference as a forced language hint", async () => {
+    await invoke("client-1", { message: "hi", languagePreference: "ro" });
+
+    expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
+      "owner-1", CLIENT, "hi", undefined, {},
+      { forced: "ro", fallback: "en" },
+    );
+  });
+
+  it("forwards conversationLanguage as the fallback when the selector is auto (no languagePreference)", async () => {
+    await invoke("client-1", { message: "hi", conversationLanguage: "ro" });
+
+    expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
+      "owner-1", CLIENT, "hi", undefined, {},
+      { forced: undefined, fallback: "ro" },
+    );
+  });
+
+  it("ignores a garbage/unsupported languagePreference or conversationLanguage value instead of forwarding it", async () => {
+    await invoke("client-1", { message: "hi", languagePreference: "auto", conversationLanguage: "fr" });
+
+    expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
+      "owner-1", CLIENT, "hi", undefined, {},
+      { forced: undefined, fallback: "en" },
     );
   });
 

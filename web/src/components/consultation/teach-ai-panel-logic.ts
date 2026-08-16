@@ -73,6 +73,12 @@ export async function finishRecording(
   clientId: string,
   callbacks: FinishRecordingCallbacks,
   deps: FinishRecordingDeps,
+  // Appended as a new trailing optional param (not inserted earlier) so
+  // every existing positional call site keeps compiling unchanged. Passed
+  // straight through to voice-transcript/route.ts's own optional "language"
+  // form field -- see that route for why this can only be a prompt-text
+  // hint, never a real provider config option.
+  language?: "en" | "ro",
 ): Promise<void> {
   stream.getTracks().forEach((track) => track.stop());
   callbacks.onStopped();
@@ -84,6 +90,9 @@ export async function finishRecording(
 
     const form = new FormData();
     form.append("audio", blob, "note.webm");
+    if (language) {
+      form.append("language", language);
+    }
 
     let response: Response;
     try {

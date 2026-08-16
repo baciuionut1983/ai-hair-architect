@@ -1,4 +1,67 @@
+import type { SpeechLocale } from "./consultation-chat-tts-logic";
+
 export type ConsultationHistoryLoadStatus = "ready" | "error";
+
+// The Consult AI "Language" selector's own state: "auto" follows the
+// conversation (per-message detection, see consultation-chat-tts-logic.ts's
+// resolveReplySpeechLocale); a concrete value explicitly fixes it. Distinct
+// from SpeechLocale ("ro-RO"/"en-US", a BCP-47 tag needed for
+// SpeechSynthesisUtterance.lang) -- this uses contracts.ts's own Locale
+// vocabulary ("en"/"ro") since it is also what's sent to the backend
+// (forcedReplyLanguage/fallbackReplyLanguage) and persisted to the
+// account's User.locale.
+export type LanguageSelection = "auto" | "en" | "ro";
+
+// localStorage key for the selector -- a per-browser preference so the
+// stylist never has to reselect on every page/session (persists
+// immediately and locally; a concrete, non-"auto" choice is additionally
+// best-effort synced to the account via POST /api/v1/account/locale, for
+// cross-device persistence).
+export const LANGUAGE_SELECTION_STORAGE_KEY = "aha:consult-ai:language-selection";
+
+export function parseStoredLanguageSelection(value: string | null): LanguageSelection {
+  return value === "en" || value === "ro" ? value : "auto";
+}
+
+export function languageSelectionToSpeechLocale(selection: "en" | "ro"): SpeechLocale {
+  return selection === "ro" ? "ro-RO" : "en-US";
+}
+
+export function speechLocaleToLanguageSelection(locale: SpeechLocale): "en" | "ro" {
+  return locale === "ro-RO" ? "ro" : "en";
+}
+
+export interface ChatLanguageFields {
+  languagePreference?: "en" | "ro";
+  conversationLanguage?: "en" | "ro";
+}
+
+// Computes exactly the two optional language fields a chat POST body sends,
+// mirroring the same forced-vs-fallback split the backend enforces (see
+// ConsultationChatLanguageHint in consultation-chat-service.ts): a concrete
+// selector value is always a hard override (languagePreference); "auto"
+// sends only the conversation's own currently-tracked language, if any, as
+// a soft, ambiguous-message-only fallback -- never a forced one.
+export function buildChatLanguageFields(selection: LanguageSelection, conversationLocale: SpeechLocale | null): ChatLanguageFields {
+  if (selection !== "auto") {
+    return { languagePreference: selection };
+  }
+  if (conversationLocale) {
+    return { conversationLanguage: speechLocaleToLanguageSelection(conversationLocale) };
+  }
+  return {};
+}
+
+// Resolves the STT language hint sent with a voice recording (see
+// finishRecording's trailing optional param): a concrete selector value
+// always wins; "auto" falls back to the conversation's own currently
+// tracked language, if any is established yet.
+export function resolveSttLanguageHint(selection: LanguageSelection, conversationLocale: SpeechLocale | null): "en" | "ro" | undefined {
+  if (selection !== "auto") {
+    return selection;
+  }
+  return conversationLocale ? speechLocaleToLanguageSelection(conversationLocale) : undefined;
+}
 
 export function resolveConsultationHistoryLoadStatus(response: { ok: boolean }): ConsultationHistoryLoadStatus {
   return response.ok ? "ready" : "error";

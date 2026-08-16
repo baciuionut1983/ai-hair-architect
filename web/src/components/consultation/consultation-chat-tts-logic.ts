@@ -12,19 +12,106 @@
 // key/cost/new Railway variable, and it works on both desktop and mobile
 // browsers that implement the standard.
 
-// This app supports exactly two locales today (see src/lib/i18n.ts:
-// SupportedLocale = "en" | "ro") -- detection is scoped to exactly that,
-// not a general-purpose language identifier. Romanian-specific diacritics
-// are a reliable, self-contained signal of the reply's actual language,
-// independent of the stylist's own account locale -- which matters
-// because a single stylist's conversations may legitimately switch
-// language mid-session.
-const ROMANIAN_DIACRITICS_PATTERN = /[ăâîșț]/i;
-
+// This app supports exactly two locales today (see src/lib/i18n.ts /
+// contracts.ts's Locale = "en" | "ro") -- detection is scoped to exactly
+// that, not a general-purpose language identifier.
 export type SpeechLocale = "ro-RO" | "en-US";
 
-export function detectSpeechLocale(text: string): SpeechLocale {
-  return ROMANIAN_DIACRITICS_PATTERN.test(text) ? "ro-RO" : "en-US";
+// Regression: a live test showed a Romanian reply pronounced as English --
+// the original detector only checked diacritics (ăâîșț), so any Romanian
+// text typed/transcribed WITHOUT diacritics (very common) was silently
+// misclassified. Diacritics remain the strongest signal when present;
+// stopword scoring (words that appear even without diacritics, e.g. "nu",
+// "este", "vrea", "parul") is now a second, independent signal. Returns
+// null -- "genuinely ambiguous" -- only when NEITHER language shows any
+// signal at all (e.g. a bare name or a number), so the caller can fall
+// back to a sturdier signal instead of guessing.
+const ROMANIAN_DIACRITICS_PATTERN = /[ăâîșț]/i;
+
+const ROMANIAN_STOPWORDS = new Set([
+  "si", "și", "sa", "să", "nu", "este", "sunt", "pentru", "care", "cu", "la",
+  "de", "in", "în", "mai", "dar", "ce", "cum", "sau", "din", "pe", "un", "o",
+  "acest", "aceasta", "această", "va", "fi", "are", "avea", "trebuie",
+  "poate", "ei", "ea", "el", "lor", "noastre", "vrea", "vreau", "doreste",
+  "dorește", "parul", "părul", "clienta", "clientul", "azi", "acum", "bine",
+  "multumesc", "mulțumesc", "buna", "bună", "ziua", "salut", "te", "rog",
+  "am", "ai", "au", "fost", "cred", "cred că", "atunci", "asta", "aici",
+]);
+
+const ENGLISH_STOPWORDS = new Set([
+  "the", "is", "are", "for", "with", "and", "that", "this", "her", "she",
+  "want", "wants", "would", "like", "please", "hair", "client", "thanks",
+  "have", "has", "will", "can", "should", "keep", "more", "very", "today",
+  "hello", "hi", "yes", "no", "not", "you", "your", "what", "how", "when",
+  "was", "were", "been", "think", "here", "there", "then", "in", "on", "at",
+  "to", "it", "be", "do", "so", "if", "or", "we", "us", "my", "as", "an",
+  "by", "up", "of", "a", "let", "let's", "continue", "actually",
+]);
+
+function wordScore(words: string[], set: Set<string>): number {
+  let score = 0;
+  for (const word of words) {
+    if (set.has(word)) score += 1;
+  }
+  return score;
+}
+
+// Confident detection of the ACTUAL text's language, independent of any
+// user setting -- diacritics first (unambiguous when present), then a
+// stopword-frequency comparison. Returns null when there's no usable
+// signal at all, rather than guessing.
+export function detectSpeechLocale(text: string): SpeechLocale | null {
+  if (ROMANIAN_DIACRITICS_PATTERN.test(text)) {
+    return "ro-RO";
+  }
+
+  const words = text.toLowerCase().match(/[a-zăâîșț]+/gi) ?? [];
+  if (words.length === 0) {
+    return null;
+  }
+
+  const roScore = wordScore(words, ROMANIAN_STOPWORDS);
+  const enScore = wordScore(words, ENGLISH_STOPWORDS);
+
+  if (roScore === 0 && enScore === 0) {
+    return null;
+  }
+
+  return roScore > enScore ? "ro-RO" : "en-US";
+}
+
+// The stylist's own choice: "auto" follows the conversation (see
+// resolveReplySpeechLocale below); a concrete value fixes the language
+// deterministically, overriding detection entirely -- "Selectorul manual
+// trebuie să poată fixa limba atunci când utilizatorul dorește asta."
+export type LanguagePreference = "auto" | SpeechLocale;
+
+// Priority chain, exactly as specified: explicit user selection -> the
+// conversation's own established language (so a single short/ambiguous
+// reply mid-conversation doesn't randomly flip voices) -> fresh detection
+// of THIS text as a fallback -> a safe, hardcoded default as the last
+// resort. Returns the locale to speak in AND the conversation's language
+// going forward (updated only when this call had a real signal to offer,
+// so an ambiguous message never erases a previously-established language).
+export function resolveReplySpeechLocale(
+  text: string,
+  preference: LanguagePreference,
+  conversationLocale: SpeechLocale | null,
+): { locale: SpeechLocale; conversationLocale: SpeechLocale | null } {
+  if (preference !== "auto") {
+    return { locale: preference, conversationLocale: preference };
+  }
+
+  const detected = detectSpeechLocale(text);
+  if (detected) {
+    return { locale: detected, conversationLocale: detected };
+  }
+
+  if (conversationLocale) {
+    return { locale: conversationLocale, conversationLocale };
+  }
+
+  return { locale: "en-US", conversationLocale: null };
 }
 
 export interface SpeechVoiceLike {
@@ -92,11 +179,15 @@ export const VOICE_REPLY_FAILURE_MESSAGE = "Voice reply failed. The text reply a
 // Always cancels any previous utterance before starting a new one --
 // this app never has two AI voice replies audible at once, regardless of
 // how quickly successive replies arrive.
-export function speakReply(text: string, deps: SpeakReplyDeps, callbacks: SpeakReplyCallbacks): void {
+//
+// `locale` is the caller's already-resolved locale (via
+// resolveReplySpeechLocale) -- this function only ever speaks in exactly
+// the locale it's given, never re-derives one, so the priority chain
+// lives in exactly one place.
+export function speakReply(text: string, locale: SpeechLocale, deps: SpeakReplyDeps, callbacks: SpeakReplyCallbacks): void {
   deps.synth.cancel();
 
   const utterance = deps.createUtterance(text);
-  const locale = detectSpeechLocale(text);
   const voice = selectVoiceForLocale(deps.synth.getVoices(), locale);
 
   utterance.lang = locale;

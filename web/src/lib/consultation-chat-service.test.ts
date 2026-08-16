@@ -438,6 +438,58 @@ describe("sendConsultationMessage", () => {
     });
   });
 
+  it("threads a forced language hint into the provider context", async () => {
+    let capturedContext: unknown;
+    const provider = stubProvider(async (_msg, ctx) => {
+      capturedContext = ctx;
+      return { reply: "ok", needsClarification: false };
+    });
+
+    await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider }, { forced: "ro" });
+
+    expect(capturedContext).toMatchObject({ forcedReplyLanguage: "ro" });
+    expect(capturedContext).not.toHaveProperty("fallbackReplyLanguage");
+  });
+
+  it("threads a fallback language hint into the provider context when there is no forced language", async () => {
+    let capturedContext: unknown;
+    const provider = stubProvider(async (_msg, ctx) => {
+      capturedContext = ctx;
+      return { reply: "ok", needsClarification: false };
+    });
+
+    await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider }, { fallback: "en" });
+
+    expect(capturedContext).toMatchObject({ fallbackReplyLanguage: "en" });
+    expect(capturedContext).not.toHaveProperty("forcedReplyLanguage");
+  });
+
+  it("a forced language hint takes priority over a fallback one -- only forcedReplyLanguage reaches the provider", async () => {
+    let capturedContext: unknown;
+    const provider = stubProvider(async (_msg, ctx) => {
+      capturedContext = ctx;
+      return { reply: "ok", needsClarification: false };
+    });
+
+    await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider }, { forced: "ro", fallback: "en" });
+
+    expect(capturedContext).toMatchObject({ forcedReplyLanguage: "ro" });
+    expect(capturedContext).not.toHaveProperty("fallbackReplyLanguage");
+  });
+
+  it("omits both language fields from the provider context when no hint is given at all", async () => {
+    let capturedContext: unknown;
+    const provider = stubProvider(async (_msg, ctx) => {
+      capturedContext = ctx;
+      return { reply: "ok", needsClarification: false };
+    });
+
+    await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+    expect(capturedContext).not.toHaveProperty("forcedReplyLanguage");
+    expect(capturedContext).not.toHaveProperty("fallbackReplyLanguage");
+  });
+
   it("professional memory is an explicit empty array (not omitted) when there is none, so the model sees a real empty state", async () => {
     let capturedContext: unknown;
     const provider = stubProvider(async (_msg, ctx) => {

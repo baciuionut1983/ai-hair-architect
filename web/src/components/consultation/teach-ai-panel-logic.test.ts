@@ -75,6 +75,30 @@ describe("finishRecording", () => {
     expect(init.body).toBeInstanceOf(FormData);
   });
 
+  it("3b: appends the optional trailing language param to the form when given", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub }, "ro");
+
+    const [, init] = fetchStub.mock.calls[0] as unknown as [string, RequestInit];
+    const form = init.body as FormData;
+    expect(form.get("language")).toBe("ro");
+  });
+
+  it("3c: omits the language field entirely when not given -- every pre-existing call site (5-arg) keeps working unchanged", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    const [, init] = fetchStub.mock.calls[0] as unknown as [string, RequestInit];
+    const form = init.body as FormData;
+    expect(form.get("language")).toBeNull();
+  });
+
   it("4: delivers the resulting transcript and transcriptId to onSuccess when the response is ok", async () => {
     const { stream } = fakeStream();
     const callbacks = callbackSpies();

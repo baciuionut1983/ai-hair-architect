@@ -101,6 +101,22 @@ export interface ConsultationChatContext {
   // can see, not an absent field it might paper over.
   professionalMemory: ConsultationChatMemoryItem[];
   clientProfessionalMemory: ConsultationChatClientMemory;
+  // Two independent language signals, matching the app's own "Auto vs.
+  // fixed language" selector:
+  // - forcedReplyLanguage: the stylist explicitly picked a language
+  //   (selector set to something other than "Auto") -- the model MUST
+  //   reply in this language always, even if the stylist's own message
+  //   happens to be written in a different one. This is what "fixing"
+  //   the language means. Never set at the same time as
+  //   fallbackReplyLanguage below.
+  // - fallbackReplyLanguage: selector is "Auto" -- used ONLY when the
+  //   stylist's own message is genuinely ambiguous (too short, a name, a
+  //   number). Never overrides a message that clearly indicates its own
+  //   language -- the model is instructed to prefer the message's own
+  //   language above this hint. See SYSTEM_INSTRUCTION in
+  //   consultation-chat-provider-gemini.ts for the exact rule.
+  forcedReplyLanguage?: "en" | "ro";
+  fallbackReplyLanguage?: "en" | "ro";
 }
 
 export interface ConsultationChatProposedCorrection {

@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildChatLanguageFields,
   describeSendFailure,
   extractMemoryDecisionIds,
   isSendableMessage,
-  resolveConsultationHistoryLoadStatus
+  languageSelectionToSpeechLocale,
+  parseStoredLanguageSelection,
+  resolveConsultationHistoryLoadStatus,
+  resolveSttLanguageHint,
+  speechLocaleToLanguageSelection
 } from "./consultation-chat-logic";
 
 describe("resolveConsultationHistoryLoadStatus", () => {
@@ -88,5 +93,58 @@ describe("describeSendFailure", () => {
     for (const status of [404, 429, 503, 504, 502, 500]) {
       expect(describeSendFailure(status).toLowerCase()).not.toContain("noted");
     }
+  });
+});
+
+describe("parseStoredLanguageSelection", () => {
+  it("accepts the two concrete stored values", () => {
+    expect(parseStoredLanguageSelection("en")).toBe("en");
+    expect(parseStoredLanguageSelection("ro")).toBe("ro");
+  });
+
+  it("defaults to auto for null, garbage, or an explicit 'auto' value", () => {
+    expect(parseStoredLanguageSelection(null)).toBe("auto");
+    expect(parseStoredLanguageSelection("fr")).toBe("auto");
+    expect(parseStoredLanguageSelection("auto")).toBe("auto");
+    expect(parseStoredLanguageSelection("")).toBe("auto");
+  });
+});
+
+describe("languageSelectionToSpeechLocale / speechLocaleToLanguageSelection", () => {
+  it("round-trips both directions", () => {
+    expect(languageSelectionToSpeechLocale("ro")).toBe("ro-RO");
+    expect(languageSelectionToSpeechLocale("en")).toBe("en-US");
+    expect(speechLocaleToLanguageSelection("ro-RO")).toBe("ro");
+    expect(speechLocaleToLanguageSelection("en-US")).toBe("en");
+  });
+});
+
+describe("buildChatLanguageFields", () => {
+  it("sends languagePreference as a forced override for a concrete selection, regardless of conversation locale", () => {
+    expect(buildChatLanguageFields("ro", "en-US")).toEqual({ languagePreference: "ro" });
+    expect(buildChatLanguageFields("ro", null)).toEqual({ languagePreference: "ro" });
+  });
+
+  it("sends conversationLanguage as a fallback only when auto and a conversation locale is already established", () => {
+    expect(buildChatLanguageFields("auto", "ro-RO")).toEqual({ conversationLanguage: "ro" });
+  });
+
+  it("sends neither field when auto and no conversation locale has been established yet", () => {
+    expect(buildChatLanguageFields("auto", null)).toEqual({});
+  });
+});
+
+describe("resolveSttLanguageHint", () => {
+  it("a concrete selection always wins", () => {
+    expect(resolveSttLanguageHint("ro", "en-US")).toBe("ro");
+    expect(resolveSttLanguageHint("en", null)).toBe("en");
+  });
+
+  it("auto falls back to the established conversation locale", () => {
+    expect(resolveSttLanguageHint("auto", "ro-RO")).toBe("ro");
+  });
+
+  it("auto with no established conversation locale yet returns undefined (no hint sent)", () => {
+    expect(resolveSttLanguageHint("auto", null)).toBeUndefined();
   });
 });

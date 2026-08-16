@@ -45,6 +45,17 @@ export interface SendConsultationMessageDependencies {
   now?: () => Date;
 }
 
+// Mirrors ConsultationChatContext's forcedReplyLanguage/fallbackReplyLanguage
+// split one level up, at the service boundary -- forced is the stylist's own
+// explicit, non-"auto" language selection (always wins); fallback is used
+// only when the message itself is too ambiguous to tell, and is never a hard
+// override (so a Romanian UI/account locale can never force a reply
+// language on its own -- see the route for where this is populated).
+export interface ConsultationChatLanguageHint {
+  forced?: "en" | "ro";
+  fallback?: "en" | "ro";
+}
+
 /**
  * Orchestrates one turn of the Conversational Professional AI: persists the
  * stylist's message first (so it is never lost even if the provider call
@@ -61,6 +72,7 @@ export async function sendConsultationMessage(
   message: string,
   analysisId: string | undefined,
   dependencies: SendConsultationMessageDependencies = {},
+  languageHint: ConsultationChatLanguageHint = {},
 ): Promise<SendConsultationMessageResult> {
   const startedAt = (dependencies.now ?? (() => new Date()))().getTime();
 
@@ -182,7 +194,7 @@ export async function sendConsultationMessage(
       return failure("PERSISTENCE_FAILURE");
     }
 
-    const context = buildChatContext(client, analysis, priorMessages, memories, clientMemory);
+    const context = buildChatContext(client, analysis, priorMessages, memories, clientMemory, languageHint);
 
     const controller = new AbortController();
     let result;
@@ -269,6 +281,7 @@ function buildChatContext(
   priorMessages: ConsultationMessageRow[],
   memories: Awaited<ReturnType<typeof retrieveRelevantMemories>>,
   clientMemory: Awaited<ReturnType<typeof buildClientProfessionalMemory>>,
+  languageHint: ConsultationChatLanguageHint,
 ): ConsultationChatContext {
   return {
     clientFullName: client.fullName,
@@ -278,6 +291,8 @@ function buildChatContext(
     })),
     professionalMemory: memories.map(({ scope, kind, content, source, confidence }) => ({ scope, kind, content, source, confidence })),
     clientProfessionalMemory: clientMemory,
+    ...(languageHint.forced ? { forcedReplyLanguage: languageHint.forced } : {}),
+    ...(!languageHint.forced && languageHint.fallback ? { fallbackReplyLanguage: languageHint.fallback } : {}),
     ...(analysis
       ? {
           currentAnalysis: {

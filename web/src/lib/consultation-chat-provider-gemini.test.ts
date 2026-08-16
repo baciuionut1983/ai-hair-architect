@@ -427,6 +427,58 @@ describe("GeminiConsultationChatProvider", () => {
     expect(sink.input?.prompt).not.toContain("this exact message matched this app's own detection");
   });
 
+  it("emits a FORCED REPLY LANGUAGE line when the stylist has explicitly fixed the language", async () => {
+    const sink: { input?: GeminiChatGenerateInput } = {};
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+    );
+
+    await provider.respond("What technique would you use here?", context({ forcedReplyLanguage: "ro" }), new AbortController().signal);
+
+    expect(sink.input?.prompt).toContain("FORCED REPLY LANGUAGE: Romanian (ro)");
+    expect(sink.input?.prompt).not.toContain("Fallback reply language if ambiguous");
+  });
+
+  it("emits a fallback reply language line when only the auto/ambiguous fallback is set", async () => {
+    const sink: { input?: GeminiChatGenerateInput } = {};
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+    );
+
+    await provider.respond("42", context({ fallbackReplyLanguage: "en" }), new AbortController().signal);
+
+    expect(sink.input?.prompt).toContain("Fallback reply language if ambiguous: English (en)");
+    expect(sink.input?.prompt).not.toContain("FORCED REPLY LANGUAGE:");
+  });
+
+  it("forced language takes priority over fallback language when both are somehow set", async () => {
+    const sink: { input?: GeminiChatGenerateInput } = {};
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+    );
+
+    await provider.respond("42", context({ forcedReplyLanguage: "ro", fallbackReplyLanguage: "en" }), new AbortController().signal);
+
+    expect(sink.input?.prompt).toContain("FORCED REPLY LANGUAGE: Romanian (ro)");
+    expect(sink.input?.prompt).not.toContain("Fallback reply language if ambiguous");
+  });
+
+  it("emits neither language line when no language hint is provided at all", async () => {
+    const sink: { input?: GeminiChatGenerateInput } = {};
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+    );
+
+    await provider.respond("What technique would you use here?", context(), new AbortController().signal);
+
+    expect(sink.input?.prompt).not.toContain("FORCED REPLY LANGUAGE:");
+    expect(sink.input?.prompt).not.toContain("Fallback reply language if ambiguous:");
+  });
+
   it("renders the chosen technique, assumptions, contraindications, safety notes, and clarification answers for the real Scissor Over Comb scenario", async () => {
     const sink: { input?: GeminiChatGenerateInput } = {};
     const provider = new GeminiConsultationChatProvider(

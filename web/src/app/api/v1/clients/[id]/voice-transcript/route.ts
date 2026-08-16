@@ -67,9 +67,16 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // -- caught here so that case still fails closed with the existing 400
   // "Invalid audio." response, never an uncaught 500.
   let audio: FormDataEntryValue | null;
+  let languageHint: FormDataEntryValue | null;
   try {
     const form = await request.formData();
     audio = form.get("audio");
+    // Optional, sent by the frontend's current language selector/
+    // conversation language -- Gemini's REST API has no dedicated
+    // language-hint config field, so this can only be steered via prompt
+    // text (see the transcription prompt built below), same technique as
+    // consultation-chat-provider-gemini.ts's memory-proposal reminder line.
+    languageHint = form.get("language");
   } catch {
     logVoiceTranscript("FAILED", "invalid_audio", { resultCode: "INVALID_AUDIO", reason: "form_data_parse_threw" });
     return NextResponse.json({ error: "Invalid audio." }, { status: 400 });
@@ -122,6 +129,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   const audioBase64 = Buffer.from(await audio.arrayBuffer()).toString("base64");
 
+  const languageName = languageHint === "ro" ? "Romanian" : languageHint === "en" ? "English" : null;
+  const transcriptionInstruction = languageName
+    ? `Transcribe this audio faithfully. The speaker is most likely speaking ${languageName} -- prefer that ` +
+      "language if the audio is ambiguous, but transcribe whatever language is actually spoken. Return only " +
+      "the transcript, with no commentary."
+    : "Transcribe this audio faithfully. Return only the transcript, with no commentary.";
+
   let response: Response;
   try {
     response = await fetch(
@@ -132,7 +146,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
         body: JSON.stringify({
           contents: [{ parts: [
-            { text: "Transcribe this audio faithfully. Return only the transcript, with no commentary." },
+            { text: transcriptionInstruction },
             { inlineData: { mimeType: audio.type, data: audioBase64 } },
           ] }],
           generationConfig: { temperature: 0 },
