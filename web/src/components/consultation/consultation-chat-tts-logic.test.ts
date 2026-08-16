@@ -99,24 +99,32 @@ describe("selectVoiceForLocale", () => {
     expect(selectVoiceForLocale(voices, "ro-RO")?.name).toBe("Moldovan");
   });
 
-  it("falls back to the browser's default voice when no matching language exists at all", () => {
+  it("returns null when the browser reports zero installed voices", () => {
+    expect(selectVoiceForLocale([], "ro-RO")).toBeNull();
+  });
+
+  // Regression (bug #1): a live test with Language: Romanian selected
+  // showed the reply's text correctly in Romanian, but read aloud with an
+  // English voice. An earlier version of this function fell back to the
+  // browser's "default" voice (often en-*) or simply the first available
+  // voice when no ro-* voice existed -- these two tests pin down that it
+  // must NEVER substitute a voice from an unrelated language, even when
+  // one is flagged as the browser's own default or is simply first in the
+  // list, regardless of the target language actually being installed.
+  it("never substitutes the browser's default voice when it belongs to a different language than requested", () => {
     const voices = [
       { lang: "fr-FR", name: "French" },
       { lang: "en-US", name: "English", default: true },
     ];
-    expect(selectVoiceForLocale(voices, "ro-RO")?.name).toBe("English");
+    expect(selectVoiceForLocale(voices, "ro-RO")).toBeNull();
   });
 
-  it("falls back to the first available voice when there's no language match and no default flagged", () => {
+  it("never substitutes the first available voice when no voice matches the requested language at all", () => {
     const voices = [
       { lang: "fr-FR", name: "French" },
       { lang: "de-DE", name: "German" },
     ];
-    expect(selectVoiceForLocale(voices, "ro-RO")?.name).toBe("French");
-  });
-
-  it("returns null when the browser reports zero installed voices", () => {
-    expect(selectVoiceForLocale([], "ro-RO")).toBeNull();
+    expect(selectVoiceForLocale(voices, "ro-RO")).toBeNull();
   });
 });
 
@@ -124,15 +132,20 @@ function fakeUtterance(): SpeechUtteranceLike {
   return { lang: "", voice: null, onstart: null, onend: null, onerror: null };
 }
 
-function fakeSynth(overrides: Partial<SpeechSynthesisLike> = {}): SpeechSynthesisLike & { speakCalls: SpeechUtteranceLike[]; cancelCalls: number } {
+function fakeSynth(
+  overrides: Partial<SpeechSynthesisLike> = {},
+): SpeechSynthesisLike & { speakCalls: SpeechUtteranceLike[]; cancelCalls: number; resumeCalls: number } {
   const speakCalls: SpeechUtteranceLike[] = [];
   let cancelCalls = 0;
+  let resumeCalls = 0;
   return {
     speak: overrides.speak ?? ((u: SpeechUtteranceLike) => { speakCalls.push(u); }),
     cancel: overrides.cancel ?? (() => { cancelCalls += 1; }),
+    resume: overrides.resume ?? (() => { resumeCalls += 1; }),
     getVoices: overrides.getVoices ?? (() => []),
     get speakCalls() { return speakCalls; },
     get cancelCalls() { return cancelCalls; },
+    get resumeCalls() { return resumeCalls; },
   };
 }
 
@@ -148,6 +161,24 @@ describe("speakReply", () => {
 
     expect(synth.cancelCalls).toBe(1);
     expect(synth.speakCalls).toHaveLength(1);
+  });
+
+  // Regression (bug #2): a live test showed Voice Reply silently not
+  // starting at all, but ONLY for a reply that followed a chat-composer
+  // voice-input message -- the exact same code path worked normally for a
+  // typed message. getUserMedia (the chat mic's own STT capture) is a
+  // documented trigger for some Chromium builds leaving the speech
+  // synthesis engine internally paused; cancel() alone doesn't reliably
+  // unstick it. resume() must be called unconditionally, every time --
+  // it's a no-op when the engine isn't paused, so there's no reason to
+  // ever skip it based on message origin.
+  it("always calls resume() (in addition to cancel()) before speaking, regardless of message origin", () => {
+    const synth = fakeSynth();
+    const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn() };
+
+    speakReply("Hello", "en-US", { synth, createUtterance: fakeUtterance }, callbacks);
+
+    expect(synth.resumeCalls).toBe(1);
   });
 
   it("speaks in exactly the locale it's given, never re-deriving one from the text itself", () => {
@@ -178,6 +209,51 @@ describe("speakReply", () => {
 
     expect(synth.speakCalls).toHaveLength(1);
     expect(synth.speakCalls[0].voice).toBeNull();
+  });
+
+  // Regression (bug #1, honest-fallback half): the fix for "reads Romanian
+  // text with an English voice" is to never assign an unrelated-language
+  // voice -- but simply going silent about it would be its own kind of
+  // dishonesty ("pretend Romanian Voice is active"). onVoiceUnavailable
+  // must fire so the UI can tell the stylist plainly, in both the
+  // "wrong-language voices exist" and "zero voices installed at all" cases
+  // -- from the stylist's perspective, both mean the same thing: no
+  // guarantee this will sound like the requested language.
+  it("calls onVoiceUnavailable when the browser has voices installed but none for the requested language", () => {
+    const synth = fakeSynth({ getVoices: () => [{ lang: "en-US", name: "English", default: true }] });
+    const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn(), onVoiceUnavailable: vi.fn() };
+
+    speakReply("Bună ziua.", "ro-RO", { synth, createUtterance: fakeUtterance }, callbacks);
+
+    expect(callbacks.onVoiceUnavailable).toHaveBeenCalledWith("ro-RO");
+    expect(synth.speakCalls[0].voice).toBeNull();
+    // Still attempts to speak, best-effort, via utterance.lang alone.
+    expect(synth.speakCalls[0].lang).toBe("ro-RO");
+  });
+
+  it("calls onVoiceUnavailable when the browser has zero voices installed at all", () => {
+    const synth = fakeSynth({ getVoices: () => [] });
+    const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn(), onVoiceUnavailable: vi.fn() };
+
+    speakReply("Bună ziua.", "ro-RO", { synth, createUtterance: fakeUtterance }, callbacks);
+
+    expect(callbacks.onVoiceUnavailable).toHaveBeenCalledWith("ro-RO");
+  });
+
+  it("never calls onVoiceUnavailable when a matching-language voice is actually found", () => {
+    const synth = fakeSynth({ getVoices: () => [{ lang: "ro-RO", name: "Romanian" }] });
+    const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn(), onVoiceUnavailable: vi.fn() };
+
+    speakReply("Bună ziua.", "ro-RO", { synth, createUtterance: fakeUtterance }, callbacks);
+
+    expect(callbacks.onVoiceUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("does not throw when onVoiceUnavailable is omitted (optional callback)", () => {
+    const synth = fakeSynth({ getVoices: () => [{ lang: "en-US", name: "English" }] });
+    const callbacks = { onStart: vi.fn(), onEnd: vi.fn(), onError: vi.fn() };
+
+    expect(() => speakReply("Bună ziua.", "ro-RO", { synth, createUtterance: fakeUtterance }, callbacks)).not.toThrow();
   });
 
   it("calls onStart/onEnd through the utterance's own event handlers", () => {

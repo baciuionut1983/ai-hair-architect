@@ -120,13 +120,24 @@ export interface SpeechVoiceLike {
   default?: boolean;
 }
 
-// Picks the best available voice for a target BCP-47 locale: an exact
-// lang match first, then a language-only match (e.g. any "ro-*" voice for
-// "ro-RO"), then the browser's own default voice, then simply the first
-// available voice -- never throws. Returns null only when the browser
-// reports zero installed voices at all, a real possibility this app
-// cannot control (per the user's own acknowledgment: voice language
-// follows the conversation "pe cât permite infrastructura aplicației").
+// Picks a voice for a target BCP-47 locale: an exact lang match first,
+// then a language-only match (e.g. any "ro-*" voice for "ro-RO"). Returns
+// null when the device has NO voice for this language at all -- unlike an
+// earlier version of this function, it never falls back to the browser's
+// "default" voice or simply the first available one, because that default
+// is very often an unrelated-language voice (e.g. an en-* voice on an
+// English-OS install).
+//
+// Regression: a live test with Language: Romanian selected showed the
+// reply's TEXT correctly in Romanian, but read aloud with an English
+// voice. Root cause: this function used to substitute that unrelated
+// default/first voice, and once utterance.voice is explicitly set,
+// browsers use THAT voice's own language and effectively ignore
+// utterance.lang -- so "no Romanian voice installed" silently became
+// "reads Romanian text with an English voice" instead of an honest
+// fallback. Returning null here leaves utterance.voice unset, so the
+// browser is free to use utterance.lang on its own -- see speakReply's
+// onVoiceUnavailable callback for how the caller is told about this case.
 export function selectVoiceForLocale<T extends SpeechVoiceLike>(voices: T[], targetLocale: string): T | null {
   if (voices.length === 0) return null;
 
@@ -135,12 +146,7 @@ export function selectVoiceForLocale<T extends SpeechVoiceLike>(voices: T[], tar
 
   const languageOnly = targetLocale.split("-")[0]?.toLowerCase() ?? targetLocale.toLowerCase();
   const sameLanguage = voices.find((voice) => voice.lang.toLowerCase().startsWith(languageOnly));
-  if (sameLanguage) return sameLanguage;
-
-  const defaultVoice = voices.find((voice) => voice.default);
-  if (defaultVoice) return defaultVoice;
-
-  return voices[0];
+  return sameLanguage ?? null;
 }
 
 export interface SpeechUtteranceLike {
@@ -154,6 +160,16 @@ export interface SpeechUtteranceLike {
 export interface SpeechSynthesisLike {
   speak(utterance: SpeechUtteranceLike): void;
   cancel(): void;
+  // Regression: getUserMedia (used by the chat composer's own microphone
+  // -- see use-voice-recording.ts) is a documented trigger for some
+  // Chromium builds leaving the speech synthesis engine internally
+  // paused; a live test showed a reply's TTS silently not starting at all
+  // specifically after a voice-input message, never after a typed one.
+  // cancel() alone does not reliably unstick a paused engine -- resume()
+  // does, and is a no-op when the engine isn't paused, so speakReply calls
+  // it unconditionally before every speak(), regardless of the message's
+  // origin.
+  resume(): void;
   getVoices(): SpeechVoiceLike[];
 }
 
@@ -166,9 +182,24 @@ export interface SpeakReplyCallbacks {
   onStart: () => void;
   onEnd: () => void;
   onError: (message: string) => void;
+  // Fired (synchronously, before speaking starts) when the device has no
+  // installed voice matching the requested locale at all -- speech still
+  // proceeds best-effort (via utterance.lang alone, with no voice
+  // assigned), but the caller must tell the stylist plainly rather than
+  // silently implying the requested language played correctly.
+  onVoiceUnavailable?: (locale: SpeechLocale) => void;
 }
 
 export const VOICE_REPLY_FAILURE_MESSAGE = "Voice reply failed. The text reply above is still available.";
+
+// Temporary, safe-fields-only diagnostics for the live voice-selection
+// bug -- never the reply text itself, only locale/voice names, matching
+// this codebase's existing logClient (teach-ai-panel-logic.ts) convention.
+const VOICE_REPLY_CLIENT_LOG_TAG = "VOICE_REPLY_CLIENT";
+
+function logVoiceReplyClient(event: string, details: Record<string, unknown> = {}): void {
+  console.log(JSON.stringify({ tag: VOICE_REPLY_CLIENT_LOG_TAG, event, ...details }));
+}
 
 // Regression-proofing by construction, not discipline: this only ever
 // reads `text` (the reply already shown on screen) aloud -- it never
@@ -186,14 +217,27 @@ export const VOICE_REPLY_FAILURE_MESSAGE = "Voice reply failed. The text reply a
 // lives in exactly one place.
 export function speakReply(text: string, locale: SpeechLocale, deps: SpeakReplyDeps, callbacks: SpeakReplyCallbacks): void {
   deps.synth.cancel();
+  deps.synth.resume();
 
   const utterance = deps.createUtterance(text);
-  const voice = selectVoiceForLocale(deps.synth.getVoices(), locale);
+  const voices = deps.synth.getVoices();
+  const voice = selectVoiceForLocale(voices, locale);
 
   utterance.lang = locale;
   if (voice) {
     utterance.voice = voice;
+  } else {
+    callbacks.onVoiceUnavailable?.(locale);
   }
+
+  logVoiceReplyClient("speak_requested", {
+    requestedLanguage: locale,
+    utteranceLang: utterance.lang,
+    selectedVoiceName: voice?.name ?? null,
+    selectedVoiceLang: voice?.lang ?? null,
+    voiceCount: voices.length,
+  });
+
   utterance.onstart = () => callbacks.onStart();
   utterance.onend = () => callbacks.onEnd();
   utterance.onerror = () => callbacks.onError(VOICE_REPLY_FAILURE_MESSAGE);

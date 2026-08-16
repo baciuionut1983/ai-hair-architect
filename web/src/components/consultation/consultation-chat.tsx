@@ -49,6 +49,11 @@ export interface ConsultationChatProps {
 
 type HistoryStatus = "loading" | "ready" | "error";
 
+const LOCALE_LABELS: Record<SpeechLocale, string> = {
+  "ro-RO": "Romanian",
+  "en-US": "English",
+};
+
 const MEMORY_ACTION_LABELS: Record<string, string> = {
   save_client_memory: "Save to client memory",
   save_professional_rule: "Save as professional rule",
@@ -87,6 +92,12 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  // Distinct from voiceError (an actual playback failure): set when the
+  // device simply has no installed voice for the requested language --
+  // speech still plays best-effort, so this is an honest heads-up, not a
+  // failure. Never silently implies the requested language's voice was
+  // used when it wasn't (see selectVoiceForLocale's own regression note).
+  const [voiceUnavailableNotice, setVoiceUnavailableNotice] = useState<string | null>(null);
   // The conversation's own "Language" selector (Auto/English/Romanian) --
   // distinct from the account/UI locale on purpose (see
   // consultation-chat-service.ts's ConsultationChatLanguageHint): a
@@ -125,6 +136,17 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     // selection is only knowable client-side.
     if (typeof window !== "undefined") {
       setLanguageSelection(parseStoredLanguageSelection(window.localStorage.getItem(LANGUAGE_SELECTION_STORAGE_KEY)));
+    }
+    // Some browsers only start loading the installed voice list (which
+    // getVoices() needs to find a ro-RO/en-US match -- see
+    // consultation-chat-tts-logic.ts's selectVoiceForLocale) after the
+    // first getVoices() call, and finish asynchronously via the
+    // voiceschanged event. Nudging it here means the list is more likely
+    // to already be populated by the time the first reply actually needs
+    // to speak -- speakReply always re-reads getVoices() fresh at call
+    // time, so nothing else needs to consume this value.
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.getVoices();
     }
     // Cleanup: never leave the browser still reading a reply aloud after
     // this component unmounts (e.g. navigating away mid-speech).
@@ -231,6 +253,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     if (typeof window === "undefined" || !window.speechSynthesis) return;
 
     setVoiceError(null);
+    setVoiceUnavailableNotice(null);
     // Regression: a live test showed a Romanian reply pronounced in
     // English -- resolveReplySpeechLocale applies the same
     // selector-override-first, then-detection, then-established-locale,
@@ -256,6 +279,11 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
         onError: (errorMessage: string) => {
           setSpeakingMessageId((current) => (current === message.id ? null : current));
           setVoiceError(errorMessage);
+        },
+        onVoiceUnavailable: (unavailableLocale) => {
+          setVoiceUnavailableNotice(
+            `No ${LOCALE_LABELS[unavailableLocale]} voice is installed on this device -- reading with the browser's default voice instead.`,
+          );
         },
       },
     );
@@ -473,6 +501,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
       {sendError ? <Alert variant="error">{sendError}</Alert> : null}
       {memoryError ? <Alert variant="error">{memoryError}</Alert> : null}
       {voiceError ? <Alert variant="error">{voiceError}</Alert> : null}
+      {voiceUnavailableNotice ? <Alert variant="warning">{voiceUnavailableNotice}</Alert> : null}
       {chatVoiceStatus ? <p className="text-xs text-muted">{chatVoiceStatus}</p> : null}
 
       <form onSubmit={handleSubmit} className="flex items-end gap-2">
