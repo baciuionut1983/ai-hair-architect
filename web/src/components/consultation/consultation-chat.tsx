@@ -38,6 +38,7 @@ import {
   type SpeechUtteranceLike
 } from "./consultation-chat-tts-logic";
 import { TeachAiPanel } from "./teach-ai-panel";
+import { bindFetch } from "./teach-ai-panel-logic";
 import { useVoiceRecording } from "./use-voice-recording";
 
 export interface ConsultationChatProps {
@@ -372,7 +373,18 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
       clientId,
       message.content,
       toCloudTtsLanguageCode(language) as LanguageCode,
-      { fetch },
+      // Regression: `{ fetch }` (object shorthand for `{ fetch: fetch }`)
+      // stores fetch's bare function reference as a plain object's
+      // property. A real browser's native fetch is a *branded* method --
+      // calling it as `deps.fetch(...)` invokes it with `this === deps`
+      // (plain method-call syntax always binds `this` to the object
+      // before the dot), which throws "TypeError: Failed to execute
+      // 'fetch' on 'Window': Illegal invocation" synchronously, before
+      // any network request is ever made. Exactly the same root cause
+      // teach-ai-panel-logic.ts's own bindFetch already exists to fix
+      // (see its own regression note) -- reused here rather than
+      // re-solving the same problem a second, differently-worded way.
+      { fetch: bindFetch(fetch) },
       {
         onSuccess: (audioBlob) => {
           setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));

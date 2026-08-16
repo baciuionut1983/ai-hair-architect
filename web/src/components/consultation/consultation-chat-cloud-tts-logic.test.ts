@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { logVoiceReplyClientEvent, synthesizeCloudVoiceReply } from "./consultation-chat-cloud-tts-logic";
 import { speakReply, type SpeakReplyDeps } from "./consultation-chat-tts-logic";
+import { bindFetch } from "./teach-ai-panel-logic";
 
 function okResponse(blob: Blob): Response {
   return { ok: true, blob: async () => blob } as unknown as Response;
@@ -251,5 +252,79 @@ describe("VOICE_REPLY_CLIENT event names stay unambiguous across both log source
     } finally {
       logSpy.mockRestore();
     }
+  });
+});
+
+// Regression: the demonstrated live production cause, confirmed live via
+// this file's own cloud_fetch_threw logging -- cloud TTS WAS selected and
+// WAS attempted (speak_message_branch_decision showed cloudSupported:true,
+// cloud_request_initiated fired), but the fetch call itself threw
+// "TypeError: Failed to execute 'fetch' on 'Window': Illegal invocation"
+// before any network request could be made. Root cause: consultation-
+// chat.tsx used to pass `{ fetch }` (object shorthand for
+// `{ fetch: fetch }`) to synthesizeCloudVoiceReply -- the bare global
+// function reference stored as a plain object's property. A real
+// browser's native fetch is a *branded* method requiring `this` to be
+// exactly the window/global object it's defined on; calling it later as
+// `deps.fetch(...)` invokes it with `this === deps` (plain method-call
+// syntax always binds `this` to the object before the dot), which throws
+// synchronously. This is the EXACT same bug class already fixed once in
+// teach-ai-panel-logic.ts's own bindFetch (see that file's own regression
+// note) -- it reached this SECOND call site because a mocked fetch
+// (vi.fn(), used by every other test in this file) never checks `this`
+// at all, so full test coverage of synthesizeCloudVoiceReply itself never
+// caught it; only a test double that reproduces the browser's real
+// `this`-binding requirement can.
+describe("fetch this-binding regression (the exact live production bug)", () => {
+  // Simulates a real browser's native fetch: only works when called with
+  // `this === globalThis` (the real window object in a browser) -- exactly
+  // the constraint bindFetch(fetch).bind(globalThis) satisfies. Any other
+  // receiver (e.g. a plain deps object storing the bare reference) is
+  // rejected, matching the real "Illegal invocation" error the user's
+  // live retest reproduced byte-for-byte.
+  function brandedFetchDouble(): typeof fetch {
+    function fetchLike(this: unknown) {
+      if (this !== globalThis) {
+        throw new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation");
+      }
+      return Promise.resolve(new Response(new Blob(["audio"])));
+    }
+    return fetchLike as unknown as typeof fetch;
+  }
+
+  it("reproduces the exact production bug: an unbound fetch reference makes cloud TTS fall back to 'network', never reaching the server", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const onFailure = vi.fn();
+    try {
+      // This is exactly `{ fetch }` from consultation-chat.tsx before the
+      // fix: the bare reference, invoked as synthesizeCloudVoiceReply's
+      // own `deps.fetch(...)` call, so `this` is `deps`, not globalThis.
+      await synthesizeCloudVoiceReply(
+        "client-1", "text", "ro",
+        { fetch: brandedFetchDouble() },
+        { onSuccess: () => {}, onFailure },
+      );
+
+      expect(onFailure).toHaveBeenCalledWith("network");
+      const events = logSpy.mock.calls.map((call) => (JSON.parse(call[0] as string) as { event: string; errorMessage?: string }));
+      const threw = events.find((line) => line.event === "cloud_fetch_threw");
+      expect(threw?.errorMessage).toContain("Illegal invocation");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("fixes it: wrapping with bindFetch (exactly what consultation-chat.tsx does now) lets the real request go through", async () => {
+    const onSuccess = vi.fn();
+    const onFailure = vi.fn();
+
+    await synthesizeCloudVoiceReply(
+      "client-1", "text", "ro",
+      { fetch: bindFetch(brandedFetchDouble()) },
+      { onSuccess, onFailure },
+    );
+
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(onSuccess).toHaveBeenCalledTimes(1);
   });
 });
