@@ -24,13 +24,26 @@
 // logic.ts's VOICE_TRANSCRIPT_CLIENT (never the reply text, never a
 // token/cookie) -- a single browser-console read now settles which one
 // actually happened.
+//
+// Naming regression found on the FIRST live retest of this logging: this
+// tag ("VOICE_REPLY_CLIENT") collides with an older, separate log source
+// -- consultation-chat-tts-logic.ts's own local-Web-Speech-only logging,
+// which ALSO used this exact tag (pre-dating cloud TTS entirely). A
+// retest that filtered the console by this tag saw only that older
+// source's "speak_requested" event and NONE of this file's events at
+// all -- which, combined with every other diagnostic check, points to
+// the deployed bundle predating this file, not a live bug in it. Event
+// names are now prefixed "cloud_" specifically so the SOURCE is
+// unambiguous from the event name alone, without requiring two different
+// tags (the local file's own event is now "local_speak_requested" -- see
+// consultation-chat-tts-logic.ts).
 
 import type { LanguageCode } from "@/lib/language-registry";
 
-const CLIENT_LOG_TAG = "VOICE_REPLY_CLIENT";
+export const VOICE_REPLY_CLIENT_LOG_TAG = "VOICE_REPLY_CLIENT";
 
-function logClient(event: string, details: Record<string, unknown> = {}): void {
-  console.log(JSON.stringify({ tag: CLIENT_LOG_TAG, event, ...details }));
+export function logVoiceReplyClientEvent(event: string, details: Record<string, unknown> = {}): void {
+  console.log(JSON.stringify({ tag: VOICE_REPLY_CLIENT_LOG_TAG, event, ...details }));
 }
 
 export type CloudVoiceReplyFailureReason = "network" | "unavailable";
@@ -47,8 +60,9 @@ export interface SynthesizeCloudVoiceReplyCallbacks {
   // limited, timed out server-side, unsupported language, etc.) -- the
   // SPECIFIC reason (e.g. VOICE_REPLY_PROVIDER_NOT_CONFIGURED vs
   // VOICE_REPLY_RATE_LIMITED) is read from the response body and logged
-  // via logClient above, not lost -- this callback parameter only needs
-  // to know "cloud didn't work, fall back" for either case.
+  // via logVoiceReplyClientEvent above, not lost -- this callback
+  // parameter only needs to know "cloud didn't work, fall back" for
+  // either case.
   onFailure: (reason: CloudVoiceReplyFailureReason) => void;
 }
 
@@ -61,15 +75,15 @@ export async function synthesizeCloudVoiceReply(
 ): Promise<void> {
   let response: Response;
   try {
-    logClient("request_initiated", { language, textLength: text.length });
+    logVoiceReplyClientEvent("cloud_request_initiated", { language, textLength: text.length });
     response = await deps.fetch(`/api/v1/clients/${clientId}/voice-reply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, language }),
     });
-    logClient("response_received", { status: response.status, ok: response.ok });
+    logVoiceReplyClientEvent("cloud_response_received", { status: response.status, ok: response.ok });
   } catch (error) {
-    logClient("fetch_threw", {
+    logVoiceReplyClientEvent("cloud_fetch_threw", {
       errorName: error instanceof Error ? error.name : "unknown",
       errorMessage: error instanceof Error ? error.message : String(error),
     });
@@ -86,17 +100,17 @@ export async function synthesizeCloudVoiceReply(
       .json()
       .then((body: { error?: string }) => body.error ?? "unknown")
       .catch(() => "unknown");
-    logClient("response_not_ok", { status: response.status, errorCode });
+    logVoiceReplyClientEvent("cloud_response_not_ok", { status: response.status, errorCode });
     callbacks.onFailure("unavailable");
     return;
   }
 
   try {
     const blob = await response.blob();
-    logClient("success", { audioBytes: blob.size });
+    logVoiceReplyClientEvent("cloud_success", { audioBytes: blob.size });
     callbacks.onSuccess(blob);
   } catch (error) {
-    logClient("blob_read_threw", {
+    logVoiceReplyClientEvent("cloud_blob_read_threw", {
       errorName: error instanceof Error ? error.name : "unknown",
     });
     callbacks.onFailure("unavailable");

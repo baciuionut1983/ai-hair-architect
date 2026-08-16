@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { synthesizeCloudVoiceReply } from "./consultation-chat-cloud-tts-logic";
+import { logVoiceReplyClientEvent, synthesizeCloudVoiceReply } from "./consultation-chat-cloud-tts-logic";
+import { speakReply, type SpeakReplyDeps } from "./consultation-chat-tts-logic";
 
 function okResponse(blob: Blob): Response {
   return { ok: true, blob: async () => blob } as unknown as Response;
@@ -123,7 +124,7 @@ describe("VOICE_REPLY_CLIENT diagnostics logging", () => {
       { onSuccess: () => {}, onFailure: () => {} },
     );
 
-    const initiated = loggedLines().find((line) => line.event === "request_initiated");
+    const initiated = loggedLines().find((line) => line.event === "cloud_request_initiated");
     expect(initiated).toMatchObject({ tag: "VOICE_REPLY_CLIENT", language: "ro", textLength: 51 });
     expect(JSON.stringify(loggedLines())).not.toContain("private consultation reply text");
   });
@@ -141,7 +142,7 @@ describe("VOICE_REPLY_CLIENT diagnostics logging", () => {
       { onSuccess: () => {}, onFailure: () => {} },
     );
 
-    const notOk = loggedLines().find((line) => line.event === "response_not_ok");
+    const notOk = loggedLines().find((line) => line.event === "cloud_response_not_ok");
     expect(notOk).toMatchObject({ tag: "VOICE_REPLY_CLIENT", status: 503, errorCode: "VOICE_REPLY_PROVIDER_NOT_CONFIGURED" });
   });
 
@@ -154,7 +155,7 @@ describe("VOICE_REPLY_CLIENT diagnostics logging", () => {
       { onSuccess: () => {}, onFailure: () => {} },
     );
 
-    const notOk = loggedLines().find((line) => line.event === "response_not_ok");
+    const notOk = loggedLines().find((line) => line.event === "cloud_response_not_ok");
     expect(notOk).toMatchObject({ errorCode: "VOICE_REPLY_RATE_LIMITED" });
   });
 
@@ -169,7 +170,7 @@ describe("VOICE_REPLY_CLIENT diagnostics logging", () => {
     await synthesizeCloudVoiceReply("client-1", "text", "ro", { fetch: vi.fn().mockResolvedValue(brokenResponse) }, { onSuccess: () => {}, onFailure });
 
     expect(onFailure).toHaveBeenCalledWith("unavailable");
-    const notOk = loggedLines().find((line) => line.event === "response_not_ok");
+    const notOk = loggedLines().find((line) => line.event === "cloud_response_not_ok");
     expect(notOk).toMatchObject({ errorCode: "unknown" });
   });
 
@@ -182,7 +183,7 @@ describe("VOICE_REPLY_CLIENT diagnostics logging", () => {
       { onSuccess: () => {}, onFailure: () => {} },
     );
 
-    const threw = loggedLines().find((line) => line.event === "fetch_threw");
+    const threw = loggedLines().find((line) => line.event === "cloud_fetch_threw");
     expect(threw).toMatchObject({ tag: "VOICE_REPLY_CLIENT", errorName: "TypeError", errorMessage: "Failed to fetch" });
   });
 
@@ -195,7 +196,60 @@ describe("VOICE_REPLY_CLIENT diagnostics logging", () => {
       { onSuccess: () => {}, onFailure: () => {} },
     );
 
-    const success = loggedLines().find((line) => line.event === "success");
+    const success = loggedLines().find((line) => line.event === "cloud_success");
     expect(success).toMatchObject({ tag: "VOICE_REPLY_CLIENT", audioBytes: 14 });
+  });
+});
+
+// Regression: this exact tag ("VOICE_REPLY_CLIENT") is shared with
+// consultation-chat-tts-logic.ts's own local-Web-Speech logging -- a live
+// retest that filtered the browser console by this tag saw only the
+// OTHER file's event and concluded (correctly, as it turned out, but only
+// after a lot of other verification) that cloud TTS logging never ran at
+// all. These lock in that every event name from EITHER source stays
+// unambiguous about its own origin, so a console read alone -- without
+// needing to know two files exist -- can always tell them apart.
+describe("VOICE_REPLY_CLIENT event names stay unambiguous across both log sources", () => {
+  it("every event this file logs is cloud_-prefixed", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      await synthesizeCloudVoiceReply(
+        "client-1", "text", "ro",
+        { fetch: vi.fn().mockResolvedValue(okResponse(new Blob(["audio"]))) },
+        { onSuccess: () => {}, onFailure: () => {} },
+      );
+      logVoiceReplyClientEvent("cloud_custom_event_used_directly");
+
+      const events = logSpy.mock.calls.map((call) => (JSON.parse(call[0] as string) as { event: string }).event);
+      expect(events.length).toBeGreaterThan(0);
+      for (const event of events) {
+        expect(event.startsWith("cloud_")).toBe(true);
+      }
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it("the local Web Speech fallback's own event is local_-prefixed, never colliding with a cloud_ event name", () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const synth: SpeakReplyDeps["synth"] = {
+        speak: () => {},
+        cancel: () => {},
+        resume: () => {},
+        getVoices: () => [],
+      };
+      const createUtterance: SpeakReplyDeps["createUtterance"] = () => ({
+        lang: "", voice: null, onstart: null, onend: null, onerror: null,
+      });
+
+      speakReply("Bună ziua.", "ro-RO", { synth, createUtterance }, { onStart: () => {}, onEnd: () => {}, onError: () => {} });
+
+      const events = logSpy.mock.calls.map((call) => (JSON.parse(call[0] as string) as { event: string }).event);
+      expect(events).toContain("local_speak_requested");
+      expect(events.some((event) => event.startsWith("cloud_"))).toBe(false);
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 });

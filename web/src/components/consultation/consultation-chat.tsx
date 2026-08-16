@@ -13,7 +13,7 @@ import type {
 import { conversationSupportedLanguages, getLanguageDefinition, isCloudTtsLanguageCode, toCloudTtsLanguageCode, type LanguageCode } from "@/lib/language-registry";
 import { useUiLanguage } from "@/lib/ui-language-context";
 
-import { synthesizeCloudVoiceReply } from "./consultation-chat-cloud-tts-logic";
+import { logVoiceReplyClientEvent, synthesizeCloudVoiceReply } from "./consultation-chat-cloud-tts-logic";
 import {
   buildChatLanguageFields,
   describeSendFailure,
@@ -351,7 +351,18 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     );
     setConversationLanguage(nextConversationLanguage);
 
-    if (!isCloudTtsLanguageCode(language)) {
+    // Unconditional -- fires on EVERY Voice Reply attempt, before either
+    // branch below runs. Diagnostic value: if this line is ever missing
+    // from a live retest's console (filtered by tag VOICE_REPLY_CLIENT),
+    // that is definitive proof the browser is running a bundle that
+    // predates this file's current state entirely (a stale/failed
+    // deployment), not a live bug in the branch logic itself -- settles
+    // the question a prior retest could not, since only the OLDER local-
+    // only logging (now "local_speak_requested") had appeared.
+    const cloudSupported = isCloudTtsLanguageCode(language);
+    logVoiceReplyClientEvent("speak_message_branch_decision", { language, cloudSupported });
+
+    if (!cloudSupported) {
       speakMessageLocally(message, language, false);
       return;
     }

@@ -157,6 +157,15 @@ export const VOICE_REPLY_FAILURE_MESSAGE = "Voice reply failed. The text reply a
 // bug -- never the reply text itself, only locale/voice names, matching
 // this codebase's existing logClient (teach-ai-panel-logic.ts) convention.
 // Kept until multilingual voice selection has been retested live.
+//
+// Shares the "VOICE_REPLY_CLIENT" tag with consultation-chat-cloud-tts-
+// logic.ts's own logging (both are diagnostics for the same Voice Reply
+// feature, one console filter finds either) -- but this event is
+// explicitly "local_"-prefixed so the SOURCE is unambiguous. A prior
+// naming collision here (this file's event was just "speak_requested",
+// indistinguishable at a glance from the cloud file's own events) briefly
+// made a live retest's console output look like cloud TTS had never even
+// logged anything, when the real issue was a stale deployed bundle.
 const VOICE_REPLY_CLIENT_LOG_TAG = "VOICE_REPLY_CLIENT";
 
 function logVoiceReplyClient(event: string, details: Record<string, unknown> = {}): void {
@@ -192,7 +201,7 @@ export function speakReply(text: string, locale: SpeechLocale, deps: SpeakReplyD
     callbacks.onVoiceUnavailable?.(locale);
   }
 
-  logVoiceReplyClient("speak_requested", {
+  logVoiceReplyClient("local_speak_requested", {
     requestedLanguage: locale,
     utteranceLang: utterance.lang,
     selectedVoiceName: voice?.name ?? null,
