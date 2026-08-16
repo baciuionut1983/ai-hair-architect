@@ -20,6 +20,7 @@ import {
   extractMemoryDecisionIds,
   formatMessageTime,
   isSendableMessage,
+  isVoiceInputBusy,
   LANGUAGE_SELECTION_STORAGE_KEY,
   parseStoredLanguageSelection,
   resolveConsultationHistoryLoadStatus,
@@ -680,7 +681,13 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
           type="button"
           variant="secondary"
           onClick={toggleChatRecording}
-          disabled={sending}
+          // Explicit, independently-tested guard (see isVoiceInputBusy's own
+          // doc comment) against starting a second, overlapping recording
+          // while the first one's transcript is still being generated or
+          // its message is still being sent -- previously an implicit
+          // side-effect of passing loading={chatProcessing} to a component
+          // that happens to disable itself when loading.
+          disabled={isVoiceInputBusy(sending, chatProcessing)}
           loading={chatProcessing}
           aria-label={chatRecording ? "Stop voice input" : "Voice input"}
         >

@@ -65,6 +65,25 @@ export function isSendableMessage(value: string): boolean {
   return value.trim().length > 0;
 }
 
+// Audit finding (Speak to AI end-to-end trace): the ONLY thing preventing
+// a stylist from starting a second, overlapping voice recording while the
+// first one's transcript is still being generated (chatProcessing, ~8s in
+// production) or its resulting message is still being sent to the AI
+// (sending, ~15s in production) was the Mic button's `loading` prop
+// implicitly disabling it via Button's own `disabled={disabled || loading}`
+// -- correct today, but an easy-to-lose invariant buried inside a UI
+// component rather than an explicit, independently-testable contract. A
+// second overlapping recording during that ~23s window would let two
+// finishRecording calls race, each unconditionally toggling shared
+// recording/processing state -- not itself catastrophic (sendMessage's own
+// `sending` guard still stops a duplicate SEND), but confusing UI state and
+// a real risk if either guard is ever refactored independently.  Naming
+// and testing this explicitly turns "happens to work because of how two
+// separate props interact" into a real, provable guarantee.
+export function isVoiceInputBusy(sending: boolean, chatProcessing: boolean): boolean {
+  return sending || chatProcessing;
+}
+
 // Regression: reopening Consult AI (or reloading the page) showed active
 // Confirm/Edit/Reject buttons again on proposedMemory cards the stylist had
 // already decided on -- the decision lived only in transient React state,

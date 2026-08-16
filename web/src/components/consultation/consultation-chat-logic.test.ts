@@ -5,6 +5,7 @@ import {
   describeSendFailure,
   extractMemoryDecisionIds,
   isSendableMessage,
+  isVoiceInputBusy,
   parseStoredLanguageSelection,
   resolveConsultationHistoryLoadStatus,
   resolveSttLanguageHint
@@ -28,6 +29,29 @@ describe("isSendableMessage", () => {
 
   it("accepts real text, ignoring surrounding whitespace", () => {
     expect(isSendableMessage("  Her density is low  ")).toBe(true);
+  });
+});
+
+// Speak to AI end-to-end audit: this is the explicit, testable version of
+// the guard that stops a stylist from starting a second, overlapping voice
+// recording while the first one's transcript is still being generated
+// (STT in flight, real production latency ~8s) or its message is still
+// being sent to the AI (chat in flight, real production latency ~15s).
+describe("isVoiceInputBusy", () => {
+  it("is busy while the STT transcription itself is still in flight", () => {
+    expect(isVoiceInputBusy(false, true)).toBe(true);
+  });
+
+  it("is busy while the chat message is still being sent", () => {
+    expect(isVoiceInputBusy(true, false)).toBe(true);
+  });
+
+  it("is busy if somehow both overlap", () => {
+    expect(isVoiceInputBusy(true, true)).toBe(true);
+  });
+
+  it("is free only when neither STT nor chat is in flight", () => {
+    expect(isVoiceInputBusy(false, false)).toBe(false);
   });
 });
 
