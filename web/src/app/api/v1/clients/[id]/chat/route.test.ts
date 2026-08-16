@@ -153,6 +153,17 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     );
   });
 
+  it("forwards a forced languagePreference for languages well beyond the original seven -- Japanese, Korean, Hindi, Russian", async () => {
+    for (const code of ["ja", "ko", "hi", "ru"]) {
+      const response = await invoke("client-1", { message: "hi", languagePreference: code });
+      expect(response.status).toBe(200);
+      expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
+        "owner-1", CLIENT, "hi", undefined, {},
+        { forced: code, fallback: "en" },
+      );
+    }
+  });
+
   it("ignores a garbage/unsupported languagePreference or conversationLanguage value instead of forwarding it", async () => {
     await invoke("client-1", { message: "hi", languagePreference: "auto", conversationLanguage: "xx" });
 
@@ -162,11 +173,13 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     );
   });
 
-  // "pt" is a real language-registry entry (see language-registry.ts) but
-  // not yet conversation-supported -- it must be rejected here exactly
-  // like a nonsense string, not accepted just because it's a known code.
+  // "fa" (Persian) is a real language-registry entry (see
+  // language-registry.ts) but not yet conversation-supported (not
+  // confirmed on Gemini's documented language list) -- it must be
+  // rejected here exactly like a nonsense string, not accepted just
+  // because it's a known code.
   it("ignores a registry language that is not yet conversation-supported", async () => {
-    await invoke("client-1", { message: "hi", languagePreference: "pt" });
+    await invoke("client-1", { message: "hi", languagePreference: "fa" });
 
     expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
       "owner-1", CLIENT, "hi", undefined, {},

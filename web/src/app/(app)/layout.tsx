@@ -188,6 +188,8 @@ function AuthenticatedShell({
               onChange={onUiLanguageChange}
               label={t("language.label")}
               className="w-40"
+              searchPlaceholder={t("language.search")}
+              noMatchesLabel={t("language.noMatches")}
             />
           }
         />

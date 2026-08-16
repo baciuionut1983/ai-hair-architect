@@ -96,7 +96,7 @@ describe("describeSendFailure", () => {
 
 describe("parseStoredLanguageSelection", () => {
   it("accepts any conversation-supported registry language, not just en/ro", () => {
-    for (const code of ["en", "ro", "ar", "it", "fr", "de", "es"]) {
+    for (const code of ["en", "ro", "ar", "it", "fr", "de", "es", "ja", "ko", "hi", "ru", "sw"]) {
       expect(parseStoredLanguageSelection(code)).toBe(code);
     }
   });
@@ -104,10 +104,11 @@ describe("parseStoredLanguageSelection", () => {
   it("defaults to auto for null, garbage, a registry-but-not-conversation-supported code, or an explicit 'auto' value", () => {
     expect(parseStoredLanguageSelection(null)).toBe("auto");
     expect(parseStoredLanguageSelection("xx")).toBe("auto");
-    // "pt" is a real registry entry (see language-registry.ts) but not yet
-    // conversation-supported -- the selector must not offer it as if it
-    // were usable.
-    expect(parseStoredLanguageSelection("pt")).toBe("auto");
+    // "fa" (Persian) is a real registry entry (see language-registry.ts)
+    // but not yet conversation-supported (not confirmed on Gemini's
+    // documented language list) -- the selector must not offer it as if
+    // it were usable.
+    expect(parseStoredLanguageSelection("fa")).toBe("auto");
     expect(parseStoredLanguageSelection("auto")).toBe("auto");
     expect(parseStoredLanguageSelection("")).toBe("auto");
   });

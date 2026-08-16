@@ -27,6 +27,9 @@ export type { ErrorStateProps } from "./error-state";
 export { getInputClasses, Input } from "./input";
 export type { InputProps } from "./input";
 
+export { LanguageCombobox } from "./language-combobox";
+export type { LanguageComboboxProps } from "./language-combobox";
+
 export { LanguageSelector } from "./language-selector";
 export type { LanguageSelectorProps } from "./language-selector";
 

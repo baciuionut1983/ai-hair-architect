@@ -4,7 +4,7 @@ import { MessageCircle, Mic, Send, Sparkles, Square, Volume2, VolumeX } from "lu
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
-import { Alert, Badge, Button, Card, LoadingState, Select, Textarea } from "@/components/ui";
+import { Alert, Badge, Button, Card, LanguageCombobox, LoadingState, Textarea } from "@/components/ui";
 import type {
   ConsultationChatRequest,
   ConsultationChatResponse,
@@ -477,18 +477,15 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="w-44">
-            <Select
-              aria-label="Language"
+            <LanguageCombobox
+              languages={conversationSupportedLanguages()}
               value={languageSelection}
-              onChange={(event) => handleLanguageSelectionChange(event.target.value as LanguageSelection)}
-            >
-              <option value="auto">Language: Auto</option>
-              {conversationSupportedLanguages().map((entry) => (
-                <option key={entry.code} value={entry.code}>
-                  Language: {entry.label}
-                </option>
-              ))}
-            </Select>
+              onChange={(next) => handleLanguageSelectionChange(next as LanguageSelection)}
+              ariaLabel={t("language.label")}
+              searchPlaceholder={t("language.search")}
+              noMatchesLabel={t("language.noMatches")}
+              leadingOption={{ value: "auto", display: t("language.auto") }}
+            />
           </div>
           {speechSupported ? (
             <>
@@ -561,6 +558,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
       <form onSubmit={handleSubmit} className="flex items-end gap-2">
         <div className="flex-1">
           <Textarea
+            dir="auto"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             placeholder={t("consultAi.typeMessage")}
@@ -632,7 +630,8 @@ function ChatBubble({
   return (
     <div className={`flex flex-col gap-1 ${isStylist ? "items-end" : "items-start"}`}>
       <div
-        className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${
+        dir="auto"
+        className={`max-w-[85%] break-words rounded-2xl px-3 py-2 text-sm ${
           isStylist ? "bg-accent text-background" : "bg-surface-alt text-foreground"
         }`}
       >
@@ -679,13 +678,16 @@ function ChatBubble({
 
           {memoryEditing ? (
             <Textarea
+              dir="auto"
               className="mt-2"
               rows={2}
               value={memoryDraft ?? message.proposedMemory.content}
               onChange={(event) => onDraftMemoryChange(event.target.value)}
             />
           ) : (
-            <p className="mt-2 text-sm text-foreground">{memoryDraft ?? message.proposedMemory.content}</p>
+            <p dir="auto" className="mt-2 text-sm text-foreground">
+              {memoryDraft ?? message.proposedMemory.content}
+            </p>
           )}
           <p className="mt-1 text-xs text-muted">{message.proposedMemory.reason}</p>
 

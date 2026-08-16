@@ -266,21 +266,37 @@ describe("POST /api/v1/clients/[id]/voice-transcript", () => {
     expect(promptText).not.toContain("most likely speaking");
   });
 
-  // "pt" is a real language-registry entry (see language-registry.ts) but
-  // not yet conversation-supported -- it must fall back to the unhinted
-  // prompt exactly like a nonsense string, not be accepted as a hint just
-  // because it's a known registry code.
-  it("ignores a registry language that is not yet conversation-supported", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(geminiTranscriptResponse("Ola."));
+  // "fa" (Persian) is a real language-registry entry (see
+  // language-registry.ts) but not yet STT-supported (not confirmed on
+  // Gemini's documented language list) -- it must fall back to the
+  // unhinted prompt exactly like a nonsense string, not be accepted as a
+  // hint just because it's a known registry code.
+  it("ignores a registry language that is not yet STT-supported", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(geminiTranscriptResponse("Salaam."));
     vi.stubGlobal("fetch", fetchMock);
     const form = audioForm();
-    form.append("language", "pt");
+    form.append("language", "fa");
 
     await invoke(form);
 
     const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
     const promptText = requestBody.contents[0].parts[0].text as string;
     expect(promptText).not.toContain("most likely speaking");
+  });
+
+  it("appends a language hint for languages well beyond the original two -- Japanese, Korean, Hindi, Russian", async () => {
+    for (const [code, label] of [["ja", "Japanese"], ["ko", "Korean"], ["hi", "Hindi"], ["ru", "Russian"]] as const) {
+      const fetchMock = vi.fn().mockResolvedValue(geminiTranscriptResponse("transcript"));
+      vi.stubGlobal("fetch", fetchMock);
+      const form = audioForm();
+      form.append("language", code);
+
+      await invoke(form);
+
+      const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+      const promptText = requestBody.contents[0].parts[0].text as string;
+      expect(promptText).toContain(`most likely speaking ${label}`);
+    }
   });
 
   // Same fail-closed convention as every other repository in this app --

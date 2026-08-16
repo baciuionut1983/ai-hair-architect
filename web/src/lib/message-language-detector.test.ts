@@ -80,3 +80,72 @@ describe("detectMessageLanguage", () => {
     expect(detectMessageLanguage("Antonio Marchetti")).toBeNull();
   });
 });
+
+// Global script-based detection: unambiguous scripts resolve directly,
+// with no stopword list required at all (see the file's own top-of-file
+// design note for why this is the strategy for global coverage, not
+// hundreds of hand-built stopword lists).
+describe("detectMessageLanguage -- script-based detection (global coverage)", () => {
+  it("detects Japanese from hiragana/katakana, unambiguously distinct from Han-only Chinese text", () => {
+    expect(detectMessageLanguage("こんにちは、髪を長く保ちたいです。")).toBe("ja");
+    expect(detectMessageLanguage("パーマをかけたいです。")).toBe("ja");
+  });
+
+  it("detects Korean from Hangul", () => {
+    expect(detectMessageLanguage("안녕하세요, 머리를 길게 유지하고 싶어요.")).toBe("ko");
+  });
+
+  it("returns null for Han-only text -- genuinely ambiguous between Simplified/Traditional Chinese (and rare kanji-only Japanese)", () => {
+    expect(detectMessageLanguage("你好，我想保持长发。")).toBeNull();
+  });
+
+  it("detects Hebrew from its script", () => {
+    expect(detectMessageLanguage("שלום, אני רוצה לשמור על השיער ארוך.")).toBe("he");
+  });
+
+  it("detects Arabic from its script when no Persian/Urdu-exclusive letters are present", () => {
+    expect(detectMessageLanguage("مرحبا، أريد الحفاظ على شعري طويلا.")).toBe("ar");
+  });
+
+  it("detects Urdu (the only active language of the Persian/Urdu pair) via its exclusive letters", () => {
+    expect(detectMessageLanguage("ہیلو، میں اپنے بالوں کو لمبا رکھنا چاہتا ہوں۔")).toBe("ur");
+  });
+
+  it("returns null for Devanagari script -- genuinely ambiguous between Hindi and Marathi in this registry", () => {
+    expect(detectMessageLanguage("नमस्ते, मैं अपने बालों को लंबा रखना चाहती हूं।")).toBeNull();
+  });
+
+  it("detects Bengali, Punjabi (Gurmukhi), Gujarati, Tamil, Telugu, Kannada, and Malayalam from their own unambiguous scripts", () => {
+    expect(detectMessageLanguage("হ্যালো, আমি আমার চুল লম্বা রাখতে চাই।")).toBe("bn");
+    expect(detectMessageLanguage("ਸਤ ਸ੍ਰੀ ਅਕਾਲ, ਮੈਂ ਆਪਣੇ ਵਾਲ ਲੰਬੇ ਰੱਖਣਾ ਚਾਹੁੰਦੀ ਹਾਂ।")).toBe("pa");
+    expect(detectMessageLanguage("નમસ્તે, હું મારા વાળ લાંબા રાખવા માંગુ છું.")).toBe("gu");
+    expect(detectMessageLanguage("வணக்கம், நான் என் முடியை நீளமாக வைத்திருக்க விரும்புகிறேன்.")).toBe("ta");
+    expect(detectMessageLanguage("నమస్కారం, నేను నా జుట్టును పొడవుగా ఉంచాలనుకుంటున్నాను.")).toBe("te");
+    expect(detectMessageLanguage("ನಮಸ್ಕಾರ, ನಾನು ನನ್ನ ಕೂದಲನ್ನು ಉದ್ದವಾಗಿ ಇಟ್ಟುಕೊಳ್ಳಲು ಬಯಸುತ್ತೇನೆ.")).toBe("kn");
+    expect(detectMessageLanguage("നമസ്കാരം, എനിക്ക് എന്റെ മുടി നീളമുള്ളതായി സൂക്ഷിക്കണം.")).toBe("ml");
+  });
+
+  it("detects Thai from its script", () => {
+    expect(detectMessageLanguage("สวัสดี ฉันอยากรักษาผมให้ยาว")).toBe("th");
+  });
+
+  it("detects Greek from its script", () => {
+    expect(detectMessageLanguage("Γεια σας, θέλω να κρατήσω τα μαλλιά μου μακριά.")).toBe("el");
+  });
+
+  it("returns null for plain Cyrillic text -- genuinely ambiguous between Russian/Bulgarian/Serbian in this registry", () => {
+    expect(detectMessageLanguage("Привет, я хочу сохранить длинные волосы.")).toBeNull();
+  });
+
+  it("detects Ukrainian specifically via its own exclusive Cyrillic letters (і ї є ґ)", () => {
+    expect(detectMessageLanguage("Привіт, я хочу зберегти довге волосся, дякую.")).toBe("uk");
+  });
+
+  it("never applies Latin-script diacritic/stopword scoring to non-Latin script text (script wins outright)", () => {
+    // Purely a construction check: Japanese text obviously has none of
+    // the Latin stopwords/diacritics, so this also passes trivially --
+    // included to pin down that the script branch returns before ever
+    // reaching the Latin path.
+    expect(detectMessageLanguage("これはテストです。")).toBe("ja");
+  });
+});

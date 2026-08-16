@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   conversationSupportedLanguages,
+  filterLanguages,
   getLanguageDefinition,
   getTextDirection,
+  isConversationLanguageCode,
   isLanguageCode,
   isRtlLanguageCode,
+  isSttLanguageCode,
   LANGUAGE_CODES,
   LANGUAGE_REGISTRY,
   parseLanguageCode,
@@ -14,22 +17,26 @@ import {
   uiSupportedLanguages,
 } from "./language-registry";
 
+// The eighteen languages with a real (full or beta) UI translation --
+// see translations.ts's own coverage note. Not the limit of the
+// registry (see below) -- just the current UI-translated set.
+const UI_TRANSLATED_CODES = ["en", "ro", "ar", "it", "fr", "de", "es", "pt", "nl", "pl", "tr", "el", "he", "ja", "ko", "zh-Hans", "zh-Hant", "hi"];
+
+// Explicitly required by the task: real conversation/STT support must
+// exist for these, based on Gemini's own documented language list (see
+// the registry's own provider-capability-audit comment) -- not just the
+// original seven.
+const REQUIRED_CONVERSATION_CODES = [
+  "ro", "en", "ar", "he", "it", "fr", "de", "es", "pt", "nl", "pl", "tr", "el", "hi", "ja", "ko", "zh-Hans", "zh-Hant",
+];
+
 describe("LANGUAGE_REGISTRY", () => {
   it("is a data array, not a hardcoded closed set -- registry length is what defines LANGUAGE_CODES, nothing pins it to a fixed count", () => {
     expect(LANGUAGE_CODES.length).toBe(LANGUAGE_REGISTRY.length);
-    expect(LANGUAGE_CODES.length).toBeGreaterThan(10);
   });
 
-  it("includes the seven initially active languages", () => {
-    for (const code of ["en", "ro", "ar", "it", "fr", "de", "es"]) {
-      expect(LANGUAGE_CODES).toContain(code);
-    }
-  });
-
-  it("includes a broad set of prepared-but-not-yet-activated world languages, demonstrating the registry is not limited to the initial seven", () => {
-    for (const code of ["pt", "nl", "pl", "tr", "el", "he", "ja", "ko", "zh-Hans", "zh-Hant", "hi"]) {
-      expect(LANGUAGE_CODES).toContain(code);
-    }
+  it("is genuinely global -- covers far more than the original eighteen UI-translated languages", () => {
+    expect(LANGUAGE_CODES.length).toBeGreaterThan(40);
   });
 
   it("every entry declares itself under its own code", () => {
@@ -38,19 +45,44 @@ describe("LANGUAGE_REGISTRY", () => {
     }
   });
 
-  it("the seven active languages are conversation/STT/TTS supported; prepared languages are honestly not", () => {
-    for (const code of ["en", "ro", "ar", "it", "fr", "de", "es"]) {
+  it("every explicitly required language is conversation/STT supported, with a real TTS architecture mapping", () => {
+    for (const code of REQUIRED_CONVERSATION_CODES) {
       const entry = requireLanguageDefinition(code);
       expect(entry.conversationSupported).toBe(true);
       expect(entry.sttSupported).toBe(true);
       expect(entry.ttsSupported).toBe(true);
+      expect(entry.speechLocale.length).toBeGreaterThan(0);
     }
-    for (const code of ["pt", "nl", "pl", "tr", "el", "he", "ja", "ko", "zh-Hans", "zh-Hant", "hi"]) {
+  });
+
+  it("conversationSupported and sttSupported are tracked together for THIS provider, but as independent fields (not derived from each other)", () => {
+    // Every conversation-supported entry also happens to be STT-supported
+    // today (same Gemini provider backs both) -- but the two fields are
+    // still separate booleans on the type, not one flag reused twice, so
+    // a future provider mismatch (e.g. text-only support without audio)
+    // would only require a data change, not a schema change.
+    for (const entry of LANGUAGE_REGISTRY) {
+      if (entry.conversationSupported) {
+        expect(entry.sttSupported).toBe(true);
+      }
+    }
+  });
+
+  it("a language can be conversation-supported with no UI translation at all (independent dimensions)", () => {
+    const russian = requireLanguageDefinition("ru");
+    expect(russian.conversationSupported).toBe(true);
+    expect(russian.uiSupportLevel).toBe("none");
+  });
+
+  it("does not overclaim support for languages not confirmed on the provider's documented list", () => {
+    for (const code of ["fa", "pa", "ms", "fil"]) {
       const entry = requireLanguageDefinition(code);
       expect(entry.conversationSupported).toBe(false);
       expect(entry.sttSupported).toBe(false);
-      expect(entry.ttsSupported).toBe(false);
-      expect(entry.uiSupportLevel).toBe("none");
+      // TTS architecture (a BCP-47 tag the Web Speech API can be asked to
+      // attempt) is still honestly true -- that dimension doesn't depend
+      // on Gemini at all.
+      expect(entry.ttsSupported).toBe(true);
     }
   });
 
@@ -59,21 +91,22 @@ describe("LANGUAGE_REGISTRY", () => {
     expect(full.sort()).toEqual(["en", "ro"]);
   });
 
-  it("Arabic/Italian/French/German/Spanish are marked beta -- real conversation support, partial UI", () => {
-    for (const code of ["ar", "it", "fr", "de", "es"]) {
+  it("every UI-translated language beyond en/ro is marked beta, never full", () => {
+    for (const code of UI_TRANSLATED_CODES) {
+      if (code === "en" || code === "ro") continue;
       const entry = requireLanguageDefinition(code);
       expect(entry.uiSupportLevel).toBe("beta");
-      expect(entry.conversationSupported).toBe(true);
     }
   });
 });
 
 describe("isRtlLanguageCode / getTextDirection (generic RTL, not hardcoded to Arabic)", () => {
-  it("recognizes multiple RTL languages, including ones not yet activated for anything else (e.g. Hebrew)", () => {
-    expect(isRtlLanguageCode("ar")).toBe(true);
-    expect(isRtlLanguageCode("he")).toBe(true);
-    expect(getTextDirection("ar")).toBe("rtl");
-    expect(getTextDirection("he")).toBe("rtl");
+  it("recognizes multiple RTL languages actually present in the registry: Arabic, Hebrew, Urdu, Persian", () => {
+    for (const code of ["ar", "he", "ur", "fa"]) {
+      expect(isRtlLanguageCode(code)).toBe(true);
+      expect(getTextDirection(code)).toBe("rtl");
+      expect(requireLanguageDefinition(code).direction).toBe("rtl");
+    }
   });
 
   it("every registry entry's own stored direction matches the generic RTL detector", () => {
@@ -82,10 +115,11 @@ describe("isRtlLanguageCode / getTextDirection (generic RTL, not hardcoded to Ar
     }
   });
 
-  it("is ltr for non-RTL languages", () => {
-    expect(isRtlLanguageCode("en")).toBe(false);
-    expect(isRtlLanguageCode("ro")).toBe(false);
-    expect(getTextDirection("fr")).toBe("ltr");
+  it("is ltr for non-RTL languages, including newly added ones", () => {
+    for (const code of ["en", "ro", "ja", "ko", "hi", "ru", "zh-Hans"]) {
+      expect(isRtlLanguageCode(code)).toBe(false);
+      expect(getTextDirection(code)).toBe("ltr");
+    }
   });
 
   it("matches on the primary subtag even for a compound/regional code", () => {
@@ -117,9 +151,28 @@ describe("isLanguageCode / getLanguageDefinition / requireLanguageDefinition", (
   });
 });
 
+describe("isConversationLanguageCode / isSttLanguageCode (independent gates)", () => {
+  it("both true for the required conversation-supported set", () => {
+    for (const code of REQUIRED_CONVERSATION_CODES) {
+      expect(isConversationLanguageCode(code)).toBe(true);
+      expect(isSttLanguageCode(code)).toBe(true);
+    }
+  });
+
+  it("both false for a registry-only, not-yet-confirmed language", () => {
+    expect(isConversationLanguageCode("fa")).toBe(false);
+    expect(isSttLanguageCode("fa")).toBe(false);
+  });
+
+  it("both false for a totally unknown code", () => {
+    expect(isConversationLanguageCode("xx")).toBe(false);
+    expect(isSttLanguageCode("xx")).toBe(false);
+  });
+});
+
 describe("parseLanguageCode", () => {
-  it("passes through any real registry code, including newer ones -- never narrows a valid non-en/ro code back to en", () => {
-    for (const code of ["ar", "fr", "de", "es", "it"]) {
+  it("passes through any real registry code, including newly added ones -- never narrows a valid non-en/ro code back to en", () => {
+    for (const code of ["ar", "fr", "de", "es", "it", "ja", "ko", "hi", "ru", "sw"]) {
       expect(parseLanguageCode(code)).toBe(code);
     }
   });
@@ -138,6 +191,8 @@ describe("resolveLanguageCodeFromBrowserTag", () => {
     expect(resolveLanguageCodeFromBrowserTag("fr-CA")).toBe("fr");
     expect(resolveLanguageCodeFromBrowserTag("AR-eg")).toBe("ar");
     expect(resolveLanguageCodeFromBrowserTag("de")).toBe("de");
+    expect(resolveLanguageCodeFromBrowserTag("ja-JP")).toBe("ja");
+    expect(resolveLanguageCodeFromBrowserTag("sw-KE")).toBe("sw");
   });
 
   it("matches a compound registry code (script variant) case-insensitively", () => {
@@ -146,25 +201,55 @@ describe("resolveLanguageCodeFromBrowserTag", () => {
     expect(resolveLanguageCodeFromBrowserTag("zh-Hant-TW")).toBe("zh-Hant");
   });
 
-  it("falls back to en for an unsupported or missing browser tag", () => {
-    expect(resolveLanguageCodeFromBrowserTag("sw-KE")).toBe("en");
+  it("falls back to en for a genuinely unrecognized or missing browser tag", () => {
+    expect(resolveLanguageCodeFromBrowserTag("xx-YY")).toBe("en");
     expect(resolveLanguageCodeFromBrowserTag(null)).toBe("en");
     expect(resolveLanguageCodeFromBrowserTag(undefined)).toBe("en");
   });
 });
 
 describe("uiSupportedLanguages / conversationSupportedLanguages", () => {
-  it("uiSupportedLanguages includes both full and beta UI languages, excludes 'none'", () => {
-    const codes = uiSupportedLanguages().map((entry) => entry.code);
-    expect(codes).toContain("en");
-    expect(codes).toContain("ro");
-    expect(codes).toContain("ar");
-    expect(codes).not.toContain("pt");
-    expect(codes).not.toContain("ja");
+  it("uiSupportedLanguages includes exactly the eighteen UI-translated languages, excludes 'none'", () => {
+    const codes = uiSupportedLanguages().map((entry) => entry.code).sort();
+    expect(codes).toEqual([...UI_TRANSLATED_CODES].sort());
   });
 
-  it("conversationSupportedLanguages includes exactly the seven active languages", () => {
-    const codes = conversationSupportedLanguages().map((entry) => entry.code).sort();
-    expect(codes).toEqual(["ar", "de", "en", "es", "fr", "it", "ro"]);
+  it("conversationSupportedLanguages includes far more than just the UI-translated set", () => {
+    const codes = conversationSupportedLanguages().map((entry) => entry.code);
+    expect(codes.length).toBeGreaterThan(UI_TRANSLATED_CODES.length);
+    // Russian has no UI translation at all, but IS a real conversation
+    // language -- proof the two lists are genuinely independent.
+    expect(codes).toContain("ru");
+  });
+});
+
+describe("filterLanguages (the searchable selector's filter logic)", () => {
+  it("returns everything for an empty query", () => {
+    expect(filterLanguages(LANGUAGE_REGISTRY, "")).toHaveLength(LANGUAGE_REGISTRY.length);
+    expect(filterLanguages(LANGUAGE_REGISTRY, "   ")).toHaveLength(LANGUAGE_REGISTRY.length);
+  });
+
+  it("matches by native name, case-insensitively", () => {
+    const results = filterLanguages(LANGUAGE_REGISTRY, "français");
+    expect(results.map((entry) => entry.code)).toContain("fr");
+  });
+
+  it("matches by English label", () => {
+    const results = filterLanguages(LANGUAGE_REGISTRY, "japanese");
+    expect(results.map((entry) => entry.code)).toContain("ja");
+  });
+
+  it("matches by code", () => {
+    const results = filterLanguages(LANGUAGE_REGISTRY, "zh-hant");
+    expect(results.map((entry) => entry.code)).toEqual(["zh-Hant"]);
+  });
+
+  it("finds a non-Latin native name by its own script", () => {
+    const results = filterLanguages(LANGUAGE_REGISTRY, "한국어");
+    expect(results.map((entry) => entry.code)).toEqual(["ko"]);
+  });
+
+  it("returns an empty array for a query matching nothing", () => {
+    expect(filterLanguages(LANGUAGE_REGISTRY, "zzzzz-not-a-language")).toHaveLength(0);
   });
 });
