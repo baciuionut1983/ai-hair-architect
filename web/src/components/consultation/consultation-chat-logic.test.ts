@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   buildChatLanguageFields,
+  callOnce,
   describeSendFailure,
   extractMemoryDecisionIds,
   isSendableMessage,
@@ -52,6 +53,51 @@ describe("isVoiceInputBusy", () => {
 
   it("is free only when neither STT nor chat is in flight", () => {
     expect(isVoiceInputBusy(false, false)).toBe(false);
+  });
+});
+
+// Cloud Voice Reply playback audit: a live retest showed two different
+// fallback error messages for a single cloud audio playback failure --
+// traced to <audio>'s own "error" event and its play() promise rejection
+// both being legitimate signals for the same underlying failure, each
+// independently triggering the local-fallback side effect. callOnce is
+// the generic, reusable fix: whichever of the two signals fires first
+// wins, any further ones are no-ops.
+describe("callOnce", () => {
+  it("runs the wrapped function on the first call", () => {
+    const fn = vi.fn();
+    const guarded = callOnce(fn);
+
+    guarded();
+
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("never runs the wrapped function a second time, no matter how many further calls happen", () => {
+    const fn = vi.fn();
+    const guarded = callOnce(fn);
+
+    guarded();
+    guarded();
+    guarded();
+
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  // The exact production shape: two independent call sites (an "error"
+  // handler and a "rejected promise" handler) both holding the SAME
+  // guarded reference, either of which might fire first.
+  it("stays guarded even when called from two different independent call sites for the same underlying event", () => {
+    const fn = vi.fn();
+    const guarded = callOnce(fn);
+
+    const onMediaError = () => guarded();
+    const onPlayRejected = () => guarded();
+
+    onMediaError();
+    onPlayRejected();
+
+    expect(fn).toHaveBeenCalledTimes(1);
   });
 });
 

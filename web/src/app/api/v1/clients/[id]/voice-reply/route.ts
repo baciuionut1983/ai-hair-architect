@@ -170,13 +170,22 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   const sampleRateHz = parseSampleRateFromMimeType(result.mimeType);
-  const wav = wrapPcmAsWav(Buffer.from(result.audioBase64, "base64"), sampleRateHz);
+  const pcm = Buffer.from(result.audioBase64, "base64");
+  const wav = wrapPcmAsWav(pcm, sampleRateHz);
 
+  // providerMimeType/sampleRateHz/pcmBytes are logged explicitly (not
+  // just the final wav.length) so a live retest can directly confirm
+  // what Gemini actually returned -- e.g. that it really is the assumed
+  // 16-bit/mono/24kHz raw PCM this route wraps as WAV -- rather than
+  // that assumption only ever being verified against documentation.
   logVoiceReply("SUCCEEDED", "complete", {
     model,
     language,
     languageCode,
     textLength: text.length,
+    providerMimeType: result.mimeType,
+    sampleRateHz,
+    pcmBytes: pcm.length,
     audioBytes: wav.length,
   });
 

@@ -84,6 +84,29 @@ export function isVoiceInputBusy(sending: boolean, chatProcessing: boolean): boo
   return sending || chatProcessing;
 }
 
+// Audit finding (cloud Voice Reply playback trace): a live retest showed
+// TWO different fallback messages after a successful cloud TTS response
+// ("Voice reply failed..." then "cloud voice service unavailable...
+// reading with browser's default voice instead") -- traced to the local
+// Web Speech fallback being triggered TWICE for a single cloud playback
+// failure, because the <audio> element's own `error` event and its
+// play() promise rejection are both legitimate, independent signals for
+// the very same underlying failure in most browsers. The second
+// fallback call's synth.cancel() interrupted the first call's
+// already-queued utterance, which then fired its own onerror as
+// "canceled" -- two real, but misleading, error messages from one root
+// cause. This is a small, generic, reusable guarantee (not specific to
+// audio, or to any one language) that a given side effect runs AT MOST
+// ONCE, no matter how many of its possible triggers actually fire.
+export function callOnce(fn: () => void): () => void {
+  let called = false;
+  return () => {
+    if (called) return;
+    called = true;
+    fn();
+  };
+}
+
 // Regression: reopening Consult AI (or reloading the page) showed active
 // Confirm/Edit/Reject buttons again on proposedMemory cards the stylist had
 // already decided on -- the decision lived only in transient React state,

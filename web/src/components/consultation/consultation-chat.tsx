@@ -16,6 +16,7 @@ import { useUiLanguage } from "@/lib/ui-language-context";
 import { logVoiceReplyClientEvent, synthesizeCloudVoiceReply } from "./consultation-chat-cloud-tts-logic";
 import {
   buildChatLanguageFields,
+  callOnce,
   describeSendFailure,
   extractMemoryDecisionIds,
   formatMessageTime,
@@ -388,22 +389,60 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
       {
         onSuccess: (audioBlob) => {
           setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
+          logVoiceReplyClientEvent("cloud_audio_element_created", { audioBytes: audioBlob.size, blobType: audioBlob.type });
           const audio = new Audio(URL.createObjectURL(audioBlob));
           cloudAudioRef.current = audio;
-          audio.onplay = () => setSpeakingMessageId(message.id);
+
+          // Regression: audio.onerror (a genuine media decode/load
+          // failure) and audio.play()'s own rejected promise are BOTH
+          // legitimate signals for the very same underlying failure in
+          // most browsers -- see callOnce's own doc comment
+          // (consultation-chat-logic.ts) for the exact live symptom this
+          // caused. callOnce guarantees the fallback fires exactly once
+          // per attempt, regardless of which signal (or both) actually
+          // fires -- generic for any language, not specific to this one
+          // failure.
+          const triggerLocalFallback = callOnce(() => {
+            setSpeakingMessageId((current) => (current === message.id ? null : current));
+            stopCloudAudio();
+            speakMessageLocally(message, language, true);
+          });
+
+          // Playback-stage diagnostics (requirement: audio received ->
+          // blob created -> decoder/load -> play requested -> playing ->
+          // ended / playback error) -- safe fields only (byte counts,
+          // durations, native error codes), never the conversation text.
+          // audio.error.code is a native MediaError code (1=ABORTED,
+          // 2=NETWORK, 3=DECODE, 4=SRC_NOT_SUPPORTED) -- exactly the
+          // detail needed to tell a malformed/unsupported audio format
+          // apart from an autoplay-policy rejection or a network hiccup,
+          // which nothing before this logged at all.
+          audio.onloadedmetadata = () => logVoiceReplyClientEvent("cloud_loadedmetadata", { durationSeconds: audio.duration });
+          audio.oncanplay = () => logVoiceReplyClientEvent("cloud_canplay");
+          audio.onplay = () => {
+            logVoiceReplyClientEvent("cloud_playing");
+            setSpeakingMessageId(message.id);
+          };
           audio.onended = () => {
+            logVoiceReplyClientEvent("cloud_ended");
             setSpeakingMessageId((current) => (current === message.id ? null : current));
             stopCloudAudio();
           };
           audio.onerror = () => {
-            setSpeakingMessageId((current) => (current === message.id ? null : current));
-            stopCloudAudio();
-            speakMessageLocally(message, language, true);
+            logVoiceReplyClientEvent("cloud_playback_error", {
+              mediaErrorCode: audio.error?.code ?? null,
+              mediaErrorMessage: audio.error?.message ?? null,
+            });
+            triggerLocalFallback();
           };
-          void audio.play().catch(() => {
-            setSpeakingMessageId((current) => (current === message.id ? null : current));
-            stopCloudAudio();
-            speakMessageLocally(message, language, true);
+
+          logVoiceReplyClientEvent("cloud_play_requested");
+          void audio.play().catch((error: unknown) => {
+            logVoiceReplyClientEvent("cloud_play_rejected", {
+              errorName: error instanceof Error ? error.name : "unknown",
+              errorMessage: error instanceof Error ? error.message : String(error),
+            });
+            triggerLocalFallback();
           });
         },
         onFailure: () => {

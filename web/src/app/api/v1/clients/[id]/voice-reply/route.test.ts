@@ -292,4 +292,23 @@ describe("production diagnostics logging", () => {
     expect(completeLine).toMatchObject({ gate: "VOICE_REPLY", status: "SUCCEEDED", stage: "complete", language: "en" });
     expect(JSON.stringify(loggedLines)).not.toContain("private consultation reply text");
   });
+
+  // Playback investigation: the ONLY way to confirm what Gemini actually
+  // returned (vs what this route assumes -- 16-bit/mono/24kHz raw PCM,
+  // wrapped as WAV) is to log the provider's own mimeType and the raw
+  // PCM byte count alongside the final wrapped size, not just the final
+  // wav.length -- otherwise a format mismatch is unverifiable from logs
+  // alone.
+  it("logs the provider's own mimeType, sample rate, and raw PCM byte count -- not just the final wrapped WAV size", async () => {
+    await invoke({ text: "hello", language: "en" });
+
+    const loggedLines = logSpy.mock.calls.map((call) => JSON.parse(call[0] as string));
+    const completeLine = loggedLines.find((line) => line.stage === "complete");
+    expect(completeLine).toMatchObject({
+      providerMimeType: SAMPLE_AUDIO.mimeType,
+      sampleRateHz: 24000,
+      pcmBytes: 4,
+      audioBytes: 48,
+    });
+  });
 });
