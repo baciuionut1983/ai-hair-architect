@@ -10,9 +10,10 @@ import type {
   ConsultationChatResponse,
   ConsultationMessageRecord
 } from "@/lib/contracts";
-import { conversationSupportedLanguages, getLanguageDefinition, type LanguageCode } from "@/lib/language-registry";
+import { conversationSupportedLanguages, getLanguageDefinition, isCloudTtsLanguageCode, toCloudTtsLanguageCode, type LanguageCode } from "@/lib/language-registry";
 import { useUiLanguage } from "@/lib/ui-language-context";
 
+import { synthesizeCloudVoiceReply } from "./consultation-chat-cloud-tts-logic";
 import {
   buildChatLanguageFields,
   describeSendFailure,
@@ -86,15 +87,30 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   const [rejectingMemoryId, setRejectingMemoryId] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   // AI Voice Reply (optional, OFF by default): reads the AI's own text
-  // reply aloud via the browser's native speech synthesis -- never a
-  // second, separately-generated response (speakReply only ever reads
-  // `content`, the exact text already rendered below). speechSupported
-  // starts false and is only set after mount (never read during SSR) to
-  // avoid a hydration mismatch; a browser without the Web Speech API just
-  // never shows the toggle, degrading honestly to text-only.
-  const [speechSupported, setSpeechSupported] = useState(false);
+  // reply aloud, cloud TTS first, the browser's native speech synthesis as
+  // fallback (see speakMessage below) -- never a second, separately-
+  // generated response (both paths only ever read `content`, the exact
+  // text already rendered below).
+  //
+  // Whether the Voice Reply toggle itself should even be shown. Cloud TTS
+  // (the primary provider now) only needs the standard HTML5 Audio API,
+  // NOT window.speechSynthesis -- gating the whole feature on Web Speech
+  // support (as it was before cloud TTS existed) would wrongly hide Voice
+  // Reply on a device with no Web Speech API installed that can still
+  // perfectly well play the cloud-generated audio. Starts false and is
+  // only set after mount (never read during SSR) to avoid a hydration
+  // mismatch; a browser with neither capability just never shows the
+  // toggle, degrading honestly to text-only.
+  const [voiceReplyAvailable, setVoiceReplyAvailable] = useState(false);
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
+  // Cloud TTS is now the PRIMARY Voice Reply path (see
+  // consultation-chat-cloud-tts-logic.ts); this tracks the "Generating
+  // voice..." window between requesting audio and it actually starting to
+  // play -- distinct from speakingMessageId (which covers BOTH cloud
+  // playback and the local Web Speech fallback, since only one of the two
+  // is ever active for a given message).
+  const [voiceGeneratingMessageId, setVoiceGeneratingMessageId] = useState<string | null>(null);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   // Distinct from voiceError (an actual playback failure): set when the
   // device simply has no installed voice for the requested language --
@@ -120,6 +136,12 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   // never a forced value.
   const [conversationLanguage, setConversationLanguage] = useState<LanguageCode | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
+  // The single cloud-TTS <audio> element in flight, if any -- created lazily
+  // per reply (see speakMessage below), never more than one at a time
+  // (stopCloudAudio always tears down the previous one first, matching
+  // "un nou reply trebuie să oprească audio-ul anterior" for cloud audio
+  // exactly the way deps.synth.cancel() already does for Web Speech).
+  const cloudAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const sttLanguageHint = resolveSttLanguageHint(languageSelection, conversationLanguage);
   const {
@@ -142,15 +164,19 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   });
 
   useEffect(() => {
-    // Unavoidable: whether the Web Speech API exists is only knowable
+    // Unavoidable: which voice capabilities exist is only knowable
     // client-side, and must be synced into state after mount (starting at
     // false, matching what SSR renders) to avoid a hydration mismatch --
     // the same pattern already used elsewhere in this codebase (see
     // milestone2-analysis-panel.tsx) for the same class of browser-only
-    // capability check.
+    // capability check. Available if EITHER the standard Audio element
+    // (cloud TTS playback) or window.speechSynthesis (local fallback)
+    // exists -- in practice virtually always the Audio element.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSpeechSupported(isSpeechSynthesisSupported(typeof window === "undefined" ? undefined : window));
-    // Same hydration-safe reasoning as speechSupported above -- the stored
+    setVoiceReplyAvailable(
+      typeof window !== "undefined" && (typeof window.Audio !== "undefined" || isSpeechSynthesisSupported(window)),
+    );
+    // Same hydration-safe reasoning as voiceReplyAvailable above -- the stored
     // selection is only knowable client-side.
     if (typeof window !== "undefined") {
       setLanguageSelection(parseStoredLanguageSelection(window.localStorage.getItem(LANGUAGE_SELECTION_STORAGE_KEY)));
@@ -172,8 +198,26 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
       if (typeof window !== "undefined" && window.speechSynthesis) {
         stopSpeaking(window.speechSynthesis as unknown as SpeechSynthesisLike);
       }
+      stopCloudAudio();
     };
   }, []);
+
+  // Tears down whatever cloud-TTS audio is currently playing/loading, if
+  // any -- releases its object URL (never leaked) and detaches handlers
+  // first so a stop/unmount/new-reply can never race with a still-in-
+  // flight onended/onerror callback touching state after the fact.
+  function stopCloudAudio() {
+    const audio = cloudAudioRef.current;
+    if (!audio) return;
+    audio.pause();
+    audio.onplay = null;
+    audio.onended = null;
+    audio.onerror = null;
+    if (audio.src.startsWith("blob:")) {
+      URL.revokeObjectURL(audio.src);
+    }
+    cloudAudioRef.current = null;
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -222,10 +266,6 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     }
 
     const optimistic: ConsultationMessageRecord = {
-      // Pre-existing, unrelated to Voice Reply: safe here because this
-      // runs only inside a user-triggered event handler, never during
-      // render -- the "purity" rule can't distinguish the two.
-      // eslint-disable-next-line react-hooks/purity
       id: `pending-${Date.now()}`,
       role: "stylist",
       content: outgoing,
@@ -275,11 +315,23 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   // never a second, separately-generated response. Never touches
   // proposedMemory/Confirm/Edit/Reject in any way: Voice Reply is purely
   // an optional way to hear this same content, not a new data flow.
+  //
+  // Provider order (requirement 4): cloud TTS first, local Web Speech as
+  // fallback, text-only (already always true -- the reply text is on
+  // screen regardless) as the last resort. Cloud failing for ANY reason
+  // (network, rate-limited, unsupported language, provider error) falls
+  // through to the exact same local path this component already had --
+  // that path's own onVoiceUnavailable honesty guarantee is unchanged.
   function speakMessage(message: ConsultationMessageRecord) {
-    if (typeof window === "undefined" || !window.speechSynthesis) return;
-
+    stopCloudAudio();
+    if (typeof window !== "undefined" && window.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    setVoiceGeneratingMessageId(null);
+    setSpeakingMessageId(null);
     setVoiceError(null);
     setVoiceUnavailableNotice(null);
+
     // A concrete selector value always wins outright. Otherwise, prefer
     // message.replyLanguage -- the backend's own single canonical language
     // decision for this exact reply (see consultation-chat-service.ts,
@@ -297,6 +349,54 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
       conversationLanguage,
     );
     setConversationLanguage(nextConversationLanguage);
+
+    if (!isCloudTtsLanguageCode(language)) {
+      speakMessageLocally(message, language);
+      return;
+    }
+
+    setVoiceGeneratingMessageId(message.id);
+    void synthesizeCloudVoiceReply(
+      clientId,
+      message.content,
+      toCloudTtsLanguageCode(language) as LanguageCode,
+      { fetch },
+      {
+        onSuccess: (audioBlob) => {
+          setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
+          const audio = new Audio(URL.createObjectURL(audioBlob));
+          cloudAudioRef.current = audio;
+          audio.onplay = () => setSpeakingMessageId(message.id);
+          audio.onended = () => {
+            setSpeakingMessageId((current) => (current === message.id ? null : current));
+            stopCloudAudio();
+          };
+          audio.onerror = () => {
+            setSpeakingMessageId((current) => (current === message.id ? null : current));
+            stopCloudAudio();
+            speakMessageLocally(message, language);
+          };
+          void audio.play().catch(() => {
+            setSpeakingMessageId((current) => (current === message.id ? null : current));
+            stopCloudAudio();
+            speakMessageLocally(message, language);
+          });
+        },
+        onFailure: () => {
+          setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
+          speakMessageLocally(message, language);
+        },
+      },
+    );
+  }
+
+  // The local Web Speech fallback -- unchanged from before cloud TTS
+  // existed, still the same honest "No {label} voice is installed..."
+  // guarantee, now reached only when cloud TTS is unsupported/unavailable
+  // for this reply rather than being the primary path.
+  function speakMessageLocally(message: ConsultationMessageRecord, language: LanguageCode) {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+
     speakReply(
       message.content,
       languageToSpeechLocale(language),
@@ -328,6 +428,8 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     if (typeof window !== "undefined" && window.speechSynthesis) {
       stopSpeaking(window.speechSynthesis as unknown as SpeechSynthesisLike);
     }
+    stopCloudAudio();
+    setVoiceGeneratingMessageId(null);
     setSpeakingMessageId(null);
   }
 
@@ -464,9 +566,11 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
       ? t("consultAi.processing")
       : sending
         ? t("consultAi.aiResponding")
-        : speakingMessageId
-          ? t("consultAi.speaking")
-          : null;
+        : voiceGeneratingMessageId
+          ? t("consultAi.generatingVoice")
+          : speakingMessageId
+            ? t("consultAi.speaking")
+            : null;
 
   return (
     <Card className="flex flex-col gap-4">
@@ -487,9 +591,9 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
               leadingOption={{ value: "auto", display: t("language.auto") }}
             />
           </div>
-          {speechSupported ? (
+          {voiceReplyAvailable ? (
             <>
-              {speakingMessageId ? (
+              {voiceGeneratingMessageId || speakingMessageId ? (
                 <Button type="button" variant="ghost" onClick={handleStopSpeaking}>
                   <VolumeX className="h-4 w-4" aria-hidden="true" />
                   {t("consultAi.stop")}

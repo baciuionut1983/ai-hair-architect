@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  cloudTtsSupportedLanguages,
   conversationSupportedLanguages,
   filterLanguages,
   getLanguageDefinition,
   getTextDirection,
+  isCloudTtsLanguageCode,
   isConversationLanguageCode,
   isLanguageCode,
   isRtlLanguageCode,
@@ -14,6 +16,7 @@ import {
   parseLanguageCode,
   requireLanguageDefinition,
   resolveLanguageCodeFromBrowserTag,
+  toCloudTtsLanguageCode,
   uiSupportedLanguages,
 } from "./language-registry";
 
@@ -251,5 +254,49 @@ describe("filterLanguages (the searchable selector's filter logic)", () => {
 
   it("returns an empty array for a query matching nothing", () => {
     expect(filterLanguages(LANGUAGE_REGISTRY, "zzzzz-not-a-language")).toHaveLength(0);
+  });
+});
+
+// Cloud TTS (Gemini native speech generation) -- audited separately from
+// conversationSupported/sttSupported, against Gemini's own documented TTS
+// language table fetched live during this audit (not assumed from the
+// text-model list). Every one of this registry's 49 languages, including
+// the 4 not confirmed for conversation/STT (fa, pa, ms, fil), appeared on
+// that table -- confirmed here as a data assertion, not a guess.
+describe("cloudTtsSupported / isCloudTtsLanguageCode / cloudTtsSupportedLanguages", () => {
+  it("every single registry language is cloud-TTS-supported today, per the live provider audit", () => {
+    for (const entry of LANGUAGE_REGISTRY) {
+      expect(entry.cloudTtsSupported).toBe(true);
+      expect(isCloudTtsLanguageCode(entry.code)).toBe(true);
+    }
+  });
+
+  it("is a genuinely independent dimension from conversationSupported -- true even where conversation/STT are false", () => {
+    for (const code of ["fa", "pa", "ms", "fil"]) {
+      const entry = requireLanguageDefinition(code);
+      expect(entry.conversationSupported).toBe(false);
+      expect(entry.cloudTtsSupported).toBe(true);
+    }
+  });
+
+  it("is false for a totally unknown code", () => {
+    expect(isCloudTtsLanguageCode("xx")).toBe(false);
+  });
+
+  it("cloudTtsSupportedLanguages includes the entire registry today", () => {
+    expect(cloudTtsSupportedLanguages()).toHaveLength(LANGUAGE_REGISTRY.length);
+  });
+});
+
+describe("toCloudTtsLanguageCode", () => {
+  it("passes through an ordinary registry code unchanged", () => {
+    expect(toCloudTtsLanguageCode("ro")).toBe("ro");
+    expect(toCloudTtsLanguageCode("ar")).toBe("ar");
+    expect(toCloudTtsLanguageCode("ja")).toBe("ja");
+  });
+
+  it("maps both Chinese script variants to the one real ISO 639-1 spoken-language code", () => {
+    expect(toCloudTtsLanguageCode("zh-Hans")).toBe("zh");
+    expect(toCloudTtsLanguageCode("zh-Hant")).toBe("zh");
   });
 });

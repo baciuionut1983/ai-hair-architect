@@ -23,6 +23,7 @@ const ALL_KEYS: Array<Parameters<typeof translate>[1]> = [
   "consultAi.processing",
   "consultAi.aiResponding",
   "consultAi.speaking",
+  "consultAi.generatingVoice",
   "common.on",
   "common.off",
 ];

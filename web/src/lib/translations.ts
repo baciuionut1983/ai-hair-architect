@@ -37,6 +37,7 @@ export type TranslationKey =
   | "consultAi.processing"
   | "consultAi.aiResponding"
   | "consultAi.speaking"
+  | "consultAi.generatingVoice"
   | "common.on"
   | "common.off";
 
@@ -62,6 +63,7 @@ const EN: Dictionary = {
   "consultAi.processing": "Processing...",
   "consultAi.aiResponding": "AI responding...",
   "consultAi.speaking": "Speaking...",
+  "consultAi.generatingVoice": "Generating voice...",
   "common.on": "On",
   "common.off": "Off",
 };
@@ -86,6 +88,7 @@ const RO: Dictionary = {
   "consultAi.processing": "Se procesează...",
   "consultAi.aiResponding": "AI răspunde...",
   "consultAi.speaking": "Vorbește...",
+  "consultAi.generatingVoice": "Se generează vocea...",
   "common.on": "Activ",
   "common.off": "Inactiv",
 };
@@ -110,6 +113,7 @@ const AR: Dictionary = {
   "consultAi.processing": "جارٍ المعالجة...",
   "consultAi.aiResponding": "الذكاء الاصطناعي يرد...",
   "consultAi.speaking": "يتحدث...",
+  "consultAi.generatingVoice": "جارٍ إنشاء الصوت...",
   "common.on": "مفعّل",
   "common.off": "غير مفعّل",
 };
@@ -134,6 +138,7 @@ const IT: Dictionary = {
   "consultAi.processing": "Elaborazione...",
   "consultAi.aiResponding": "L'IA sta rispondendo...",
   "consultAi.speaking": "Sta parlando...",
+  "consultAi.generatingVoice": "Generazione voce...",
   "common.on": "Attivo",
   "common.off": "Disattivo",
 };
@@ -158,6 +163,7 @@ const FR: Dictionary = {
   "consultAi.processing": "Traitement en cours...",
   "consultAi.aiResponding": "L'IA répond...",
   "consultAi.speaking": "En train de parler...",
+  "consultAi.generatingVoice": "Génération de la voix...",
   "common.on": "Activé",
   "common.off": "Désactivé",
 };
@@ -182,6 +188,7 @@ const DE: Dictionary = {
   "consultAi.processing": "Wird verarbeitet...",
   "consultAi.aiResponding": "KI antwortet...",
   "consultAi.speaking": "Spricht...",
+  "consultAi.generatingVoice": "Stimme wird generiert...",
   "common.on": "Ein",
   "common.off": "Aus",
 };
@@ -206,6 +213,7 @@ const ES: Dictionary = {
   "consultAi.processing": "Procesando...",
   "consultAi.aiResponding": "La IA está respondiendo...",
   "consultAi.speaking": "Hablando...",
+  "consultAi.generatingVoice": "Generando voz...",
   "common.on": "Activado",
   "common.off": "Desactivado",
 };
@@ -230,6 +238,7 @@ const PT: Dictionary = {
   "consultAi.processing": "A processar...",
   "consultAi.aiResponding": "A IA está a responder...",
   "consultAi.speaking": "A falar...",
+  "consultAi.generatingVoice": "A gerar voz...",
   "common.on": "Ativado",
   "common.off": "Desativado",
 };
@@ -254,6 +263,7 @@ const NL: Dictionary = {
   "consultAi.processing": "Verwerken...",
   "consultAi.aiResponding": "AI antwoordt...",
   "consultAi.speaking": "Spreekt...",
+  "consultAi.generatingVoice": "Stem wordt gegenereerd...",
   "common.on": "Aan",
   "common.off": "Uit",
 };
@@ -278,6 +288,7 @@ const PL: Dictionary = {
   "consultAi.processing": "Przetwarzanie...",
   "consultAi.aiResponding": "AI odpowiada...",
   "consultAi.speaking": "Mówi...",
+  "consultAi.generatingVoice": "Generowanie głosu...",
   "common.on": "Włączone",
   "common.off": "Wyłączone",
 };
@@ -302,6 +313,7 @@ const TR: Dictionary = {
   "consultAi.processing": "İşleniyor...",
   "consultAi.aiResponding": "Yapay zeka yanıt veriyor...",
   "consultAi.speaking": "Konuşuyor...",
+  "consultAi.generatingVoice": "Ses oluşturuluyor...",
   "common.on": "Açık",
   "common.off": "Kapalı",
 };
@@ -326,6 +338,7 @@ const EL: Dictionary = {
   "consultAi.processing": "Επεξεργασία...",
   "consultAi.aiResponding": "Η IA απαντά...",
   "consultAi.speaking": "Μιλάει...",
+  "consultAi.generatingVoice": "Δημιουργία φωνής...",
   "common.on": "Ενεργό",
   "common.off": "Ανενεργό",
 };
@@ -350,6 +363,7 @@ const HE: Dictionary = {
   "consultAi.processing": "מעבד...",
   "consultAi.aiResponding": "הבינה המלאכותית משיבה...",
   "consultAi.speaking": "מדבר...",
+  "consultAi.generatingVoice": "מייצר קול...",
   "common.on": "פעיל",
   "common.off": "כבוי",
 };
@@ -374,6 +388,7 @@ const JA: Dictionary = {
   "consultAi.processing": "処理中...",
   "consultAi.aiResponding": "AIが応答しています...",
   "consultAi.speaking": "話しています...",
+  "consultAi.generatingVoice": "音声を生成中...",
   "common.on": "オン",
   "common.off": "オフ",
 };
@@ -398,6 +413,7 @@ const KO: Dictionary = {
   "consultAi.processing": "처리 중...",
   "consultAi.aiResponding": "AI가 응답 중...",
   "consultAi.speaking": "말하는 중...",
+  "consultAi.generatingVoice": "음성 생성 중...",
   "common.on": "켜짐",
   "common.off": "꺼짐",
 };
@@ -422,6 +438,7 @@ const ZH_HANS: Dictionary = {
   "consultAi.processing": "正在处理...",
   "consultAi.aiResponding": "AI 正在回复...",
   "consultAi.speaking": "正在说话...",
+  "consultAi.generatingVoice": "正在生成语音...",
   "common.on": "开启",
   "common.off": "关闭",
 };
@@ -446,6 +463,7 @@ const ZH_HANT: Dictionary = {
   "consultAi.processing": "處理中...",
   "consultAi.aiResponding": "AI 正在回覆...",
   "consultAi.speaking": "正在說話...",
+  "consultAi.generatingVoice": "正在產生語音...",
   "common.on": "開啟",
   "common.off": "關閉",
 };
@@ -470,6 +488,7 @@ const HI: Dictionary = {
   "consultAi.processing": "प्रोसेस हो रहा है...",
   "consultAi.aiResponding": "AI जवाब दे रहा है...",
   "consultAi.speaking": "बोल रहा है...",
+  "consultAi.generatingVoice": "आवाज़ बनाई जा रही है...",
   "common.on": "चालू",
   "common.off": "बंद",
 };

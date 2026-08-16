@@ -12,7 +12,7 @@
 // isLanguageCode/parseLanguageCode -- the registry is the actual source
 // of truth, not the type system.
 //
-// This is NOT closed at ~18 entries either. Four capability dimensions
+// This is NOT closed at ~18 entries either. Five capability dimensions
 // are tracked INDEPENDENTLY per language, and are expected to evolve
 // independently as this product's providers' real capabilities do:
 //   - uiSupportLevel: does the app SHELL/menus have real translated text?
@@ -22,13 +22,24 @@
 //   - sttSupported: can this app's voice-transcript route (which calls
 //     the SAME Gemini generateContent endpoint, just with inline audio
 //     instead of only text) transcribe this language?
+//   - cloudTtsSupported: can this app's voice-reply route (Gemini's
+//     native TTS, via generateContent + responseModalities:[AUDIO]) speak
+//     this language? Audited separately from conversationSupported/
+//     sttSupported -- confirmed against Gemini's own documented TTS
+//     language table, not assumed from the text-model list. A language
+//     can be cloudTtsSupported=true while conversationSupported=false
+//     (e.g. Persian, Punjabi, Malay, Filipino: not on the text-generation
+//     documented list, but present on the TTS one) -- these are real,
+//     independently-audited provider capabilities, never inferred from
+//     each other.
 //   - ttsSupported: is there a real BCP-47 speechLocale this app can ask
-//     the BROWSER's Web Speech API to attempt? This is an ARCHITECTURE
-//     claim only -- it does NOT mean a voice is actually installed on any
-//     given device. Runtime voice availability is a separate, per-device
-//     fact determined by speechSynthesis.getVoices() at the moment of
-//     speaking (see consultation-chat-tts-logic.ts's selectVoiceForLocale
-//     / speakReply's onVoiceUnavailable) -- never claimed here.
+//     the BROWSER's Web Speech API to attempt, as the LOCAL FALLBACK when
+//     cloud TTS is unavailable/fails? This is an ARCHITECTURE claim only
+//     -- it does NOT mean a voice is actually installed on any given
+//     device. Runtime voice availability is a separate, per-device fact
+//     determined by speechSynthesis.getVoices() at the moment of speaking
+//     (see consultation-chat-tts-logic.ts's selectVoiceForLocale /
+//     speakReply's onVoiceUnavailable) -- never claimed here.
 // A language can be conversationSupported=true with uiSupportLevel="none"
 // (Consult AI can fully talk to a stylist in Turkish today even though
 // the app's own menus aren't translated into Turkish yet) -- these are
@@ -79,6 +90,9 @@ export interface LanguageDefinition {
   uiSupportLevel: UiSupportLevel;
   conversationSupported: boolean;
   sttSupported: boolean;
+  // Real, audited provider capability -- see the type-level doc comment
+  // above. Distinct from ttsSupported (the local/browser fallback claim).
+  cloudTtsSupported: boolean;
   // Architecture-level only -- see the type-level doc comment above.
   ttsSupported: boolean;
 }
@@ -134,93 +148,93 @@ export const LANGUAGE_REGISTRY: LanguageDefinition[] = [
   define({
     code: "en", locale: "en-US", label: "English", nativeName: "English",
     speechLocale: "en-US", uiSupportLevel: "full",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "ro", locale: "ro-RO", label: "Romanian", nativeName: "Română",
     speechLocale: "ro-RO", uiSupportLevel: "full",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   // -- Beta UI (shell + Consult AI chrome) + full conversation/STT/TTS --
   define({
     code: "ar", locale: "ar-SA", label: "Arabic", nativeName: "العربية",
     speechLocale: "ar-SA", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "it", locale: "it-IT", label: "Italian", nativeName: "Italiano",
     speechLocale: "it-IT", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "fr", locale: "fr-FR", label: "French", nativeName: "Français",
     speechLocale: "fr-FR", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "de", locale: "de-DE", label: "German", nativeName: "Deutsch",
     speechLocale: "de-DE", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "es", locale: "es-ES", label: "Spanish", nativeName: "Español",
     speechLocale: "es-ES", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "pt", locale: "pt-PT", label: "Portuguese", nativeName: "Português",
     speechLocale: "pt-PT", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "nl", locale: "nl-NL", label: "Dutch", nativeName: "Nederlands",
     speechLocale: "nl-NL", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "pl", locale: "pl-PL", label: "Polish", nativeName: "Polski",
     speechLocale: "pl-PL", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "tr", locale: "tr-TR", label: "Turkish", nativeName: "Türkçe",
     speechLocale: "tr-TR", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "el", locale: "el-GR", label: "Greek", nativeName: "Ελληνικά",
     speechLocale: "el-GR", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "he", locale: "he-IL", label: "Hebrew", nativeName: "עברית",
     speechLocale: "he-IL", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "ja", locale: "ja-JP", label: "Japanese", nativeName: "日本語",
     speechLocale: "ja-JP", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "ko", locale: "ko-KR", label: "Korean", nativeName: "한국어",
     speechLocale: "ko-KR", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "zh-Hans", locale: "zh-Hans-CN", label: "Chinese (Simplified)", nativeName: "简体中文",
     speechLocale: "zh-CN", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "zh-Hant", locale: "zh-Hant-TW", label: "Chinese (Traditional)", nativeName: "繁體中文",
     speechLocale: "zh-TW", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
   define({
     code: "hi", locale: "hi-IN", label: "Hindi", nativeName: "हिन्दी",
     speechLocale: "hi-IN", uiSupportLevel: "beta",
-    conversationSupported: true, sttSupported: true, ttsSupported: true,
+    conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true,
   }),
 
   // -- No UI dictionary yet, but real conversation/STT/TTS (Gemini
@@ -230,57 +244,57 @@ export const LANGUAGE_REGISTRY: LanguageDefinition[] = [
   // change only. --
 
   // Slavic
-  define({ code: "ru", locale: "ru-RU", label: "Russian", nativeName: "Русский", speechLocale: "ru-RU", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "uk", locale: "uk-UA", label: "Ukrainian", nativeName: "Українська", speechLocale: "uk-UA", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "cs", locale: "cs-CZ", label: "Czech", nativeName: "Čeština", speechLocale: "cs-CZ", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "sk", locale: "sk-SK", label: "Slovak", nativeName: "Slovenčina", speechLocale: "sk-SK", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "bg", locale: "bg-BG", label: "Bulgarian", nativeName: "Български", speechLocale: "bg-BG", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "sr", locale: "sr-RS", label: "Serbian", nativeName: "Српски", speechLocale: "sr-RS", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "hr", locale: "hr-HR", label: "Croatian", nativeName: "Hrvatski", speechLocale: "hr-HR", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "sl", locale: "sl-SI", label: "Slovenian", nativeName: "Slovenščina", speechLocale: "sl-SI", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
+  define({ code: "ru", locale: "ru-RU", label: "Russian", nativeName: "Русский", speechLocale: "ru-RU", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "uk", locale: "uk-UA", label: "Ukrainian", nativeName: "Українська", speechLocale: "uk-UA", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "cs", locale: "cs-CZ", label: "Czech", nativeName: "Čeština", speechLocale: "cs-CZ", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "sk", locale: "sk-SK", label: "Slovak", nativeName: "Slovenčina", speechLocale: "sk-SK", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "bg", locale: "bg-BG", label: "Bulgarian", nativeName: "Български", speechLocale: "bg-BG", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "sr", locale: "sr-RS", label: "Serbian", nativeName: "Српски", speechLocale: "sr-RS", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "hr", locale: "hr-HR", label: "Croatian", nativeName: "Hrvatski", speechLocale: "hr-HR", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "sl", locale: "sl-SI", label: "Slovenian", nativeName: "Slovenščina", speechLocale: "sl-SI", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
 
   // Baltic
-  define({ code: "lv", locale: "lv-LV", label: "Latvian", nativeName: "Latviešu", speechLocale: "lv-LV", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "lt", locale: "lt-LT", label: "Lithuanian", nativeName: "Lietuvių", speechLocale: "lt-LT", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
+  define({ code: "lv", locale: "lv-LV", label: "Latvian", nativeName: "Latviešu", speechLocale: "lv-LV", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "lt", locale: "lt-LT", label: "Lithuanian", nativeName: "Lietuvių", speechLocale: "lt-LT", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
 
   // Nordic
-  define({ code: "sv", locale: "sv-SE", label: "Swedish", nativeName: "Svenska", speechLocale: "sv-SE", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "nb", locale: "nb-NO", label: "Norwegian", nativeName: "Norsk bokmål", speechLocale: "nb-NO", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "da", locale: "da-DK", label: "Danish", nativeName: "Dansk", speechLocale: "da-DK", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "fi", locale: "fi-FI", label: "Finnish", nativeName: "Suomi", speechLocale: "fi-FI", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
+  define({ code: "sv", locale: "sv-SE", label: "Swedish", nativeName: "Svenska", speechLocale: "sv-SE", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "nb", locale: "nb-NO", label: "Norwegian", nativeName: "Norsk bokmål", speechLocale: "nb-NO", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "da", locale: "da-DK", label: "Danish", nativeName: "Dansk", speechLocale: "da-DK", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "fi", locale: "fi-FI", label: "Finnish", nativeName: "Suomi", speechLocale: "fi-FI", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
 
   // Other European
-  define({ code: "hu", locale: "hu-HU", label: "Hungarian", nativeName: "Magyar", speechLocale: "hu-HU", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
+  define({ code: "hu", locale: "hu-HU", label: "Hungarian", nativeName: "Magyar", speechLocale: "hu-HU", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
 
   // Arabic-script family beyond Arabic itself
-  define({ code: "ur", locale: "ur-PK", label: "Urdu", nativeName: "اردو", speechLocale: "ur-PK", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
+  define({ code: "ur", locale: "ur-PK", label: "Urdu", nativeName: "اردو", speechLocale: "ur-PK", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
   // Persian: NOT on Gemini's documented supported-language list at the
   // time of this audit -- registry-only (metadata correct, RTL correct)
   // until that changes; never claimed as conversation/STT-capable
   // without real provider confirmation.
-  define({ code: "fa", locale: "fa-IR", label: "Persian", nativeName: "فارسی", speechLocale: "fa-IR", uiSupportLevel: "none", conversationSupported: false, sttSupported: false, ttsSupported: true }),
+  define({ code: "fa", locale: "fa-IR", label: "Persian", nativeName: "فارسی", speechLocale: "fa-IR", uiSupportLevel: "none", conversationSupported: false, sttSupported: false, cloudTtsSupported: true, ttsSupported: true }),
 
   // South Asian
-  define({ code: "bn", locale: "bn-BD", label: "Bengali", nativeName: "বাংলা", speechLocale: "bn-BD", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "ta", locale: "ta-IN", label: "Tamil", nativeName: "தமிழ்", speechLocale: "ta-IN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "te", locale: "te-IN", label: "Telugu", nativeName: "తెలుగు", speechLocale: "te-IN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "mr", locale: "mr-IN", label: "Marathi", nativeName: "मराठी", speechLocale: "mr-IN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "gu", locale: "gu-IN", label: "Gujarati", nativeName: "ગુજરાતી", speechLocale: "gu-IN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "kn", locale: "kn-IN", label: "Kannada", nativeName: "ಕನ್ನಡ", speechLocale: "kn-IN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "ml", locale: "ml-IN", label: "Malayalam", nativeName: "മലയാളം", speechLocale: "ml-IN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
+  define({ code: "bn", locale: "bn-BD", label: "Bengali", nativeName: "বাংলা", speechLocale: "bn-BD", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "ta", locale: "ta-IN", label: "Tamil", nativeName: "தமிழ்", speechLocale: "ta-IN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "te", locale: "te-IN", label: "Telugu", nativeName: "తెలుగు", speechLocale: "te-IN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "mr", locale: "mr-IN", label: "Marathi", nativeName: "मराठी", speechLocale: "mr-IN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "gu", locale: "gu-IN", label: "Gujarati", nativeName: "ગુજરાતી", speechLocale: "gu-IN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "kn", locale: "kn-IN", label: "Kannada", nativeName: "ಕನ್ನಡ", speechLocale: "kn-IN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "ml", locale: "ml-IN", label: "Malayalam", nativeName: "മലയാളം", speechLocale: "ml-IN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
   // Punjabi: not confirmed on the documented list -- registry-only.
-  define({ code: "pa", locale: "pa-IN", label: "Punjabi", nativeName: "ਪੰਜਾਬੀ", speechLocale: "pa-IN", uiSupportLevel: "none", conversationSupported: false, sttSupported: false, ttsSupported: true }),
+  define({ code: "pa", locale: "pa-IN", label: "Punjabi", nativeName: "ਪੰਜਾਬੀ", speechLocale: "pa-IN", uiSupportLevel: "none", conversationSupported: false, sttSupported: false, cloudTtsSupported: true, ttsSupported: true }),
 
   // Southeast Asian
-  define({ code: "vi", locale: "vi-VN", label: "Vietnamese", nativeName: "Tiếng Việt", speechLocale: "vi-VN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "th", locale: "th-TH", label: "Thai", nativeName: "ไทย", speechLocale: "th-TH", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
-  define({ code: "id", locale: "id-ID", label: "Indonesian", nativeName: "Bahasa Indonesia", speechLocale: "id-ID", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
+  define({ code: "vi", locale: "vi-VN", label: "Vietnamese", nativeName: "Tiếng Việt", speechLocale: "vi-VN", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "th", locale: "th-TH", label: "Thai", nativeName: "ไทย", speechLocale: "th-TH", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "id", locale: "id-ID", label: "Indonesian", nativeName: "Bahasa Indonesia", speechLocale: "id-ID", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
   // Malay/Filipino: not confirmed on the documented list -- registry-only.
-  define({ code: "ms", locale: "ms-MY", label: "Malay", nativeName: "Bahasa Melayu", speechLocale: "ms-MY", uiSupportLevel: "none", conversationSupported: false, sttSupported: false, ttsSupported: true }),
-  define({ code: "fil", locale: "fil-PH", label: "Filipino", nativeName: "Filipino", speechLocale: "fil-PH", uiSupportLevel: "none", conversationSupported: false, sttSupported: false, ttsSupported: true }),
+  define({ code: "ms", locale: "ms-MY", label: "Malay", nativeName: "Bahasa Melayu", speechLocale: "ms-MY", uiSupportLevel: "none", conversationSupported: false, sttSupported: false, cloudTtsSupported: true, ttsSupported: true }),
+  define({ code: "fil", locale: "fil-PH", label: "Filipino", nativeName: "Filipino", speechLocale: "fil-PH", uiSupportLevel: "none", conversationSupported: false, sttSupported: false, cloudTtsSupported: true, ttsSupported: true }),
 
   // African
-  define({ code: "sw", locale: "sw-KE", label: "Swahili", nativeName: "Kiswahili", speechLocale: "sw-KE", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, ttsSupported: true }),
+  define({ code: "sw", locale: "sw-KE", label: "Swahili", nativeName: "Kiswahili", speechLocale: "sw-KE", uiSupportLevel: "none", conversationSupported: true, sttSupported: true, cloudTtsSupported: true, ttsSupported: true }),
 ];
 
 const REGISTRY_BY_CODE: Map<LanguageCode, LanguageDefinition> = new Map(
@@ -314,6 +328,16 @@ export function isConversationLanguageCode(value: string): boolean {
 // future provider ever supports one without the other.
 export function isSttLanguageCode(value: string): boolean {
   return REGISTRY_BY_CODE.get(value)?.sttSupported === true;
+}
+
+// Independent of both of the above (see the type-level doc comment) --
+// the voice-reply route's own gate for whether Gemini's cloud TTS can be
+// asked to speak this language at all. A language can be true here while
+// false for isConversationLanguageCode (Persian, Punjabi, Malay, Filipino
+// are on Gemini's documented TTS language table but not its documented
+// text-generation one) -- never inferred from the other two.
+export function isCloudTtsLanguageCode(value: string): boolean {
+  return REGISTRY_BY_CODE.get(value)?.cloudTtsSupported === true;
 }
 
 export function getLanguageDefinition(code: LanguageCode): LanguageDefinition | undefined {
@@ -372,6 +396,23 @@ export function uiSupportedLanguages(): LanguageDefinition[] {
 
 export function conversationSupportedLanguages(): LanguageDefinition[] {
   return LANGUAGE_REGISTRY.filter((entry) => entry.conversationSupported);
+}
+
+export function cloudTtsSupportedLanguages(): LanguageDefinition[] {
+  return LANGUAGE_REGISTRY.filter((entry) => entry.cloudTtsSupported);
+}
+
+// Gemini's speechConfig.languageCode expects a bare ISO 639-1 tag. Every
+// registry `code` already IS one, with exactly two exceptions: zh-Hans and
+// zh-Hant are two separate registry entries for the same SPOKEN language
+// (Mandarin) distinguished only by which script the on-screen text uses --
+// script has no bearing on pronunciation, so both map to the one real
+// ISO 639-1 tag ("zh") rather than being sent as-is (which Gemini would
+// not recognize as a language code at all). No other registry code needs
+// this translation.
+export function toCloudTtsLanguageCode(code: LanguageCode): string {
+  if (code === "zh-Hans" || code === "zh-Hant") return "zh";
+  return code;
 }
 
 // Case-insensitive substring match against a language's native name,
