@@ -29,6 +29,7 @@ import {
   resolveReplySpeechLocale,
   speakReply,
   stopSpeaking,
+  type LanguagePreference,
   type SpeechLocale,
   type SpeechSynthesisLike,
   type SpeechUtteranceLike
@@ -114,13 +115,23 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
 
   const sttLanguageHint = resolveSttLanguageHint(languageSelection, conversationLocale);
-  const { recording: chatRecording, status: chatVoiceStatus, toggleRecording: toggleChatRecording } = useVoiceRecording({
+  const {
+    recording: chatRecording,
+    processing: chatProcessing,
+    error: chatVoiceError,
+    toggleRecording: toggleChatRecording,
+  } = useVoiceRecording({
     clientId,
     language: sttLanguageHint,
-    // Populates ONLY the normal chat composer's own draft -- this hook has
-    // no knowledge of Teach the AI's state at all, so a chat-composer voice
-    // note can structurally never reach it or trigger a memory proposal.
-    onTranscript: (transcript) => setDraft(transcript),
+    // Natural-conversation flow: speaking and pausing (or a manual Stop)
+    // sends immediately, exactly like a typed Send -- no separate review
+    // step. Still structurally isolated from Teach the AI: this hook has
+    // no knowledge of its draft/transcriptId state at all, so a
+    // chat-composer voice note can never reach it or trigger a memory
+    // proposal.
+    onTranscript: (transcript) => {
+      void sendMessage(transcript.trim());
+    },
   });
 
   useEffect(() => {
@@ -193,13 +204,16 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     scrollAnchorRef.current?.scrollIntoView({ block: "end" });
   }, [messages]);
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    if (!isSendableMessage(draft) || sending) {
+  // Extracted from the form's own submit handler so a chat-composer voice
+  // message (see onTranscript above) can send itself through the EXACT
+  // same pipeline as a typed message -- one send mechanism, not two --
+  // including triggering Voice Reply's TTS on the new assistant reply
+  // identically regardless of the message's origin.
+  async function sendMessage(outgoing: string) {
+    if (!isSendableMessage(outgoing) || sending) {
       return;
     }
 
-    const outgoing = draft.trim();
     const optimistic: ConsultationMessageRecord = {
       // Pre-existing, unrelated to Voice Reply: safe here because this
       // runs only inside a user-triggered event handler, never during
@@ -245,6 +259,11 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     }
   }
 
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    await sendMessage(draft.trim());
+  }
+
   // Reads exactly the reply text already shown in the bubble below --
   // never a second, separately-generated response. Never touches
   // proposedMemory/Confirm/Edit/Reject in any way: Voice Reply is purely
@@ -254,15 +273,23 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
 
     setVoiceError(null);
     setVoiceUnavailableNotice(null);
-    // Regression: a live test showed a Romanian reply pronounced in
-    // English -- resolveReplySpeechLocale applies the same
-    // selector-override-first, then-detection, then-established-locale,
-    // then-safe-default priority chain used for the AI's own reply
-    // language on the backend (see SYSTEM_INSTRUCTION rule 10), so TTS and
-    // the reply text can never disagree about which language is "current."
+    // A concrete selector value always wins outright. Otherwise, prefer
+    // message.replyLanguage -- the backend's own single canonical language
+    // decision for this exact reply (see consultation-chat-service.ts),
+    // computed once there and never re-guessed here. Only when that is
+    // genuinely absent (e.g. an older cached response) does this fall back
+    // to resolveReplySpeechLocale's own text detection -- so this reply
+    // language, the AI's own reply, and the STT hint that led to it are
+    // never three independent detectors that could disagree.
+    const effectivePreference: LanguagePreference =
+      languageSelection !== "auto"
+        ? languageSelectionToSpeechLocale(languageSelection)
+        : message.replyLanguage
+          ? languageSelectionToSpeechLocale(message.replyLanguage)
+          : "auto";
     const { locale, conversationLocale: nextConversationLocale } = resolveReplySpeechLocale(
       message.content,
-      languageSelection === "auto" ? "auto" : languageSelectionToSpeechLocale(languageSelection),
+      effectivePreference,
       conversationLocale,
     );
     setConversationLocale(nextConversationLocale);
@@ -418,6 +445,21 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     }
   }
 
+  // A single combined status line for the whole voice conversation loop,
+  // so the flow reads clearly (Listening... -> Processing... -> AI
+  // responding... -> Speaking...) instead of several separate, silent
+  // state transitions. Priority order matches the real sequence of
+  // events; only one of these is ever true-ish at a time in practice.
+  const voiceFlowStatus = chatRecording
+    ? "Listening..."
+    : chatProcessing
+      ? "Processing..."
+      : sending
+        ? "AI responding..."
+        : speakingMessageId
+          ? "Speaking..."
+          : null;
+
   return (
     <Card className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -502,7 +544,8 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
       {memoryError ? <Alert variant="error">{memoryError}</Alert> : null}
       {voiceError ? <Alert variant="error">{voiceError}</Alert> : null}
       {voiceUnavailableNotice ? <Alert variant="warning">{voiceUnavailableNotice}</Alert> : null}
-      {chatVoiceStatus ? <p className="text-xs text-muted">{chatVoiceStatus}</p> : null}
+      {chatVoiceError ? <Alert variant="error">{chatVoiceError}</Alert> : null}
+      {voiceFlowStatus ? <p className="text-xs text-muted">{voiceFlowStatus}</p> : null}
 
       <form onSubmit={handleSubmit} className="flex items-end gap-2">
         <div className="flex-1">
@@ -525,6 +568,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
           variant="secondary"
           onClick={toggleChatRecording}
           disabled={sending}
+          loading={chatProcessing}
           aria-label={chatRecording ? "Stop voice input" : "Voice input"}
         >
           {chatRecording ? <Square className="h-4 w-4" aria-hidden="true" /> : <Mic className="h-4 w-4" aria-hidden="true" />}

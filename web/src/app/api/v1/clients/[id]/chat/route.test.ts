@@ -246,6 +246,34 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     });
   });
 
+  it("includes replyLanguage in the response when the service computed one", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({
+      outcome: "succeeded",
+      reply: { id: "msg-2", role: "assistant", content: "Bună ziua.", proposedCorrection: null, createdAt: "2026-08-14T10:00:00.000Z" },
+      needsClarification: false,
+      replyLanguage: "ro",
+    });
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    const body = await response.json();
+    expect(body.reply.replyLanguage).toBe("ro");
+  });
+
+  it("omits replyLanguage from the response entirely when the service could not determine one -- absent, not null", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({
+      outcome: "succeeded",
+      reply: { id: "msg-2", role: "assistant", content: "42", proposedCorrection: null, createdAt: "2026-08-14T10:00:00.000Z" },
+      needsClarification: false,
+      replyLanguage: null,
+    });
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    const body = await response.json();
+    expect(body.reply).not.toHaveProperty("replyLanguage");
+  });
+
   it("omits proposedMemory from the response entirely when the reply carries none -- the field is absent, not null or empty", async () => {
     const response = await invoke("client-1", { message: "hi" });
 

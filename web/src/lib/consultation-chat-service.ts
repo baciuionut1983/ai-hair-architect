@@ -11,6 +11,7 @@ import type { ChatProviderError, ConsultationChatContext, ConsultationChatProvid
 import { resolveImageAnalysisProviderConfig } from "@/lib/image-analysis-provider-config";
 import { retrieveRelevantMemories } from "@/lib/professional-memory-repository";
 import { buildClientProfessionalMemory } from "@/lib/consultation-client-context";
+import { detectMessageLanguage } from "@/lib/message-language-detector";
 
 export type ConsultationChatResultCode =
   | "PROCESSING_DISABLED"
@@ -36,7 +37,21 @@ export const CONSULTATION_CHAT_RESULT_HTTP_STATUS: Record<ConsultationChatResult
 };
 
 export type SendConsultationMessageResult =
-  | { outcome: "succeeded"; reply: ConsultationMessageRow; needsClarification: boolean }
+  | {
+      outcome: "succeeded";
+      reply: ConsultationMessageRow;
+      needsClarification: boolean;
+      // The ONE canonical language decision for this exact reply -- forced
+      // selection, else the same detectMessageLanguage the frontend's own
+      // TTS locale mapping wraps (see consultation-chat-tts-logic.ts), else
+      // the soft fallback. Computed here, once, so the AI's reply language
+      // and the voice that reads it aloud can never independently disagree
+      // (previously two separate detectors: Gemini's own prompt-following,
+      // and a second re-detection purely on the frontend). null only when
+      // truly nothing -- forced, fallback, or a detectable signal in the
+      // reply text itself -- was available.
+      replyLanguage: "en" | "ro" | null;
+    }
   | { outcome: "failed"; code: ConsultationChatResultCode };
 
 export interface SendConsultationMessageDependencies {
@@ -243,6 +258,14 @@ export async function sendConsultationMessage(
 
     void stored; // the stylist's own message is already durably persisted above
 
+    // The ONE canonical language decision for this reply: the same
+    // priority chain buildPrompt already told the model to follow
+    // (forced override wins outright; otherwise, detect what language the
+    // reply actually came back in; otherwise fall back to the soft
+    // ambiguous-message hint) -- computed once here, not re-guessed a
+    // second time on the frontend.
+    const replyLanguage = languageHint.forced ?? detectMessageLanguage(result.reply) ?? languageHint.fallback ?? null;
+
     // Safe-fields success log -- never the message/reply content, only
     // whether the provider actually included a proposal in this exact
     // response. Without this, "the reply talks about noting something but
@@ -260,7 +283,7 @@ export async function sendConsultationMessage(
       needsClarification: result.needsClarification,
     });
 
-    return { outcome: "succeeded", reply: replyRow, needsClarification: result.needsClarification };
+    return { outcome: "succeeded", reply: replyRow, needsClarification: result.needsClarification, replyLanguage };
   } catch (error) {
     logConsultationChatFailure({
       stage: "unexpected",

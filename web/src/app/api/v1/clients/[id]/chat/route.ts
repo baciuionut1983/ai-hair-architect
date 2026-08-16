@@ -128,7 +128,8 @@ export async function POST(
         : {}),
       ...(isProposedMemory(result.reply.proposedMemory)
         ? { proposedMemory: result.reply.proposedMemory }
-        : {})
+        : {}),
+      ...(result.replyLanguage ? { replyLanguage: result.replyLanguage } : {})
     },
     needsClarification: result.needsClarification
   };

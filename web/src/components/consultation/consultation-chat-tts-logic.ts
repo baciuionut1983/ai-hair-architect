@@ -12,72 +12,31 @@
 // key/cost/new Railway variable, and it works on both desktop and mobile
 // browsers that implement the standard.
 
+import { detectMessageLanguage, type MessageLanguage } from "@/lib/message-language-detector";
+
 // This app supports exactly two locales today (see src/lib/i18n.ts /
 // contracts.ts's Locale = "en" | "ro") -- detection is scoped to exactly
 // that, not a general-purpose language identifier.
 export type SpeechLocale = "ro-RO" | "en-US";
 
-// Regression: a live test showed a Romanian reply pronounced as English --
-// the original detector only checked diacritics (ăâîșț), so any Romanian
-// text typed/transcribed WITHOUT diacritics (very common) was silently
-// misclassified. Diacritics remain the strongest signal when present;
-// stopword scoring (words that appear even without diacritics, e.g. "nu",
-// "este", "vrea", "parul") is now a second, independent signal. Returns
-// null -- "genuinely ambiguous" -- only when NEITHER language shows any
-// signal at all (e.g. a bare name or a number), so the caller can fall
-// back to a sturdier signal instead of guessing.
-const ROMANIAN_DIACRITICS_PATTERN = /[ăâîșț]/i;
-
-const ROMANIAN_STOPWORDS = new Set([
-  "si", "și", "sa", "să", "nu", "este", "sunt", "pentru", "care", "cu", "la",
-  "de", "in", "în", "mai", "dar", "ce", "cum", "sau", "din", "pe", "un", "o",
-  "acest", "aceasta", "această", "va", "fi", "are", "avea", "trebuie",
-  "poate", "ei", "ea", "el", "lor", "noastre", "vrea", "vreau", "doreste",
-  "dorește", "parul", "părul", "clienta", "clientul", "azi", "acum", "bine",
-  "multumesc", "mulțumesc", "buna", "bună", "ziua", "salut", "te", "rog",
-  "am", "ai", "au", "fost", "cred", "cred că", "atunci", "asta", "aici",
-]);
-
-const ENGLISH_STOPWORDS = new Set([
-  "the", "is", "are", "for", "with", "and", "that", "this", "her", "she",
-  "want", "wants", "would", "like", "please", "hair", "client", "thanks",
-  "have", "has", "will", "can", "should", "keep", "more", "very", "today",
-  "hello", "hi", "yes", "no", "not", "you", "your", "what", "how", "when",
-  "was", "were", "been", "think", "here", "there", "then", "in", "on", "at",
-  "to", "it", "be", "do", "so", "if", "or", "we", "us", "my", "as", "an",
-  "by", "up", "of", "a", "let", "let's", "continue", "actually",
-]);
-
-function wordScore(words: string[], set: Set<string>): number {
-  let score = 0;
-  for (const word of words) {
-    if (set.has(word)) score += 1;
-  }
-  return score;
+export function languageToSpeechLocale(language: MessageLanguage): SpeechLocale {
+  return language === "ro" ? "ro-RO" : "en-US";
 }
 
-// Confident detection of the ACTUAL text's language, independent of any
-// user setting -- diacritics first (unambiguous when present), then a
-// stopword-frequency comparison. Returns null when there's no usable
-// signal at all, rather than guessing.
+export function speechLocaleToLanguage(locale: SpeechLocale): MessageLanguage {
+  return locale === "ro-RO" ? "ro" : "en";
+}
+
+// Thin wrapper over the app's ONE canonical language detector
+// (src/lib/message-language-detector.ts), which the backend also uses
+// (consultation-chat-service.ts, to compute
+// ConsultationMessageRecord.replyLanguage) -- so the AI's reply language
+// and the voice that reads it aloud are never two independent guesses
+// that could disagree; this only ever re-maps the SAME result into a
+// BCP-47 speech locale.
 export function detectSpeechLocale(text: string): SpeechLocale | null {
-  if (ROMANIAN_DIACRITICS_PATTERN.test(text)) {
-    return "ro-RO";
-  }
-
-  const words = text.toLowerCase().match(/[a-zăâîșț]+/gi) ?? [];
-  if (words.length === 0) {
-    return null;
-  }
-
-  const roScore = wordScore(words, ROMANIAN_STOPWORDS);
-  const enScore = wordScore(words, ENGLISH_STOPWORDS);
-
-  if (roScore === 0 && enScore === 0) {
-    return null;
-  }
-
-  return roScore > enScore ? "ro-RO" : "en-US";
+  const language = detectMessageLanguage(text);
+  return language ? languageToSpeechLocale(language) : null;
 }
 
 // The stylist's own choice: "auto" follows the conversation (see
@@ -236,6 +195,10 @@ export function speakReply(text: string, locale: SpeechLocale, deps: SpeakReplyD
     selectedVoiceName: voice?.name ?? null,
     selectedVoiceLang: voice?.lang ?? null,
     voiceCount: voices.length,
+    // Distinct langs only (deduped) -- confirms live, on the actual
+    // device, whether ANY ro-*/en-* voice is even installed at all,
+    // rather than assuming from voiceCount alone.
+    availableVoiceLangs: [...new Set(voices.map((v) => v.lang))],
   });
 
   utterance.onstart = () => callbacks.onStart();

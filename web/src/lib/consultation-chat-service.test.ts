@@ -490,6 +490,56 @@ describe("sendConsultationMessage", () => {
     expect(capturedContext).not.toHaveProperty("fallbackReplyLanguage");
   });
 
+  // replyLanguage is the ONE canonical language decision for a reply,
+  // computed once here and consumed by both the wire response and (via
+  // ConsultationMessageRecord.replyLanguage) the frontend's TTS locale --
+  // never re-detected a second, independent time. Same priority chain as
+  // buildPrompt's own SYSTEM_INSTRUCTION rule 10: forced override always
+  // wins, regardless of what the reply text itself says.
+  it("replyLanguage: a forced language hint always wins, even if the reply text detects as a different language", async () => {
+    const provider = stubProvider(async () => ({ reply: "This is clearly English text.", needsClarification: false }));
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider }, { forced: "ro" });
+
+    expect(result.outcome).toBe("succeeded");
+    if (result.outcome === "succeeded") {
+      expect(result.replyLanguage).toBe("ro");
+    }
+  });
+
+  it("replyLanguage: with no forced hint, detects the language the reply actually came back in", async () => {
+    const provider = stubProvider(async () => ({ reply: "Clienta vrea sa pastreze parul lung.", needsClarification: false }));
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider }, { fallback: "en" });
+
+    expect(result.outcome).toBe("succeeded");
+    if (result.outcome === "succeeded") {
+      expect(result.replyLanguage).toBe("ro");
+    }
+  });
+
+  it("replyLanguage: falls back to the soft fallback hint only when the reply text itself is genuinely ambiguous", async () => {
+    const provider = stubProvider(async () => ({ reply: "42", needsClarification: false }));
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider }, { fallback: "ro" });
+
+    expect(result.outcome).toBe("succeeded");
+    if (result.outcome === "succeeded") {
+      expect(result.replyLanguage).toBe("ro");
+    }
+  });
+
+  it("replyLanguage: null when nothing -- forced, detected, or fallback -- is available", async () => {
+    const provider = stubProvider(async () => ({ reply: "42", needsClarification: false }));
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+    expect(result.outcome).toBe("succeeded");
+    if (result.outcome === "succeeded") {
+      expect(result.replyLanguage).toBeNull();
+    }
+  });
+
   it("professional memory is an explicit empty array (not omitted) when there is none, so the model sees a real empty state", async () => {
     let capturedContext: unknown;
     const provider = stubProvider(async (_msg, ctx) => {

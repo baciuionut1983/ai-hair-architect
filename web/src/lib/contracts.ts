@@ -394,6 +394,13 @@ export interface ConsultationMessageRecord {
   proposedMemory?: ConsultationChatProposedMemory;
   proposedMemoryDecision?: ConsultationMemoryDecision;
   createdAt: string;
+  // Only ever populated on a freshly-received assistant reply (the one the
+  // chat route just generated) -- never persisted, so reloaded history
+  // never carries it. The single canonical language decision for this
+  // exact reply (see consultation-chat-service.ts's replyLanguage), so
+  // Voice Reply's TTS locale can defer to it directly instead of
+  // re-detecting the reply text a second time.
+  replyLanguage?: "en" | "ro";
 }
 
 export interface ConsultationChatResponse {

@@ -1,4 +1,4 @@
-import type { SpeechLocale } from "./consultation-chat-tts-logic";
+import { languageToSpeechLocale, speechLocaleToLanguage, type SpeechLocale } from "./consultation-chat-tts-logic";
 
 export type ConsultationHistoryLoadStatus = "ready" | "error";
 
@@ -23,13 +23,13 @@ export function parseStoredLanguageSelection(value: string | null): LanguageSele
   return value === "en" || value === "ro" ? value : "auto";
 }
 
-export function languageSelectionToSpeechLocale(selection: "en" | "ro"): SpeechLocale {
-  return selection === "ro" ? "ro-RO" : "en-US";
-}
-
-export function speechLocaleToLanguageSelection(locale: SpeechLocale): "en" | "ro" {
-  return locale === "ro-RO" ? "ro" : "en";
-}
+// Both delegate to the app's single canonical "en"/"ro" <-> SpeechLocale
+// mapping (consultation-chat-tts-logic.ts) rather than maintaining a
+// second copy -- kept as named exports here since callers throughout this
+// file/consultation-chat.tsx already refer to the "LanguageSelection"
+// framing of this mapping.
+export const languageSelectionToSpeechLocale = languageToSpeechLocale;
+export const speechLocaleToLanguageSelection = speechLocaleToLanguage;
 
 export interface ChatLanguageFields {
   languagePreference?: "en" | "ro";
