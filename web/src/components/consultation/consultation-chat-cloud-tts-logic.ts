@@ -11,8 +11,27 @@
 // This never generates a second, separately-worded reply -- callers must
 // pass the EXACT text already shown in the message bubble; this function
 // only ever forwards it.
+//
+// Regression this logging exists for: a live production report showed
+// Romanian Voice Reply falling straight to "No Romanian voice is
+// installed... reading with the browser's default voice instead" -- the
+// LOCAL fallback's own honest message, which only proves cloud TTS was
+// attempted and failed, never says WHY. Before this, that failure was
+// silently swallowed: onFailure's `reason` parameter told the caller
+// "fall back" but was never logged anywhere, so distinguishing "cloud not
+// configured on Railway yet" from "a real provider error" required
+// guessing. Same tag/shape/safe-fields convention as teach-ai-panel-
+// logic.ts's VOICE_TRANSCRIPT_CLIENT (never the reply text, never a
+// token/cookie) -- a single browser-console read now settles which one
+// actually happened.
 
 import type { LanguageCode } from "@/lib/language-registry";
+
+const CLIENT_LOG_TAG = "VOICE_REPLY_CLIENT";
+
+function logClient(event: string, details: Record<string, unknown> = {}): void {
+  console.log(JSON.stringify({ tag: CLIENT_LOG_TAG, event, ...details }));
+}
 
 export type CloudVoiceReplyFailureReason = "network" | "unavailable";
 
@@ -26,9 +45,10 @@ export interface SynthesizeCloudVoiceReplyCallbacks {
   // the request never left the browser). "unavailable": a real HTTP
   // response came back, but not 2xx (provider not configured, rate
   // limited, timed out server-side, unsupported language, etc.) -- the
-  // route's own JSON message already describes the specifics server-side
-  // (see voice-reply/route.ts's VOICE_REPLY log gate); this function only
-  // needs to know "cloud didn't work, fall back" for either case.
+  // SPECIFIC reason (e.g. VOICE_REPLY_PROVIDER_NOT_CONFIGURED vs
+  // VOICE_REPLY_RATE_LIMITED) is read from the response body and logged
+  // via logClient above, not lost -- this callback parameter only needs
+  // to know "cloud didn't work, fall back" for either case.
   onFailure: (reason: CloudVoiceReplyFailureReason) => void;
 }
 
@@ -41,25 +61,44 @@ export async function synthesizeCloudVoiceReply(
 ): Promise<void> {
   let response: Response;
   try {
+    logClient("request_initiated", { language, textLength: text.length });
     response = await deps.fetch(`/api/v1/clients/${clientId}/voice-reply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, language }),
     });
-  } catch {
+    logClient("response_received", { status: response.status, ok: response.ok });
+  } catch (error) {
+    logClient("fetch_threw", {
+      errorName: error instanceof Error ? error.name : "unknown",
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
     callbacks.onFailure("network");
     return;
   }
 
   if (!response.ok) {
+    // Best-effort: the route always returns a JSON { error, message } body
+    // on failure, but this must never throw the whole flow into the
+    // catch-all below if that body is somehow missing/malformed.
+    const errorCode = await response
+      .clone()
+      .json()
+      .then((body: { error?: string }) => body.error ?? "unknown")
+      .catch(() => "unknown");
+    logClient("response_not_ok", { status: response.status, errorCode });
     callbacks.onFailure("unavailable");
     return;
   }
 
   try {
     const blob = await response.blob();
+    logClient("success", { audioBytes: blob.size });
     callbacks.onSuccess(blob);
-  } catch {
+  } catch (error) {
+    logClient("blob_read_threw", {
+      errorName: error instanceof Error ? error.name : "unknown",
+    });
     callbacks.onFailure("unavailable");
   }
 }

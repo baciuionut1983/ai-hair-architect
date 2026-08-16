@@ -352,7 +352,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     setConversationLanguage(nextConversationLanguage);
 
     if (!isCloudTtsLanguageCode(language)) {
-      speakMessageLocally(message, language);
+      speakMessageLocally(message, language, false);
       return;
     }
 
@@ -375,27 +375,31 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
           audio.onerror = () => {
             setSpeakingMessageId((current) => (current === message.id ? null : current));
             stopCloudAudio();
-            speakMessageLocally(message, language);
+            speakMessageLocally(message, language, true);
           };
           void audio.play().catch(() => {
             setSpeakingMessageId((current) => (current === message.id ? null : current));
             stopCloudAudio();
-            speakMessageLocally(message, language);
+            speakMessageLocally(message, language, true);
           });
         },
         onFailure: () => {
           setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
-          speakMessageLocally(message, language);
+          speakMessageLocally(message, language, true);
         },
       },
     );
   }
 
-  // The local Web Speech fallback -- unchanged from before cloud TTS
-  // existed, still the same honest "No {label} voice is installed..."
-  // guarantee, now reached only when cloud TTS is unsupported/unavailable
-  // for this reply rather than being the primary path.
-  function speakMessageLocally(message: ConsultationMessageRecord, language: LanguageCode) {
+  // The local Web Speech fallback -- reached either because this
+  // language has no cloud TTS coverage at all (cloudAttempted=false --
+  // registry-only today, since all 49 registry languages are
+  // cloud-TTS-supported) or because cloud TTS was tried and failed
+  // (cloudAttempted=true -- see synthesizeCloudVoiceReply's own
+  // VOICE_REPLY_CLIENT logging for the specific reason). Requirement:
+  // never let a fallback voice be mistaken for a correct one -- the
+  // stylist is told explicitly which situation this is.
+  function speakMessageLocally(message: ConsultationMessageRecord, language: LanguageCode, cloudAttempted: boolean) {
     if (typeof window === "undefined" || !window.speechSynthesis) return;
 
     speakReply(
@@ -414,11 +418,15 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
         },
         // Generic for any registry language -- never hardcoded to a fixed
         // pair, so "No Arabic voice is installed..." reads exactly like
-        // "No Romanian voice is installed..." would have.
+        // "No Romanian voice is installed..." would have. Explicitly
+        // two-stage honest when cloud was attempted first (requirement:
+        // never let a fallback voice be mistaken for a correct one).
         onVoiceUnavailable: () => {
           const label = getLanguageDefinition(language)?.label ?? language;
           setVoiceUnavailableNotice(
-            `No ${label} voice is installed on this device -- reading with the browser's default voice instead.`,
+            cloudAttempted
+              ? `The cloud voice service is unavailable right now, and no ${label} voice is installed on this device -- reading with the browser's default voice instead.`
+              : `No ${label} voice is installed on this device -- reading with the browser's default voice instead.`,
           );
         },
       },
