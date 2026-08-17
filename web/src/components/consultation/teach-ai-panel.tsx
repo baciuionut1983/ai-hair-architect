@@ -3,6 +3,7 @@
 import { Brain, Mic, Square } from "lucide-react";
 import { useRef, useState } from "react";
 import { Alert, Button, Textarea } from "@/components/ui";
+import { decodeBlobAsWav } from "./audio-wav-encode";
 import { bindFetch, finishRecording, logClient } from "./teach-ai-panel-logic";
 
 type Action = "save_client_memory" | "save_professional_rule" | "mark_preference" | "save_outcome";
@@ -70,7 +71,7 @@ export function TeachAiPanel({ clientId }: { clientId: string }) {
             setTranscriptId(id);
             setStatus("Transcript ready for review. It has not been saved as memory.");
           },
-        }, { fetch: bindFetch(fetch) });
+        }, { fetch: bindFetch(fetch), encodeAsWav: decodeBlobAsWav });
       };
       media.start();
       setRecording(true);

@@ -29,6 +29,18 @@ export interface FinishRecordingCallbacks {
 
 export interface FinishRecordingDeps {
   fetch: typeof fetch;
+  // Converts the raw recorded Blob to a Gemini-supported WAV Blob before
+  // upload -- see audio-wav-encode.ts's own module comment for the full
+  // root cause this exists for: MediaRecorder's own container format
+  // (audio/webm;codecs=opus on Chrome/Android) is not among Gemini's
+  // documented supported audio input formats and reliably fails
+  // generateContent with a provider-side 500, on every platform, not just
+  // iOS. Injected (not called directly) so this stays unit-testable
+  // without a real AudioContext, which jsdom does not implement. Omitted,
+  // or rejecting, falls back to uploading the original recording
+  // unchanged -- this must never be the only path to a working upload,
+  // only the fix for that one specific, demonstrated format failure.
+  encodeAsWav?: (blob: Blob) => Promise<Blob>;
 }
 
 const GENERIC_TRANSCRIPTION_FAILURE_MESSAGE = "Voice transcription failed. You can still type your note.";
@@ -87,11 +99,28 @@ export async function finishRecording(
   logClient("recording_stopped");
 
   try {
-    const blob = new Blob(chunks, { type: mimeType || "audio/webm" });
+    let blob = new Blob(chunks, { type: mimeType || "audio/webm" });
     logClient("blob_created", { mimeType: blob.type, sizeBytes: blob.size });
 
+    if (deps.encodeAsWav) {
+      try {
+        blob = await deps.encodeAsWav(blob);
+        logClient("wav_reencode_succeeded", { mimeType: blob.type, sizeBytes: blob.size });
+      } catch (error) {
+        // Falls back to the original recording unchanged -- see
+        // FinishRecordingDeps.encodeAsWav's own doc comment. Still worth
+        // an honest attempt at transcription rather than failing the
+        // whole flow here: the original format may happen to be one
+        // Gemini does accept (e.g. Safari's audio/mp4).
+        logClient("wav_reencode_failed", {
+          errorName: error instanceof Error ? error.name : "unknown",
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
     const form = new FormData();
-    form.append("audio", blob, "note.webm");
+    form.append("audio", blob, blob.type === "audio/wav" ? "note.wav" : "note.webm");
     if (language) {
       form.append("language", language);
     }

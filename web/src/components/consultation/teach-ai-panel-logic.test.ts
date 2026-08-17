@@ -197,6 +197,101 @@ describe("finishRecording", () => {
   });
 });
 
+// Regression: a real production report confirmed via Railway logs -- a
+// well-formed request WITH real audio bytes (70814 bytes,
+// audio/webm;codecs=opus) reached Gemini and was rejected with a
+// provider-side HTTP 500. Reproduced on iPhone, Android, AND desktop
+// Chrome alike (never platform-specific), and confirmed against Google's
+// own audio-understanding docs: WebM is not among Gemini's documented
+// supported audio input formats at all. deps.encodeAsWav (see
+// audio-wav-encode.ts) exists specifically to convert whatever the
+// browser actually recorded into a format Gemini does document support,
+// before it is ever uploaded.
+describe("finishRecording WAV re-encoding", () => {
+  it("uploads the re-encoded WAV blob (not the original recording) when encodeAsWav succeeds", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+    const wavBlob = new Blob(["wav-bytes"], { type: "audio/wav" });
+    const encodeAsWav = vi.fn(async () => wavBlob);
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm;codecs=opus", "client-1", callbacks, {
+      fetch: fetchStub,
+      encodeAsWav,
+    });
+
+    expect(encodeAsWav).toHaveBeenCalledTimes(1);
+    const [, init] = fetchStub.mock.calls[0] as unknown as [string, RequestInit];
+    const form = init.body as FormData;
+    const uploaded = form.get("audio") as Blob;
+    expect(uploaded.type).toBe("audio/wav");
+    expect(await uploaded.text()).toBe("wav-bytes");
+  });
+
+  it("names the uploaded file note.wav when re-encoding succeeded", async () => {
+    const { stream } = fakeStream();
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+    const encodeAsWav = vi.fn(async () => new Blob(["wav-bytes"], { type: "audio/wav" }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbackSpies(), {
+      fetch: fetchStub,
+      encodeAsWav,
+    });
+
+    const [, init] = fetchStub.mock.calls[0] as unknown as [string, RequestInit];
+    const entries = [...(init.body as FormData).entries()] as [string, FormDataEntryValue][];
+    const [, fileValue] = entries.find(([key]) => key === "audio")!;
+    expect((fileValue as File).name).toBe("note.wav");
+  });
+
+  it("falls back to uploading the original recording when encodeAsWav rejects -- never a new failure mode", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+    const encodeAsWav = vi.fn(async () => { throw new Error("AudioContext is not available in this browser."); });
+
+    await finishRecording(stream, [new Blob(["original"])], "audio/webm", "client-1", callbacks, {
+      fetch: fetchStub,
+      encodeAsWav,
+    });
+
+    const [, init] = fetchStub.mock.calls[0] as unknown as [string, RequestInit];
+    const form = init.body as FormData;
+    const uploaded = form.get("audio") as Blob;
+    expect(uploaded.type).toBe("audio/webm");
+    expect(await uploaded.text()).toBe("original");
+    expect(callbacks.onFailure).not.toHaveBeenCalled();
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1");
+  });
+
+  it("logs wav_reencode_failed (not audio bytes) when encodeAsWav rejects", async () => {
+    const { stream } = fakeStream();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+    const encodeAsWav = vi.fn(async () => { throw new TypeError("decodeAudioData failed"); });
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbackSpies(), {
+      fetch: fetchStub,
+      encodeAsWav,
+    });
+
+    const events = logSpy.mock.calls.map((call) => JSON.parse(call[0] as string));
+    expect(events).toContainEqual(expect.objectContaining({ event: "wav_reencode_failed", errorName: "TypeError" }));
+    logSpy.mockRestore();
+  });
+
+  it("does not attempt re-encoding at all when encodeAsWav is not provided (existing call sites keep working unchanged)", async () => {
+    const { stream } = fakeStream();
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbackSpies(), { fetch: fetchStub });
+
+    const [, init] = fetchStub.mock.calls[0] as unknown as [string, RequestInit];
+    const form = init.body as FormData;
+    expect((form.get("audio") as Blob).type).toBe("audio/webm");
+  });
+});
+
 // Regression: a live report reproduced "Voice transcription failed" with
 // ZERO matching VOICE_TRANSCRIPT lines in Railway's Deploy Logs afterward
 // -- meaning the backend's own logging (however thorough) could not tell

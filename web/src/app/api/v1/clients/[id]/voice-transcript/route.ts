@@ -12,6 +12,30 @@ const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
 const PROVIDER_TIMEOUT_MS = 30_000;
 const MAX_TRANSCRIPT_LENGTH = 4000;
 
+// Exactly Gemini's own documented supported audio input formats for
+// generateContent (https://ai.google.dev/gemini-api/docs/audio) -- most
+// notably, does NOT include audio/webm, MediaRecorder's own default
+// container on Chrome/Android (confirmed live: a real, correctly-sized
+// audio/webm;codecs=opus upload reached Gemini and was rejected with a
+// provider-side HTTP 500). Never guessed or expanded beyond what Google
+// documents -- see this route's own use of it below for why.
+const GEMINI_SUPPORTED_AUDIO_MIME_TYPES = new Set([
+  "audio/wav",
+  "audio/mp3",
+  "audio/aiff",
+  "audio/aac",
+  "audio/ogg",
+  "audio/flac",
+]);
+
+// Strips any trailing MIME parameters (e.g. the ";codecs=opus" a browser
+// appends to audio/webm) before matching against the allowlist above --
+// the container format is what Gemini's docs enumerate, never the codec
+// parameter.
+function baseMimeType(mimeType: string): string {
+  return mimeType.split(";")[0]?.trim().toLowerCase() ?? mimeType;
+}
+
 // A live report ("Voice transcription failed. You can still type your
 // note.") could not be root-caused because this route had zero diagnostic
 // logging on any branch -- every failure was silent from Railway's
@@ -126,6 +150,33 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       sizeBytes: audio instanceof File ? audio.size : null,
     });
     return NextResponse.json({ error: "Invalid audio." }, { status: 400 });
+  }
+
+  // Root cause of the live "Voice transcription failed" report, confirmed
+  // against Google's own audio-understanding docs: WebM (MediaRecorder's
+  // own default container on Chrome/Android) is not among Gemini's
+  // documented supported audio input formats at all -- sending it reaches
+  // Gemini's servers fine but fails deep in their own decoding pipeline,
+  // surfacing as an opaque provider-side HTTP 500 rather than a clean
+  // 400. The client (see audio-wav-encode.ts's decodeBlobAsWav) now
+  // converts to WAV before every upload, so this should rarely trigger in
+  // practice -- but it exists as a fail-closed safety net for whatever
+  // slips through that conversion (an old browser with no AudioContext,
+  // conversion throwing for some other reason), rejecting immediately
+  // with an honest, specific reason instead of spending a provider call
+  // (and its cost/quota) on a request already known to fail, or letting a
+  // genuine format problem be misread as a provider outage.
+  if (!GEMINI_SUPPORTED_AUDIO_MIME_TYPES.has(baseMimeType(audio.type))) {
+    logVoiceTranscript("FAILED", "invalid_audio", {
+      resultCode: "UNSUPPORTED_AUDIO_FORMAT",
+      reason: "mime_type_not_supported_by_provider",
+      mimeType: audio.type,
+      sizeBytes: audio.size,
+    });
+    return NextResponse.json(
+      { error: "UNSUPPORTED_AUDIO_FORMAT", message: "This recording format isn't supported for transcription. Please try again, or type your note." },
+      { status: 400 },
+    );
   }
 
   const audioBase64 = Buffer.from(await audio.arrayBuffer()).toString("base64");

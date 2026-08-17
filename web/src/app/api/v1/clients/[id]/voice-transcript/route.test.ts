@@ -20,10 +20,15 @@ const CLIENT = { id: "client-1", ownerUserId: "owner-1", fullName: "Jane Doe", e
 
 const ORIGINAL_ENV = { ...process.env };
 
+// audio/wav (not audio/webm): the client now always converts a recording
+// to WAV -- a format Gemini's own docs confirm as supported -- before
+// upload (see audio-wav-encode.ts's decodeBlobAsWav), so that is the
+// realistic default for every test in this file EXCEPT the ones
+// specifically about the new format-rejection check below.
 function audioForm(overrides: { type?: string; size?: number } = {}): FormData {
   const form = new FormData();
   const bytes = new Uint8Array(overrides.size ?? 1024);
-  form.append("audio", new File([bytes], "note.webm", { type: overrides.type ?? "audio/webm" }));
+  form.append("audio", new File([bytes], "note.wav", { type: overrides.type ?? "audio/wav" }));
   return form;
 }
 
@@ -161,6 +166,33 @@ describe("POST /api/v1/clients/[id]/voice-transcript", () => {
 
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  // Regression: a live production report, confirmed via Railway logs --
+  // a real, correctly-sized audio/webm;codecs=opus upload (Chrome's own
+  // MediaRecorder default, reproduced on iPhone, Android, and desktop
+  // Chrome alike) reached Gemini and was rejected with a provider-side
+  // HTTP 500, wasting a real provider call/cost on a request that was
+  // always going to fail -- WebM is not among Gemini's own documented
+  // supported audio formats at all. This is now caught before ever
+  // calling the provider, with an honest, specific reason distinct from
+  // the generic "wrong content-type entirely" case above.
+  it("returns 400 UNSUPPORTED_AUDIO_FORMAT for audio/webm without ever calling the provider", async () => {
+    const response = await invoke(audioForm({ type: "audio/webm;codecs=opus" }));
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("UNSUPPORTED_AUDIO_FORMAT");
+    expect(body.message).toContain("type your note");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["audio/wav", "audio/mp3", "audio/aiff", "audio/aac", "audio/ogg", "audio/flac"])(
+    "accepts %s -- one of Gemini's own documented supported audio formats",
+    async (type) => {
+      const response = await invoke(audioForm({ type }));
+      expect(response.status).toBe(200);
+    },
+  );
 
   it("returns 502 when the provider call itself fails or times out", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
@@ -391,12 +423,12 @@ describe("production diagnostics logging", () => {
       Response.json({ error: { code: 400, message: "Invalid value at 'contents[0].parts[1].inline_data.mime_type'", status: "INVALID_ARGUMENT" } }, { status: 400 }),
     ));
 
-    await invoke(audioForm({ type: "audio/webm" }));
+    await invoke(audioForm({ type: "audio/wav" }));
 
     const logged = loggedLine(errorSpy);
     expect(logged).toMatchObject({
       gate: "VOICE_TRANSCRIPT", status: "FAILED", stage: "provider_call", reason: "provider_response_not_ok",
-      providerHttpStatus: 400, audioMimeType: "audio/webm",
+      providerHttpStatus: 400, audioMimeType: "audio/wav",
     });
     expect(String(logged.providerErrorBody)).toContain("INVALID_ARGUMENT");
   });
@@ -445,12 +477,12 @@ describe("production diagnostics logging", () => {
   });
 
   it("logs a SUCCEEDED line on success (console.log, not console.error), with safe fields but never the transcript content", async () => {
-    await invoke(audioForm({ type: "audio/webm" }));
+    await invoke(audioForm({ type: "audio/wav" }));
 
     expect(errorSpy).not.toHaveBeenCalled();
     const loggedLines = logSpy.mock.calls.map((call) => JSON.parse(call[0] as string));
     const completeLine = loggedLines.find((line) => line.stage === "complete");
-    expect(completeLine).toMatchObject({ gate: "VOICE_TRANSCRIPT", status: "SUCCEEDED", stage: "complete", audioMimeType: "audio/webm" });
+    expect(completeLine).toMatchObject({ gate: "VOICE_TRANSCRIPT", status: "SUCCEEDED", stage: "complete", audioMimeType: "audio/wav" });
     expect(JSON.stringify(loggedLines)).not.toContain("She had bleach");
   });
 

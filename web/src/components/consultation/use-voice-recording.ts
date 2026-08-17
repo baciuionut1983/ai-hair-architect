@@ -30,6 +30,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { LanguageCode } from "@/lib/language-registry";
 
+import { decodeBlobAsWav } from "./audio-wav-encode";
 import { bindFetch, finishRecording, logClient } from "./teach-ai-panel-logic";
 import { evaluateVadSample, initVadState, shouldAutoSubmitTranscript, type VadState } from "./voice-activity-logic";
 
@@ -163,7 +164,7 @@ export function useVoiceRecording({ clientId, language, onTranscript }: UseVoice
                 }
               },
             },
-            { fetch: bindFetch(fetch) },
+            { fetch: bindFetch(fetch), encodeAsWav: decodeBlobAsWav },
             language,
           );
         };
