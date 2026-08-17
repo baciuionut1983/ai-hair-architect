@@ -36,6 +36,35 @@
 export const AUDIO_UNLOCK_DATA_URI =
   "data:audio/wav;base64,UklGRrQBAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YZABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
+// Regression, confirmed against this app's own CSP header (next.config.ts):
+// media-src is 'self' blob: -- deliberately, added once already for cloud
+// Voice Reply's own <audio> playback (see that header's own comment) --
+// and does NOT include the data: scheme. A first version of this unlock
+// mechanism set audio.src directly to AUDIO_UNLOCK_DATA_URI (a data: URI)
+// -- CSP blocks that at the browser's security-policy level before ever
+// attempting to decode it, deterministically, on every CSP-enforcing
+// browser regardless of platform or gesture timing, surfacing as exactly
+// the failure next.config.ts's own comment already documents for the
+// same mistake once before: "MEDIA_ELEMENT_ERROR: Media rejected by URL
+// safety check" + play() rejecting with NotSupportedError. Converting to
+// a blob: URL (already permitted) fixes it without touching CSP at all --
+// this app's own cloud TTS playback already proves that scheme works.
+export function dataUriToBlob(dataUri: string): Blob {
+  const commaIndex = dataUri.indexOf(",");
+  const header = dataUri.slice(0, commaIndex);
+  const base64 = dataUri.slice(commaIndex + 1);
+  const mimeMatch = /^data:([^;]+);base64$/.exec(header);
+  const mimeType = mimeMatch?.[1] ?? "application/octet-stream";
+
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return new Blob([bytes], { type: mimeType });
+}
+
 export interface VoiceReplyEnableOutcome {
   enabled: boolean;
   message: string | null;

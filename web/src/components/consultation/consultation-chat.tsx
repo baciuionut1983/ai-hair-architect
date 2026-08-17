@@ -14,7 +14,7 @@ import { conversationSupportedLanguages, getLanguageDefinition, isCloudTtsLangua
 import { useUiLanguage } from "@/lib/ui-language-context";
 
 import { logVoiceReplyClientEvent, synthesizeCloudVoiceReply } from "./consultation-chat-cloud-tts-logic";
-import { AUDIO_UNLOCK_DATA_URI, resolveVoiceReplyEnableOutcome } from "./voice-reply-unlock-logic";
+import { AUDIO_UNLOCK_DATA_URI, dataUriToBlob, resolveVoiceReplyEnableOutcome } from "./voice-reply-unlock-logic";
 import {
   buildChatLanguageFields,
   callOnce,
@@ -107,6 +107,12 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   // toggle, degrading honestly to text-only.
   const [voiceReplyAvailable, setVoiceReplyAvailable] = useState(false);
   const [voiceReplyEnabled, setVoiceReplyEnabled] = useState(false);
+  // True only for the brief window while an unlock attempt (see
+  // unlockAudioPlayback) is in flight -- disables the toggle so a second,
+  // overlapping click can never race the first attempt's own state
+  // update, and doubles as an honest "why is this disabled right now"
+  // signal rather than the toggle just silently not responding.
+  const [voiceReplyUnlocking, setVoiceReplyUnlocking] = useState(false);
   const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null);
   // Cloud TTS is now the PRIMARY Voice Reply path (see
   // consultation-chat-cloud-tts-logic.ts); this tracks the "Generating
@@ -270,35 +276,54 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   // reached after two real network round-trips, by which point iOS's
   // transient user-activation window has already expired).
   //
-  // Regression this order fixes: an earlier version called
-  // primeSpeechSynthesis() BEFORE audio.play(). Per WebKit's own
-  // documented user-activation model, some gesture-gated calls are
-  // "consumable" -- a single click grants only one privileged action, and
-  // a second one in the same handler can find the gesture already spent.
-  // speechSynthesis.speak() running first could exhaust the click's
-  // gesture, leaving audio.play() -- the primary, higher-value path,
-  // since cloud TTS covers every registry language -- with none, so it
-  // rejected on every single click, deterministically, with the toggle
-  // never able to report itself as on. audio.play() must always get
-  // first claim on the gesture; the speech-synthesis priming is
-  // best-effort only and now runs strictly after, win or lose.
+  // Regression this fixes (CONFIRMED, not theorized -- see
+  // dataUriToBlob's own doc comment): this app's CSP is media-src 'self'
+  // blob: -- it does NOT include data:. An earlier version set audio.src
+  // directly to AUDIO_UNLOCK_DATA_URI (a data: URI), which CSP blocks at
+  // the security-policy level before ever attempting to decode it, on
+  // every CSP-enforcing browser, regardless of platform -- so audio.play()
+  // rejected deterministically, every single click, and the toggle could
+  // never report itself as on. Converting to a blob: URL (already
+  // permitted; this app's own cloud TTS playback already proves that
+  // scheme works) fixes it without touching CSP at all.
+  //
+  // A second, independent fix already landed here (e05aa0b): an earlier
+  // version also called primeSpeechSynthesis() BEFORE audio.play(), which
+  // per WebKit's documented "consumable" user-activation model could have
+  // exhausted the click's gesture before audio.play() got to use it. That
+  // ordering is kept even though the CSP block alone was sufficient to
+  // explain the full production symptom -- both are real, independent
+  // correctness issues, not alternatives to each other.
   function unlockAudioPlayback(): Promise<boolean> {
     const audio = getOrCreateCloudAudioElement();
-    audio.src = AUDIO_UNLOCK_DATA_URI;
+    logVoiceReplyClientEvent("unlock_audio_element_ready", {
+      readyState: audio.readyState,
+      hadSrc: Boolean(audio.src),
+    });
+
+    const unlockUrl = URL.createObjectURL(dataUriToBlob(AUDIO_UNLOCK_DATA_URI));
+    audio.src = unlockUrl;
+    logVoiceReplyClientEvent("unlock_start", { readyState: audio.readyState });
+
     return audio
       .play()
       .then(() => {
-        logVoiceReplyClientEvent("audio_unlock_succeeded");
+        logVoiceReplyClientEvent("unlock_succeeded", { readyState: audio.readyState });
         return true;
       })
       .catch((error: unknown) => {
-        logVoiceReplyClientEvent("audio_unlock_failed", {
+        logVoiceReplyClientEvent("unlock_failed", {
           errorName: error instanceof Error ? error.name : "unknown",
           errorMessage: error instanceof Error ? error.message : String(error),
+          readyState: audio.readyState,
+          networkState: audio.networkState,
+          mediaErrorCode: audio.error?.code ?? null,
+          userAgent: typeof navigator !== "undefined" ? navigator.userAgent : null,
         });
         return false;
       })
       .finally(() => {
+        URL.revokeObjectURL(unlockUrl);
         primeSpeechSynthesis();
       });
   }
@@ -604,19 +629,39 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     // toggle stuck again with no matching line for this event, that
     // rules out the click handler entirely and points elsewhere (e.g.
     // the button itself, or an ancestor intercepting the event).
-    logVoiceReplyClientEvent("voice_reply_toggle_clicked", { wasEnabled: voiceReplyEnabled });
+    logVoiceReplyClientEvent("toggle_clicked", {
+      wasEnabled: voiceReplyEnabled,
+      wasUnlocking: voiceReplyUnlocking,
+      userAgent: typeof navigator !== "undefined" ? navigator.userAgent : null,
+    });
+
+    // Guards a genuinely possible race (a second click before the first
+    // attempt's own state update lands) -- the button is also visually
+    // disabled for this exact window (see the render below), so this is
+    // belt-and-suspenders, not the only guard.
+    if (voiceReplyUnlocking) {
+      logVoiceReplyClientEvent("toggle_blocked", { reason: "unlock_already_in_progress" });
+      return;
+    }
 
     if (voiceReplyEnabled) {
       handleStopSpeaking();
       setVoiceReplyEnabled(false);
+      logVoiceReplyClientEvent("state_reset", { reason: "user_turned_off" });
       return;
     }
 
     setVoiceError(null);
+    setVoiceReplyUnlocking(true);
     const unlockSucceeded = await unlockAudioPlayback();
+    setVoiceReplyUnlocking(false);
+
     const outcome = resolveVoiceReplyEnableOutcome(unlockSucceeded);
     setVoiceReplyEnabled(outcome.enabled);
-    if (outcome.message) {
+    if (outcome.enabled) {
+      logVoiceReplyClientEvent("state_set_active");
+    } else {
+      logVoiceReplyClientEvent("state_reset", { reason: "unlock_failed" });
       setVoiceError(outcome.message);
     }
   }
@@ -774,7 +819,13 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
                   {t("consultAi.stop")}
                 </Button>
               ) : null}
-              <Button type="button" variant="secondary" onClick={handleToggleVoiceReply}>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={handleToggleVoiceReply}
+                disabled={voiceReplyUnlocking}
+                loading={voiceReplyUnlocking}
+              >
                 {voiceReplyEnabled ? <Volume2 className="h-4 w-4" aria-hidden="true" /> : <VolumeX className="h-4 w-4" aria-hidden="true" />}
                 {t("consultAi.voiceReply")}: {voiceReplyEnabled ? t("common.on") : t("common.off")}
               </Button>
