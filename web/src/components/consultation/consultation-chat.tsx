@@ -269,9 +269,20 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   // necessary at all (a real reply's own audio.play() call is only ever
   // reached after two real network round-trips, by which point iOS's
   // transient user-activation window has already expired).
+  //
+  // Regression this order fixes: an earlier version called
+  // primeSpeechSynthesis() BEFORE audio.play(). Per WebKit's own
+  // documented user-activation model, some gesture-gated calls are
+  // "consumable" -- a single click grants only one privileged action, and
+  // a second one in the same handler can find the gesture already spent.
+  // speechSynthesis.speak() running first could exhaust the click's
+  // gesture, leaving audio.play() -- the primary, higher-value path,
+  // since cloud TTS covers every registry language -- with none, so it
+  // rejected on every single click, deterministically, with the toggle
+  // never able to report itself as on. audio.play() must always get
+  // first claim on the gesture; the speech-synthesis priming is
+  // best-effort only and now runs strictly after, win or lose.
   function unlockAudioPlayback(): Promise<boolean> {
-    primeSpeechSynthesis();
-
     const audio = getOrCreateCloudAudioElement();
     audio.src = AUDIO_UNLOCK_DATA_URI;
     return audio
@@ -286,6 +297,9 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
           errorMessage: error instanceof Error ? error.message : String(error),
         });
         return false;
+      })
+      .finally(() => {
+        primeSpeechSynthesis();
       });
   }
 
@@ -585,6 +599,13 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   // oricând la Text Only" is not honored if a reply keeps talking after
   // the stylist just turned it off.
   async function handleToggleVoiceReply() {
+    // Unconditional -- proves the click itself reached this handler at
+    // all, before anything else runs. If a future live retest shows the
+    // toggle stuck again with no matching line for this event, that
+    // rules out the click handler entirely and points elsewhere (e.g.
+    // the button itself, or an ancestor intercepting the event).
+    logVoiceReplyClientEvent("voice_reply_toggle_clicked", { wasEnabled: voiceReplyEnabled });
+
     if (voiceReplyEnabled) {
       handleStopSpeaking();
       setVoiceReplyEnabled(false);
