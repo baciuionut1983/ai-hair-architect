@@ -14,6 +14,7 @@ import { conversationSupportedLanguages, getLanguageDefinition, isCloudTtsLangua
 import { useUiLanguage } from "@/lib/ui-language-context";
 
 import { logVoiceReplyClientEvent, synthesizeCloudVoiceReply } from "./consultation-chat-cloud-tts-logic";
+import { AUDIO_UNLOCK_DATA_URI, resolveVoiceReplyEnableOutcome } from "./voice-reply-unlock-logic";
 import {
   buildChatLanguageFields,
   callOnce,
@@ -139,11 +140,17 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   // never a forced value.
   const [conversationLanguage, setConversationLanguage] = useState<LanguageCode | null>(null);
   const scrollAnchorRef = useRef<HTMLDivElement | null>(null);
-  // The single cloud-TTS <audio> element in flight, if any -- created lazily
-  // per reply (see speakMessage below), never more than one at a time
-  // (stopCloudAudio always tears down the previous one first, matching
-  // "un nou reply trebuie să oprească audio-ul anterior" for cloud audio
-  // exactly the way deps.synth.cancel() already does for Web Speech).
+  // The single, persistent cloud-TTS <audio> element -- created once (see
+  // getOrCreateCloudAudioElement below) and reused for both the toggle's
+  // own iOS unlock attempt and every reply's real playback, never
+  // recreated per reply. Deliberately one long-lived element rather than
+  // `new Audio()` per reply: iOS Safari's autoplay policy only grants
+  // unlocked playback to an element that has already successfully played
+  // once in direct response to a user gesture (see
+  // voice-reply-unlock-logic.ts's module comment) -- reusing that exact
+  // element for every later, asynchronously-triggered reply is the most
+  // broadly WebKit-compatible way to keep relying on that unlock.
+  // stopCloudAudio (below) never nulls this ref, for the same reason.
   const cloudAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const sttLanguageHint = resolveSttLanguageHint(languageSelection, conversationLanguage);
@@ -209,6 +216,12 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
   // any -- releases its object URL (never leaked) and detaches handlers
   // first so a stop/unmount/new-reply can never race with a still-in-
   // flight onended/onerror callback touching state after the fact.
+  // Deliberately does NOT null out cloudAudioRef.current: this is the
+  // same persistent, already-iOS-unlocked element (see
+  // getOrCreateCloudAudioElement/unlockAudioPlayback below) reused for
+  // every reply -- discarding it here would lose the unlock and silently
+  // reintroduce "Voice Reply: On, but no audio plays" on iPhone the very
+  // next time a reply arrives.
   function stopCloudAudio() {
     const audio = cloudAudioRef.current;
     if (!audio) return;
@@ -219,7 +232,61 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     if (audio.src.startsWith("blob:")) {
       URL.revokeObjectURL(audio.src);
     }
-    cloudAudioRef.current = null;
+  }
+
+  function getOrCreateCloudAudioElement(): HTMLAudioElement {
+    if (!cloudAudioRef.current) {
+      cloudAudioRef.current = new Audio();
+    }
+    return cloudAudioRef.current;
+  }
+
+  // Best-effort priming of the OTHER audio pathway (the local Web Speech
+  // fallback -- see speakMessageLocally): WebKit gates
+  // speechSynthesis.speak() behind the same kind of user-gesture
+  // requirement as HTMLMediaElement.play(), as a wholly separate browser
+  // subsystem from <audio> -- unlocking one does not unlock the other.
+  // Never allowed to affect whether Voice Reply reports itself as on:
+  // the cloud-audio unlock in unlockAudioPlayback below is what gates
+  // that, since cloud TTS is the primary path (covers every registry
+  // language) and the local path is only ever a fallback for it.
+  function primeSpeechSynthesis(): void {
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
+    try {
+      const utterance = new SpeechSynthesisUtterance(" ");
+      window.speechSynthesis.speak(utterance);
+      window.speechSynthesis.cancel();
+    } catch {
+      // No fallback needed here -- see the comment above.
+    }
+  }
+
+  // Spends the toggle-on click's own user gesture immediately: plays a
+  // real (silent) clip on the persistent cloud-audio element so iOS
+  // Safari grants it (and, per WebKit's documented autoplay behavior, the
+  // page more broadly) unlocked playback for the rest of the session --
+  // see voice-reply-unlock-logic.ts's module comment for why this is
+  // necessary at all (a real reply's own audio.play() call is only ever
+  // reached after two real network round-trips, by which point iOS's
+  // transient user-activation window has already expired).
+  function unlockAudioPlayback(): Promise<boolean> {
+    primeSpeechSynthesis();
+
+    const audio = getOrCreateCloudAudioElement();
+    audio.src = AUDIO_UNLOCK_DATA_URI;
+    return audio
+      .play()
+      .then(() => {
+        logVoiceReplyClientEvent("audio_unlock_succeeded");
+        return true;
+      })
+      .catch((error: unknown) => {
+        logVoiceReplyClientEvent("audio_unlock_failed", {
+          errorName: error instanceof Error ? error.name : "unknown",
+          errorMessage: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      });
   }
 
   useEffect(() => {
@@ -390,8 +457,12 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
         onSuccess: (audioBlob) => {
           setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
           logVoiceReplyClientEvent("cloud_audio_element_created", { audioBytes: audioBlob.size, blobType: audioBlob.type });
-          const audio = new Audio(URL.createObjectURL(audioBlob));
-          cloudAudioRef.current = audio;
+          // Reuses the SAME element the toggle's own click already
+          // unlocked (see getOrCreateCloudAudioElement/
+          // unlockAudioPlayback) -- never `new Audio(...)` here, which
+          // would be a fresh, un-unlocked element on iOS Safari.
+          const audio = getOrCreateCloudAudioElement();
+          audio.src = URL.createObjectURL(audioBlob);
 
           // Regression: audio.onerror (a genuine media decode/load
           // failure) and audio.play()'s own rejected promise are BOTH
@@ -504,17 +575,29 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
     setSpeakingMessageId(null);
   }
 
-  function handleToggleVoiceReply() {
-    setVoiceReplyEnabled((current) => {
-      const next = !current;
-      // Turning Voice Reply off must silence it immediately -- "revenire
-      // oricând la Text Only" is not honored if a reply keeps talking
-      // after the stylist just turned it off.
-      if (!next) {
-        handleStopSpeaking();
-      }
-      return next;
-    });
+  // Turning Voice Reply ON is the one deliberate, synchronous user gesture
+  // this feature has -- spent immediately here (see unlockAudioPlayback)
+  // so a real reply's own, asynchronously-triggered playback is allowed
+  // to start on iOS Safari later. The toggle must never report itself as
+  // "On" if that unlock attempt failed: a stylist would otherwise believe
+  // audio is coming and never learn why it never plays. Turning it back
+  // OFF never needs an unlock and always succeeds immediately -- "revenire
+  // oricând la Text Only" is not honored if a reply keeps talking after
+  // the stylist just turned it off.
+  async function handleToggleVoiceReply() {
+    if (voiceReplyEnabled) {
+      handleStopSpeaking();
+      setVoiceReplyEnabled(false);
+      return;
+    }
+
+    setVoiceError(null);
+    const unlockSucceeded = await unlockAudioPlayback();
+    const outcome = resolveVoiceReplyEnableOutcome(unlockSucceeded);
+    setVoiceReplyEnabled(outcome.enabled);
+    if (outcome.message) {
+      setVoiceError(outcome.message);
+    }
   }
 
   function handleLanguageSelectionChange(next: LanguageSelection) {
