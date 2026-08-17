@@ -4,7 +4,7 @@ import { resolveOwnedClient } from "@/lib/client-repository";
 import { checkRateLimit } from "@/lib/hardening";
 import { isCloudTtsLanguageCode, toCloudTtsLanguageCode } from "@/lib/language-registry";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
-import { parseSampleRateFromMimeType, wrapPcmAsWav } from "@/lib/tts-audio-format";
+import { isValidWavHeader, parseSampleRateFromMimeType, wrapPcmAsWav } from "@/lib/tts-audio-format";
 import { GeminiTtsProvider, type TtsProviderError } from "@/lib/tts-provider-gemini";
 
 // Server-side only, by design (requirement 9 / "API key doar server-side"):
@@ -172,6 +172,35 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const sampleRateHz = parseSampleRateFromMimeType(result.mimeType);
   const pcm = Buffer.from(result.audioBase64, "base64");
   const wav = wrapPcmAsWav(pcm, sampleRateHz);
+
+  // Fail-closed runtime safety net: a live production investigation
+  // proved cloud TTS can deliver real, correctly-sized bytes end-to-end
+  // while playback still fails for an unrelated reason (that specific
+  // case turned out to be a missing CSP media-src directive, not a
+  // malformed file) -- but wrapPcmAsWav is still the one place a genuine
+  // future regression in the header-writing logic itself could ship
+  // broken audio silently. Checking the actual magic bytes/chunk sizes
+  // here, not just trusting the function that just built them, means
+  // that class of bug fails loudly (a real error) instead of being
+  // discovered again the same way this one was -- a stylist hearing an
+  // English fallback voice with no diagnostic trail.
+  const wavValidation = isValidWavHeader(wav);
+  if (!wavValidation.valid) {
+    logVoiceReply("FAILED", "wav_validation", {
+      resultCode: "VOICE_REPLY_FAILED",
+      reason: wavValidation.reason,
+      model,
+      language,
+      languageCode,
+      providerMimeType: result.mimeType,
+      sampleRateHz,
+      pcmBytes: pcm.length,
+    });
+    return NextResponse.json(
+      { error: "VOICE_REPLY_FAILED", message: "Voice reply returned an unexpected response. The text reply above is still available." },
+      { status: 502 },
+    );
+  }
 
   // providerMimeType/sampleRateHz/pcmBytes are logged explicitly (not
   // just the final wav.length) so a live retest can directly confirm

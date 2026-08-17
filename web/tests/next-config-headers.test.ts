@@ -39,4 +39,35 @@ describe("next.config.ts security headers", () => {
     const rules = await nextConfig.headers?.();
     expect(rules?.some((entry) => entry.source === "/:path*")).toBe(true);
   });
+
+  // Regression: cloud Voice Reply's <audio> element plays a blob: URL
+  // built from the /voice-reply response. With no explicit media-src,
+  // CSP falls back to default-src 'self', which does not include the
+  // blob: scheme -- Chrome blocked the load at the security-policy level
+  // (before ever attempting to decode real, valid audio bytes),
+  // surfacing as "MEDIA_ELEMENT_ERROR: Media rejected by URL safety
+  // check" and a NotSupportedError on play(). Applies globally
+  // (source: "/:path*"), so this covers every language's Voice Reply.
+  async function contentSecurityPolicyValue(): Promise<string> {
+    if (typeof nextConfig.headers !== "function") {
+      throw new Error("next.config.ts must export a headers() function");
+    }
+    const rules = await nextConfig.headers();
+    const rule = rules.find((entry) => entry.source === "/:path*");
+    const header = rule?.headers.find((h) => h.key === "Content-Security-Policy");
+    if (!header) {
+      throw new Error("Content-Security-Policy header is missing from next.config.ts");
+    }
+    return header.value;
+  }
+
+  it("allows blob: media sources for this app's own pages -- required for cloud Voice Reply's <audio> playback", async () => {
+    const value = await contentSecurityPolicyValue();
+    expect(value).toContain("media-src 'self' blob:");
+  });
+
+  it("keeps the same blob: allowance already established for images (client photo previews), for consistency", async () => {
+    const value = await contentSecurityPolicyValue();
+    expect(value).toContain("img-src 'self' data: blob:");
+  });
 });

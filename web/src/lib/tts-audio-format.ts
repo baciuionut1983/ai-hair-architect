@@ -55,3 +55,47 @@ export function wrapPcmAsWav(pcm: Buffer, sampleRateHz: number = DEFAULT_SAMPLE_
 
   return Buffer.concat([header, pcm]);
 }
+
+export interface WavValidationResult {
+  valid: boolean;
+  // Present only when invalid -- a short, safe (no audio bytes) machine-
+  // readable reason, for logging.
+  reason?: string;
+}
+
+// Verifies the actual magic bytes/chunk structure of a WAV buffer,
+// rather than trusting that "it came out of wrapPcmAsWav" or that a
+// Content-Type header of audio/wav means the payload really is one --
+// exactly the gap a live production investigation found: a browser
+// rejected an audio/wav-labeled blob outright, and the only way to be
+// certain the BYTES themselves were never the problem is to check them
+// directly, the same way a real media parser would (magic bytes first,
+// declared chunk sizes second). Used both as a genuine runtime safety
+// net (voice-reply/route.ts fails closed rather than ever ship malformed
+// audio again) and as the thing this file's own tests check against.
+export function isValidWavHeader(buffer: Buffer): WavValidationResult {
+  if (buffer.length < WAV_HEADER_BYTES) {
+    return { valid: false, reason: "too_short_for_header" };
+  }
+  if (buffer.toString("ascii", 0, 4) !== "RIFF") {
+    return { valid: false, reason: "missing_riff_magic" };
+  }
+  if (buffer.toString("ascii", 8, 12) !== "WAVE") {
+    return { valid: false, reason: "missing_wave_magic" };
+  }
+  if (buffer.toString("ascii", 12, 16) !== "fmt ") {
+    return { valid: false, reason: "missing_fmt_chunk" };
+  }
+  if (buffer.toString("ascii", 36, 40) !== "data") {
+    return { valid: false, reason: "missing_data_chunk" };
+  }
+  const riffChunkSize = buffer.readUInt32LE(4);
+  if (riffChunkSize !== buffer.length - 8) {
+    return { valid: false, reason: "riff_chunk_size_mismatch" };
+  }
+  const dataChunkSize = buffer.readUInt32LE(40);
+  if (dataChunkSize !== buffer.length - WAV_HEADER_BYTES) {
+    return { valid: false, reason: "data_chunk_size_mismatch" };
+  }
+  return { valid: true };
+}

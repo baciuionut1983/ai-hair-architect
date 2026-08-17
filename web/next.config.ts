@@ -22,8 +22,25 @@ const nextConfig: NextConfig = {
           { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
           {
             key: "Content-Security-Policy",
+            // media-src 'self' blob: -- required for cloud Voice Reply
+            // (consultation-chat.tsx's <audio> element playing a blob:
+            // URL built from the /voice-reply response). Without an
+            // explicit media-src, CSP falls back to default-src 'self',
+            // which does NOT include the blob: scheme -- Chrome then
+            // blocks the <audio> element's src at the security-policy
+            // level, before ever attempting to decode it, surfacing as
+            // "MEDIA_ELEMENT_ERROR: Media rejected by URL safety check"
+            // + the play() promise rejecting with NotSupportedError
+            // ("no supported source was found") -- both symptoms of the
+            // load being blocked, not of a malformed audio file. Same
+            // reasoning img-src 'self' data: blob: already applies to
+            // (client photo previews, also built via
+            // URL.createObjectURL) -- media-src needs the identical
+            // blob: allowance for the same reason, now that audio blobs
+            // exist too. Applies globally (source: "/:path*" below), so
+            // this fixes every language's Voice Reply, not just one.
             value:
-              "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+              "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
           },
           {
             key: "Strict-Transport-Security",

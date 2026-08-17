@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseSampleRateFromMimeType, wrapPcmAsWav } from "./tts-audio-format";
+import { isValidWavHeader, parseSampleRateFromMimeType, wrapPcmAsWav } from "./tts-audio-format";
 
 describe("parseSampleRateFromMimeType", () => {
   it("extracts the rate parameter from a Gemini-style mimeType", () => {
@@ -65,5 +65,75 @@ describe("wrapPcmAsWav", () => {
   it("defaults to 24000 Hz when no sample rate is given", () => {
     const wav = wrapPcmAsWav(Buffer.from([0, 0]));
     expect(wav.readUInt32LE(24)).toBe(24000);
+  });
+});
+
+// Playback investigation: a live production test proved cloud TTS
+// delivers real audio bytes (HTTP 200, ~801KB received, Blob correctly
+// typed audio/wav) but Chrome still refused to play it -- these tests
+// verify the actual magic bytes/chunk structure this app produces really
+// is a valid, well-formed WAV, the same way a real media parser would
+// check it, rather than trusting wrapPcmAsWav's own construction logic
+// by assumption. (The live investigation's actual root cause turned out
+// to be a missing CSP media-src directive blocking the blob: URL before
+// the browser ever got to decode it -- these tests independently confirm
+// the bytes themselves were never the problem, closing that off for good.)
+describe("isValidWavHeader", () => {
+  it("accepts every WAV this app actually produces, across sizes and sample rates", () => {
+    for (const [pcmLength, rate] of [[0, 8000], [1, 16000], [2, 22050], [1000, 24000], [1_056_526, 24000]] as const) {
+      const wav = wrapPcmAsWav(Buffer.alloc(pcmLength), rate);
+      expect(isValidWavHeader(wav)).toEqual({ valid: true });
+    }
+  });
+
+  it("rejects a buffer too short to even contain a full header", () => {
+    expect(isValidWavHeader(Buffer.alloc(10))).toEqual({ valid: false, reason: "too_short_for_header" });
+    expect(isValidWavHeader(Buffer.alloc(0))).toEqual({ valid: false, reason: "too_short_for_header" });
+  });
+
+  it("rejects raw PCM with no WAV header at all -- the exact failure mode this whole investigation was checking for", () => {
+    // Plausible-looking audio-sized data with NO RIFF/WAVE wrapping --
+    // if wrapPcmAsWav were ever accidentally skipped, this is what would
+    // reach the browser instead.
+    const rawPcm = Buffer.alloc(1000, 0x7f);
+    expect(isValidWavHeader(rawPcm)).toEqual({ valid: false, reason: "missing_riff_magic" });
+  });
+
+  it("rejects a buffer with the RIFF magic bytes corrupted", () => {
+    const wav = wrapPcmAsWav(Buffer.from([1, 2, 3, 4]), 24000);
+    wav.write("RIFX", 0, "ascii");
+    expect(isValidWavHeader(wav)).toEqual({ valid: false, reason: "missing_riff_magic" });
+  });
+
+  it("rejects a buffer with the WAVE magic bytes corrupted", () => {
+    const wav = wrapPcmAsWav(Buffer.from([1, 2, 3, 4]), 24000);
+    wav.write("WAVX", 8, "ascii");
+    expect(isValidWavHeader(wav)).toEqual({ valid: false, reason: "missing_wave_magic" });
+  });
+
+  it("rejects a buffer missing the 'fmt ' chunk marker", () => {
+    const wav = wrapPcmAsWav(Buffer.from([1, 2, 3, 4]), 24000);
+    wav.write("xxxx", 12, "ascii");
+    expect(isValidWavHeader(wav)).toEqual({ valid: false, reason: "missing_fmt_chunk" });
+  });
+
+  it("rejects a buffer missing the 'data' chunk marker", () => {
+    const wav = wrapPcmAsWav(Buffer.from([1, 2, 3, 4]), 24000);
+    wav.write("xxxx", 36, "ascii");
+    expect(isValidWavHeader(wav)).toEqual({ valid: false, reason: "missing_data_chunk" });
+  });
+
+  it("rejects a truncated file even with a technically-intact header (declared size larger than actual bytes)", () => {
+    const wav = wrapPcmAsWav(Buffer.alloc(1000), 24000);
+    const truncated = wav.subarray(0, 500); // header still says 1000 bytes of PCM follow, only 456 do
+    const result = isValidWavHeader(truncated);
+    expect(result.valid).toBe(false);
+    expect(["riff_chunk_size_mismatch", "data_chunk_size_mismatch"]).toContain(result.reason);
+  });
+
+  it("rejects a buffer whose declared RIFF chunk size doesn't match its real length", () => {
+    const wav = wrapPcmAsWav(Buffer.from([1, 2, 3, 4]), 24000);
+    wav.writeUInt32LE(999999, 4);
+    expect(isValidWavHeader(wav)).toEqual({ valid: false, reason: "riff_chunk_size_mismatch" });
   });
 });

@@ -4,6 +4,11 @@ const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const clientRepoMock = vi.hoisted(() => ({ resolveOwnedClient: vi.fn() }));
 const hardeningMock = vi.hoisted(() => ({ checkRateLimit: vi.fn() }));
 const ttsProviderMock = vi.hoisted(() => ({ synthesize: vi.fn(), lastConstructedWith: undefined as unknown }));
+// Lets one test simulate a hypothetical FUTURE regression in
+// wrapPcmAsWav itself (real implementation used by every other test)
+// to prove the route's own fail-closed WAV validation actually catches
+// a malformed result rather than shipping it to the browser.
+const audioFormatOverride = vi.hoisted(() => ({ wrapPcmAsWav: undefined as ((pcm: Buffer, rate?: number) => Buffer) | undefined }));
 
 vi.mock("@/lib/session-request-auth", () => authMock);
 vi.mock("@/lib/client-repository", () => clientRepoMock);
@@ -18,6 +23,13 @@ vi.mock("@/lib/tts-provider-gemini", () => ({
     }
   },
 }));
+vi.mock("@/lib/tts-audio-format", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/tts-audio-format")>();
+  return {
+    ...actual,
+    wrapPcmAsWav: (pcm: Buffer, rate?: number) => (audioFormatOverride.wrapPcmAsWav ?? actual.wrapPcmAsWav)(pcm, rate),
+  };
+});
 
 import { POST } from "./route";
 
@@ -56,10 +68,12 @@ beforeEach(() => {
   clientRepoMock.resolveOwnedClient.mockResolvedValue(CLIENT);
   hardeningMock.checkRateLimit.mockReturnValue({ allowed: true, remaining: 19 });
   ttsProviderMock.synthesize.mockResolvedValue(SAMPLE_AUDIO);
+  audioFormatOverride.wrapPcmAsWav = undefined;
 });
 
 afterEach(() => {
   process.env = ORIGINAL_ENV;
+  audioFormatOverride.wrapPcmAsWav = undefined;
 });
 
 describe("POST /api/v1/clients/[id]/voice-reply", () => {
@@ -165,6 +179,21 @@ describe("POST /api/v1/clients/[id]/voice-reply", () => {
     const bytes = new Uint8Array(await response.arrayBuffer());
     expect(bytes.length).toBeGreaterThan(44); // WAV header + real PCM bytes
     expect(String.fromCharCode(...bytes.subarray(0, 4))).toBe("RIFF");
+  });
+
+  // Playback investigation: proves the route's own fail-closed safety net
+  // (isValidWavHeader) actually catches a malformed result and refuses to
+  // ship it to the browser -- rather than the browser being the first
+  // place a future wrapPcmAsWav regression would ever be discovered.
+  it("fails closed with 502 rather than shipping a malformed audio body, if the WAV-wrapping ever produces an invalid header", async () => {
+    audioFormatOverride.wrapPcmAsWav = () => Buffer.from("not actually a wav file at all");
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(response.status).toBe(502);
+    const body = await response.json();
+    expect(body.error).toBe("VOICE_REPLY_FAILED");
+    expect(body.message.toLowerCase()).toContain("still available");
   });
 
   it("passes the exact text and canonical language through to the provider -- never a second, re-worded reply", async () => {
@@ -281,6 +310,17 @@ describe("production diagnostics logging", () => {
     const logged = loggedLine(errorSpy);
     expect(logged).toMatchObject({ gate: "VOICE_REPLY", status: "FAILED", stage: "provider_call", providerErrorCode: "RATE_LIMITED", providerHttpStatus: 429 });
     expect(JSON.stringify(logged)).not.toContain("private consultation reply text");
+  });
+
+  it("logs wav_validation FAILED with the specific validation reason when the wrapped audio is malformed", async () => {
+    // At least 44 bytes (so it's not rejected for being too short to even
+    // contain a header) but missing the RIFF magic bytes specifically.
+    audioFormatOverride.wrapPcmAsWav = () => Buffer.alloc(64, 0x00);
+
+    await invoke({ text: "hello", language: "en" });
+
+    const logged = loggedLine(errorSpy);
+    expect(logged).toMatchObject({ gate: "VOICE_REPLY", status: "FAILED", stage: "wav_validation", reason: "missing_riff_magic" });
   });
 
   it("logs a SUCCEEDED line on success (console.log, not console.error), with safe fields but never the reply text", async () => {
