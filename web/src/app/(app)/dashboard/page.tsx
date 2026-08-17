@@ -78,14 +78,20 @@ export default function DashboardPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        {/* break-words: at text-2xl, a real email address (one long
-            unbroken token after "Welcome back, ") is easily wider than a
-            narrow phone's content area -- without it, the title pushed
-            document width past the viewport instead of wrapping onto a
-            second line. */}
-        <h1 className="break-words text-2xl font-semibold text-foreground">
-          {user ? `Welcome back, ${user.email}` : "Welcome back"}
+        {/* Mobile-polish follow-up: break-words on a single "Welcome back,
+            <email>" line stopped the horizontal overflow, but broke the
+            email itself mid-domain ("...@gmail.c" / "om") -- readable
+            without overflowing, but not visually acceptable. Below sm:,
+            the heading is a short static string and the email moves to
+            its own line, truncated with an ellipsis (no mid-word/
+            mid-domain breaks, and no way for it to force the viewport
+            wider). Desktop keeps the original single-line presentation
+            unchanged -- only the <sm: half of each pair is new. */}
+        <h1 className="text-2xl font-semibold text-foreground">
+          <span className="sm:hidden">Welcome back!</span>
+          <span className="hidden sm:inline">{user ? `Welcome back, ${user.email}` : "Welcome back"}</span>
         </h1>
+        {user ? <p className="mt-1 truncate text-sm text-muted sm:hidden">{user.email}</p> : null}
         <p className="mt-1 text-sm text-muted">
           AI Hair Architect is being rebuilt as a full product experience. Here is what is available today.
         </p>
