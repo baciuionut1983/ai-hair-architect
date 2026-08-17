@@ -22,6 +22,8 @@ import { AUDIO_UNLOCK_DATA_URI, dataUriToBlob, resolveVoiceReplyEnableOutcome } 
 import {
   buildChatLanguageFields,
   callOnce,
+  canApplyCorrection,
+  describeApplyCorrectionFailure,
   describeSendFailure,
   extractMemoryDecisionIds,
   formatMessageTime,
@@ -99,6 +101,13 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
   const [sendError, setSendError] = useState<string | null>(null);
   const [appliedCorrectionIds, setAppliedCorrectionIds] = useState<Set<string>>(new Set());
   const [applyingId, setApplyingId] = useState<string | null>(null);
+  // Keyed by message id, like appliedCorrectionIds -- a live production
+  // report found that a failed Apply attempt (e.g. the server correctly
+  // rejecting an unrecognized proposed value) looked exactly like nothing
+  // happening at all: the request WAS sent and WAS rejected, but the
+  // client silently discarded any non-ok response. Cleared the moment a
+  // fresh attempt starts, so a retry never shows a stale error.
+  const [applyErrors, setApplyErrors] = useState<Record<string, string>>({});
   // Proposed-memory review state, keyed by the assistant message id that
   // carried the proposal. confirmedMemoryIds/rejectedMemoryIds are seeded
   // from each message's own persisted proposedMemoryDecision on every
@@ -707,11 +716,21 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
   }
 
   async function handleApplyCorrection(message: ConsultationMessageRecord) {
-    if (!analysisId || !message.proposedCorrection || applyingId) {
+    if (!canApplyCorrection({
+      hasAnalysisId: Boolean(analysisId),
+      hasProposedCorrection: Boolean(message.proposedCorrection),
+      applyingMessageId: applyingId,
+    })) {
       return;
     }
 
     setApplyingId(message.id);
+    setApplyErrors((prev) => {
+      if (!(message.id in prev)) return prev;
+      const next = { ...prev };
+      delete next[message.id];
+      return next;
+    });
     try {
       const response = await fetch(`/api/v1/analysis/${analysisId}/correct`, {
         method: "POST",
@@ -722,7 +741,26 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       if (response.ok) {
         setAppliedCorrectionIds((prev) => new Set(prev).add(message.id));
         onCorrectionApplied?.();
+        return;
       }
+
+      // Regression: a live production report -- the request WAS sent and
+      // WAS correctly rejected server-side (the AI had proposed a value
+      // outside the field's real vocabulary; see
+      // consultation-chat-provider-gemini.ts's own fix for the root
+      // cause), but this branch previously did nothing at all, so the
+      // Apply button just looked broken. Prefers the server's own
+      // `message` (the most specific, e.g. exactly which value/field was
+      // rejected and why) over the less specific `error` code, matching
+      // describeApplyCorrectionFailure's own documented precedent
+      // (sendError/memoryError/voiceError elsewhere in this file).
+      const payload = await response.json().catch(() => null) as { error?: string; message?: string } | null;
+      setApplyErrors((prev) => ({
+        ...prev,
+        [message.id]: describeApplyCorrectionFailure(response.status, payload?.message ?? payload?.error),
+      }));
+    } catch {
+      setApplyErrors((prev) => ({ ...prev, [message.id]: describeApplyCorrectionFailure(0, undefined) }));
     } finally {
       setApplyingId(null);
     }
@@ -883,6 +921,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
                 onNavigateToAnalyses={onNavigateToAnalyses}
                 applied={appliedCorrectionIds.has(message.id)}
                 applying={applyingId === message.id}
+                applyError={applyErrors[message.id]}
                 onApply={() => handleApplyCorrection(message)}
                 memoryConfirmed={confirmedMemoryIds.has(message.id)}
                 memoryRejected={rejectedMemoryIds.has(message.id)}
@@ -964,6 +1003,7 @@ function ChatBubble({
   onNavigateToAnalyses,
   applied,
   applying,
+  applyError,
   onApply,
   memoryConfirmed,
   memoryRejected,
@@ -982,6 +1022,7 @@ function ChatBubble({
   onNavigateToAnalyses: (() => void) | undefined;
   applied: boolean;
   applying: boolean;
+  applyError: string | undefined;
   onApply: () => void;
   memoryConfirmed: boolean;
   memoryRejected: boolean;
@@ -1017,6 +1058,7 @@ function ChatBubble({
           onNavigateToAnalyses={onNavigateToAnalyses}
           applied={applied}
           applying={applying}
+          applyError={applyError}
           onApply={onApply}
           t={t}
         />
@@ -1102,6 +1144,7 @@ function ProposedDirectionCard({
   onNavigateToAnalyses,
   applied,
   applying,
+  applyError,
   onApply,
   t,
 }: {
@@ -1111,6 +1154,7 @@ function ProposedDirectionCard({
   onNavigateToAnalyses: (() => void) | undefined;
   applied: boolean;
   applying: boolean;
+  applyError: string | undefined;
   onApply: () => void;
   t: (key: TranslationKey) => string;
 }) {
@@ -1136,6 +1180,12 @@ function ProposedDirectionCard({
         <Button type="button" variant="secondary" className="mt-2" loading={applying} onClick={onApply}>
           {t("consultAi.proposedDirection.applyButton")}
         </Button>
+      ) : null}
+
+      {applyError ? (
+        <Alert variant="error" className="mt-2">
+          {applyError}
+        </Alert>
       ) : null}
 
       {presentation.showNoAnalysisGuidance ? (

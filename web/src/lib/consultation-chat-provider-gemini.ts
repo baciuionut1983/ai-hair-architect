@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type, type Schema } from "@google/genai";
 
-import { CORRECTABLE_ANALYSIS_FIELDS } from "./analysis-repository";
+import { CORRECTABLE_ANALYSIS_FIELDS, CORRECTABLE_FIELD_ENUMS, type CorrectableAnalysisField } from "./analysis-repository";
 import { MEMORY_PROPOSAL_ACTION_KEYS, isMemoryProposalAction } from "./professional-memory-repository";
 import { conversationSupportedLanguages, getLanguageDefinition, isConversationLanguageCode, type LanguageCode } from "./language-registry";
 import {
@@ -347,6 +347,21 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
     if (typeof correctionValue !== "string" || correctionValue.trim().length === 0) {
       throw this.createProviderError("INVALID_FORMAT", "Gemini proposed a correction with no value.");
     }
+    // Root-cause fix (live production report): the schema only enum-
+    // constrains `field`, never `value` -- so this must reject a
+    // plausible-sounding but nonexistent value itself, exactly like the
+    // field/source checks around it, rather than let it through to be
+    // displayed as a proposal that applyAnalysisCorrection was always
+    // going to reject the moment the stylist clicked Apply. Fails this
+    // whole turn as a retryable INVALID_FORMAT (the same class of error
+    // any other malformed Gemini response already produces), rather than
+    // silently showing a doomed card.
+    if (!CORRECTABLE_FIELD_ENUMS[field as CorrectableAnalysisField].includes(correctionValue.trim())) {
+      throw this.createProviderError(
+        "INVALID_FORMAT",
+        `Gemini proposed an unrecognized value "${correctionValue}" for ${field}.`,
+      );
+    }
     if (typeof reason !== "string" || reason.trim().length === 0) {
       throw this.createProviderError("INVALID_FORMAT", "Gemini proposed a correction with no reason.");
     }
@@ -412,6 +427,24 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
 
 function buildPrompt(message: string, context: ConsultationChatContext): string {
   const lines: string[] = [SYSTEM_INSTRUCTION, "", `Client: ${context.clientFullName}`];
+
+  // Root-cause fix (live production report): a proposedCorrection's
+  // `value` was never given a concrete vocabulary anywhere in this
+  // prompt -- the model was left to invent a plausible-sounding string
+  // (e.g. "Modern Textured Crop" for targetShape) with no way to know
+  // the platform's own fixed set of real values, which
+  // applyAnalysisCorrection (and now this provider's own
+  // parseProposedCorrection, as a backstop) always rejects unless it
+  // matches exactly. Listed once, unconditionally (a correction can be
+  // proposed in a general conversation too, not only an analysis-scoped
+  // one), so rule 1 always has a real menu to choose from.
+  lines.push(
+    "",
+    "=== VALID VALUES PER CORRECTABLE FIELD (rule 1) -- a proposedCorrection's `value` MUST be EXACTLY " +
+      "one of the listed tokens for that field, verbatim, never a paraphrase, a synonym, or an invented " +
+      "term, even if it sounds more descriptive ===",
+    ...CORRECTABLE_ANALYSIS_FIELDS.map((field) => `${field}: ${CORRECTABLE_FIELD_ENUMS[field].join(", ")}`),
+  );
 
   if (context.currentAnalysis) {
     const a = context.currentAnalysis;

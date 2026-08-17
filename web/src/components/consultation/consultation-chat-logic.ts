@@ -198,3 +198,45 @@ export type NoAnalysisGuidanceActionMode = "switchTab" | "navigateToClientPage";
 export function resolveNoAnalysisGuidanceActionMode(hasNavigateCallback: boolean): NoAnalysisGuidanceActionMode {
   return hasNavigateCallback ? "switchTab" : "navigateToClientPage";
 }
+
+// The exact guard handleApplyCorrection (consultation-chat.tsx) already
+// enforced inline, extracted so it's independently testable: Apply is
+// only ever meaningful for an analysis-scoped proposal, and never while
+// another apply attempt for ANY message in this conversation is already
+// in flight (applyingMessageId tracks at most one at a time) -- the
+// single shared in-flight id is what makes a rapid double-click on the
+// same button, or a click on a different proposal's button mid-request,
+// both safe no-ops rather than a race.
+export function canApplyCorrection(input: {
+  hasAnalysisId: boolean;
+  hasProposedCorrection: boolean;
+  applyingMessageId: string | null;
+}): boolean {
+  return input.hasAnalysisId && input.hasProposedCorrection && input.applyingMessageId === null;
+}
+
+// Maps a failed apply attempt's HTTP status/server message to a clear,
+// user-facing explanation -- mirrors describeSendFailure's own
+// established convention in this file (server text, when present, is
+// already human-readable and passed through as-is; never translated,
+// same precedent as sendError/memoryError/voiceError elsewhere in this
+// component). Regression this exists to fix: a live production report
+// showed the Apply button appearing to "do nothing" on failure -- the
+// request *was* correctly rejected server-side (e.g. the AI proposed a
+// value outside the field's real vocabulary), but the client silently
+// discarded any non-ok response instead of ever surfacing why.
+export function describeApplyCorrectionFailure(status: number, serverMessage: string | undefined): string {
+  if (serverMessage && serverMessage.trim().length > 0) {
+    return serverMessage;
+  }
+  switch (status) {
+    case 404:
+      return "This analysis could not be found.";
+    case 409:
+      return "This analysis changed since this proposal was made. Please refresh and try again.";
+    case 503:
+      return "This could not be saved right now. Please try again.";
+    default:
+      return "This direction could not be applied. Please try again.";
+  }
+}

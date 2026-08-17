@@ -134,7 +134,19 @@ export const CORRECTABLE_ANALYSIS_FIELDS = [
 ] as const;
 export type CorrectableAnalysisField = (typeof CORRECTABLE_ANALYSIS_FIELDS)[number];
 
-const CORRECTABLE_FIELD_ENUMS: Record<CorrectableAnalysisField, readonly string[]> = {
+// Exported (not just used internally by applyAnalysisCorrection below) so
+// consultation-chat-provider-gemini.ts can validate a proposedCorrection's
+// `value` against the SAME real vocabulary before ever showing it to a
+// stylist -- see that file's own parseProposedCorrection for the bug this
+// closes: Gemini's responseSchema only constrains `field` and `source` to
+// an enum, never `value` (a free STRING), so nothing previously stopped a
+// plausible-sounding but nonexistent value (e.g. "Modern Textured Crop"
+// for targetShape, whose real values are precision_bob/graduated_bob/
+// long_layers/shag_mullet/pixie_crop/face_framing_cascade/
+// blunt_perimeter_texturized) from being persisted and displayed as a
+// seemingly-complete, applicable proposal that was always going to be
+// rejected the moment anyone actually clicked Apply.
+export const CORRECTABLE_FIELD_ENUMS: Record<CorrectableAnalysisField, readonly string[]> = {
   hairType: HAIR_TYPES,
   density: LEVELS,
   porosity: LEVELS,

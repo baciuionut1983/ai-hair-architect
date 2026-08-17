@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildChatLanguageFields,
   callOnce,
+  canApplyCorrection,
+  describeApplyCorrectionFailure,
   describeSendFailure,
   extractMemoryDecisionIds,
   isSendableMessage,
@@ -268,5 +270,63 @@ describe("resolveNoAnalysisGuidanceActionMode", () => {
 
   it("falls back to the cross-page Link only when no callback is available at all", () => {
     expect(resolveNoAnalysisGuidanceActionMode(false)).toBe("navigateToClientPage");
+  });
+});
+
+// Regression: a live production report showed the Apply button appearing
+// to do nothing at all -- traced to two separate bugs, one of which is
+// this guard's own exact condition (handleApplyCorrection,
+// consultation-chat.tsx) never having been independently verified.
+describe("canApplyCorrection", () => {
+  it("allows applying when analysis-scoped, a proposal exists, and nothing else is already in flight", () => {
+    expect(canApplyCorrection({ hasAnalysisId: true, hasProposedCorrection: true, applyingMessageId: null })).toBe(true);
+  });
+
+  it("blocks a second apply attempt while any apply is already in flight -- the double-click/race guard", () => {
+    expect(canApplyCorrection({ hasAnalysisId: true, hasProposedCorrection: true, applyingMessageId: "other-message-id" })).toBe(false);
+  });
+
+  it("blocks applying in a general conversation with no analysisId", () => {
+    expect(canApplyCorrection({ hasAnalysisId: false, hasProposedCorrection: true, applyingMessageId: null })).toBe(false);
+  });
+
+  it("blocks applying a message with no proposedCorrection at all", () => {
+    expect(canApplyCorrection({ hasAnalysisId: true, hasProposedCorrection: false, applyingMessageId: null })).toBe(false);
+  });
+});
+
+// Regression: the exact live bug -- the server correctly rejected an
+// AI-proposed value that wasn't one of the field's real enum values
+// (with a specific, useful message), but the client discarded any
+// non-ok response silently. These lock in that a real server message is
+// always preferred, and that every status still gets a real, honest
+// fallback when the server doesn't provide one.
+describe("describeApplyCorrectionFailure", () => {
+  it("prefers the server's own message when present -- the specific, useful case", () => {
+    expect(describeApplyCorrectionFailure(400, '"Modern Textured Crop" is not a valid value for targetShape.')).toBe(
+      '"Modern Textured Crop" is not a valid value for targetShape.',
+    );
+  });
+
+  it("falls back to a clear 404 message when the server gives no message text", () => {
+    expect(describeApplyCorrectionFailure(404, undefined)).toBe("This analysis could not be found.");
+  });
+
+  it("falls back to a clear 409 (concurrency conflict) message", () => {
+    expect(describeApplyCorrectionFailure(409, undefined)).toBe(
+      "This analysis changed since this proposal was made. Please refresh and try again.",
+    );
+  });
+
+  it("falls back to a clear 503 message", () => {
+    expect(describeApplyCorrectionFailure(503, undefined)).toBe("This could not be saved right now. Please try again.");
+  });
+
+  it("never returns an empty string, even for an unrecognized status with no server message (e.g. the fetch itself throwing)", () => {
+    expect(describeApplyCorrectionFailure(0, undefined)).toBe("This direction could not be applied. Please try again.");
+  });
+
+  it("ignores a blank/whitespace-only server message rather than displaying nothing meaningful", () => {
+    expect(describeApplyCorrectionFailure(404, "   ")).toBe("This analysis could not be found.");
   });
 });

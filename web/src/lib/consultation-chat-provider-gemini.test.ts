@@ -136,6 +136,59 @@ describe("GeminiConsultationChatProvider", () => {
     await expect(provider.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({ code: "INVALID_FORMAT" });
   });
 
+  // Regression: the exact live production bug. Gemini's own responseSchema
+  // only enum-constrains `field` and `source`, never `value` (a free
+  // STRING) -- so nothing previously stopped a plausible-sounding but
+  // nonexistent value ("Modern Textured Crop" is not one of
+  // targetShape's real values: precision_bob/graduated_bob/long_layers/
+  // shag_mullet/pixie_crop/face_framing_cascade/blunt_perimeter_texturized)
+  // from being persisted and shown to the stylist as a seemingly-complete
+  // proposal that applyAnalysisCorrection was always going to reject the
+  // moment Apply was clicked -- with the client silently discarding that
+  // rejection (see the separate handleApplyCorrection fix). This closes
+  // the gap at its source: an unrecognized value now fails the whole
+  // turn immediately, the same way an unrecognized field already did.
+  it("rejects a proposed correction whose value is not one of the field's real enum values (the live bug)", async () => {
+    const response = JSON.stringify({
+      reply: "I'd suggest a Modern Textured Crop for her.",
+      needsClarification: false,
+      proposedCorrection: { field: "targetShape", value: "Modern Textured Crop", reason: "...", source: "stylist_confirmed" },
+    });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    await expect(provider.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({ code: "INVALID_FORMAT" });
+  });
+
+  it("accepts a proposed correction whose value IS one of the field's real enum values", async () => {
+    const response = JSON.stringify({
+      reply: "I'd suggest a graduated bob for her.",
+      needsClarification: false,
+      proposedCorrection: { field: "targetShape", value: "graduated_bob", reason: "Preserves more perimeter weight.", source: "stylist_confirmed" },
+    });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    const result = await provider.respond("msg", context(), new AbortController().signal);
+
+    expect(result.proposedCorrection).toEqual({
+      field: "targetShape",
+      value: "graduated_bob",
+      reason: "Preserves more perimeter weight.",
+      source: "stylist_confirmed",
+    });
+  });
+
+  it("sends the real allowed values for targetShape in the prompt, so the model has a concrete menu instead of guessing", async () => {
+    const sink: { input?: GeminiChatGenerateInput } = {};
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+    );
+
+    await provider.respond("msg", context(), new AbortController().signal);
+
+    expect(sink.input?.prompt).toContain("targetShape: precision_bob, graduated_bob");
+  });
+
   // A: the AI can recognize a "remember this" professional observation and
   // propose it as a memory candidate -- never create it itself.
   it("parses a reply with a proposed memory candidate, never applying anything itself", async () => {
