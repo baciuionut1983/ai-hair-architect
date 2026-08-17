@@ -101,7 +101,14 @@ export function LanguageCombobox({
         <ChevronDown className="h-4 w-4 shrink-0 text-muted" aria-hidden="true" />
       </button>
       {open ? (
-        <div className="absolute z-20 mt-1 w-64 max-w-[80vw] rounded-xl border border-border bg-surface shadow-lg">
+        // w-56 sm:w-64: the trigger sits close to the Topbar's right edge
+        // (squeezed between it and the Logout button by justify-between --
+        // see topbar.tsx), and this panel is left-anchored to the
+        // trigger -- at w-64/256px on a 320px-wide phone there wasn't
+        // enough room left of that anchor point for the panel to stay
+        // within the viewport. w-56/224px reliably fits in that exact
+        // squeezed position; max-w-[80vw] remains as an outer safety cap.
+        <div className="absolute z-20 mt-1 w-56 max-w-[80vw] rounded-xl border border-border bg-surface shadow-lg sm:w-64">
           <div className="p-2">
             <Input
               ref={inputRef}
