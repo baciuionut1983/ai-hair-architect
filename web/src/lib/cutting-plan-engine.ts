@@ -113,6 +113,48 @@ export function generateTechnicalCutPlan(input: AnalysisEngineInput): TechnicalC
     notes.push("Layered perimeter keeps the silhouette mobile without collapsing length.");
   }
 
+  // Production regression (AI Proposed Look Apply-consistency audit): these
+  // three targetShape values existed in the enum and were fully assignable
+  // via applyAnalysisCorrection, but had no branch here -- recomputePlans
+  // genuinely ran (single authoritative engine, atomic with the field
+  // update), yet silently fell through to the same neutral defaults as
+  // "no targetShape at all", so the displayed haircut plan never visibly
+  // changed after applying one of these three shapes.
+  if (profile.targetShape === "blunt_perimeter_texturized") {
+    selection.structuralTechnique = "one_length";
+    selection.cuttingTechnique = "blunt_line";
+    selection.texturizingTechnique = "slice_and_slide";
+    elevation = "0_deg_blunt";
+    distribution = "natural_fall";
+    guideline = "visual_perimeter";
+    professionalReasonParts.push("A blunt one-length perimeter preserves maximum density and a graphic silhouette line.");
+    notes.push("Slice-and-slide texture internally after the blunt line is set, so movement is added without softening the perimeter's visual weight.");
+  }
+
+  if (profile.targetShape === "shag_mullet") {
+    selection.structuralTechnique = "precision_layering";
+    selection.cuttingTechnique = "elevation_cutting";
+    selection.texturizingTechnique = "razor_texturizing";
+    elevation = "180_deg_overdirection";
+    distribution = "shifting_line";
+    guideline = "multiple_reference";
+    sectioning = "horseshoe_crown";
+    professionalReasonParts.push("Elevation-driven overdirection with razored ends builds the shag/mullet's signature disconnection between crown and length.");
+    notes.push("Overdirect the crown to establish the top/length contrast that defines the silhouette.");
+  }
+
+  if (profile.targetShape === "pixie_crop") {
+    selection.structuralTechnique = "compact_graduation";
+    selection.cuttingTechnique = "scissor_over_comb";
+    selection.texturizingTechnique = "channel_cutting";
+    elevation = "45_deg_graduation";
+    distribution = "overdirected_back";
+    guideline = "stationary";
+    sectioning = "horseshoe_fringe";
+    professionalReasonParts.push("Compact graduation with a fringe-isolated section keeps crown volume controlled while defining the face-framing fringe.");
+    notes.push("Channel-cut the crown for piecey texture once the graduated base is established.");
+  }
+
   if (profile.faceShape === "round" || profile.faceShape === "square") {
     elevation = "135_deg_long_layer";
     distribution = "overdirected_forward";
@@ -276,6 +318,18 @@ function selectTechnique(profile: TechnicalProfile): TechniqueSelection {
 
   if (profile.targetShape === "long_layers" || profile.targetShape === "face_framing_cascade") {
     return { structuralTechnique: "precision_layering", cuttingTechnique: "slice_cutting" };
+  }
+
+  if (profile.targetShape === "blunt_perimeter_texturized") {
+    return { structuralTechnique: "one_length", cuttingTechnique: "blunt_line" };
+  }
+
+  if (profile.targetShape === "shag_mullet") {
+    return { structuralTechnique: "precision_layering", cuttingTechnique: "elevation_cutting" };
+  }
+
+  if (profile.targetShape === "pixie_crop") {
+    return { structuralTechnique: "compact_graduation", cuttingTechnique: "scissor_over_comb" };
   }
 
   return { structuralTechnique: "internal_layering", cuttingTechnique: "scissor_over_comb" };

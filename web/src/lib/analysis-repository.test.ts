@@ -520,6 +520,100 @@ describe("applyAnalysisCorrection", () => {
     const allowed: Array<"stylist_confirmed" | "client_reported"> = ["stylist_confirmed", "client_reported"];
     expect(allowed).toHaveLength(2);
   });
+
+  // Regression (AI Proposed Look Apply-consistency audit): a live production
+  // report showed the card correctly flip to "Applied" after applying
+  // "Blunt Perimeter Texturized," but the displayed Haircut plan still
+  // showed the old Internal Layering/Scissor Over Comb architecture. Root
+  // cause was in cutting-plan-engine.ts (three TargetShape values had no
+  // branch, see cutting-plan-engine.test.ts), not here -- but this proves
+  // the actual production path (applyAnalysisCorrection, the real engine,
+  // no mocked recomputation) produces a genuinely different, correct plan,
+  // and that the corrected field and its recomputed plan are written in the
+  // exact same tx.analysis.update() call, so no intermediate state can ever
+  // have the new targetShape with the old plan (or vice versa).
+  it("regenerates the Haircut plan's technical coordinates when targetShape is corrected -- and writes the corrected field and the recomputed plan in the SAME update call (production regression: Blunt Perimeter Texturized applied, plan stayed on the neutral defaults)", async () => {
+    prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({ goal: "reshape", targetShape: null }));
+    prismaMocks.analysisUpdate.mockImplementation(async ({ data }) => analysisRow({
+      targetShape: data.targetShape,
+      technicalCutPlan: data.technicalCutPlan === Prisma.JsonNull ? null : data.technicalCutPlan,
+    }));
+
+    const result = await applyAnalysisCorrection("owner-1", "analysis-1", {
+      field: "targetShape",
+      value: "blunt_perimeter_texturized",
+      source: "stylist_confirmed",
+    });
+
+    const writtenData = prismaMocks.analysisUpdate.mock.calls[0][0].data;
+    expect(writtenData.targetShape).toBe("blunt_perimeter_texturized");
+    expect(writtenData.technicalCutPlan).toMatchObject({
+      structuralTechnique: "one_length",
+      cuttingTechnique: "blunt_line",
+      texturizingTechnique: "slice_and_slide",
+      elevation: "0_deg_blunt",
+      distribution: "natural_fall",
+      guideline: "visual_perimeter",
+    });
+    // Not the neutral defaults the production report showed staying put.
+    expect(writtenData.technicalCutPlan.structuralTechnique).not.toBe("internal_layering");
+    expect(writtenData.technicalCutPlan.cuttingTechnique).not.toBe("scissor_over_comb");
+    expect(result?.targetShape).toBe("blunt_perimeter_texturized");
+    expect(result?.technicalCutPlan?.structuralTechnique).toBe("one_length");
+  });
+
+  it("leaves the Haircut plan's technical coordinates unchanged when the corrected field does not affect the cutting-plan engine's inputs (unrelated correction must not perturb unrelated derived output)", async () => {
+    prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({ goal: "reshape", targetShape: "graduated_bob", scalpCondition: null }));
+    prismaMocks.analysisUpdate.mockImplementation(async ({ data }) => analysisRow({
+      scalpCondition: data.scalpCondition,
+      technicalCutPlan: data.technicalCutPlan === Prisma.JsonNull ? null : data.technicalCutPlan,
+    }));
+
+    await applyAnalysisCorrection("owner-1", "analysis-1", {
+      field: "scalpCondition",
+      value: "oily",
+      source: "client_reported",
+    });
+
+    const writtenData = prismaMocks.analysisUpdate.mock.calls[0][0].data;
+    expect(writtenData.scalpCondition).toBe("oily");
+    // graduated_bob's own coordinates (see cutting-plan-engine.test.ts) --
+    // unaffected by a scalpCondition-only correction.
+    expect(writtenData.technicalCutPlan).toMatchObject({
+      structuralTechnique: "graduation",
+      cuttingTechnique: "slice_cutting",
+      elevation: "45_deg_graduation",
+    });
+  });
+
+  it("retries serialization conflicts for applyAnalysisCorrection just like other Analysis mutations, and the retried attempt still writes the corrected field and its recomputed plan together", async () => {
+    const conflict = new Prisma.PrismaClientKnownRequestError("serialization conflict", {
+      code: "P2034",
+      clientVersion: "test",
+    });
+    let attempts = 0;
+    prismaMocks.analysisFindFirst.mockResolvedValue(analysisRow({ goal: "reshape", targetShape: null }));
+    prismaMocks.analysisUpdate.mockImplementation(async ({ data }) => analysisRow({
+      targetShape: data.targetShape,
+      technicalCutPlan: data.technicalCutPlan === Prisma.JsonNull ? null : data.technicalCutPlan,
+    }));
+    prismaMocks.transaction.mockImplementation(async (operation) => {
+      attempts += 1;
+      const result = await operation(tx);
+      if (attempts < 3) throw conflict;
+      return result;
+    });
+
+    const result = await applyAnalysisCorrection("owner-1", "analysis-1", {
+      field: "targetShape",
+      value: "pixie_crop",
+      source: "stylist_confirmed",
+    });
+
+    expect(prismaMocks.transaction).toHaveBeenCalledTimes(3);
+    expect(result?.targetShape).toBe("pixie_crop");
+    expect(result?.technicalCutPlan?.structuralTechnique).toBe("compact_graduation");
+  });
 });
 
 describe("listAnalysisCorrections", () => {
