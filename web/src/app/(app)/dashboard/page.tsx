@@ -78,7 +78,12 @@ export default function DashboardPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="text-2xl font-semibold text-foreground">
+        {/* break-words: at text-2xl, a real email address (one long
+            unbroken token after "Welcome back, ") is easily wider than a
+            narrow phone's content area -- without it, the title pushed
+            document width past the viewport instead of wrapping onto a
+            second line. */}
+        <h1 className="break-words text-2xl font-semibold text-foreground">
           {user ? `Welcome back, ${user.email}` : "Welcome back"}
         </h1>
         <p className="mt-1 text-sm text-muted">

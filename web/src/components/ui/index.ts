@@ -36,7 +36,7 @@ export type { LanguageSelectorProps } from "./language-selector";
 export { getSelectClasses, Select } from "./select";
 export type { SelectProps } from "./select";
 
-export { getSidebarItemClasses, Sidebar } from "./sidebar";
+export { getSidebarItemClasses, getSidebarNavClasses, Sidebar } from "./sidebar";
 export type { SidebarNavItem, SidebarProps } from "./sidebar";
 
 export { getTabsListClasses, getTabTriggerClasses, Tabs } from "./tabs";

@@ -11,6 +11,8 @@ import { UiLanguageProvider, useUiLanguage } from "@/lib/ui-language-context";
 import { ErrorState, LanguageSelector, LoadingState, Sidebar, Topbar } from "@/components/ui";
 import type { SidebarNavItem } from "@/components/ui";
 
+import { getMainContentClasses } from "./main-content-classes";
+
 type AuthState =
   | { status: "loading" }
   | { status: "error" }
@@ -197,7 +199,7 @@ function AuthenticatedShell({
             />
           }
         />
-        <main className="flex-1 p-4 md:p-8">{children}</main>
+        <main className={getMainContentClasses()}>{children}</main>
       </div>
     </div>
   );

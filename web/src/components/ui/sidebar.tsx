@@ -26,6 +26,15 @@ export function getSidebarItemClasses(isActive: boolean, className?: string): st
   );
 }
 
+// Exported (not just used inline below) so the safe-area fix itself is
+// independently testable without a rendering environment: on the mobile
+// drawer, this keeps the last nav item from landing flush against, or
+// under, iPhone's home-indicator area. A no-op on desktop/non-notched
+// devices, where env(safe-area-inset-bottom) resolves to 0.
+export function getSidebarNavClasses(): string {
+  return "flex flex-col gap-1 p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)]";
+}
+
 export interface SidebarProps {
   items: SidebarNavItem[];
   mobileOpen: boolean;
@@ -49,7 +58,7 @@ export function Sidebar({ items, mobileOpen, onMobileClose }: SidebarProps) {
   }, [mobileOpen, onMobileClose]);
 
   const nav = (
-    <nav className="flex flex-col gap-1 p-4" aria-label="Main navigation">
+    <nav className={getSidebarNavClasses()} aria-label="Main navigation">
       {items.map((item) => {
         const isActive = pathname === item.href;
         return (

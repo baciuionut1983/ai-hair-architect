@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 
+import { APP_VIEWPORT } from "./viewport-config";
+
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
@@ -16,6 +18,8 @@ export const metadata: Metadata = {
   title: "AI Hair Architect",
   description: "AI Hair Architect - Next.js migration stage",
 };
+
+export const viewport = APP_VIEWPORT;
 
 // Deliberately static: lang/dir here are the pre-auth default (English,
 // LTR) for every page, public or authenticated. An earlier version of
