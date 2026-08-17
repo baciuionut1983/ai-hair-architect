@@ -187,7 +187,11 @@ function AuthenticatedShell({
               value={uiLanguage}
               onChange={onUiLanguageChange}
               label={t("language.label")}
-              className="w-40"
+              // Narrower floor on small phones (a fixed w-40/160px left no
+              // room to shrink, contributing to Topbar-row horizontal
+              // overflow) -- the trigger's own truncate handles a long
+              // native-name label gracefully at either size.
+              className="w-28 sm:w-40"
               searchPlaceholder={t("language.search")}
               noMatchesLabel={t("language.noMatches")}
             />

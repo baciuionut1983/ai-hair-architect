@@ -160,7 +160,7 @@ export default function ClientDetailPage() {
           <ArrowLeft className="h-4 w-4" aria-hidden="true" />
           Back to clients
         </Link>
-        <h1 className="mt-2 text-2xl font-semibold text-foreground">{client.fullName}</h1>
+        <h1 className="mt-2 break-words text-2xl font-semibold text-foreground">{client.fullName}</h1>
       </div>
 
       <Tabs items={TAB_ITEMS} value={activeTab} onChange={setActiveTab} />
@@ -218,7 +218,11 @@ function OverviewTab({ client }: { client: ClientRecord }) {
       {client.email ? (
         <div>
           <p className="text-xs text-muted">Email</p>
-          <p className="text-sm text-foreground">{client.email}</p>
+          {/* break-words: an email address has no spaces to wrap at --
+              without it, a long one would force this card (and its
+              ancestors) wider than a narrow phone's viewport instead of
+              wrapping onto a second line. */}
+          <p className="break-words text-sm text-foreground">{client.email}</p>
         </div>
       ) : null}
       {client.phone ? (
@@ -230,7 +234,7 @@ function OverviewTab({ client }: { client: ClientRecord }) {
       {client.notes ? (
         <div>
           <p className="text-xs text-muted">Notes</p>
-          <p className="whitespace-pre-wrap text-sm text-foreground">{client.notes}</p>
+          <p className="whitespace-pre-wrap break-words text-sm text-foreground">{client.notes}</p>
         </div>
       ) : null}
       {!client.email && !client.phone && !client.notes ? (
@@ -288,7 +292,7 @@ function HistoryTab({ state, clientId }: { state: HistoryState; clientId: string
       <HistorySection icon={FlaskConical} title="Formulas" isEmpty={formulas.length === 0} emptyLabel="No formulas yet.">
         <div className="flex flex-col gap-2">
           {formulas.map((formula) => (
-            <Card key={formula.id}>
+            <Card key={formula.id} className="break-words">
               <p className="font-medium text-foreground">{formula.formulaName}</p>
               <p className="mt-1 text-sm text-muted">{formula.formulaDetails}</p>
               <p className="mt-2 text-xs text-muted">{formatDate(formula.createdAt)}</p>
@@ -300,7 +304,7 @@ function HistoryTab({ state, clientId }: { state: HistoryState; clientId: string
       <HistorySection icon={Sparkles} title="Treatments" isEmpty={treatments.length === 0} emptyLabel="No treatments yet.">
         <div className="flex flex-col gap-2">
           {treatments.map((treatment) => (
-            <Card key={treatment.id}>
+            <Card key={treatment.id} className="break-words">
               <p className="font-medium text-foreground">{treatment.treatmentName}</p>
               <p className="mt-1 text-sm text-muted">{treatment.treatmentDetails}</p>
               <p className="mt-2 text-xs text-muted">{formatDate(treatment.createdAt)}</p>
@@ -395,7 +399,7 @@ function AppointmentsTab({ state }: { state: AppointmentsState }) {
   return (
     <div className="flex flex-col gap-2">
       {state.appointments.map((appointment) => (
-        <Card key={appointment.id}>
+        <Card key={appointment.id} className="break-words">
           <p className="font-medium text-foreground">{appointment.title}</p>
           <p className="mt-1 text-sm text-muted">{formatDateTime(appointment.startsAt)}</p>
           {appointment.notes ? <p className="mt-2 text-sm text-muted">{appointment.notes}</p> : null}

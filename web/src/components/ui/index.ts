@@ -39,7 +39,7 @@ export type { SelectProps } from "./select";
 export { getSidebarItemClasses, Sidebar } from "./sidebar";
 export type { SidebarNavItem, SidebarProps } from "./sidebar";
 
-export { getTabTriggerClasses, Tabs } from "./tabs";
+export { getTabsListClasses, getTabTriggerClasses, Tabs } from "./tabs";
 export type { TabItem, TabsProps } from "./tabs";
 
 export { getTextareaClasses, Textarea } from "./textarea";

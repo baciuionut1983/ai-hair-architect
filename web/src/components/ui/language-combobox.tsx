@@ -82,7 +82,13 @@ export function LanguageCombobox({
   }
 
   return (
-    <div ref={containerRef} className={cn("relative", className)}>
+    // min-w-0: this sits inside flex rows (Topbar, Consult AI's header)
+    // that need it to actually shrink below its caller-given width on a
+    // narrow phone, rather than forcing the row wider than the viewport
+    // -- the trigger's own truncate below already handles a long
+    // selected-language name gracefully once shrinking is allowed to
+    // happen at all.
+    <div ref={containerRef} className={cn("relative min-w-0", className)}>
       <button
         type="button"
         aria-label={ariaLabel}

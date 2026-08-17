@@ -61,7 +61,12 @@ export function Alert({ variant = "info", title, className, children, ...rest }:
   return (
     <div className={getAlertClasses(variant, className)} role="alert" {...rest}>
       {renderAlertIcon(variant)}
-      <div className="flex flex-col gap-0.5 text-foreground">
+      {/* min-w-0: a flex item's default min-width is "auto" (content's
+          natural size) -- without it, a long unbroken message (a real
+          risk here, since several of these render provider/network error
+          text) could refuse to shrink to the alert's own width and force
+          it, and its ancestors, wider than the viewport. */}
+      <div className="flex min-w-0 flex-col gap-0.5 break-words text-foreground">
         {title ? <p className="font-medium">{title}</p> : null}
         {children ? <div className="text-muted">{children}</div> : null}
       </div>

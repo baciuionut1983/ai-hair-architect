@@ -96,7 +96,7 @@ export function TeachAiPanel({ clientId }: { clientId: string }) {
 
   return (
     <div className="rounded-xl border border-border bg-surface-alt p-3">
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
         <strong className="text-sm">Teach the AI</strong>
         <Button type="button" variant="secondary" onClick={toggleRecording}>
           {recording ? <Square className="h-4 w-4" aria-hidden="true" /> : <Mic className="h-4 w-4" aria-hidden="true" />}

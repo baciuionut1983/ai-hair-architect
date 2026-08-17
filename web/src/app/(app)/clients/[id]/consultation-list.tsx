@@ -21,7 +21,7 @@ export function ConsultationList({
   return (
     <div className="flex flex-col gap-2">
       {consultations.map((consultation) => (
-        <Card key={consultation.id} className="flex flex-col gap-2">
+        <Card key={consultation.id} className="flex flex-col gap-2 break-words">
           <p className="text-xs text-muted">{new Date(consultation.createdAt).toLocaleDateString()}</p>
           <p className="text-sm text-foreground">{consultation.summary}</p>
           {consultation.nextSteps.length > 0 ? (

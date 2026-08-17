@@ -731,7 +731,13 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
       {voiceFlowStatus ? <p className="text-xs text-muted">{voiceFlowStatus}</p> : null}
 
       <form onSubmit={handleSubmit} className="flex items-end gap-2">
-        <div className="flex-1">
+        {/* min-w-0: a flex item's default min-width is "auto" (its
+            content's natural size), not 0 -- without it, the textarea
+            could refuse to shrink below some browser-internal minimum on
+            a narrow phone and push the mic/Send buttons partly off
+            screen instead of the composer row fitting in the available
+            width. */}
+        <div className="min-w-0 flex-1">
           <Textarea
             dir="auto"
             value={draft}
@@ -821,7 +827,7 @@ function ChatBubble({
       <span className="px-1 text-xs text-muted">{formatMessageTime(message.createdAt)}</span>
 
       {message.proposedCorrection ? (
-        <div className="mt-1 max-w-[85%] rounded-xl border border-border bg-surface p-3">
+        <div className="mt-1 max-w-[85%] break-words rounded-xl border border-border bg-surface p-3">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="warning">Proposed correction</Badge>
             <span className="text-xs text-muted">not applied yet</span>
@@ -849,7 +855,7 @@ function ChatBubble({
       ) : null}
 
       {message.proposedMemory ? (
-        <div className="mt-1 max-w-[85%] rounded-xl border border-border bg-surface p-3">
+        <div className="mt-1 max-w-[85%] break-words rounded-xl border border-border bg-surface p-3">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="warning">Proposed memory</Badge>
             <span className="text-xs text-muted">
