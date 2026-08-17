@@ -618,3 +618,57 @@ describe("GeminiConsultationChatProvider", () => {
     }
   });
 });
+
+// AI Proposed Look Phase 1 honesty check: `reply` must never claim a
+// correction was already applied, since nothing in this system ever
+// applies one automatically -- see rule 1b and
+// containsCorrectionAlreadyAppliedWording's own comments in
+// consultation-chat-provider-gemini.ts.
+describe("correction-already-applied honesty check", () => {
+  it("rejects a reply that claims a correction was already set/updated, even when proposedCorrection is present", async () => {
+    const response = JSON.stringify({
+      reply: "I've updated her target shape to a graduated bob.",
+      needsClarification: false,
+      proposedCorrection: { field: "targetShape", value: "graduated_bob", reason: "Preserves more perimeter weight.", source: "stylist_confirmed" },
+    });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    await expect(
+      provider.respond("I want to preserve more perimeter.", context(), new AbortController().signal),
+    ).rejects.toMatchObject({ code: "INVALID_FORMAT" });
+  });
+
+  it("rejects the same false claim even when proposedCorrection is absent entirely", async () => {
+    const response = JSON.stringify({
+      reply: "Done -- her file now shows a graduated bob as the target shape.",
+      needsClarification: false,
+    });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    await expect(
+      provider.respond("What did you just do?", context(), new AbortController().signal),
+    ).rejects.toMatchObject({ code: "INVALID_FORMAT" });
+  });
+
+  it("succeeds with honest proposal wording that matches rule 1b's own suggested phrasing", async () => {
+    const response = JSON.stringify({
+      reply: "I'd suggest a graduated bob for her -- I've prepared this direction below for you to review and apply.",
+      needsClarification: false,
+      proposedCorrection: { field: "targetShape", value: "graduated_bob", reason: "Preserves more perimeter weight.", source: "stylist_confirmed" },
+    });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    const result = await provider.respond("I want to preserve more perimeter.", context(), new AbortController().signal);
+
+    expect(result.proposedCorrection).toEqual({ field: "targetShape", value: "graduated_bob", reason: "Preserves more perimeter weight.", source: "stylist_confirmed" });
+  });
+
+  it("succeeds normally for an ordinary reply with no correction and no applied-claim wording", async () => {
+    const response = JSON.stringify({ reply: "Sure, tell me more about what she's looking for.", needsClarification: false });
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, fixedClient(response));
+
+    const result = await provider.respond("hi", context(), new AbortController().signal);
+
+    expect(result.reply).toBe("Sure, tell me more about what she's looking for.");
+  });
+});

@@ -150,3 +150,32 @@ export function describeSendFailure(status: number): string {
       return "Something went wrong sending your message. Please try again.";
   }
 }
+
+export interface ProposedDirectionPresentation {
+  status: "pending" | "applied";
+  showApplyButton: boolean;
+  showNoAnalysisGuidance: boolean;
+}
+
+// Decides what the "AI Proposed Direction" card shows, purely from state --
+// kept separate from the JSX (ChatBubble in consultation-chat.tsx) so the
+// exact branching is independently testable without a rendering
+// environment. This is where the card's own honesty requirement lives:
+// "impossible to confuse a proposal with an already-saved change".
+// `applied` must only ever be true after a real, successful
+// POST /api/v1/analysis/{id}/correct (see handleApplyCorrection) -- never
+// assumed from anything else, so this function never has to guess.
+export function resolveProposedDirectionPresentation(input: {
+  hasAnalysisId: boolean;
+  applied: boolean;
+}): ProposedDirectionPresentation {
+  return {
+    status: input.applied ? "applied" : "pending",
+    showApplyButton: input.hasAnalysisId && !input.applied,
+    // A general conversation (no analysisId) has no Analysis row to apply
+    // to yet -- Phase 2 territory (AnalysisProposal persistence). Shown
+    // whenever there's no analysisId to target, regardless of `applied`,
+    // which in practice can only ever be true when hasAnalysisId is too.
+    showNoAnalysisGuidance: !input.hasAnalysisId,
+  };
+}

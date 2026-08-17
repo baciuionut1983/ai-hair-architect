@@ -38,6 +38,14 @@ export type TranslationKey =
   | "consultAi.aiResponding"
   | "consultAi.speaking"
   | "consultAi.generatingVoice"
+  | "consultAi.proposedDirection.badge"
+  | "consultAi.proposedDirection.directionLabel"
+  | "consultAi.proposedDirection.whyLabel"
+  | "consultAi.proposedDirection.statusPending"
+  | "consultAi.proposedDirection.statusApplied"
+  | "consultAi.proposedDirection.applyButton"
+  | "consultAi.proposedDirection.noAnalysisExplain"
+  | "consultAi.proposedDirection.noAnalysisLink"
   | "common.on"
   | "common.off";
 
@@ -64,6 +72,15 @@ const EN: Dictionary = {
   "consultAi.aiResponding": "AI responding...",
   "consultAi.speaking": "Speaking...",
   "consultAi.generatingVoice": "Generating voice...",
+  "consultAi.proposedDirection.badge": "AI Proposed Direction",
+  "consultAi.proposedDirection.directionLabel": "Proposed direction",
+  "consultAi.proposedDirection.whyLabel": "Why AI recommends this",
+  "consultAi.proposedDirection.statusPending": "Proposed — not applied yet",
+  "consultAi.proposedDirection.statusApplied": "Applied to this client's analysis",
+  "consultAi.proposedDirection.applyButton": "Apply this direction",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "This is a professional suggestion only — it hasn't been saved to a plan yet. Applying it needs a specific analysis.",
+  "consultAi.proposedDirection.noAnalysisLink": "Open this client's analyses",
   "common.on": "On",
   "common.off": "Off",
 };
@@ -89,6 +106,15 @@ const RO: Dictionary = {
   "consultAi.aiResponding": "AI răspunde...",
   "consultAi.speaking": "Vorbește...",
   "consultAi.generatingVoice": "Se generează vocea...",
+  "consultAi.proposedDirection.badge": "Direcție propusă de AI",
+  "consultAi.proposedDirection.directionLabel": "Direcție propusă",
+  "consultAi.proposedDirection.whyLabel": "De ce recomandă AI asta",
+  "consultAi.proposedDirection.statusPending": "Propus — nu este încă aplicat",
+  "consultAi.proposedDirection.statusApplied": "Aplicat la analiza acestui client",
+  "consultAi.proposedDirection.applyButton": "Aplică această direcție",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "Aceasta este doar o sugestie profesională — nu a fost încă salvată într-un plan. Pentru a o aplica, este nevoie de o analiză specifică.",
+  "consultAi.proposedDirection.noAnalysisLink": "Deschide analizele acestui client",
   "common.on": "Activ",
   "common.off": "Inactiv",
 };
@@ -114,6 +140,15 @@ const AR: Dictionary = {
   "consultAi.aiResponding": "الذكاء الاصطناعي يرد...",
   "consultAi.speaking": "يتحدث...",
   "consultAi.generatingVoice": "جارٍ إنشاء الصوت...",
+  "consultAi.proposedDirection.badge": "اتجاه مقترح من الذكاء الاصطناعي",
+  "consultAi.proposedDirection.directionLabel": "الاتجاه المقترح",
+  "consultAi.proposedDirection.whyLabel": "سبب توصية الذكاء الاصطناعي بهذا",
+  "consultAi.proposedDirection.statusPending": "مقترح — لم يُطبَّق بعد",
+  "consultAi.proposedDirection.statusApplied": "تم تطبيقه على تحليل هذا العميل",
+  "consultAi.proposedDirection.applyButton": "تطبيق هذا الاتجاه",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "هذا مجرد اقتراح مهني — لم يُحفظ بعد في خطة. لتطبيقه، يلزم وجود تحليل محدد.",
+  "consultAi.proposedDirection.noAnalysisLink": "افتح تحليلات هذا العميل",
   "common.on": "مفعّل",
   "common.off": "غير مفعّل",
 };
@@ -139,6 +174,15 @@ const IT: Dictionary = {
   "consultAi.aiResponding": "L'IA sta rispondendo...",
   "consultAi.speaking": "Sta parlando...",
   "consultAi.generatingVoice": "Generazione voce...",
+  "consultAi.proposedDirection.badge": "Direzione proposta dall'IA",
+  "consultAi.proposedDirection.directionLabel": "Direzione proposta",
+  "consultAi.proposedDirection.whyLabel": "Perché l'IA lo consiglia",
+  "consultAi.proposedDirection.statusPending": "Proposto — non ancora applicato",
+  "consultAi.proposedDirection.statusApplied": "Applicato all'analisi di questo cliente",
+  "consultAi.proposedDirection.applyButton": "Applica questa direzione",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "Questo è solo un suggerimento professionale — non è stato ancora salvato in un piano. Per applicarlo serve un'analisi specifica.",
+  "consultAi.proposedDirection.noAnalysisLink": "Apri le analisi di questo cliente",
   "common.on": "Attivo",
   "common.off": "Disattivo",
 };
@@ -164,6 +208,15 @@ const FR: Dictionary = {
   "consultAi.aiResponding": "L'IA répond...",
   "consultAi.speaking": "En train de parler...",
   "consultAi.generatingVoice": "Génération de la voix...",
+  "consultAi.proposedDirection.badge": "Direction proposée par l'IA",
+  "consultAi.proposedDirection.directionLabel": "Direction proposée",
+  "consultAi.proposedDirection.whyLabel": "Pourquoi l'IA recommande cela",
+  "consultAi.proposedDirection.statusPending": "Proposé — pas encore appliqué",
+  "consultAi.proposedDirection.statusApplied": "Appliqué à l'analyse de ce client",
+  "consultAi.proposedDirection.applyButton": "Appliquer cette direction",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "Il s'agit uniquement d'une suggestion professionnelle — elle n'a pas encore été enregistrée dans un plan. Pour l'appliquer, une analyse spécifique est nécessaire.",
+  "consultAi.proposedDirection.noAnalysisLink": "Ouvrir les analyses de ce client",
   "common.on": "Activé",
   "common.off": "Désactivé",
 };
@@ -189,6 +242,15 @@ const DE: Dictionary = {
   "consultAi.aiResponding": "KI antwortet...",
   "consultAi.speaking": "Spricht...",
   "consultAi.generatingVoice": "Stimme wird generiert...",
+  "consultAi.proposedDirection.badge": "KI-vorgeschlagene Richtung",
+  "consultAi.proposedDirection.directionLabel": "Vorgeschlagene Richtung",
+  "consultAi.proposedDirection.whyLabel": "Warum die KI dies empfiehlt",
+  "consultAi.proposedDirection.statusPending": "Vorgeschlagen — noch nicht übernommen",
+  "consultAi.proposedDirection.statusApplied": "Auf die Analyse dieses Kunden angewendet",
+  "consultAi.proposedDirection.applyButton": "Diese Richtung übernehmen",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "Dies ist nur ein fachlicher Vorschlag — er wurde noch nicht in einem Plan gespeichert. Zum Übernehmen ist eine bestimmte Analyse erforderlich.",
+  "consultAi.proposedDirection.noAnalysisLink": "Analysen dieses Kunden öffnen",
   "common.on": "Ein",
   "common.off": "Aus",
 };
@@ -214,6 +276,15 @@ const ES: Dictionary = {
   "consultAi.aiResponding": "La IA está respondiendo...",
   "consultAi.speaking": "Hablando...",
   "consultAi.generatingVoice": "Generando voz...",
+  "consultAi.proposedDirection.badge": "Dirección propuesta por la IA",
+  "consultAi.proposedDirection.directionLabel": "Dirección propuesta",
+  "consultAi.proposedDirection.whyLabel": "Por qué la IA recomienda esto",
+  "consultAi.proposedDirection.statusPending": "Propuesto — aún no aplicado",
+  "consultAi.proposedDirection.statusApplied": "Aplicado al análisis de este cliente",
+  "consultAi.proposedDirection.applyButton": "Aplicar esta dirección",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "Esto es solo una sugerencia profesional — todavía no se ha guardado en un plan. Para aplicarla, se necesita un análisis específico.",
+  "consultAi.proposedDirection.noAnalysisLink": "Abrir los análisis de este cliente",
   "common.on": "Activado",
   "common.off": "Desactivado",
 };
@@ -239,6 +310,15 @@ const PT: Dictionary = {
   "consultAi.aiResponding": "A IA está a responder...",
   "consultAi.speaking": "A falar...",
   "consultAi.generatingVoice": "A gerar voz...",
+  "consultAi.proposedDirection.badge": "Direção proposta pela IA",
+  "consultAi.proposedDirection.directionLabel": "Direção proposta",
+  "consultAi.proposedDirection.whyLabel": "Porque é que a IA recomenda isto",
+  "consultAi.proposedDirection.statusPending": "Proposto — ainda não aplicado",
+  "consultAi.proposedDirection.statusApplied": "Aplicado à análise deste cliente",
+  "consultAi.proposedDirection.applyButton": "Aplicar esta direção",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "Isto é apenas uma sugestão profissional — ainda não foi guardada num plano. Para a aplicar, é necessária uma análise específica.",
+  "consultAi.proposedDirection.noAnalysisLink": "Abrir as análises deste cliente",
   "common.on": "Ativado",
   "common.off": "Desativado",
 };
@@ -264,6 +344,15 @@ const NL: Dictionary = {
   "consultAi.aiResponding": "AI antwoordt...",
   "consultAi.speaking": "Spreekt...",
   "consultAi.generatingVoice": "Stem wordt gegenereerd...",
+  "consultAi.proposedDirection.badge": "Door AI voorgestelde richting",
+  "consultAi.proposedDirection.directionLabel": "Voorgestelde richting",
+  "consultAi.proposedDirection.whyLabel": "Waarom AI dit aanbeveelt",
+  "consultAi.proposedDirection.statusPending": "Voorgesteld — nog niet toegepast",
+  "consultAi.proposedDirection.statusApplied": "Toegepast op de analyse van deze klant",
+  "consultAi.proposedDirection.applyButton": "Deze richting toepassen",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "Dit is alleen een professionele suggestie — nog niet opgeslagen in een plan. Om dit toe te passen is een specifieke analyse nodig.",
+  "consultAi.proposedDirection.noAnalysisLink": "Analyses van deze klant openen",
   "common.on": "Aan",
   "common.off": "Uit",
 };
@@ -289,6 +378,15 @@ const PL: Dictionary = {
   "consultAi.aiResponding": "AI odpowiada...",
   "consultAi.speaking": "Mówi...",
   "consultAi.generatingVoice": "Generowanie głosu...",
+  "consultAi.proposedDirection.badge": "Kierunek zaproponowany przez AI",
+  "consultAi.proposedDirection.directionLabel": "Proponowany kierunek",
+  "consultAi.proposedDirection.whyLabel": "Dlaczego AI to zaleca",
+  "consultAi.proposedDirection.statusPending": "Zaproponowano — jeszcze nie zastosowano",
+  "consultAi.proposedDirection.statusApplied": "Zastosowano w analizie tego klienta",
+  "consultAi.proposedDirection.applyButton": "Zastosuj ten kierunek",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "To tylko profesjonalna sugestia — nie została jeszcze zapisana w planie. Aby ją zastosować, potrzebna jest konkretna analiza.",
+  "consultAi.proposedDirection.noAnalysisLink": "Otwórz analizy tego klienta",
   "common.on": "Włączone",
   "common.off": "Wyłączone",
 };
@@ -314,6 +412,15 @@ const TR: Dictionary = {
   "consultAi.aiResponding": "Yapay zeka yanıt veriyor...",
   "consultAi.speaking": "Konuşuyor...",
   "consultAi.generatingVoice": "Ses oluşturuluyor...",
+  "consultAi.proposedDirection.badge": "Yapay Zeka Tarafından Önerilen Yön",
+  "consultAi.proposedDirection.directionLabel": "Önerilen yön",
+  "consultAi.proposedDirection.whyLabel": "Yapay zeka bunu neden öneriyor",
+  "consultAi.proposedDirection.statusPending": "Önerildi — henüz uygulanmadı",
+  "consultAi.proposedDirection.statusApplied": "Bu müşterinin analizine uygulandı",
+  "consultAi.proposedDirection.applyButton": "Bu yönü uygula",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "Bu yalnızca profesyonel bir öneridir — henüz bir plana kaydedilmedi. Uygulamak için belirli bir analiz gereklidir.",
+  "consultAi.proposedDirection.noAnalysisLink": "Bu müşterinin analizlerini aç",
   "common.on": "Açık",
   "common.off": "Kapalı",
 };
@@ -339,6 +446,15 @@ const EL: Dictionary = {
   "consultAi.aiResponding": "Η IA απαντά...",
   "consultAi.speaking": "Μιλάει...",
   "consultAi.generatingVoice": "Δημιουργία φωνής...",
+  "consultAi.proposedDirection.badge": "Κατεύθυνση που προτείνει η AI",
+  "consultAi.proposedDirection.directionLabel": "Προτεινόμενη κατεύθυνση",
+  "consultAi.proposedDirection.whyLabel": "Γιατί το προτείνει η AI",
+  "consultAi.proposedDirection.statusPending": "Προτάθηκε — δεν έχει εφαρμοστεί ακόμη",
+  "consultAi.proposedDirection.statusApplied": "Εφαρμόστηκε στην ανάλυση αυτού του πελάτη",
+  "consultAi.proposedDirection.applyButton": "Εφαρμογή αυτής της κατεύθυνσης",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "Αυτή είναι μόνο μια επαγγελματική πρόταση — δεν έχει αποθηκευτεί ακόμη σε ένα πλάνο. Για να εφαρμοστεί, απαιτείται συγκεκριμένη ανάλυση.",
+  "consultAi.proposedDirection.noAnalysisLink": "Άνοιγμα των αναλύσεων αυτού του πελάτη",
   "common.on": "Ενεργό",
   "common.off": "Ανενεργό",
 };
@@ -364,6 +480,15 @@ const HE: Dictionary = {
   "consultAi.aiResponding": "הבינה המלאכותית משיבה...",
   "consultAi.speaking": "מדבר...",
   "consultAi.generatingVoice": "מייצר קול...",
+  "consultAi.proposedDirection.badge": "כיוון מוצע על ידי הבינה המלאכותית",
+  "consultAi.proposedDirection.directionLabel": "כיוון מוצע",
+  "consultAi.proposedDirection.whyLabel": "למה הבינה המלאכותית ממליצה על כך",
+  "consultAi.proposedDirection.statusPending": "הוצע — טרם הוחל",
+  "consultAi.proposedDirection.statusApplied": "הוחל על הניתוח של לקוח זה",
+  "consultAi.proposedDirection.applyButton": "החל כיוון זה",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "זו רק המלצה מקצועית — היא עדיין לא נשמרה בתוכנית. כדי להחיל אותה, נדרש ניתוח ספציפי.",
+  "consultAi.proposedDirection.noAnalysisLink": "פתח את הניתוחים של לקוח זה",
   "common.on": "פעיל",
   "common.off": "כבוי",
 };
@@ -389,6 +514,15 @@ const JA: Dictionary = {
   "consultAi.aiResponding": "AIが応答しています...",
   "consultAi.speaking": "話しています...",
   "consultAi.generatingVoice": "音声を生成中...",
+  "consultAi.proposedDirection.badge": "AIが提案する方向性",
+  "consultAi.proposedDirection.directionLabel": "提案された方向性",
+  "consultAi.proposedDirection.whyLabel": "AIがこれを勧める理由",
+  "consultAi.proposedDirection.statusPending": "提案済み — まだ適用されていません",
+  "consultAi.proposedDirection.statusApplied": "このクライアントの分析に適用されました",
+  "consultAi.proposedDirection.applyButton": "この方向性を適用",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "これは専門的な提案にすぎません — まだプランに保存されていません。適用するには特定の分析が必要です。",
+  "consultAi.proposedDirection.noAnalysisLink": "このクライアントの分析を開く",
   "common.on": "オン",
   "common.off": "オフ",
 };
@@ -414,6 +548,15 @@ const KO: Dictionary = {
   "consultAi.aiResponding": "AI가 응답 중...",
   "consultAi.speaking": "말하는 중...",
   "consultAi.generatingVoice": "음성 생성 중...",
+  "consultAi.proposedDirection.badge": "AI가 제안한 방향",
+  "consultAi.proposedDirection.directionLabel": "제안된 방향",
+  "consultAi.proposedDirection.whyLabel": "AI가 이를 추천하는 이유",
+  "consultAi.proposedDirection.statusPending": "제안됨 — 아직 적용되지 않음",
+  "consultAi.proposedDirection.statusApplied": "이 고객의 분석에 적용됨",
+  "consultAi.proposedDirection.applyButton": "이 방향 적용하기",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "이것은 전문적인 제안일 뿐입니다 — 아직 플랜에 저장되지 않았습니다. 적용하려면 특정 분석이 필요합니다.",
+  "consultAi.proposedDirection.noAnalysisLink": "이 고객의 분석 열기",
   "common.on": "켜짐",
   "common.off": "꺼짐",
 };
@@ -439,6 +582,15 @@ const ZH_HANS: Dictionary = {
   "consultAi.aiResponding": "AI 正在回复...",
   "consultAi.speaking": "正在说话...",
   "consultAi.generatingVoice": "正在生成语音...",
+  "consultAi.proposedDirection.badge": "AI 建议的方向",
+  "consultAi.proposedDirection.directionLabel": "建议的方向",
+  "consultAi.proposedDirection.whyLabel": "AI 为何推荐此项",
+  "consultAi.proposedDirection.statusPending": "已建议 — 尚未应用",
+  "consultAi.proposedDirection.statusApplied": "已应用到此客户的分析",
+  "consultAi.proposedDirection.applyButton": "应用此方向",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "这只是一个专业建议——尚未保存到方案中。要应用它，需要一个具体的分析。",
+  "consultAi.proposedDirection.noAnalysisLink": "打开此客户的分析",
   "common.on": "开启",
   "common.off": "关闭",
 };
@@ -464,6 +616,15 @@ const ZH_HANT: Dictionary = {
   "consultAi.aiResponding": "AI 正在回覆...",
   "consultAi.speaking": "正在說話...",
   "consultAi.generatingVoice": "正在產生語音...",
+  "consultAi.proposedDirection.badge": "AI 建議的方向",
+  "consultAi.proposedDirection.directionLabel": "建議的方向",
+  "consultAi.proposedDirection.whyLabel": "AI 為何推薦此項",
+  "consultAi.proposedDirection.statusPending": "已建議 — 尚未套用",
+  "consultAi.proposedDirection.statusApplied": "已套用至此客戶的分析",
+  "consultAi.proposedDirection.applyButton": "套用此方向",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "這只是一個專業建議——尚未儲存至方案中。要套用它，需要一個具體的分析。",
+  "consultAi.proposedDirection.noAnalysisLink": "開啟此客戶的分析",
   "common.on": "開啟",
   "common.off": "關閉",
 };
@@ -489,6 +650,15 @@ const HI: Dictionary = {
   "consultAi.aiResponding": "AI जवाब दे रहा है...",
   "consultAi.speaking": "बोल रहा है...",
   "consultAi.generatingVoice": "आवाज़ बनाई जा रही है...",
+  "consultAi.proposedDirection.badge": "AI द्वारा सुझाई गई दिशा",
+  "consultAi.proposedDirection.directionLabel": "सुझाई गई दिशा",
+  "consultAi.proposedDirection.whyLabel": "AI इसकी सिफ़ारिश क्यों कर रहा है",
+  "consultAi.proposedDirection.statusPending": "सुझाया गया — अभी लागू नहीं हुआ",
+  "consultAi.proposedDirection.statusApplied": "इस ग्राहक के विश्लेषण पर लागू किया गया",
+  "consultAi.proposedDirection.applyButton": "यह दिशा लागू करें",
+  "consultAi.proposedDirection.noAnalysisExplain":
+    "यह केवल एक पेशेवर सुझाव है — इसे अभी तक किसी योजना में सहेजा नहीं गया है। इसे लागू करने के लिए एक विशिष्ट विश्लेषण आवश्यक है।",
+  "consultAi.proposedDirection.noAnalysisLink": "इस ग्राहक के विश्लेषण खोलें",
   "common.on": "चालू",
   "common.off": "बंद",
 };

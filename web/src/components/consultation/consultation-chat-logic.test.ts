@@ -9,6 +9,7 @@ import {
   isVoiceInputBusy,
   parseStoredLanguageSelection,
   resolveConsultationHistoryLoadStatus,
+  resolveProposedDirectionPresentation,
   resolveSttLanguageHint
 } from "./consultation-chat-logic";
 
@@ -218,5 +219,36 @@ describe("resolveSttLanguageHint", () => {
 
   it("auto with no established conversation language yet returns undefined (no hint sent)", () => {
     expect(resolveSttLanguageHint("auto", null)).toBeUndefined();
+  });
+});
+
+// AI Proposed Look Phase 1: the "AI Proposed Direction" card must never
+// let a stylist confuse a still-pending proposal with an already-saved
+// change (analysis-scoped case), and must never silently associate a
+// general conversation with any specific analysis (no implicit "latest
+// analysis" choice).
+describe("resolveProposedDirectionPresentation", () => {
+  it("analysis-scoped, not yet applied: shows the Apply action, no no-analysis guidance", () => {
+    const result = resolveProposedDirectionPresentation({ hasAnalysisId: true, applied: false });
+    expect(result).toEqual({ status: "pending", showApplyButton: true, showNoAnalysisGuidance: false });
+  });
+
+  it("analysis-scoped, applied: status flips to applied, Apply action disappears", () => {
+    const result = resolveProposedDirectionPresentation({ hasAnalysisId: true, applied: true });
+    expect(result).toEqual({ status: "applied", showApplyButton: false, showNoAnalysisGuidance: false });
+  });
+
+  it("general conversation (no analysisId): shows the honest no-analysis guidance, never the Apply action", () => {
+    const result = resolveProposedDirectionPresentation({ hasAnalysisId: false, applied: false });
+    expect(result).toEqual({ status: "pending", showApplyButton: false, showNoAnalysisGuidance: true });
+  });
+
+  it("never shows the Apply action for a general conversation, even in a state that should not occur in practice", () => {
+    // applied can only ever become true via a real POST to
+    // /api/v1/analysis/{id}/correct, which requires an analysisId -- this
+    // combination is not reachable through the real UI, but the function
+    // must still degrade sanely rather than showing a dead Apply button.
+    const result = resolveProposedDirectionPresentation({ hasAnalysisId: false, applied: true });
+    expect(result.showApplyButton).toBe(false);
   });
 });

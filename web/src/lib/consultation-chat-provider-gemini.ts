@@ -109,6 +109,18 @@ const SYSTEM_INSTRUCTION =
   "observation/judgment, \"client_reported\" only when the stylist is explicitly relaying something the " +
   "client said, e.g. bleach/chemical history). Never propose a correction for something the message did not " +
   "actually state.\n" +
+  "1b. CRITICAL consistency rule for `reply` wording, identical in spirit to rule 2b below but for " +
+  "corrections: never describe a correction as already set, saved, applied, or changed in `reply` when you " +
+  "are only including a proposedCorrection in this response -- NEVER say \"I've set...\", \"I've updated...\", " +
+  "\"I've changed her target shape to...\", \"done\", \"her file now shows...\", or any other phrasing that " +
+  "implies the analysis or plan already reflects this change, since nothing here ever applies a correction " +
+  "automatically -- it only becomes real once the stylist explicitly applies it, and they may never apply it " +
+  "if they edit or reject it instead. Instead say something like \"I'd suggest a graduated bob for her -- " +
+  "I've prepared this direction below for you to review and apply\" or \"Here's the direction I'd recommend; " +
+  "take a look below to apply it to her plan\". This applies regardless of whether this response includes a " +
+  "proposedCorrection at all: never claim to have set, updated, applied, or changed any analysis field unless " +
+  "the platform itself just told you it already did (which never happens in this flow) -- just discuss it " +
+  "normally, or ask whether the stylist wants to make the change.\n" +
   "2. If the stylist states a professional observation, preference, or note they want remembered for later -- " +
   "especially when they explicitly say something like \"remember this\", \"note this for her file\", or " +
   "\"do not change the analysis, just note it\" -- you MUST include a proposedMemory object in this exact " +
@@ -282,6 +294,21 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
       throw this.createProviderError(
         "INVALID_FORMAT",
         "Gemini's reply referenced a memory proposal it did not actually include.",
+      );
+    }
+
+    // AI Proposed Look Phase 1 honesty check, same defense-in-depth spirit
+    // as the memory check above (see rule 1b's own comment for why prompt
+    // wording alone is never structurally reliable) -- but unconditional,
+    // not gated on proposedCorrection's presence: nothing in this system
+    // EVER applies a correction automatically, in any response, so a reply
+    // claiming otherwise is wrong regardless of what else is in this same
+    // JSON object. Deliberately narrow (English phrasing only) -- see
+    // containsCorrectionAlreadyAppliedWording's own comment.
+    if (containsCorrectionAlreadyAppliedWording(parsed.reply)) {
+      throw this.createProviderError(
+        "INVALID_FORMAT",
+        "Gemini's reply claimed a correction was already applied, but this system never applies corrections automatically.",
       );
     }
 
@@ -513,6 +540,38 @@ function containsMemoryProposalTemplateWording(reply: unknown): boolean {
   if (typeof reply !== "string") return false;
   const normalized = reply.toLocaleLowerCase();
   return MEMORY_PROPOSAL_TEMPLATE_MARKERS.some((marker) => normalized.includes(marker));
+}
+
+// AI Proposed Look Phase 1: catches `reply` claiming a correction is
+// already set/updated/applied/changed -- nothing in this system ever
+// applies a correction automatically, so this phrasing is always wrong,
+// regardless of what else is in the same response. Deliberately narrow
+// and English-only, matching MEMORY_PROPOSAL_TEMPLATE_MARKERS' own
+// documented scope: `reply` can be written in any of this app's
+// supported languages (rule 10), and this cannot catch an equivalent
+// false claim made in another language -- it is a defense-in-depth net
+// for the common/English case, not a complete multilingual guarantee.
+// Rule 1b's own suggested alternative phrasing steers the model away
+// from ever needing these words at all.
+const CORRECTION_ALREADY_APPLIED_MARKERS = [
+  "i've set",
+  "i have set",
+  "i've updated",
+  "i have updated",
+  "i've changed",
+  "i have changed",
+  "i've applied",
+  "i have applied",
+  "her file now",
+  "his file now",
+  "their file now",
+  "the analysis now shows",
+] as const;
+
+function containsCorrectionAlreadyAppliedWording(reply: unknown): boolean {
+  if (typeof reply !== "string") return false;
+  const normalized = reply.toLocaleLowerCase();
+  return CORRECTION_ALREADY_APPLIED_MARKERS.some((marker) => normalized.includes(marker));
 }
 
 // Deterministic, backend-owned intent detection on the STYLIST'S OWN

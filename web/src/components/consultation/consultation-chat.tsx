@@ -1,16 +1,20 @@
 "use client";
 
 import { MessageCircle, Mic, Send, Sparkles, Square, Volume2, VolumeX } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 
 import { Alert, Badge, Button, Card, LanguageCombobox, LoadingState, Textarea } from "@/components/ui";
 import type {
+  ConsultationChatProposedCorrection,
   ConsultationChatRequest,
   ConsultationChatResponse,
   ConsultationMessageRecord
 } from "@/lib/contracts";
+import { humanizeEnumValue } from "@/lib/humanize-enum-value";
 import { conversationSupportedLanguages, getLanguageDefinition, isCloudTtsLanguageCode, toCloudTtsLanguageCode, type LanguageCode } from "@/lib/language-registry";
+import type { TranslationKey } from "@/lib/translations";
 import { useUiLanguage } from "@/lib/ui-language-context";
 
 import { logVoiceReplyClientEvent, synthesizeCloudVoiceReply } from "./consultation-chat-cloud-tts-logic";
@@ -26,6 +30,7 @@ import {
   LANGUAGE_SELECTION_STORAGE_KEY,
   parseStoredLanguageSelection,
   resolveConsultationHistoryLoadStatus,
+  resolveProposedDirectionPresentation,
   resolveSttLanguageHint,
   type LanguageSelection
 } from "./consultation-chat-logic";
@@ -857,6 +862,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
               <ChatBubble
                 key={message.id}
                 message={message}
+                clientId={clientId}
                 analysisId={analysisId}
                 applied={appliedCorrectionIds.has(message.id)}
                 applying={applyingId === message.id}
@@ -936,6 +942,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
 
 function ChatBubble({
   message,
+  clientId,
   analysisId,
   applied,
   applying,
@@ -952,6 +959,7 @@ function ChatBubble({
   onRejectMemory
 }: {
   message: ConsultationMessageRecord;
+  clientId: string;
   analysisId: string | undefined;
   applied: boolean;
   applying: boolean;
@@ -967,6 +975,7 @@ function ChatBubble({
   onConfirmMemory: () => void;
   onRejectMemory: () => void;
 }) {
+  const { t } = useUiLanguage();
   const isStylist = message.role === "stylist";
 
   return (
@@ -982,31 +991,15 @@ function ChatBubble({
       <span className="px-1 text-xs text-muted">{formatMessageTime(message.createdAt)}</span>
 
       {message.proposedCorrection ? (
-        <div className="mt-1 max-w-[85%] break-words rounded-xl border border-border bg-surface p-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="warning">Proposed correction</Badge>
-            <span className="text-xs text-muted">not applied yet</span>
-          </div>
-          <p className="mt-2 text-sm text-foreground">
-            <span className="font-medium">{message.proposedCorrection.field}</span> &rarr; {message.proposedCorrection.value}
-          </p>
-          <p className="mt-1 text-xs text-muted">{message.proposedCorrection.reason}</p>
-          {analysisId ? (
-            applied ? (
-              <Badge variant="success" className="mt-2">
-                Applied
-              </Badge>
-            ) : (
-              <Button type="button" variant="secondary" className="mt-2" loading={applying} onClick={onApply}>
-                Apply this correction
-              </Button>
-            )
-          ) : (
-            <p className="mt-2 text-xs text-muted">
-              Start this conversation from a specific analysis to apply this correction directly.
-            </p>
-          )}
-        </div>
+        <ProposedDirectionCard
+          correction={message.proposedCorrection}
+          clientId={clientId}
+          hasAnalysisId={Boolean(analysisId)}
+          applied={applied}
+          applying={applying}
+          onApply={onApply}
+          t={t}
+        />
       ) : null}
 
       {message.proposedMemory ? (
@@ -1054,6 +1047,81 @@ function ChatBubble({
               </Button>
             </div>
           )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// AI Proposed Look Phase 1 ("AI Proposed Direction"): evolves the old
+// "Proposed correction" card so a stylist can never confuse a still-
+// pending professional suggestion with a change already saved to the
+// client's plan -- what was proposed, why, and its exact status
+// (Proposed vs Applied) are always visible together, never implied by a
+// bare label. The underlying pipeline is unchanged and unweakened: this
+// still only ever calls the existing, atomic
+// POST /api/v1/analysis/{id}/correct (via onApply, passed straight
+// through from handleApplyCorrection) -- see
+// resolveProposedDirectionPresentation (consultation-chat-logic.ts) for
+// the branching this renders.
+//
+// `value` is rendered humanized (e.g. "graduated_bob" -> "Graduated
+// Bob") using the same humanizeEnumValue already used for every other
+// M8 plan field (TechnicalCutPlanView etc.) -- never re-translated into
+// the UI language, since the model is instructed to keep
+// proposedCorrection.field/value in English regardless of reply
+// language (consultation-chat-provider-gemini.ts's own SYSTEM_INSTRUCTION,
+// rule 10) so applyAnalysisCorrection's enum validation stays reliable.
+// `reason`, by contrast, is the model's own prose and is already in
+// whatever language the conversation is in -- no humanizing needed or
+// wanted there.
+function ProposedDirectionCard({
+  correction,
+  clientId,
+  hasAnalysisId,
+  applied,
+  applying,
+  onApply,
+  t,
+}: {
+  correction: ConsultationChatProposedCorrection;
+  clientId: string;
+  hasAnalysisId: boolean;
+  applied: boolean;
+  applying: boolean;
+  onApply: () => void;
+  t: (key: TranslationKey) => string;
+}) {
+  const presentation = resolveProposedDirectionPresentation({ hasAnalysisId, applied });
+
+  return (
+    <div className="mt-1 max-w-[85%] break-words rounded-xl border border-border bg-surface p-3">
+      <Badge variant="warning">{t("consultAi.proposedDirection.badge")}</Badge>
+
+      <p className="mt-2 text-xs font-medium text-muted">{t("consultAi.proposedDirection.directionLabel")}</p>
+      <p className="text-sm font-medium text-foreground">{humanizeEnumValue(correction.value)}</p>
+
+      <p className="mt-2 text-xs font-medium text-muted">{t("consultAi.proposedDirection.whyLabel")}</p>
+      <p className="text-sm text-foreground">{correction.reason}</p>
+
+      <p className="mt-2 text-xs text-muted">
+        {presentation.status === "applied"
+          ? t("consultAi.proposedDirection.statusApplied")
+          : t("consultAi.proposedDirection.statusPending")}
+      </p>
+
+      {presentation.showApplyButton ? (
+        <Button type="button" variant="secondary" className="mt-2" loading={applying} onClick={onApply}>
+          {t("consultAi.proposedDirection.applyButton")}
+        </Button>
+      ) : null}
+
+      {presentation.showNoAnalysisGuidance ? (
+        <div className="mt-2 flex flex-col items-start gap-1">
+          <p className="text-xs text-muted">{t("consultAi.proposedDirection.noAnalysisExplain")}</p>
+          <Link href={`/clients/${clientId}`} className="text-xs text-accent hover:underline">
+            {t("consultAi.proposedDirection.noAnalysisLink")}
+          </Link>
         </div>
       ) : null}
     </div>
