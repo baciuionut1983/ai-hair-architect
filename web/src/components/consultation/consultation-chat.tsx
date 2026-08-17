@@ -30,6 +30,7 @@ import {
   LANGUAGE_SELECTION_STORAGE_KEY,
   parseStoredLanguageSelection,
   resolveConsultationHistoryLoadStatus,
+  resolveNoAnalysisGuidanceActionMode,
   resolveProposedDirectionPresentation,
   resolveSttLanguageHint,
   type LanguageSelection
@@ -57,6 +58,21 @@ export interface ConsultationChatProps {
   // POST /api/v1/analysis/{id}/correct endpoint -- this component never
   // mutates analysis data itself.
   onCorrectionApplied?: () => void;
+  // AI Proposed Look Phase 1 bug fix: the "AI Proposed Direction" card's
+  // no-analysisId guidance (see ProposedDirectionCard below) needs a real
+  // way to reach the client's analyses -- but the ONLY place that card
+  // ever renders (no analysisId means the general, client-scoped Consult
+  // AI tab) is already rendered at /clients/{clientId}, on the client
+  // detail page's own "consult" tab. That page's tabs are local React
+  // state, not routed (see clients/[id]/page.tsx's activeTab), so a
+  // <Link href={`/clients/${clientId}`}> resolved to the exact URL the
+  // browser was already on -- a same-route no-op Next.js doesn't remount,
+  // so nothing ever visibly happened on click. This optional callback
+  // lets the parent page switch its own local tab state instead of
+  // attempting a real navigation; when absent (e.g. a future caller with
+  // no such tab concept), ProposedDirectionCard falls back to the plain
+  // cross-page Link, which is still a safe, valid destination.
+  onNavigateToAnalyses?: () => void;
 }
 
 type HistoryStatus = "loading" | "ready" | "error";
@@ -68,7 +84,7 @@ const MEMORY_ACTION_LABELS: Record<string, string> = {
   save_outcome: "Save as outcome"
 };
 
-export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: ConsultationChatProps) {
+export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, onNavigateToAnalyses }: ConsultationChatProps) {
   // The app's GLOBAL UI language (see (app)/layout.tsx) -- for this
   // component's own static chrome (Voice Reply/Stop/Send/composer
   // placeholder) only. Deliberately independent of languageSelection
@@ -864,6 +880,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied }: 
                 message={message}
                 clientId={clientId}
                 analysisId={analysisId}
+                onNavigateToAnalyses={onNavigateToAnalyses}
                 applied={appliedCorrectionIds.has(message.id)}
                 applying={applyingId === message.id}
                 onApply={() => handleApplyCorrection(message)}
@@ -944,6 +961,7 @@ function ChatBubble({
   message,
   clientId,
   analysisId,
+  onNavigateToAnalyses,
   applied,
   applying,
   onApply,
@@ -961,6 +979,7 @@ function ChatBubble({
   message: ConsultationMessageRecord;
   clientId: string;
   analysisId: string | undefined;
+  onNavigateToAnalyses: (() => void) | undefined;
   applied: boolean;
   applying: boolean;
   onApply: () => void;
@@ -995,6 +1014,7 @@ function ChatBubble({
           correction={message.proposedCorrection}
           clientId={clientId}
           hasAnalysisId={Boolean(analysisId)}
+          onNavigateToAnalyses={onNavigateToAnalyses}
           applied={applied}
           applying={applying}
           onApply={onApply}
@@ -1079,6 +1099,7 @@ function ProposedDirectionCard({
   correction,
   clientId,
   hasAnalysisId,
+  onNavigateToAnalyses,
   applied,
   applying,
   onApply,
@@ -1087,6 +1108,7 @@ function ProposedDirectionCard({
   correction: ConsultationChatProposedCorrection;
   clientId: string;
   hasAnalysisId: boolean;
+  onNavigateToAnalyses: (() => void) | undefined;
   applied: boolean;
   applying: boolean;
   onApply: () => void;
@@ -1119,9 +1141,25 @@ function ProposedDirectionCard({
       {presentation.showNoAnalysisGuidance ? (
         <div className="mt-2 flex flex-col items-start gap-1">
           <p className="text-xs text-muted">{t("consultAi.proposedDirection.noAnalysisExplain")}</p>
-          <Link href={`/clients/${clientId}`} className="text-xs text-accent hover:underline">
-            {t("consultAi.proposedDirection.noAnalysisLink")}
-          </Link>
+          {resolveNoAnalysisGuidanceActionMode(Boolean(onNavigateToAnalyses)) === "switchTab" ? (
+            // The general Consult AI tab this card renders on IS
+            // /clients/{clientId} already (see ConsultationChatProps'
+            // own comment on onNavigateToAnalyses) -- a real button that
+            // switches the parent's local tab state, not a Link to the
+            // page already on screen, which is exactly what silently did
+            // nothing before this fix.
+            <button
+              type="button"
+              onClick={onNavigateToAnalyses}
+              className="text-xs text-accent hover:underline"
+            >
+              {t("consultAi.proposedDirection.noAnalysisLink")}
+            </button>
+          ) : (
+            <Link href={`/clients/${clientId}`} className="text-xs text-accent hover:underline">
+              {t("consultAi.proposedDirection.noAnalysisLink")}
+            </Link>
+          )}
         </div>
       ) : null}
     </div>

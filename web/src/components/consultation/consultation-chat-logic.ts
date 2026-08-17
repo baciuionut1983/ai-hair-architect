@@ -179,3 +179,22 @@ export function resolveProposedDirectionPresentation(input: {
     showNoAnalysisGuidance: !input.hasAnalysisId,
   };
 }
+
+export type NoAnalysisGuidanceActionMode = "switchTab" | "navigateToClientPage";
+
+// Regression this exists to prevent: the no-analysis guidance CTA
+// (ProposedDirectionCard) once linked to /clients/{clientId} unconditionally
+// -- but the ONLY place that guidance ever renders (the general Consult AI
+// tab) is already rendered AT that exact URL, since that page's tabs are
+// local React state, not routed. A same-route Link is a no-op Next.js
+// doesn't remount, so the CTA silently did nothing on click. "switchTab"
+// (a real callback the parent page uses to change its own local tab
+// state) must always be preferred whenever the caller provides one;
+// "navigateToClientPage" (the plain cross-page Link) is only a fallback
+// for a caller with no such tab concept. Kept as its own pure decision so
+// a future refactor that accidentally stops wiring the callback -- or
+// reverts to always using the Link -- fails a test instead of silently
+// reintroducing a dead control.
+export function resolveNoAnalysisGuidanceActionMode(hasNavigateCallback: boolean): NoAnalysisGuidanceActionMode {
+  return hasNavigateCallback ? "switchTab" : "navigateToClientPage";
+}

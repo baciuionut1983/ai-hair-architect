@@ -9,6 +9,7 @@ import {
   isVoiceInputBusy,
   parseStoredLanguageSelection,
   resolveConsultationHistoryLoadStatus,
+  resolveNoAnalysisGuidanceActionMode,
   resolveProposedDirectionPresentation,
   resolveSttLanguageHint
 } from "./consultation-chat-logic";
@@ -250,5 +251,22 @@ describe("resolveProposedDirectionPresentation", () => {
     // must still degrade sanely rather than showing a dead Apply button.
     const result = resolveProposedDirectionPresentation({ hasAnalysisId: false, applied: true });
     expect(result.showApplyButton).toBe(false);
+  });
+});
+
+// Regression: the no-analysis guidance CTA used to link to
+// /clients/{clientId} unconditionally -- but the only place it renders
+// (the general Consult AI tab) is already AT that exact URL, since that
+// page's tabs are local React state, not routed. A same-route Link is a
+// no-op Next.js doesn't remount, so the CTA silently did nothing on
+// click in production. These lock in that a real callback destination is
+// always preferred over the dead-end Link fallback.
+describe("resolveNoAnalysisGuidanceActionMode", () => {
+  it("prefers the real tab-switch action whenever the caller provides one", () => {
+    expect(resolveNoAnalysisGuidanceActionMode(true)).toBe("switchTab");
+  });
+
+  it("falls back to the cross-page Link only when no callback is available at all", () => {
+    expect(resolveNoAnalysisGuidanceActionMode(false)).toBe("navigateToClientPage");
   });
 });

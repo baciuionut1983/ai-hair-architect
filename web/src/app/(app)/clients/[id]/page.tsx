@@ -174,7 +174,9 @@ export default function ClientDetailPage() {
           consultations={historyState.status === "ready" ? historyState.consultations : []}
         />
       ) : null}
-      {activeTab === "consult" ? <ConsultationChat clientId={clientId} /> : null}
+      {activeTab === "consult" ? (
+        <ConsultationChat clientId={clientId} onNavigateToAnalyses={() => setActiveTab("ai-analysis")} />
+      ) : null}
     </div>
   );
 }
