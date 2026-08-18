@@ -110,6 +110,44 @@ describe("production guards", () => {
     });
   });
 
+  // 2026-08-18 production investigation: a Railway dashboard identifier
+  // the user was reading turned out not to match any real commit in this
+  // repo's history at all -- this field exists so "which commit is
+  // actually live" can be answered from a real HTTP response instead of
+  // an ambiguous dashboard string, for this and every future investigation.
+  it("reports the real deployed commit/deployment id when Railway provides them, never fabricated", async () => {
+    const result = await evaluateReadiness({
+      requestId: "req-2",
+      now: new Date("2026-07-24T00:00:00.000Z"),
+      env: {
+        NODE_ENV: "production",
+        DATABASE_URL: "postgresql://db",
+        WEBHOOK_SECRET_ENCRYPTION_KEY: Buffer.alloc(32).toString("base64"),
+        RAILWAY_GIT_COMMIT_SHA: "8f97f74f7fd52bc9832cb4e1a6f60c60f583c0ba",
+        RAILWAY_DEPLOYMENT_ID: "6942bdf1-aaaa-bbbb-cccc-000000000000",
+      },
+    });
+
+    expect(result.payload.deployment).toEqual({
+      gitCommitSha: "8f97f74f7fd52bc9832cb4e1a6f60c60f583c0ba",
+      railwayDeploymentId: "6942bdf1-aaaa-bbbb-cccc-000000000000",
+    });
+  });
+
+  it("reports deployment fields as explicitly null (never a fabricated placeholder) when Railway's own variables are absent -- e.g. local dev, or a non-Railway platform", async () => {
+    const result = await evaluateReadiness({
+      requestId: "req-3",
+      now: new Date("2026-07-24T00:00:00.000Z"),
+      env: {
+        NODE_ENV: "production",
+        DATABASE_URL: "postgresql://db",
+        WEBHOOK_SECRET_ENCRYPTION_KEY: Buffer.alloc(32).toString("base64"),
+      },
+    });
+
+    expect(result.payload.deployment).toEqual({ gitCommitSha: null, railwayDeploymentId: null });
+  });
+
   it("derives PASS only when every essential registry domain is durable and production-ready", () => {
     const domains = [
       "clients",

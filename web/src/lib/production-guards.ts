@@ -35,6 +35,18 @@ export interface ReadinessPayload {
   businessPersistenceDomains: BusinessPersistenceReadinessDomain[];
   requestId: string;
   timestamp: string;
+  // Diagnostic-only (2026-08-18 production investigation): Railway
+  // auto-injects these for every deployment, no configuration needed --
+  // never fabricated, explicitly null when absent (e.g. local dev, or a
+  // platform other than Railway). Exists so "which commit is actually
+  // live right now" can be answered from a real HTTP response instead of
+  // an ambiguous dashboard identifier -- a Railway "deployment ID" is its
+  // OWN internal id, not necessarily a git SHA, and the two are easy to
+  // conflate when reading the dashboard.
+  deployment: {
+    gitCommitSha: string | null;
+    railwayDeploymentId: string | null;
+  };
 }
 
 export interface ReadinessEvaluation {
@@ -136,9 +148,18 @@ export async function evaluateReadiness(input: {
       checks,
       businessPersistenceDomains,
       requestId: input.requestId,
-      timestamp: now.toISOString()
+      timestamp: now.toISOString(),
+      deployment: {
+        gitCommitSha: normalizeDeploymentField(env.RAILWAY_GIT_COMMIT_SHA),
+        railwayDeploymentId: normalizeDeploymentField(env.RAILWAY_DEPLOYMENT_ID)
+      }
     }
   };
+}
+
+function normalizeDeploymentField(value: string | undefined): string | null {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 export function buildBusinessPersistenceCheck(
