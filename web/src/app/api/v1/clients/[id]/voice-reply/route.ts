@@ -152,7 +152,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   const apiKey = process.env.TEXT_TO_SPEECH_API_KEY;
-  const model = process.env.TEXT_TO_SPEECH_MODEL || "gemini-2.5-flash-preview-tts";
+  const primaryModel = process.env.TEXT_TO_SPEECH_MODEL || "gemini-2.5-flash-preview-tts";
   if (!apiKey) {
     logVoiceReply("FAILED", "config_check", { resultCode: "VOICE_REPLY_PROVIDER_NOT_CONFIGURED", reason: "api_key_missing", voiceTurnId });
     return NextResponse.json(
@@ -161,33 +161,56 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     );
   }
 
-  const provider = new GeminiTtsProvider({ apiKey, model, timeoutMs: PROVIDER_TIMEOUT_MS });
   const languageCode = toCloudTtsLanguageCode(language);
 
-  // AI Usage & Cost Metering Phase 1: one correlationId per logical
-  // synthesize attempt -- this route never retries the provider call
-  // itself internally, so attemptNumber is always the default (1).
-  // Purely additive instrumentation: no existing behavior, timing, or
-  // response above/below this block changes.
-  const usageCorrelationId = randomUUID();
-  const providerCallStartedAt = Date.now();
+  // TTS reliability hardening (2026-08-19): a real production TIMEOUT
+  // proved this call was never retried at all -- unlike STT
+  // (teach-ai-panel-logic.ts) and Consult AI (consultation-chat-service.ts),
+  // which already recover from the identical class of transient failure.
+  // Mirrors both exactly: at most ONE retry, only when GeminiTtsProvider's
+  // own classifyTtsError already marked the failure `retryable` (TIMEOUT,
+  // RATE_LIMITED, or a 5xx PROVIDER_ERROR) -- never for NOT_CONFIGURED,
+  // INVALID_FORMAT, or a non-5xx PROVIDER_ERROR, since a second identical
+  // call could never change that outcome. Structurally impossible to
+  // return or play duplicate audio: this whole retry happens inside ONE
+  // request/response cycle, so the client (synthesizeCloudVoiceReply)
+  // still only ever makes one fetch call and receives exactly one
+  // response, either the final audio bytes or a final JSON error -- the
+  // browser fallback (speakMessageLocally) is reached only once BOTH
+  // attempts here are exhausted.
+  //
+  // No TTS fallback model config existed before this change -- added here,
+  // mirroring STT_FALLBACK_MODEL/CONSULTATION_CHAT_FALLBACK_MODEL exactly:
+  // unset by default, never invented, used only for the retry.
+  const fallbackModel = process.env.TEXT_TO_SPEECH_FALLBACK_MODEL;
+  const retryModel = fallbackModel && fallbackModel.trim().length > 0 && fallbackModel !== primaryModel ? fallbackModel : primaryModel;
 
+  // AI Usage & Cost Metering Phase 1: one correlationId per logical
+  // synthesize attempt, shared by every attempt's success/failure
+  // recording call below -- each real provider call still gets its own,
+  // correctly-attributed row via attemptNumber, mirroring
+  // consultation-chat-service.ts's own recordAttempt scheme exactly.
+  const usageCorrelationId = randomUUID();
+
+  let activeModel = primaryModel;
+  let attemptNumber: 1 | 2 = 1;
+  let providerCallStartedAt = Date.now();
   let result;
   try {
-    result = await provider.synthesize(text, languageCode);
-  } catch (error) {
-    const providerError = error as TtsProviderError;
-    const { status, body: errorBody } = mapProviderErrorToResponse(providerError);
+    result = await new GeminiTtsProvider({ apiKey, model: activeModel, timeoutMs: PROVIDER_TIMEOUT_MS }).synthesize(text, languageCode);
+  } catch (firstError) {
+    const firstProviderError = firstError as TtsProviderError;
     logVoiceReply("FAILED", "provider_call", {
-      resultCode: errorBody.error,
-      providerErrorCode: providerError.code,
-      providerHttpStatus: providerError.status,
-      providerErrorMessage: providerError.message?.slice(0, MAX_LOGGED_PROVIDER_ERROR_LENGTH),
-      model,
+      resultCode: mapProviderErrorToResponse(firstProviderError).body.error,
+      providerErrorCode: firstProviderError.code,
+      providerHttpStatus: firstProviderError.status,
+      providerErrorMessage: firstProviderError.message?.slice(0, MAX_LOGGED_PROVIDER_ERROR_LENGTH),
+      model: activeModel,
       language,
       languageCode,
       textLength: text.length,
       voiceTurnId,
+      providerAttemptNumber: attemptNumber,
     });
     // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
     // contract: a metering problem must never turn an already-failed
@@ -199,16 +222,61 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         feature: "voice_reply",
         modality: "TTS",
         correlationId: usageCorrelationId,
+        attemptNumber,
         provider: "gemini",
-        model,
+        model: activeModel,
         outcome: "FAILED",
-        errorCategory: providerError.code,
+        errorCategory: firstProviderError.code,
         latencyMs: Date.now() - providerCallStartedAt,
       });
     } catch {
       // Intentionally swallowed -- see comment above.
     }
-    return NextResponse.json(errorBody, { status });
+
+    if (firstProviderError.retryable !== true) {
+      const { status, body: errorBody } = mapProviderErrorToResponse(firstProviderError);
+      return NextResponse.json({ ...errorBody, providerAttemptCount: attemptNumber }, { status });
+    }
+
+    attemptNumber = 2;
+    activeModel = retryModel;
+    providerCallStartedAt = Date.now();
+    try {
+      result = await new GeminiTtsProvider({ apiKey, model: activeModel, timeoutMs: PROVIDER_TIMEOUT_MS }).synthesize(text, languageCode);
+    } catch (secondError) {
+      const secondProviderError = secondError as TtsProviderError;
+      logVoiceReply("FAILED", "provider_call", {
+        resultCode: mapProviderErrorToResponse(secondProviderError).body.error,
+        providerErrorCode: secondProviderError.code,
+        providerHttpStatus: secondProviderError.status,
+        providerErrorMessage: secondProviderError.message?.slice(0, MAX_LOGGED_PROVIDER_ERROR_LENGTH),
+        model: activeModel,
+        language,
+        languageCode,
+        textLength: text.length,
+        voiceTurnId,
+        providerAttemptNumber: attemptNumber,
+      });
+      try {
+        await recordAiUsageEvent({
+          ownerUserId: user.id,
+          clientId: id,
+          feature: "voice_reply",
+          modality: "TTS",
+          correlationId: usageCorrelationId,
+          attemptNumber,
+          provider: "gemini",
+          model: activeModel,
+          outcome: "FAILED",
+          errorCategory: secondProviderError.code,
+          latencyMs: Date.now() - providerCallStartedAt,
+        });
+      } catch {
+        // Intentionally swallowed -- see comment above.
+      }
+      const { status, body: errorBody } = mapProviderErrorToResponse(secondProviderError);
+      return NextResponse.json({ ...errorBody, providerAttemptCount: attemptNumber }, { status });
+    }
   }
 
   // Voice latency audit (2026-08-18): the exact same measurement AI Usage
@@ -217,7 +285,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // a response header (the success body is raw audio bytes, not JSON, so
   // it cannot carry a field the way the STT/Consult AI routes do) --
   // X-Provider-Latency-Ms, read by the client so it can report a real
-  // ttsProviderMs distinct from its own round-trip measurement.
+  // ttsProviderMs distinct from its own round-trip measurement. Reflects
+  // whichever attempt (1 or 2) actually succeeded.
   const providerLatencyMs = Date.now() - providerCallStartedAt;
 
   // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
@@ -230,8 +299,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       feature: "voice_reply",
       modality: "TTS",
       correlationId: usageCorrelationId,
+      attemptNumber,
       provider: "gemini",
-      model,
+      model: activeModel,
       providerRequestId: result.providerRequestId,
       usage: result.usage,
       outcome: "SUCCEEDED",
@@ -261,16 +331,17 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     logVoiceReply("FAILED", "wav_validation", {
       resultCode: "VOICE_REPLY_FAILED",
       reason: wavValidation.reason,
-      model,
+      model: activeModel,
       language,
       languageCode,
       providerMimeType: result.mimeType,
       sampleRateHz,
       pcmBytes: pcm.length,
       voiceTurnId,
+      providerAttemptNumber: attemptNumber,
     });
     return NextResponse.json(
-      { error: "VOICE_REPLY_FAILED", message: "Voice reply returned an unexpected response. The text reply above is still available." },
+      { error: "VOICE_REPLY_FAILED", message: "Voice reply returned an unexpected response. The text reply above is still available.", providerAttemptCount: attemptNumber },
       { status: 502 },
     );
   }
@@ -281,7 +352,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // 16-bit/mono/24kHz raw PCM this route wraps as WAV -- rather than
   // that assumption only ever being verified against documentation.
   logVoiceReply("SUCCEEDED", "complete", {
-    model,
+    model: activeModel,
     language,
     languageCode,
     textLength: text.length,
@@ -290,6 +361,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     pcmBytes: pcm.length,
     audioBytes: wav.length,
     voiceTurnId,
+    providerAttemptNumber: attemptNumber,
   });
 
   return new Response(new Uint8Array(wav), {
@@ -298,6 +370,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       "Content-Type": "audio/wav",
       "Cache-Control": "no-store",
       "X-Provider-Latency-Ms": String(providerLatencyMs),
+      // TTS reliability hardening (2026-08-19): lets the client report a
+      // real providerAttemptCount for voice latency telemetry, mirroring
+      // Consult AI's own providerAttemptCount field -- 1 unless the single
+      // automatic retry above recovered a transient failure.
+      "X-Provider-Attempt-Count": String(attemptNumber),
     },
   });
 }

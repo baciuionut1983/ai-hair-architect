@@ -67,8 +67,12 @@ export interface SynthesizeCloudVoiceReplyCallbacks {
   // X-Provider-Latency-Ms response header -- the same number it already
   // computes for AI Usage Metering), never a client-side approximation.
   // `null` when the header is absent (e.g. an older cached/proxied
-  // response) -- never fabricated.
-  onSuccess: (audioBlob: Blob, ttsProviderMs: number | null) => void;
+  // response) -- never fabricated. TTS reliability hardening
+  // (2026-08-19): providerAttemptCount is the server's own real count (1,
+  // or 2 if its single automatic retry recovered a transient failure),
+  // read from X-Provider-Attempt-Count -- null only when the header is
+  // genuinely absent.
+  onSuccess: (audioBlob: Blob, ttsProviderMs: number | null, providerAttemptCount: number | null) => void;
   // "network": the request never completed (fetch threw -- offline, CORS,
   // the request never left the browser). "unavailable": a real HTTP
   // response came back, but not 2xx (provider not configured, rate
@@ -77,8 +81,13 @@ export interface SynthesizeCloudVoiceReplyCallbacks {
   // VOICE_REPLY_RATE_LIMITED) is read from the response body and logged
   // via logVoiceReplyClientEvent above, not lost -- this callback
   // parameter only needs to know "cloud didn't work, fall back" for
-  // either case.
-  onFailure: (reason: CloudVoiceReplyFailureReason) => void;
+  // either case. TTS reliability hardening (2026-08-19): errorCode/
+  // providerAttemptCount surface the server's own final classification
+  // and real attempt count (after its own retry was already exhausted)
+  // for voice latency telemetry -- undefined only when genuinely
+  // unavailable (e.g. "network", where no server response body exists at
+  // all), never fabricated.
+  onFailure: (reason: CloudVoiceReplyFailureReason, errorCode?: string, providerAttemptCount?: number) => void;
 }
 
 export async function synthesizeCloudVoiceReply(
@@ -114,25 +123,30 @@ export async function synthesizeCloudVoiceReply(
   }
 
   if (!response.ok) {
-    // Best-effort: the route always returns a JSON { error, message } body
-    // on failure, but this must never throw the whole flow into the
-    // catch-all below if that body is somehow missing/malformed.
-    const errorCode = await response
+    // Best-effort: the route always returns a JSON { error, message,
+    // providerAttemptCount? } body on failure, but this must never throw
+    // the whole flow into the catch-all below if that body is somehow
+    // missing/malformed.
+    const parsedBody = await response
       .clone()
       .json()
-      .then((body: { error?: string }) => body.error ?? "unknown")
-      .catch(() => "unknown");
+      .then((body: { error?: string; providerAttemptCount?: number }) => body)
+      .catch(() => null as { error?: string; providerAttemptCount?: number } | null);
+    const errorCode = parsedBody?.error ?? "unknown";
     logVoiceReplyClientEvent("cloud_response_not_ok", { status: response.status, errorCode });
-    callbacks.onFailure("unavailable");
+    callbacks.onFailure("unavailable", errorCode, parsedBody?.providerAttemptCount);
     return;
   }
 
   try {
     const blob = await response.blob();
-    const headerValue = response.headers.get("X-Provider-Latency-Ms");
-    const ttsProviderMs = headerValue !== null && Number.isFinite(Number(headerValue)) ? Number(headerValue) : null;
+    const latencyHeader = response.headers.get("X-Provider-Latency-Ms");
+    const ttsProviderMs = latencyHeader !== null && Number.isFinite(Number(latencyHeader)) ? Number(latencyHeader) : null;
+    const attemptCountHeader = response.headers.get("X-Provider-Attempt-Count");
+    const providerAttemptCount =
+      attemptCountHeader !== null && Number.isFinite(Number(attemptCountHeader)) ? Number(attemptCountHeader) : null;
     logVoiceReplyClientEvent("cloud_success", { audioBytes: blob.size });
-    callbacks.onSuccess(blob, ttsProviderMs);
+    callbacks.onSuccess(blob, ttsProviderMs, providerAttemptCount);
   } catch (error) {
     logVoiceReplyClientEvent("cloud_blob_read_threw", {
       errorName: error instanceof Error ? error.name : "unknown",

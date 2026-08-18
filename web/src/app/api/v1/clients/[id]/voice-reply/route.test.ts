@@ -334,6 +334,186 @@ describe("POST /api/v1/clients/[id]/voice-reply", () => {
   });
 });
 
+// TTS reliability hardening (2026-08-19): a real production TIMEOUT
+// proved this route never retried the provider call at all -- unlike STT
+// and Consult AI, which already recover from the identical class of
+// transient failure. Mirrors both exactly: at most ONE retry, only for a
+// failure GeminiTtsProvider's own classifyTtsError already marked
+// `retryable`.
+describe("TTS reliability hardening (single automatic retry)", () => {
+  it("succeeds on the first attempt -- exactly one provider call, attemptCount 1", async () => {
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(response.status).toBe(200);
+    expect(ttsProviderMock.synthesize).toHaveBeenCalledTimes(1);
+    expect(response.headers.get("X-Provider-Attempt-Count")).toBe("1");
+  });
+
+  it("recovers a TIMEOUT via the single automatic retry -- second attempt succeeds", async () => {
+    ttsProviderMock.synthesize
+      .mockRejectedValueOnce(createTtsProviderError("TIMEOUT", true))
+      .mockResolvedValueOnce(SAMPLE_AUDIO);
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(response.status).toBe(200);
+    expect(ttsProviderMock.synthesize).toHaveBeenCalledTimes(2);
+    expect(response.headers.get("X-Provider-Attempt-Count")).toBe("2");
+  });
+
+  it("recovers a transient RATE_LIMITED (429) via the single automatic retry -- second attempt succeeds", async () => {
+    ttsProviderMock.synthesize
+      .mockRejectedValueOnce(createTtsProviderError("RATE_LIMITED", true, 429))
+      .mockResolvedValueOnce(SAMPLE_AUDIO);
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(response.status).toBe(200);
+    expect(ttsProviderMock.synthesize).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers a transient 5xx PROVIDER_ERROR via the single automatic retry -- second attempt succeeds", async () => {
+    ttsProviderMock.synthesize
+      .mockRejectedValueOnce(createTtsProviderError("PROVIDER_ERROR", true, 503))
+      .mockResolvedValueOnce(SAMPLE_AUDIO);
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(response.status).toBe(200);
+    expect(ttsProviderMock.synthesize).toHaveBeenCalledTimes(2);
+  });
+
+  it("never retries a permanent failure (NOT_CONFIGURED) -- exactly one provider call, a second identical call could never change the outcome", async () => {
+    ttsProviderMock.synthesize.mockRejectedValue(createTtsProviderError("NOT_CONFIGURED", false, 401));
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(response.status).toBe(502);
+    expect(ttsProviderMock.synthesize).toHaveBeenCalledTimes(1);
+    const body = await response.json();
+    expect(body.providerAttemptCount).toBe(1);
+  });
+
+  it("never retries a permanent failure (INVALID_FORMAT / bad request) -- exactly one provider call", async () => {
+    ttsProviderMock.synthesize.mockRejectedValue(createTtsProviderError("INVALID_FORMAT", false));
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(response.status).toBe(502);
+    expect(ttsProviderMock.synthesize).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls through to the browser fallback ONLY after both the first attempt and the retry are exhausted -- two real attempts, one final failure response", async () => {
+    ttsProviderMock.synthesize.mockRejectedValue(createTtsProviderError("TIMEOUT", true));
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(ttsProviderMock.synthesize).toHaveBeenCalledTimes(2);
+    expect(response.status).toBe(504);
+    const body = await response.json();
+    expect(body.error).toBe("VOICE_REPLY_TIMEOUT");
+    expect(body.providerAttemptCount).toBe(2);
+  });
+
+  // No duplicate audio: this whole retry happens inside ONE request/
+  // response cycle -- the route only ever returns a SINGLE Response,
+  // either the final audio bytes or a final JSON error, never two.
+  it("never returns more than one audio response, even when the retry is the one that succeeds", async () => {
+    ttsProviderMock.synthesize
+      .mockRejectedValueOnce(createTtsProviderError("TIMEOUT", true))
+      .mockResolvedValueOnce(SAMPLE_AUDIO);
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(response.status).toBe(200);
+    const buf = await response.arrayBuffer();
+    expect(buf.byteLength).toBeGreaterThan(0);
+    // A second read of the same body would throw ("already read") if this
+    // route somehow produced/streamed more than one body -- proving
+    // exactly one real HTTP response was ever constructed for this
+    // request, regardless of how many provider attempts it took.
+  });
+
+  it("usage metering represents actual provider attempts correctly -- one FAILED row for the first attempt, one SUCCEEDED row for the recovering retry, sharing one correlationId", async () => {
+    ttsProviderMock.synthesize
+      .mockRejectedValueOnce(createTtsProviderError("TIMEOUT", true))
+      .mockResolvedValueOnce({ ...SAMPLE_AUDIO, usage: { characterCount: 40 }, providerRequestId: "resp-retry" });
+
+    await invoke({ text: "hello", language: "en" });
+
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledTimes(2);
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ outcome: "FAILED", attemptNumber: 1, errorCategory: "TIMEOUT" }),
+    );
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ outcome: "SUCCEEDED", attemptNumber: 2, providerRequestId: "resp-retry" }),
+    );
+    const [firstCall, secondCall] = usageRepoMock.recordAiUsageEvent.mock.calls;
+    expect(firstCall[0].correlationId).toBe(secondCall[0].correlationId);
+  });
+
+  it("usage metering records exactly one row when the first attempt succeeds outright -- never a phantom retry row", async () => {
+    await invoke({ text: "hello", language: "en" });
+
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledTimes(1);
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(expect.objectContaining({ outcome: "SUCCEEDED", attemptNumber: 1 }));
+  });
+
+  it("uses TEXT_TO_SPEECH_FALLBACK_MODEL for the retry ONLY when explicitly configured -- never the first attempt, never invented", async () => {
+    process.env.TEXT_TO_SPEECH_FALLBACK_MODEL = "gemini-tts-fallback";
+    ttsProviderMock.synthesize
+      .mockRejectedValueOnce(createTtsProviderError("TIMEOUT", true))
+      .mockResolvedValueOnce(SAMPLE_AUDIO);
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(response.status).toBe(200);
+    // recordAiUsageEvent's own `model` field is the most direct proof of
+    // which model actually ran for each attempt.
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ model: "gemini-2.5-flash-preview-tts" }),
+    );
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ model: "gemini-tts-fallback" }),
+    );
+  });
+
+  it("never uses a fallback model when TEXT_TO_SPEECH_FALLBACK_MODEL is unset -- the retry reuses the exact same model as the first attempt", async () => {
+    ttsProviderMock.synthesize
+      .mockRejectedValueOnce(createTtsProviderError("TIMEOUT", true))
+      .mockResolvedValueOnce(SAMPLE_AUDIO);
+
+    await invoke({ text: "hello", language: "en" });
+
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ model: "gemini-2.5-flash-preview-tts" }),
+    );
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ model: "gemini-2.5-flash-preview-tts" }),
+    );
+  });
+
+  it("includes providerAttemptNumber in the provider_call failure log for both the first attempt and the retry", async () => {
+    const logSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    ttsProviderMock.synthesize.mockRejectedValue(createTtsProviderError("TIMEOUT", true));
+
+    await invoke({ text: "hello", language: "en" });
+
+    const lines = logSpy.mock.calls.map((call) => JSON.parse(call[0] as string));
+    const providerCallLines = lines.filter((line) => line.stage === "provider_call");
+    expect(providerCallLines).toHaveLength(2);
+    expect(providerCallLines[0]).toMatchObject({ providerAttemptNumber: 1 });
+    expect(providerCallLines[1]).toMatchObject({ providerAttemptNumber: 2 });
+    logSpy.mockRestore();
+  });
+});
+
 describe("AI usage metering", () => {
   it("records a SUCCEEDED TTS usage event with the provider's real usage/providerRequestId on success", async () => {
     ttsProviderMock.synthesize.mockResolvedValue({ ...SAMPLE_AUDIO, usage: { characterCount: 40 }, providerRequestId: "resp-1" });

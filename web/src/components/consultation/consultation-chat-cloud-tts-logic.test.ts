@@ -12,7 +12,10 @@ function okResponse(blob: Blob, headers: Record<string, string> = {}): Response 
   } as unknown as Response;
 }
 
-function notOkResponse(status: number, errorBody: { error?: string; message?: string } = { error: "VOICE_REPLY_UNAVAILABLE" }): Response {
+function notOkResponse(
+  status: number,
+  errorBody: { error?: string; message?: string; providerAttemptCount?: number } = { error: "VOICE_REPLY_UNAVAILABLE" },
+): Response {
   const response = {
     ok: false,
     status,
@@ -71,7 +74,7 @@ describe("synthesizeCloudVoiceReply", () => {
       { fetch: vi.fn().mockResolvedValue(okResponse(blob)) },
       { onSuccess, onFailure: () => {} },
     );
-    expect(onSuccess).toHaveBeenCalledWith(blob, null);
+    expect(onSuccess).toHaveBeenCalledWith(blob, null, null);
   });
 
   // Voice latency audit (2026-08-18): the server exposes its own measured
@@ -87,7 +90,7 @@ describe("synthesizeCloudVoiceReply", () => {
       { fetch: vi.fn().mockResolvedValue(okResponse(blob, { "X-Provider-Latency-Ms": "742" })) },
       { onSuccess, onFailure: () => {} },
     );
-    expect(onSuccess).toHaveBeenCalledWith(blob, 742);
+    expect(onSuccess).toHaveBeenCalledWith(blob, 742, null);
   });
 
   it("passes ttsProviderMs as null, never a fabricated number, when the header is absent", async () => {
@@ -100,7 +103,23 @@ describe("synthesizeCloudVoiceReply", () => {
       { fetch: vi.fn().mockResolvedValue(okResponse(blob)) },
       { onSuccess, onFailure: () => {} },
     );
-    expect(onSuccess).toHaveBeenCalledWith(blob, null);
+    expect(onSuccess).toHaveBeenCalledWith(blob, null, null);
+  });
+
+  // TTS reliability hardening (2026-08-19): the server exposes its own
+  // real retry count via X-Provider-Attempt-Count -- proves this is read
+  // from the real response header, never invented.
+  it("extracts providerAttemptCount from the X-Provider-Attempt-Count response header when present", async () => {
+    const blob = new Blob(["fake-wav-bytes"]);
+    const onSuccess = vi.fn();
+    await synthesizeCloudVoiceReply(
+      "client-1",
+      "text",
+      "en",
+      { fetch: vi.fn().mockResolvedValue(okResponse(blob, { "X-Provider-Attempt-Count": "2" })) },
+      { onSuccess, onFailure: () => {} },
+    );
+    expect(onSuccess).toHaveBeenCalledWith(blob, null, 2);
   });
 
   it("calls onFailure('unavailable') for a non-2xx response, without throwing", async () => {
@@ -112,7 +131,22 @@ describe("synthesizeCloudVoiceReply", () => {
       { fetch: vi.fn().mockResolvedValue(notOkResponse(503)) },
       { onSuccess: () => {}, onFailure },
     );
-    expect(onFailure).toHaveBeenCalledWith("unavailable");
+    expect(onFailure).toHaveBeenCalledWith("unavailable", "VOICE_REPLY_UNAVAILABLE", undefined);
+  });
+
+  // TTS reliability hardening (2026-08-19): the server's own final error
+  // code (already reflecting its own retry being exhausted) and real
+  // attempt count are read from the failure response body.
+  it("extracts errorCode and providerAttemptCount from the failure response body when present", async () => {
+    const onFailure = vi.fn();
+    await synthesizeCloudVoiceReply(
+      "client-1",
+      "text",
+      "en",
+      { fetch: vi.fn().mockResolvedValue(notOkResponse(504, { error: "VOICE_REPLY_TIMEOUT", providerAttemptCount: 2 })) },
+      { onSuccess: () => {}, onFailure },
+    );
+    expect(onFailure).toHaveBeenCalledWith("unavailable", "VOICE_REPLY_TIMEOUT", 2);
   });
 
   it("calls onFailure('network') when fetch itself throws (offline, CORS, request never left the browser)", async () => {
@@ -264,7 +298,7 @@ describe("VOICE_REPLY_CLIENT diagnostics logging", () => {
 
     await synthesizeCloudVoiceReply("client-1", "text", "ro", { fetch: vi.fn().mockResolvedValue(brokenResponse) }, { onSuccess: () => {}, onFailure });
 
-    expect(onFailure).toHaveBeenCalledWith("unavailable");
+    expect(onFailure).toHaveBeenCalledWith("unavailable", "unknown", undefined);
     const notOk = loggedLines().find((line) => line.event === "cloud_response_not_ok");
     expect(notOk).toMatchObject({ errorCode: "unknown" });
   });

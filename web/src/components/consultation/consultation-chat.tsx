@@ -632,6 +632,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       outcome: VoiceLatencyTurnOutcome,
       ttsProviderMs: number | null,
       errorCode?: string,
+      providerAttemptCount?: number,
     ) => {
       if (!voiceLatency) return;
       const summary = computeVoiceLatencySummary(finalMarks, {
@@ -642,6 +643,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       logVoiceLatencySummary(voiceLatency.attemptId, summary);
       reportVoiceLatencySummary(clientId, voiceLatency.attemptId, outcome, summary, { fetch: bindFetch(fetch) }, {
         errorCode,
+        providerAttemptCount,
         elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(finalMarks, performance.now()),
       });
     };
@@ -675,7 +677,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       // re-solving the same problem a second, differently-worded way.
       { fetch: bindFetch(fetch), signal: abortController.signal },
       {
-        onSuccess: (audioBlob, ttsProviderMs) => {
+        onSuccess: (audioBlob, ttsProviderMs, ttsProviderAttemptCount) => {
           // Voice reliability hardening: a NEWER speakMessage call (a
           // second message sent, or handleStopSpeaking) already
           // superseded this one while its cloud TTS request was still in
@@ -712,7 +714,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
             // Cloud audio never played -- the turn ends here (falling
             // back to the local Web Speech path, which has no provider
             // timing to report), with whatever real marks were reached.
-            concludeVoiceTurn(ttsMarks, "tts_fallback_local", ttsProviderMs, "tts_playback_error");
+            concludeVoiceTurn(ttsMarks, "tts_fallback_local", ttsProviderMs, "tts_playback_error", ttsProviderAttemptCount ?? undefined);
           });
 
           // Playback-stage diagnostics (requirement: audio received ->
@@ -740,7 +742,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
             stopCloudAudio();
             if (voiceLatency) {
               ttsMarks = markVoiceLatencyStage(ttsMarks, "playback_ended", performance.now());
-              concludeVoiceTurn(ttsMarks, "tts_completed", ttsProviderMs);
+              concludeVoiceTurn(ttsMarks, "tts_completed", ttsProviderMs, undefined, ttsProviderAttemptCount ?? undefined);
             }
           };
           audio.onerror = () => {
@@ -760,7 +762,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
             triggerLocalFallback();
           });
         },
-        onFailure: (reason) => {
+        onFailure: (reason, ttsErrorCode, ttsProviderAttemptCount) => {
           // See the identical guard in onSuccess above.
           if (voiceReplyAttemptRef.current !== myAttempt) {
             logVoiceReplyClientEvent("cloud_response_superseded", { stage: "failure" });
@@ -770,11 +772,14 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
           speakMessageLocally(message, language, true);
           // The cloud request never produced audio at all -- no
           // tts_audio_received/audio_ready/playback marks, no
-          // ttsProviderMs (no response to read one from). `reason` is
-          // synthesizeCloudVoiceReply's own coarse classification
-          // ("network" | "unavailable") -- the specific server-side error
-          // code is already logged separately via VOICE_REPLY_CLIENT.
-          concludeVoiceTurn(ttsMarks, "tts_failed", null, reason);
+          // ttsProviderMs (no response to read one from). Prefers the
+          // server's own specific error code (e.g. VOICE_REPLY_TIMEOUT,
+          // already reflecting its own retry being exhausted) over
+          // synthesizeCloudVoiceReply's coarse "network"/"unavailable"
+          // classification -- undefined only for a genuine network-level
+          // failure, where no server response body exists at all to read
+          // a code from.
+          concludeVoiceTurn(ttsMarks, "tts_failed", null, ttsErrorCode ?? reason, ttsProviderAttemptCount);
         },
       },
       voiceLatency?.attemptId,
