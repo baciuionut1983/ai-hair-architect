@@ -79,7 +79,18 @@ describe("computeVoiceLatencySummary", () => {
       audioPreparationMs: 50,
       timeToFirstAudioMs: 5800, // playback_started(10800) - recording_stopped(5000)
       voiceTurnTotalMs: 10800, // playback_started(10800) - mic_requested(0)
+      timeToPlaybackCompleteMs: null, // playback_ended never reached in this test
     });
+  });
+
+  it("computes timeToPlaybackCompleteMs from recording_stopped to playback_ended, when the turn actually finished playing", () => {
+    const summary = computeVoiceLatencySummary({
+      recording_stopped: 5000,
+      playback_started: 10800,
+      playback_ended: 12300,
+    });
+
+    expect(summary.timeToPlaybackCompleteMs).toBe(7300);
   });
 
   it("returns null (never a fabricated 0 or estimate) for any duration whose marks were never reached -- e.g. a turn with Voice Reply off never reaches TTS stages", () => {

@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import type { AnalysisState } from "@/lib/milestone2-types";
 import { findAnalysisForOwner, findLatestAnalysisForClient } from "@/lib/analysis-repository";
 import { recordAiUsageEvent } from "@/lib/ai-usage-repository";
+import type { AiUsageQuantities } from "@/lib/ai-usage-contracts";
 import type { ClientRecord } from "@/lib/contracts";
 import {
   listRecentConsultationMessages,
@@ -59,10 +60,26 @@ export type SendConsultationMessageResult =
       // Voice latency audit (2026-08-18): the real, measured duration of
       // just the provider.respond() call below -- the SAME number AI Usage
       // Metering's own latencyMs already computes, reused rather than a
-      // second measurement.
+      // second measurement. Reflects whichever attempt (1 or 2) actually
+      // succeeded -- never the first, superseded attempt's timing, if a
+      // retry happened.
       providerLatencyMs: number;
+      // Consultation reliability hardening (2026-08-19): 1 when the first
+      // attempt succeeded outright, 2 when a transient failure was
+      // recovered by the single automatic retry -- surfaced so callers
+      // (voice latency telemetry) can report real provider-attempt counts
+      // rather than assuming every turn is exactly one call.
+      providerAttemptCount: 1 | 2;
     }
-  | { outcome: "failed"; code: ConsultationChatResultCode };
+  | {
+      outcome: "failed";
+      code: ConsultationChatResultCode;
+      // Only populated when the failure happened at the provider_call
+      // stage (undefined for config/persistence failures, where an
+      // "attempt count" isn't a meaningful concept) -- same reasoning as
+      // providerAttemptCount above.
+      providerAttemptCount?: 1 | 2;
+    };
 
 export interface SendConsultationMessageDependencies {
   env?: Readonly<Record<string, string | undefined>>;
@@ -103,6 +120,18 @@ export async function sendConsultationMessage(
   analysisId: string | undefined,
   dependencies: SendConsultationMessageDependencies = {},
   languageHint: ConsultationChatLanguageHint = {},
+  // End-to-end voice turn correlation (2026-08-19): when this call
+  // originated from a voice-initiated turn, the caller (chat/route.ts)
+  // passes the SAME id already used for STT (use-voice-recording.ts's
+  // attemptId) -- never a new, independently-generated id, so a single
+  // stylist-reported incident can be found across STT, Consult AI, and
+  // TTS's own logs by this one value. undefined for a typed message (no
+  // voice turn exists) -- included in structured logs only, never in the
+  // AI Usage Metering correlationId (see usageCorrelationId below, which
+  // stays a fresh id per real provider call -- reusing voiceTurnId there
+  // would collide across modalities and silently drop usage rows under
+  // AiUsageEvent's own idempotencyKey uniqueness).
+  voiceTurnId?: string,
 ): Promise<SendConsultationMessageResult> {
   const startedAt = (dependencies.now ?? (() => new Date()))().getTime();
 
@@ -120,6 +149,7 @@ export async function sendConsultationMessage(
         clientId: client.id,
         analysisId,
         durationMs: Date.now() - startedAt,
+        voiceTurnId,
       });
       return failure("PROCESSING_DISABLED");
     }
@@ -131,6 +161,7 @@ export async function sendConsultationMessage(
         clientId: client.id,
         analysisId,
         durationMs: Date.now() - startedAt,
+        voiceTurnId,
         // Safe: only the env variable NAME and a fixed issue code (e.g.
         // "AI_ANALYSIS_API_KEY_REQUIRED") -- never the variable's value.
         configIssueCodes: config.issues.map((issue) => issue.code).join(","),
@@ -180,6 +211,7 @@ export async function sendConsultationMessage(
         clientId: client.id,
         analysisId,
         durationMs: Date.now() - startedAt,
+        voiceTurnId,
       });
       return failure("PERSISTENCE_FAILURE");
     }
@@ -198,6 +230,7 @@ export async function sendConsultationMessage(
         clientId: client.id,
         analysisId,
         durationMs: Date.now() - startedAt,
+        voiceTurnId,
       });
       return failure("PERSISTENCE_FAILURE");
     }
@@ -219,12 +252,26 @@ export async function sendConsultationMessage(
         clientId: client.id,
         analysisId,
         durationMs: Date.now() - startedAt,
+        voiceTurnId,
       });
       return failure("PERSISTENCE_FAILURE");
     }
 
     const createProvider = dependencies.createProvider ?? defaultCreateProvider;
     const provider = createProvider({ apiKey: config.apiKey, model: config.model });
+    // Consultation reliability hardening (2026-08-19): mirrors STT_FALLBACK_MODEL
+    // exactly (see voice-transcript/route.ts's own comment) -- unset by
+    // default, never invented; only ever used for the single automatic
+    // retry below, never the first attempt. An operator can point retries
+    // at a different, hopefully-healthier model without a code change; if
+    // unset (the default), the retry simply reuses the same provider/model
+    // as the first attempt, exactly like STT's own retry does when
+    // STT_FALLBACK_MODEL is unset.
+    const fallbackModel = env.CONSULTATION_CHAT_FALLBACK_MODEL;
+    const retryProvider =
+      fallbackModel && fallbackModel.trim().length > 0 && fallbackModel !== config.model
+        ? createProvider({ apiKey: config.apiKey, model: fallbackModel })
+        : provider;
     const recordUsage = dependencies.recordAiUsageEvent ?? recordAiUsageEvent;
 
     let memories: Awaited<ReturnType<typeof retrieveRelevantMemories>>;
@@ -242,6 +289,7 @@ export async function sendConsultationMessage(
         clientId: client.id,
         analysisId,
         durationMs: Date.now() - startedAt,
+        voiceTurnId,
       });
       return failure("PERSISTENCE_FAILURE");
     }
@@ -250,32 +298,41 @@ export async function sendConsultationMessage(
 
     const controller = new AbortController();
     // AI Usage & Cost Metering Phase 1: one correlationId per logical send
-    // attempt, shared by the success and failure recording calls below --
-    // this route never retries internally, so attemptNumber is always the
-    // default (1).
+    // attempt, shared by every attempt's success/failure recording call
+    // below (each real provider call still gets its own, correctly
+    // distinct row via attemptNumber -- see recordAttempt below, mirroring
+    // voice-transcript/route.ts's own attemptId+attemptNumber scheme
+    // exactly). Deliberately NOT voiceTurnId -- see this function's own
+    // parameter doc comment for why reusing that here would collide
+    // across STT/Consultation/TTS's separate metering namespaces.
     const usageCorrelationId = randomUUID();
-    const providerCallStartedAt = Date.now();
-    let result;
-    try {
-      result = await provider.respond(message, context, controller.signal);
-    } catch (error) {
-      const resultCode = classifyProviderFailure(error);
-      const providerError = error as Partial<ChatProviderError> | undefined;
-      logConsultationChatFailure({
-        stage: "provider_call",
-        resultCode,
-        ownerUserId,
-        clientId: client.id,
-        analysisId,
-        durationMs: Date.now() - startedAt,
-        providerName: provider.name,
-        providerModelVersion: provider.modelVersion,
-        providerErrorCode: providerError?.code,
-        providerErrorStatus: providerError?.status,
-      });
+
+    // Consultation reliability hardening (2026-08-19): a real production
+    // intermittent "The AI consultation assistant is not available right
+    // now" was traced to this call never being retried at all -- any
+    // transient Gemini 5xx/429/timeout unconditionally failed the whole
+    // turn on the first hiccup, unlike STT's own single retry
+    // (teach-ai-panel-logic.ts). This mirrors that exact policy: at most
+    // ONE retry, and ONLY when the thrown ChatProviderError's own
+    // `retryable` flag (GeminiConsultationChatProvider.classifyError) is
+    // true. A permanent failure (bad auth, invalid format, a non-5xx
+    // PROVIDER_ERROR) is never retried -- a second identical call could
+    // never change the outcome. Idempotency is structural, not a
+    // best-effort promise: the stylist's message was already persisted
+    // exactly once, above, before this loop; the assistant's reply is
+    // only ever persisted once, after this loop resolves to its single
+    // final result -- neither write is inside this retry.
+    const recordAttempt = async (
+      activeProvider: ConsultationChatProvider,
+      attemptNumber: 1 | 2,
+      outcome: "SUCCEEDED" | "FAILED",
+      latencyMs: number,
+      details: { providerRequestId?: string; usage?: AiUsageQuantities; errorCategory?: string } = {},
+    ): Promise<void> => {
       // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
-      // contract: a metering problem must never turn an already-failed
-      // provider call into a DIFFERENT, worse failure for the caller.
+      // contract: a metering problem must never turn an already-decided
+      // outcome into a DIFFERENT, worse (or falsely better) one for the
+      // caller.
       try {
         await recordUsage({
           ownerUserId,
@@ -284,39 +341,82 @@ export async function sendConsultationMessage(
           feature: "consultation_chat",
           modality: "TEXT_GENERATION",
           correlationId: usageCorrelationId,
-          provider: provider.name,
-          model: provider.modelVersion,
-          outcome: "FAILED",
-          errorCategory: providerError?.code ?? resultCode,
-          latencyMs: Date.now() - providerCallStartedAt,
+          attemptNumber,
+          provider: activeProvider.name,
+          model: activeProvider.modelVersion,
+          outcome,
+          latencyMs,
+          ...details,
         });
       } catch {
         // Intentionally swallowed -- see comment above.
       }
-      return failure(resultCode);
-    }
+    };
 
-    // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
-    // contract: a metering problem must never turn a successful reply
-    // into a user-visible failure.
+    let activeProvider = provider;
+    let attemptNumber: 1 | 2 = 1;
+    let providerCallStartedAt = Date.now();
+    let result: Awaited<ReturnType<ConsultationChatProvider["respond"]>>;
     try {
-      await recordUsage({
+      result = await activeProvider.respond(message, context, controller.signal);
+    } catch (firstError) {
+      const firstResultCode = classifyProviderFailure(firstError);
+      const firstProviderError = firstError as Partial<ChatProviderError> | undefined;
+      logConsultationChatFailure({
+        stage: "provider_call",
+        resultCode: firstResultCode,
         ownerUserId,
         clientId: client.id,
         analysisId,
-        feature: "consultation_chat",
-        modality: "TEXT_GENERATION",
-        correlationId: usageCorrelationId,
-        provider: provider.name,
-        model: provider.modelVersion,
-        providerRequestId: result.providerRequestId,
-        usage: result.usage,
-        outcome: "SUCCEEDED",
-        latencyMs: Date.now() - providerCallStartedAt,
+        durationMs: Date.now() - startedAt,
+        providerName: activeProvider.name,
+        providerModelVersion: activeProvider.modelVersion,
+        providerErrorCode: firstProviderError?.code,
+        providerErrorStatus: firstProviderError?.status,
+        voiceTurnId,
+        providerAttemptNumber: attemptNumber,
       });
-    } catch {
-      // Intentionally swallowed -- see comment above.
+      await recordAttempt(activeProvider, attemptNumber, "FAILED", Date.now() - providerCallStartedAt, {
+        errorCategory: firstProviderError?.code ?? firstResultCode,
+      });
+
+      if (firstProviderError?.retryable !== true) {
+        return failure(firstResultCode, attemptNumber);
+      }
+
+      attemptNumber = 2;
+      activeProvider = retryProvider;
+      providerCallStartedAt = Date.now();
+      try {
+        result = await activeProvider.respond(message, context, controller.signal);
+      } catch (secondError) {
+        const secondResultCode = classifyProviderFailure(secondError);
+        const secondProviderError = secondError as Partial<ChatProviderError> | undefined;
+        logConsultationChatFailure({
+          stage: "provider_call",
+          resultCode: secondResultCode,
+          ownerUserId,
+          clientId: client.id,
+          analysisId,
+          durationMs: Date.now() - startedAt,
+          providerName: activeProvider.name,
+          providerModelVersion: activeProvider.modelVersion,
+          providerErrorCode: secondProviderError?.code,
+          providerErrorStatus: secondProviderError?.status,
+          voiceTurnId,
+          providerAttemptNumber: attemptNumber,
+        });
+        await recordAttempt(activeProvider, attemptNumber, "FAILED", Date.now() - providerCallStartedAt, {
+          errorCategory: secondProviderError?.code ?? secondResultCode,
+        });
+        return failure(secondResultCode, attemptNumber);
+      }
     }
+
+    await recordAttempt(activeProvider, attemptNumber, "SUCCEEDED", Date.now() - providerCallStartedAt, {
+      providerRequestId: result.providerRequestId,
+      usage: result.usage,
+    });
 
     let replyRow;
     try {
@@ -337,8 +437,10 @@ export async function sendConsultationMessage(
         clientId: client.id,
         analysisId,
         durationMs: Date.now() - startedAt,
+        voiceTurnId,
+        providerAttemptNumber: attemptNumber,
       });
-      return failure("PERSISTENCE_FAILURE");
+      return failure("PERSISTENCE_FAILURE", attemptNumber);
     }
 
     void stored; // the stylist's own message is already durably persisted above
@@ -370,6 +472,8 @@ export async function sendConsultationMessage(
       hadProposedCorrection: result.proposedCorrection != null,
       hadProposedMemory: result.proposedMemory != null,
       needsClarification: result.needsClarification,
+      voiceTurnId,
+      providerAttemptCount: attemptNumber,
     });
 
     return {
@@ -378,6 +482,7 @@ export async function sendConsultationMessage(
       needsClarification: result.needsClarification,
       replyLanguage,
       providerLatencyMs: Date.now() - providerCallStartedAt,
+      providerAttemptCount: attemptNumber,
     };
   } catch (error) {
     logConsultationChatFailure({
@@ -388,6 +493,7 @@ export async function sendConsultationMessage(
       analysisId,
       durationMs: Date.now() - startedAt,
       errorName: error instanceof Error ? error.name : "unknown",
+      voiceTurnId,
     });
     return failure("INTERNAL_PROCESSING_FAILURE");
   }
@@ -477,8 +583,8 @@ function classifyProviderFailure(error: unknown): ConsultationChatResultCode {
   }
 }
 
-function failure(code: ConsultationChatResultCode): SendConsultationMessageResult {
-  return { outcome: "failed", code };
+function failure(code: ConsultationChatResultCode, providerAttemptCount?: 1 | 2): SendConsultationMessageResult {
+  return { outcome: "failed", code, ...(providerAttemptCount ? { providerAttemptCount } : {}) };
 }
 
 // Structured, safe-fields-only diagnostic log -- same JSON-record convention
@@ -512,6 +618,8 @@ function logConsultationChatFailure(input: {
   providerErrorStatus?: number;
   configIssueCodes?: string;
   errorName?: string;
+  voiceTurnId?: string;
+  providerAttemptNumber?: number;
 }): void {
   console.error(
     JSON.stringify({
@@ -529,6 +637,8 @@ function logConsultationChatFailure(input: {
       providerErrorStatus: input.providerErrorStatus ?? null,
       configIssueCodes: input.configIssueCodes ?? null,
       errorName: input.errorName ?? null,
+      voiceTurnId: input.voiceTurnId ?? null,
+      providerAttemptNumber: input.providerAttemptNumber ?? null,
     }),
   );
 }
@@ -548,6 +658,8 @@ function logConsultationChatSuccess(input: {
   hadProposedCorrection: boolean;
   hadProposedMemory: boolean;
   needsClarification: boolean;
+  voiceTurnId?: string;
+  providerAttemptCount?: number;
 }): void {
   console.log(
     JSON.stringify({
@@ -560,6 +672,8 @@ function logConsultationChatSuccess(input: {
       hadProposedCorrection: input.hadProposedCorrection,
       hadProposedMemory: input.hadProposedMemory,
       needsClarification: input.needsClarification,
+      voiceTurnId: input.voiceTurnId ?? null,
+      providerAttemptCount: input.providerAttemptCount ?? null,
     }),
   );
 }

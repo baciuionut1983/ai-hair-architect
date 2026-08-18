@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { resolveOwnedClient } from "@/lib/client-repository";
 import { checkRateLimit } from "@/lib/hardening";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
-import { parseVoiceLatencyTelemetryPayload } from "@/lib/voice-latency-telemetry-logic";
+import { parseVoiceLatencyTelemetryPayload, terminalStageForOutcome } from "@/lib/voice-latency-telemetry-logic";
 
 // Voice latency audit follow-up (2026-08-19): this endpoint exists ONLY to
 // close a demonstrated gap -- the VOICE_LATENCY summary voice-latency-
@@ -69,6 +69,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       clientId: id,
       attemptId: parsed.value.attemptId,
       outcome: parsed.value.outcome,
+      // Derived from `outcome` (never sent separately -- see
+      // terminalStageForOutcome's own comment), so it and `outcome` can
+      // never disagree. Lets an operator filter Railway logs by exactly
+      // which stage a turn ended at (STT/consultation/TTS/playback)
+      // without needing to memorize all 8 outcome values.
+      terminalStage: terminalStageForOutcome(parsed.value.outcome),
+      errorCode: parsed.value.errorCode ?? null,
+      providerAttemptCount: parsed.value.providerAttemptCount ?? null,
+      elapsedSinceMicRequestMs: parsed.value.elapsedSinceMicRequestMs ?? null,
       ...parsed.value.summary,
     })}`,
   );

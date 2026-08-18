@@ -27,6 +27,7 @@ function validSummary() {
     audioPreparationMs: 20,
     timeToFirstAudioMs: 1900,
     voiceTurnTotalMs: 2100,
+    timeToPlaybackCompleteMs: 2600,
   };
 }
 
@@ -156,5 +157,51 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     // silently pass.
     const response = await invoke({ attemptId: "attempt-1", outcome: "stt_failed", summary: validSummary() });
     expect(response.status).toBe(202);
+  });
+
+  // Production observability follow-up (2026-08-19): a failed turn's
+  // terminal diagnostics (errorCode/providerAttemptCount/
+  // elapsedSinceMicRequestMs) and the mechanically-derived terminalStage
+  // both land in the SAME "VOICE LATENCY SUMMARY" log line -- an operator
+  // never needs a second log format to tell STT failed from Consult AI
+  // failing from TTS failing.
+  it("includes terminalStage (derived from outcome) and the terminal diagnostics fields in the log line for a failed turn", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-99",
+      outcome: "consultation_failed",
+      summary: validSummary(),
+      errorCode: "PROVIDER_TIMEOUT",
+      providerAttemptCount: 2,
+      elapsedSinceMicRequestMs: 4321,
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      outcome: "consultation_failed",
+      terminalStage: "consultation",
+      errorCode: "PROVIDER_TIMEOUT",
+      providerAttemptCount: 2,
+      elapsedSinceMicRequestMs: 4321,
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs errorCode/providerAttemptCount/elapsedSinceMicRequestMs as null (never omitted, never fabricated) when not reported", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-100", outcome: "tts_completed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      terminalStage: "playback",
+      errorCode: null,
+      providerAttemptCount: null,
+      elapsedSinceMicRequestMs: null,
+    });
+    logSpy.mockRestore();
   });
 });

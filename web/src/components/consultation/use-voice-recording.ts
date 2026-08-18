@@ -42,6 +42,7 @@ import {
 } from "./teach-ai-panel-logic";
 import { evaluateVadSample, initVadState, shouldAutoSubmitTranscript, type VadState } from "./voice-activity-logic";
 import {
+  computeElapsedSinceMicRequestMs,
   computeVoiceLatencySummary,
   logVoiceLatencySummary,
   markVoiceLatencyStage,
@@ -256,7 +257,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                 setRecording(false);
                 setProcessing(true);
               },
-              onFailure: (_message, reason, marks) => {
+              onFailure: (_message, reason, marks, attemptNumber) => {
                 setProcessing(false);
                 setError(t(translationKeyForReason(reason)));
                 // The turn ends here (no Consult AI/TTS stage will ever
@@ -269,9 +270,13 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                 const mergedMarks = mergeVoiceLatencyMarks(micMarksRef.current, marks);
                 const summary = computeVoiceLatencySummary(mergedMarks);
                 logVoiceLatencySummary(attemptId, summary);
-                reportVoiceLatencySummary(clientId, attemptId, "stt_failed", summary, { fetch: bindFetch(fetch) });
+                reportVoiceLatencySummary(clientId, attemptId, "stt_failed", summary, { fetch: bindFetch(fetch) }, {
+                  errorCode: reason,
+                  ...(attemptNumber > 0 ? { providerAttemptCount: attemptNumber } : {}),
+                  elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(mergedMarks, performance.now()),
+                });
               },
-              onSuccess: (transcript, _transcriptId, marks, sttProviderMs) => {
+              onSuccess: (transcript, _transcriptId, marks, sttProviderMs, attemptNumber) => {
                 setProcessing(false);
                 const mergedMarks = mergeVoiceLatencyMarks(micMarksRef.current, marks);
                 // Empty/whitespace-only would only ever come from a
@@ -287,7 +292,10 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                   // never reached.
                   const summary = computeVoiceLatencySummary(mergedMarks, { sttProviderMs: sttProviderMs ?? undefined });
                   logVoiceLatencySummary(attemptId, summary);
-                  reportVoiceLatencySummary(clientId, attemptId, "stt_success_not_submitted", summary, { fetch: bindFetch(fetch) });
+                  reportVoiceLatencySummary(clientId, attemptId, "stt_success_not_submitted", summary, { fetch: bindFetch(fetch) }, {
+                    providerAttemptCount: attemptNumber,
+                    elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(mergedMarks, performance.now()),
+                  });
                 }
               },
             },

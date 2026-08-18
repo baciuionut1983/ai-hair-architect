@@ -85,13 +85,24 @@ function mapProviderErrorToResponse(error: TtsProviderError): { status: number; 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   logVoiceReply("INFO", "endpoint_entered");
 
-  let body: { text?: unknown; language?: unknown };
+  let body: { text?: unknown; language?: unknown; voiceTurnId?: unknown };
   try {
     body = await request.json();
   } catch {
     logVoiceReply("FAILED", "invalid_request", { resultCode: "INVALID_REQUEST", reason: "json_parse_threw" });
     return NextResponse.json({ error: "INVALID_REQUEST", message: "Invalid request." }, { status: 400 });
   }
+
+  // End-to-end voice turn correlation (2026-08-19): when this request
+  // originated from a voice-initiated turn, the client sends the SAME id
+  // already used for STT (use-voice-recording.ts's own attemptId) -- never
+  // a new, independently-generated id. Same defensive posture as
+  // voice-transcript/route.ts's own attemptId handling: a malformed/
+  // missing value simply means "no voice turn" (unreachable in practice --
+  // this route is voice-only -- but never trusted blindly regardless),
+  // never invented.
+  const voiceTurnId: string | null =
+    typeof body.voiceTurnId === "string" && /^[A-Za-z0-9-]{1,100}$/.test(body.voiceTurnId) ? body.voiceTurnId : null;
 
   const user = await authenticateSessionRequest();
   if (!user) {
@@ -114,7 +125,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const language = typeof body.language === "string" ? body.language : "";
 
   if (!text) {
-    logVoiceReply("FAILED", "invalid_request", { resultCode: "INVALID_REQUEST", reason: "empty_text" });
+    logVoiceReply("FAILED", "invalid_request", { resultCode: "INVALID_REQUEST", reason: "empty_text", voiceTurnId });
     return NextResponse.json({ error: "INVALID_REQUEST", message: "No text to speak." }, { status: 400 });
   }
   // Cost control (requirement 7): bounds the worst-case audio-output-token
@@ -124,16 +135,16 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // truncating spoken audio without truncating the on-screen text would
   // make the two disagree about what was actually said.
   if (text.length > MAX_VOICE_REPLY_TEXT_LENGTH) {
-    logVoiceReply("FAILED", "invalid_request", { resultCode: "TEXT_TOO_LONG", reason: "text_exceeds_max_length", textLength: text.length });
+    logVoiceReply("FAILED", "invalid_request", { resultCode: "TEXT_TOO_LONG", reason: "text_exceeds_max_length", textLength: text.length, voiceTurnId });
     return NextResponse.json({ error: "TEXT_TOO_LONG", message: "This reply is too long for voice reply." }, { status: 400 });
   }
   if (!isCloudTtsLanguageCode(language)) {
-    logVoiceReply("FAILED", "invalid_request", { resultCode: "UNSUPPORTED_LANGUAGE", reason: "language_not_cloud_tts_supported", language });
+    logVoiceReply("FAILED", "invalid_request", { resultCode: "UNSUPPORTED_LANGUAGE", reason: "language_not_cloud_tts_supported", language, voiceTurnId });
     return NextResponse.json({ error: "UNSUPPORTED_LANGUAGE", message: "Voice reply is not available for this language." }, { status: 400 });
   }
 
   if (process.env.TEXT_TO_SPEECH_PROVIDER !== "gemini") {
-    logVoiceReply("FAILED", "config_check", { resultCode: "VOICE_REPLY_PROVIDER_NOT_CONFIGURED", reason: "provider_not_gemini" });
+    logVoiceReply("FAILED", "config_check", { resultCode: "VOICE_REPLY_PROVIDER_NOT_CONFIGURED", reason: "provider_not_gemini", voiceTurnId });
     return NextResponse.json(
       { error: "VOICE_REPLY_PROVIDER_NOT_CONFIGURED", message: "Voice reply is not configured. The text reply above is still available." },
       { status: 503 },
@@ -143,7 +154,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const apiKey = process.env.TEXT_TO_SPEECH_API_KEY;
   const model = process.env.TEXT_TO_SPEECH_MODEL || "gemini-2.5-flash-preview-tts";
   if (!apiKey) {
-    logVoiceReply("FAILED", "config_check", { resultCode: "VOICE_REPLY_PROVIDER_NOT_CONFIGURED", reason: "api_key_missing" });
+    logVoiceReply("FAILED", "config_check", { resultCode: "VOICE_REPLY_PROVIDER_NOT_CONFIGURED", reason: "api_key_missing", voiceTurnId });
     return NextResponse.json(
       { error: "VOICE_REPLY_PROVIDER_NOT_CONFIGURED", message: "Voice reply is not configured. The text reply above is still available." },
       { status: 503 },
@@ -176,6 +187,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       language,
       languageCode,
       textLength: text.length,
+      voiceTurnId,
     });
     // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
     // contract: a metering problem must never turn an already-failed
@@ -255,6 +267,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       providerMimeType: result.mimeType,
       sampleRateHz,
       pcmBytes: pcm.length,
+      voiceTurnId,
     });
     return NextResponse.json(
       { error: "VOICE_REPLY_FAILED", message: "Voice reply returned an unexpected response. The text reply above is still available." },
@@ -276,6 +289,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     sampleRateHz,
     pcmBytes: pcm.length,
     audioBytes: wav.length,
+    voiceTurnId,
   });
 
   return new Response(new Uint8Array(wav), {

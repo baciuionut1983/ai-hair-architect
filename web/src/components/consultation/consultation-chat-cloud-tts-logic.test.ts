@@ -39,6 +39,28 @@ describe("synthesizeCloudVoiceReply", () => {
     expect(JSON.parse(init.body)).toEqual({ text: "Clienta va reveni saptamana viitoare.", language: "ro" });
   });
 
+  // End-to-end voice turn correlation (2026-08-19): when this Voice Reply
+  // was triggered by a voice-initiated turn, the SAME id already used for
+  // STT is threaded through -- never a new, independently-generated id.
+  it("includes voiceTurnId in the request body when provided, and omits it entirely when absent", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(new Blob(["audio"])));
+    await synthesizeCloudVoiceReply(
+      "client-1",
+      "text",
+      "en",
+      { fetch: fetchMock },
+      { onSuccess: () => {}, onFailure: () => {} },
+      "voice-turn-abc",
+    );
+    const [, initWithId] = fetchMock.mock.calls[0];
+    expect(JSON.parse(initWithId.body)).toEqual({ text: "text", language: "en", voiceTurnId: "voice-turn-abc" });
+
+    fetchMock.mockClear();
+    await synthesizeCloudVoiceReply("client-1", "text", "en", { fetch: fetchMock }, { onSuccess: () => {}, onFailure: () => {} });
+    const [, initWithoutId] = fetchMock.mock.calls[0];
+    expect("voiceTurnId" in JSON.parse(initWithoutId.body)).toBe(false);
+  });
+
   it("calls onSuccess with the response blob on a 2xx response", async () => {
     const blob = new Blob(["fake-wav-bytes"]);
     const onSuccess = vi.fn();

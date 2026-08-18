@@ -200,6 +200,45 @@ describe("POST /api/v1/clients/[id]/voice-reply", () => {
     expect(Number(header)).toBeGreaterThanOrEqual(0);
   });
 
+  // End-to-end voice turn correlation (2026-08-19): when the client sends
+  // voiceTurnId (the SAME id already used for STT), it's echoed into this
+  // route's own structured log so a single stylist-reported incident can
+  // be found across STT/Consult AI/TTS logs by this one value.
+  describe("voiceTurnId correlation", () => {
+    it("includes a valid voiceTurnId in the success log", async () => {
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      await invoke({ text: "hello", language: "en", voiceTurnId: "a1b2c3d4-0000-0000-0000-000000000000" });
+
+      const lines = logSpy.mock.calls.map((call) => JSON.parse(call[0] as string));
+      const complete = lines.find((line) => line.stage === "complete");
+      expect(complete).toMatchObject({ voiceTurnId: "a1b2c3d4-0000-0000-0000-000000000000" });
+      logSpy.mockRestore();
+    });
+
+    it("logs voiceTurnId as null (never omitted, never fabricated) when absent", async () => {
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      await invoke({ text: "hello", language: "en" });
+
+      const lines = logSpy.mock.calls.map((call) => JSON.parse(call[0] as string));
+      const complete = lines.find((line) => line.stage === "complete");
+      expect(complete).toMatchObject({ voiceTurnId: null });
+      logSpy.mockRestore();
+    });
+
+    it("rejects a malformed voiceTurnId -- never trusted blindly, logged as null instead of a raw unvalidated string", async () => {
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+      await invoke({ text: "hello", language: "en", voiceTurnId: "<script>alert(1)</script>" });
+
+      const lines = logSpy.mock.calls.map((call) => JSON.parse(call[0] as string));
+      const complete = lines.find((line) => line.stage === "complete");
+      expect(complete).toMatchObject({ voiceTurnId: null });
+      logSpy.mockRestore();
+    });
+  });
+
   // Playback investigation: proves the route's own fail-closed safety net
   // (isValidWavHeader) actually catches a malformed result and refuses to
   // ship it to the browser -- rather than the browser being the first

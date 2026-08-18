@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { parseVoiceLatencyTelemetryPayload, VOICE_LATENCY_TURN_OUTCOMES } from "./voice-latency-telemetry-logic";
+import {
+  parseVoiceLatencyTelemetryPayload,
+  terminalStageForOutcome,
+  VOICE_LATENCY_TURN_OUTCOMES,
+} from "./voice-latency-telemetry-logic";
 
 function validSummary() {
   return {
@@ -16,6 +20,7 @@ function validSummary() {
     audioPreparationMs: 20,
     timeToFirstAudioMs: 1900,
     voiceTurnTotalMs: 2100,
+    timeToPlaybackCompleteMs: 2600,
   };
 }
 
@@ -63,6 +68,7 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
         audioPreparationMs: null,
         timeToFirstAudioMs: null,
         voiceTurnTotalMs: null,
+        timeToPlaybackCompleteMs: null,
       },
     });
     expect(result).toEqual({
@@ -83,6 +89,7 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
           audioPreparationMs: null,
           timeToFirstAudioMs: null,
           voiceTurnTotalMs: null,
+          timeToPlaybackCompleteMs: null,
         },
       },
     });
@@ -211,5 +218,114 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     expect(result.ok).toBe(true);
     expect(JSON.stringify(result)).not.toContain("transcript");
     expect(JSON.stringify(result)).not.toContain("audioBase64");
+  });
+
+  // Production observability follow-up (2026-08-19): terminal diagnostics
+  // for a failed/incomplete turn -- errorCode, providerAttemptCount,
+  // elapsedSinceMicRequestMs -- all optional, all strictly validated.
+  describe("terminal diagnostics (errorCode / providerAttemptCount / elapsedSinceMicRequestMs)", () => {
+    it("accepts a valid errorCode matching this app's own existing code vocabularies", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_failed",
+        summary: validSummary(),
+        errorCode: "PROVIDER_TIMEOUT",
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ errorCode: "PROVIDER_TIMEOUT" }) });
+    });
+
+    it("rejects an errorCode that isn't a safe, bounded identifier -- never a raw provider message or conversation fragment", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_failed",
+        summary: validSummary(),
+        errorCode: "the client said her hair is falling out and I don't know what to do",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_error_code" });
+    });
+
+    it("accepts a valid providerAttemptCount (1 or 2, matching STT/Consult AI's own retry policy)", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        providerAttemptCount: 2,
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ providerAttemptCount: 2 }) });
+    });
+
+    it("rejects an implausible providerAttemptCount (zero, negative, non-integer, or absurdly large)", () => {
+      for (const bad of [0, -1, 1.5, 999]) {
+        const result = parseVoiceLatencyTelemetryPayload({
+          attemptId: "attempt-1",
+          outcome: "tts_completed",
+          summary: validSummary(),
+          providerAttemptCount: bad,
+        });
+        expect(result).toEqual({ ok: false, reason: "invalid_provider_attempt_count" });
+      }
+    });
+
+    it("accepts a real elapsedSinceMicRequestMs, or null, but rejects an out-of-bounds or non-numeric value", () => {
+      expect(
+        parseVoiceLatencyTelemetryPayload({
+          attemptId: "attempt-1",
+          outcome: "stt_failed",
+          summary: validSummary(),
+          elapsedSinceMicRequestMs: 4200,
+        }),
+      ).toEqual({ ok: true, value: expect.objectContaining({ elapsedSinceMicRequestMs: 4200 }) });
+
+      expect(
+        parseVoiceLatencyTelemetryPayload({
+          attemptId: "attempt-1",
+          outcome: "stt_failed",
+          summary: validSummary(),
+          elapsedSinceMicRequestMs: null,
+        }),
+      ).toEqual({ ok: true, value: expect.objectContaining({ elapsedSinceMicRequestMs: null }) });
+
+      expect(
+        parseVoiceLatencyTelemetryPayload({
+          attemptId: "attempt-1",
+          outcome: "stt_failed",
+          summary: validSummary(),
+          elapsedSinceMicRequestMs: -5,
+        }),
+      ).toEqual({ ok: false, reason: "invalid_elapsed_since_mic_request_ms" });
+    });
+
+    it("omits all three terminal-diagnostic fields entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect("errorCode" in result.value).toBe(false);
+        expect("providerAttemptCount" in result.value).toBe(false);
+        expect("elapsedSinceMicRequestMs" in result.value).toBe(false);
+      }
+    });
+  });
+
+  describe("terminalStageForOutcome", () => {
+    it("maps every outcome to exactly one of the four real pipeline stages, matching where each outcome actually concludes", () => {
+      expect(terminalStageForOutcome("stt_failed")).toBe("stt");
+      expect(terminalStageForOutcome("stt_success_not_submitted")).toBe("stt");
+      expect(terminalStageForOutcome("consultation_failed")).toBe("consultation");
+      expect(terminalStageForOutcome("consultation_succeeded_no_voice_reply")).toBe("consultation");
+      expect(terminalStageForOutcome("tts_unsupported_language")).toBe("tts");
+      expect(terminalStageForOutcome("tts_failed")).toBe("tts");
+      expect(terminalStageForOutcome("tts_fallback_local")).toBe("tts");
+      expect(terminalStageForOutcome("tts_completed")).toBe("playback");
+    });
+
+    it("covers every declared outcome -- never throws or returns undefined for a real VOICE_LATENCY_TURN_OUTCOMES value", () => {
+      for (const outcome of VOICE_LATENCY_TURN_OUTCOMES) {
+        expect(terminalStageForOutcome(outcome)).toBeTruthy();
+      }
+    });
   });
 });

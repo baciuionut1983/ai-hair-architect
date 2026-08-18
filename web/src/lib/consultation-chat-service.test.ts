@@ -364,9 +364,13 @@ describe("sendConsultationMessage", () => {
 
     const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: timeoutProvider });
 
-    expect(result).toEqual({ outcome: "failed", code: "PROVIDER_TIMEOUT" });
+    // Consultation reliability hardening: TIMEOUT is retryable, so this
+    // stub (which always throws) is called twice -- attemptCount 2 proves
+    // the retry actually happened, not just that the final code is right.
+    expect(result).toEqual({ outcome: "failed", code: "PROVIDER_TIMEOUT", providerAttemptCount: 2 });
     // The assistant's reply is never recorded on failure -- only the
-    // stylist's own message (recorded before the provider call) exists.
+    // stylist's own message (recorded before the provider call) exists,
+    // and only ONCE, regardless of how many provider attempts followed.
     expect(messageRepoMock.recordConsultationMessage).toHaveBeenCalledTimes(1);
     expect(messageRepoMock.recordConsultationMessage).toHaveBeenCalledWith(expect.objectContaining({ role: "stylist" }));
   });
@@ -408,7 +412,7 @@ describe("sendConsultationMessage", () => {
 
     const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: timeoutProvider });
 
-    expect(result).toEqual({ outcome: "failed", code: "PROVIDER_TIMEOUT" });
+    expect(result).toEqual({ outcome: "failed", code: "PROVIDER_TIMEOUT", providerAttemptCount: 2 });
     expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "FAILED", errorCategory: "TIMEOUT", feature: "consultation_chat" }),
     );
@@ -434,9 +438,207 @@ describe("sendConsultationMessage", () => {
 
     const result = await sendConsultationMessage("owner-1", CLIENT_A, "Remember this.", undefined, { env: GEMINI_ENV, createProvider: inconsistentProvider });
 
-    expect(result).toEqual({ outcome: "failed", code: "MALFORMED_PROVIDER_RESPONSE" });
+    // retryable:false -- never retried, so exactly one attempt.
+    expect(result).toEqual({ outcome: "failed", code: "MALFORMED_PROVIDER_RESPONSE", providerAttemptCount: 1 });
     expect(messageRepoMock.recordConsultationMessage).toHaveBeenCalledTimes(1);
     expect(messageRepoMock.recordConsultationMessage).toHaveBeenCalledWith(expect.objectContaining({ role: "stylist" }));
+  });
+
+  // Consultation reliability hardening (2026-08-19): a real production
+  // intermittent "The AI consultation assistant is not available right
+  // now" traced to provider.respond() never being retried at all. These
+  // tests prove the fix mirrors STT's own single-retry policy exactly.
+  describe("consultation provider retry (transient-failure recovery)", () => {
+    it("recovers a transient provider failure via the single automatic retry -- the second, successful attempt wins", async () => {
+      let calls = 0;
+      const provider = stubProvider(async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw Object.assign(new Error("service unavailable"), { code: "PROVIDER_ERROR", retryable: true, status: 503 });
+        }
+        return { reply: "Here's what I'd recommend.", needsClarification: false };
+      });
+
+      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      expect(calls).toBe(2);
+      expect(result).toMatchObject({ outcome: "succeeded", providerAttemptCount: 2 });
+    });
+
+    it("never retries a permanent (non-retryable) failure -- exactly one provider call, never a second identical attempt that could never change the outcome", async () => {
+      let calls = 0;
+      const provider = stubProvider(async () => {
+        calls += 1;
+        throw Object.assign(new Error("bad auth"), { code: "NOT_CONFIGURED", retryable: false });
+      });
+
+      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      expect(calls).toBe(1);
+      expect(result).toEqual({ outcome: "failed", code: "PROVIDER_AUTHENTICATION_FAILURE", providerAttemptCount: 1 });
+    });
+
+    it("also fails closed if BOTH the first attempt and the retry are transient failures -- two real attempts, still no fabricated reply", async () => {
+      let calls = 0;
+      const provider = stubProvider(async () => {
+        calls += 1;
+        throw Object.assign(new Error("timed out"), { code: "TIMEOUT", retryable: true });
+      });
+
+      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      expect(calls).toBe(2);
+      expect(result).toEqual({ outcome: "failed", code: "PROVIDER_TIMEOUT", providerAttemptCount: 2 });
+    });
+
+    it("never persists a duplicate stylist message after a consultation retry -- exactly one write, made before either provider attempt", async () => {
+      let calls = 0;
+      const provider = stubProvider(async () => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error("timed out"), { code: "TIMEOUT", retryable: true });
+        return { reply: "ok", needsClarification: false };
+      });
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      const stylistWrites = messageRepoMock.recordConsultationMessage.mock.calls.filter(
+        (call: unknown[]) => (call[0] as { role: string }).role === "stylist",
+      );
+      expect(stylistWrites).toHaveLength(1);
+    });
+
+    it("never persists a duplicate assistant reply after a consultation retry -- exactly one write, only after the retry loop resolves", async () => {
+      let calls = 0;
+      const provider = stubProvider(async () => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error("timed out"), { code: "TIMEOUT", retryable: true });
+        return { reply: "ok", needsClarification: false };
+      });
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      const assistantWrites = messageRepoMock.recordConsultationMessage.mock.calls.filter(
+        (call: unknown[]) => (call[0] as { role: string }).role === "assistant",
+      );
+      expect(assistantWrites).toHaveLength(1);
+    });
+
+    it("usage metering represents actual provider attempts correctly -- one FAILED row for the first attempt, one SUCCEEDED row for the recovering retry, never merged into one", async () => {
+      let calls = 0;
+      const provider = stubProvider(async () => {
+        calls += 1;
+        if (calls === 1) throw Object.assign(new Error("rate limited"), { code: "RATE_LIMITED", retryable: true, status: 429 });
+        return { reply: "ok", needsClarification: false };
+      });
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledTimes(2);
+      expect(usageRepoMock.recordAiUsageEvent).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ outcome: "FAILED", attemptNumber: 1, errorCategory: "RATE_LIMITED" }),
+      );
+      expect(usageRepoMock.recordAiUsageEvent).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ outcome: "SUCCEEDED", attemptNumber: 2 }),
+      );
+      // Both rows share the SAME correlationId (one logical send attempt,
+      // two real provider calls) -- never two unrelated ids.
+      const [firstCall, secondCall] = usageRepoMock.recordAiUsageEvent.mock.calls;
+      expect(firstCall[0].correlationId).toBe(secondCall[0].correlationId);
+    });
+
+    it("CONSULTATION_CHAT_FALLBACK_MODEL, when explicitly configured, is used ONLY for the retry -- never the first attempt", async () => {
+      const modelsUsed: string[] = [];
+      let calls = 0;
+      const createProvider = (config: { apiKey: string; model: string }) => {
+        modelsUsed.push(config.model);
+        return {
+          name: "stub",
+          modelVersion: config.model,
+          respond: async () => {
+            calls += 1;
+            if (calls === 1) throw Object.assign(new Error("503"), { code: "PROVIDER_ERROR", retryable: true, status: 503 });
+            return { reply: "ok", needsClarification: false };
+          },
+        } as unknown as ConsultationChatProvider;
+      };
+
+      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, {
+        env: { ...GEMINI_ENV, CONSULTATION_CHAT_FALLBACK_MODEL: "gemini-3.6-pro" },
+        createProvider,
+      });
+
+      expect(modelsUsed).toEqual(["gemini-3.6-flash", "gemini-3.6-pro"]);
+      expect(result).toMatchObject({ outcome: "succeeded", providerAttemptCount: 2 });
+    });
+
+    it("never invents or uses a fallback model when CONSULTATION_CHAT_FALLBACK_MODEL is unset -- the retry reuses the exact same provider/model as the first attempt", async () => {
+      const modelsUsed: string[] = [];
+      let calls = 0;
+      const createProvider = (config: { apiKey: string; model: string }) => {
+        modelsUsed.push(config.model);
+        return {
+          name: "stub",
+          modelVersion: config.model,
+          respond: async () => {
+            calls += 1;
+            if (calls === 1) throw Object.assign(new Error("503"), { code: "PROVIDER_ERROR", retryable: true, status: 503 });
+            return { reply: "ok", needsClarification: false };
+          },
+        } as unknown as ConsultationChatProvider;
+      };
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider });
+
+      // createProvider is only ever called ONCE (no fallback model
+      // configured -- the same provider instance handles the retry), so
+      // modelsUsed has exactly one entry despite two respond() calls.
+      expect(modelsUsed).toEqual(["gemini-3.6-flash"]);
+      expect(calls).toBe(2);
+    });
+  });
+
+  // End-to-end voice turn correlation (2026-08-19): voiceTurnId is the
+  // SAME id already used for STT (use-voice-recording.ts's attemptId),
+  // threaded through purely for structured-log correlation -- never part
+  // of the AI Usage Metering correlationId (see this function's own
+  // parameter doc comment for why).
+  describe("voiceTurnId correlation", () => {
+    it("includes voiceTurnId in the structured success log when this was a voice-initiated turn", async () => {
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider }, {}, "voice-turn-abc");
+
+      const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
+      expect(logged).toMatchObject({ status: "SUCCEEDED", voiceTurnId: "voice-turn-abc" });
+      logSpy.mockRestore();
+    });
+
+    it("logs voiceTurnId as null (never omitted, never fabricated) for a typed message with no voice turn", async () => {
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
+      expect(logged.voiceTurnId).toBeNull();
+      logSpy.mockRestore();
+    });
+
+    it("includes voiceTurnId in the structured failure log too, on a provider failure", async () => {
+      const logSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const provider = stubProvider(async () => {
+        throw Object.assign(new Error("bad auth"), { code: "NOT_CONFIGURED", retryable: false });
+      });
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider }, {}, "voice-turn-xyz");
+
+      const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
+      expect(logged).toMatchObject({ status: "FAILED", voiceTurnId: "voice-turn-xyz" });
+      logSpy.mockRestore();
+    });
   });
 
   it("succeeds with no currentAnalysis context when no analysisId is given -- conversation can start before any analysis exists", async () => {

@@ -103,6 +103,11 @@ export interface VoiceLatencySummary {
   audioPreparationMs: number | null;
   timeToFirstAudioMs: number | null;
   voiceTurnTotalMs: number | null;
+  // Production observability follow-up (2026-08-19): total mic-stop-to-
+  // playback-COMPLETE latency (as opposed to timeToFirstAudioMs, which
+  // stops at playback START) -- only measurable for a turn that actually
+  // finished playing the reply aloud, null otherwise.
+  timeToPlaybackCompleteMs: number | null;
 }
 
 function diff(marks: VoiceLatencyMarks, from: VoiceLatencyStage, to: VoiceLatencyStage): number | null {
@@ -162,7 +167,22 @@ export function computeVoiceLatencySummary(
     // time as "waiting for a reply".
     timeToFirstAudioMs: diff(marks, "recording_stopped", "playback_started"),
     voiceTurnTotalMs: diff(marks, "mic_requested", "playback_started"),
+    timeToPlaybackCompleteMs: diff(marks, "recording_stopped", "playback_ended"),
   };
+}
+
+// Production observability follow-up (2026-08-19): "elapsed time until
+// failure" for a turn that never reaches a named end-stage mark at all
+// (a failed turn has no playback_started/playback_ended to diff against)
+// -- measured from mic_requested to the moment of the failure itself
+// (the caller's own `nowMs`, always performance.now() at the point the
+// failure/conclusion is detected). null only when mic_requested itself
+// was never reached (should not happen in practice -- it's marked first
+// -- but never assumed).
+export function computeElapsedSinceMicRequestMs(marks: VoiceLatencyMarks, nowMs: number): number | null {
+  const start = marks.mic_requested;
+  if (typeof start !== "number") return null;
+  return Math.max(0, Math.round(nowMs - start));
 }
 
 const VOICE_LATENCY_TAG = "VOICE_LATENCY";
@@ -178,6 +198,24 @@ export function logVoiceLatencySummary(attemptId: string, summary: VoiceLatencyS
 
 export interface ReportVoiceLatencySummaryDeps {
   fetch: typeof fetch;
+}
+
+// Terminal diagnostics for a FAILED (or otherwise non-fully-completed)
+// turn -- optional, and meaningless/omitted for a fully successful one.
+// `errorCode` is whichever specific, already-existing classification code
+// was available at the point of conclusion (e.g. finishRecording's own
+// VoiceTranscriptionFailureReason for STT, the chat route's
+// ConsultationChatResultCode for Consult AI, the TTS route's own
+// VOICE_REPLY_* error code) -- never a raw provider error message, never
+// conversation content. `providerAttemptCount` mirrors STT/Consult AI's
+// own "at most one retry" accounting. `elapsedSinceMicRequestMs` is
+// computeElapsedSinceMicRequestMs's own output, letting an operator see
+// "how long before this failed" even when no named end-stage mark was
+// ever reached.
+export interface VoiceLatencyTerminalDiagnostics {
+  errorCode?: string;
+  providerAttemptCount?: number;
+  elapsedSinceMicRequestMs?: number | null;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see
@@ -198,12 +236,13 @@ export function reportVoiceLatencySummary(
   outcome: VoiceLatencyTurnOutcome,
   summary: VoiceLatencySummary,
   deps: ReportVoiceLatencySummaryDeps,
+  diagnostics: VoiceLatencyTerminalDiagnostics = {},
 ): void {
   void deps
     .fetch(`/api/v1/clients/${clientId}/voice-latency`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ attemptId, outcome, summary }),
+      body: JSON.stringify({ attemptId, outcome, summary, ...diagnostics }),
     })
     .catch(() => {});
 }

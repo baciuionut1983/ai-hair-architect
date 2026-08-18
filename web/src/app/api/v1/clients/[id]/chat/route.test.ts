@@ -120,6 +120,7 @@ describe("POST /api/v1/clients/[id]/chat", () => {
       "analysis-1",
       {},
       expect.any(Object),
+      undefined,
     );
   });
 
@@ -132,6 +133,7 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
       "owner-1", CLIENT, "hi", undefined, {},
       { forced: undefined, fallback: "en" },
+      undefined,
     );
   });
 
@@ -141,6 +143,7 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
       "owner-1", CLIENT, "hi", undefined, {},
       { forced: "ro", fallback: "en" },
+      undefined,
     );
   });
 
@@ -150,6 +153,7 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
       "owner-1", CLIENT, "hi", undefined, {},
       { forced: undefined, fallback: "ro" },
+      undefined,
     );
   });
 
@@ -160,6 +164,7 @@ describe("POST /api/v1/clients/[id]/chat", () => {
       expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
         "owner-1", CLIENT, "hi", undefined, {},
         { forced: code, fallback: "en" },
+        undefined,
       );
     }
   });
@@ -170,6 +175,7 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
       "owner-1", CLIENT, "hi", undefined, {},
       { forced: undefined, fallback: "en" },
+      undefined,
     );
   });
 
@@ -184,6 +190,7 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
       "owner-1", CLIENT, "hi", undefined, {},
       { forced: undefined, fallback: "en" },
+      undefined,
     );
   });
 
@@ -234,6 +241,59 @@ describe("POST /api/v1/clients/[id]/chat", () => {
 
     const body = await response.json();
     expect(body.providerLatencyMs).toBe(842);
+  });
+
+  // Consultation reliability hardening (2026-08-19): surfaces the
+  // service's own real attempt count (1, or 2 if a transient failure was
+  // recovered by its single automatic retry) to the client.
+  it("surfaces providerAttemptCount in the response when the service reports one", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({
+      outcome: "succeeded",
+      reply: { id: "msg-2", role: "assistant", content: "Got it!", createdAt: "2026-08-14T10:00:00.000Z" },
+      needsClarification: false,
+      providerAttemptCount: 2,
+    });
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    const body = await response.json();
+    expect(body.providerAttemptCount).toBe(2);
+  });
+
+  // End-to-end voice turn correlation (2026-08-19): when the client sends
+  // voiceTurnId (the SAME id already used for STT), it's forwarded to the
+  // service as-is so every stage's structured logs can be correlated by
+  // this one value.
+  describe("voiceTurnId correlation", () => {
+    it("forwards a valid voiceTurnId to the service", async () => {
+      await invoke("client-1", { message: "hi", voiceTurnId: "a1b2c3d4-0000-0000-0000-000000000000" });
+
+      expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
+        "owner-1", CLIENT, "hi", undefined, {},
+        expect.any(Object),
+        "a1b2c3d4-0000-0000-0000-000000000000",
+      );
+    });
+
+    it("forwards undefined (never invents an id) for a typed message with no voiceTurnId", async () => {
+      await invoke("client-1", { message: "hi" });
+
+      expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
+        "owner-1", CLIENT, "hi", undefined, {},
+        expect.any(Object),
+        undefined,
+      );
+    });
+
+    it("rejects a malformed voiceTurnId (never trusted blindly) -- forwards undefined instead of a raw, unvalidated string", async () => {
+      await invoke("client-1", { message: "hi", voiceTurnId: "'; DROP TABLE users; --" });
+
+      expect(serviceMock.sendConsultationMessage).toHaveBeenCalledWith(
+        "owner-1", CLIENT, "hi", undefined, {},
+        expect.any(Object),
+        undefined,
+      );
+    });
   });
 
   it("includes proposedCorrection in the response when the reply carries one -- E: the correction is visible to the caller as a proposal, never marked as applied", async () => {

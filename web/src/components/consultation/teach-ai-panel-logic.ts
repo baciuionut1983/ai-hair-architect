@@ -57,7 +57,12 @@ export type VoiceTranscriptionFailureReason =
 
 export interface FinishRecordingCallbacks {
   onStopped: () => void;
-  onFailure: (message: string, reason: VoiceTranscriptionFailureReason, marks: VoiceLatencyMarks) => void;
+  // Production observability follow-up (2026-08-19): attemptNumber is how
+  // many real HTTP attempts were actually made (0 for an empty recording,
+  // which never reaches attemptUpload at all; 1 or 2 otherwise) -- lets
+  // the caller report a real providerAttemptCount rather than assuming
+  // every failure was a single try.
+  onFailure: (message: string, reason: VoiceTranscriptionFailureReason, marks: VoiceLatencyMarks, attemptNumber: number) => void;
   // Voice latency audit (2026-08-18): marks covers every recording_stopped
   // through transcript_ready stage this call reached; sttProviderMs is the
   // server's own real, measured Gemini-call duration (voice-transcript/
@@ -65,7 +70,13 @@ export interface FinishRecordingCallbacks {
   // didn't include one (never fabricated). The caller (use-voice-
   // recording.ts) merges these with its own earlier mic-phase marks and
   // carries them into the rest of the voice turn.
-  onSuccess: (transcript: string, transcriptId: string | undefined, marks: VoiceLatencyMarks, sttProviderMs: number | null) => void;
+  onSuccess: (
+    transcript: string,
+    transcriptId: string | undefined,
+    marks: VoiceLatencyMarks,
+    sttProviderMs: number | null,
+    attemptNumber: number,
+  ) => void;
 }
 
 export interface FinishRecordingDeps {
@@ -340,6 +351,12 @@ export async function finishRecording(
   // log above -- this is purely numeric timing, reusing the same
   // attemptId for correlation.
   let marks: VoiceLatencyMarks = {};
+  // Declared outside the try block (not just before the first
+  // attemptUpload call) so the outer catch-all below can also report an
+  // honest attemptNumber for an unexpected failure that happens before
+  // any real HTTP attempt was ever made (e.g. Blob construction itself
+  // throwing) -- 0 real attempts, never fabricated as 1.
+  let attemptNumber = 0;
 
   stream.getTracks().forEach((track) => track.stop());
   callbacks.onStopped();
@@ -385,13 +402,13 @@ export async function finishRecording(
     // legitimate quick "yes"/"no" note.
     if (blob.size === 0) {
       logClient("request_failed", { attemptId, reason: "empty_recording" });
-      callbacks.onFailure(EMPTY_RECORDING_MESSAGE, "emptyRecording", marks);
+      callbacks.onFailure(EMPTY_RECORDING_MESSAGE, "emptyRecording", marks, attemptNumber);
       logClient("cleanup_completed", { attemptId });
       return;
     }
 
     marks = markVoiceLatencyStage(marks, "stt_request_started", performance.now());
-    let attemptNumber = 1;
+    attemptNumber = 1;
     let result = await attemptUpload(clientId, blob, language, attemptId, attemptNumber, deps.fetch);
 
     // Never more than one retry, and only for a failure explicitly
@@ -412,10 +429,10 @@ export async function finishRecording(
 
     if (result.outcome === "success") {
       marks = markVoiceLatencyStage(marks, "transcript_ready", result.respondedAt);
-      callbacks.onSuccess(result.transcript, result.transcriptId, marks, result.sttProviderMs);
+      callbacks.onSuccess(result.transcript, result.transcriptId, marks, result.sttProviderMs, attemptNumber);
     } else {
       logClient("request_failed", { attemptId, attemptNumber, reason: "upload_failed", failureReason: result.reason });
-      callbacks.onFailure(result.message, result.reason, marks);
+      callbacks.onFailure(result.message, result.reason, marks, attemptNumber);
     }
     logClient("cleanup_completed", { attemptId });
   } catch (error) {
@@ -427,7 +444,7 @@ export async function finishRecording(
       errorName: error instanceof Error ? error.name : "unknown",
       errorMessage: error instanceof Error ? error.message : String(error),
     });
-    callbacks.onFailure(GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, "unknown", marks);
+    callbacks.onFailure(GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, "unknown", marks, attemptNumber);
     logClient("cleanup_completed", { attemptId });
   }
 }

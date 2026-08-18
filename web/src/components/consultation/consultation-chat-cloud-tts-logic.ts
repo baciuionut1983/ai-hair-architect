@@ -87,6 +87,12 @@ export async function synthesizeCloudVoiceReply(
   language: LanguageCode,
   deps: SynthesizeCloudVoiceReplyDeps,
   callbacks: SynthesizeCloudVoiceReplyCallbacks,
+  // End-to-end voice turn correlation (2026-08-19): the SAME id already
+  // used for STT (use-voice-recording.ts's own attemptId) -- appended as a
+  // new trailing optional param so every existing call site keeps
+  // compiling unchanged. undefined for a typed message's Voice Reply
+  // (voiceTurnId simply omitted from the request body, never invented).
+  voiceTurnId?: string,
 ): Promise<void> {
   let response: Response;
   try {
@@ -94,7 +100,7 @@ export async function synthesizeCloudVoiceReply(
     response = await deps.fetch(`/api/v1/clients/${clientId}/voice-reply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, language }),
+      body: JSON.stringify({ text, language, ...(voiceTurnId ? { voiceTurnId } : {}) }),
       ...(deps.signal ? { signal: deps.signal } : {}),
     });
     logVoiceReplyClientEvent("cloud_response_received", { status: response.status, ok: response.ok });

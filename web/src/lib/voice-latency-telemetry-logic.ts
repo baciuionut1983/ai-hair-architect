@@ -34,6 +34,27 @@ function isVoiceLatencyTurnOutcome(value: unknown): value is VoiceLatencyTurnOut
   return typeof value === "string" && (VOICE_LATENCY_TURN_OUTCOMES as readonly string[]).includes(value);
 }
 
+export type VoiceLatencyTerminalStage = "stt" | "consultation" | "tts" | "playback";
+
+// Derived mechanically from `outcome` rather than sent separately by the
+// client -- a second, independently-set field could drift from `outcome`
+// (e.g. a client bug pairing "stt_failed" with terminalStage "tts"); this
+// way the two can never disagree.
+const OUTCOME_TERMINAL_STAGE: Record<VoiceLatencyTurnOutcome, VoiceLatencyTerminalStage> = {
+  stt_failed: "stt",
+  stt_success_not_submitted: "stt",
+  consultation_failed: "consultation",
+  consultation_succeeded_no_voice_reply: "consultation",
+  tts_unsupported_language: "tts",
+  tts_failed: "tts",
+  tts_fallback_local: "tts",
+  tts_completed: "playback",
+};
+
+export function terminalStageForOutcome(outcome: VoiceLatencyTurnOutcome): VoiceLatencyTerminalStage {
+  return OUTCOME_TERMINAL_STAGE[outcome];
+}
+
 // Mirrors VoiceLatencySummary's own field names exactly (see
 // voice-latency-logic.ts) -- duplicated here rather than imported so this
 // server-side validation module has zero dependency on a "use client" file.
@@ -50,16 +71,26 @@ const VOICE_LATENCY_SUMMARY_FIELDS = [
   "audioPreparationMs",
   "timeToFirstAudioMs",
   "voiceTurnTotalMs",
+  "timeToPlaybackCompleteMs",
 ] as const;
 
 export type VoiceLatencySummaryField = (typeof VOICE_LATENCY_SUMMARY_FIELDS)[number];
 
 export type VoiceLatencyTelemetrySummary = Record<VoiceLatencySummaryField, number | null>;
 
+// Terminal diagnostics for a FAILED (or otherwise non-fully-completed)
+// turn -- all optional, all technical/timing-only. `errorCode` is
+// whichever specific, already-existing classification code this app
+// already uses (e.g. VoiceTranscriptionFailureReason, a
+// ConsultationChatResultCode, a VOICE_REPLY_* error) -- bounded to a safe
+// charset, never a raw provider error message or conversation content.
 export interface VoiceLatencyTelemetryInput {
   attemptId: string;
   outcome: VoiceLatencyTurnOutcome;
   summary: VoiceLatencyTelemetrySummary;
+  errorCode?: string;
+  providerAttemptCount?: number;
+  elapsedSinceMicRequestMs?: number | null;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -76,6 +107,19 @@ const ATTEMPT_ID_PATTERN = /^[A-Za-z0-9-]{1,100}$/;
 // values -- overflow, a client bug sending milliseconds-since-epoch by
 // mistake -- without ever blocking a real, if slow, measurement).
 const MAX_PLAUSIBLE_DURATION_MS = 5 * 60 * 1000;
+
+// This app's own existing error-code vocabularies (VoiceTranscriptionFailureReason,
+// ConsultationChatResultCode, VOICE_REPLY_* codes) are all short, fixed,
+// uppercase/lowercase-letters-plus-underscore identifiers -- this bound is
+// generous enough for any of them while still rejecting an attempt to
+// smuggle a long, free-form string (e.g. a raw provider error message or
+// conversation fragment) through this field.
+const ERROR_CODE_PATTERN = /^[A-Za-z0-9_]{1,64}$/;
+
+// Mirrors STT/Consult AI's own "at most one retry" policy (max 2 real
+// attempts) with a little headroom -- rejects only an implausible value,
+// never a real one.
+const MAX_PLAUSIBLE_PROVIDER_ATTEMPTS = 5;
 
 export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTelemetryValidationResult {
   if (typeof body !== "object" || body === null) {
@@ -112,10 +156,62 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     summary[field] = Math.round(value);
   }
 
+  // All three terminal-diagnostic fields are optional -- absent/invalid
+  // simply means "not reported" (never fabricated), not a request-level
+  // rejection, since they're only ever meaningful for a subset of
+  // outcomes (e.g. providerAttemptCount has no meaning for a turn that
+  // never reached a retryable stage at all).
+  let errorCode: string | undefined;
+  if (input.errorCode !== undefined) {
+    if (typeof input.errorCode !== "string" || !ERROR_CODE_PATTERN.test(input.errorCode)) {
+      return { ok: false, reason: "invalid_error_code" };
+    }
+    errorCode = input.errorCode;
+  }
+
+  let providerAttemptCount: number | undefined;
+  if (input.providerAttemptCount !== undefined) {
+    if (
+      typeof input.providerAttemptCount !== "number" ||
+      !Number.isInteger(input.providerAttemptCount) ||
+      input.providerAttemptCount < 1 ||
+      input.providerAttemptCount > MAX_PLAUSIBLE_PROVIDER_ATTEMPTS
+    ) {
+      return { ok: false, reason: "invalid_provider_attempt_count" };
+    }
+    providerAttemptCount = input.providerAttemptCount;
+  }
+
+  let elapsedSinceMicRequestMs: number | null | undefined;
+  if (input.elapsedSinceMicRequestMs !== undefined) {
+    if (input.elapsedSinceMicRequestMs === null) {
+      elapsedSinceMicRequestMs = null;
+    } else if (
+      typeof input.elapsedSinceMicRequestMs !== "number" ||
+      !Number.isFinite(input.elapsedSinceMicRequestMs) ||
+      input.elapsedSinceMicRequestMs < 0 ||
+      input.elapsedSinceMicRequestMs > MAX_PLAUSIBLE_DURATION_MS
+    ) {
+      return { ok: false, reason: "invalid_elapsed_since_mic_request_ms" };
+    } else {
+      elapsedSinceMicRequestMs = Math.round(input.elapsedSinceMicRequestMs);
+    }
+  }
+
   // Unknown extra keys on `summary` (or on the top-level body) are simply
   // never read, not rejected -- an allow-list extraction is exactly as
   // strict against injection/type-confusion as an exact-shape check, and
   // stays forward-compatible if a future field is added client-side before
   // the server is redeployed.
-  return { ok: true, value: { attemptId, outcome: input.outcome, summary } };
+  return {
+    ok: true,
+    value: {
+      attemptId,
+      outcome: input.outcome,
+      summary,
+      ...(errorCode !== undefined ? { errorCode } : {}),
+      ...(providerAttemptCount !== undefined ? { providerAttemptCount } : {}),
+      ...(elapsedSinceMicRequestMs !== undefined ? { elapsedSinceMicRequestMs } : {}),
+    },
+  };
 }

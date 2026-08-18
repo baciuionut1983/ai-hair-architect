@@ -422,6 +422,13 @@ export interface ConsultationChatResponse {
   // voice-originated ones -- harmless, and avoids a second response shape
   // just for voice.
   providerLatencyMs?: number;
+  // Consultation reliability hardening (2026-08-19): 1 when the first
+  // provider attempt succeeded outright, 2 when a transient failure was
+  // recovered by the service's single automatic retry -- see
+  // consultation-chat-service.ts's own retry logic. Same "present on
+  // every reply, harmless for typed messages" reasoning as
+  // providerLatencyMs above.
+  providerAttemptCount?: number;
 }
 
 export interface ConsultationCreateRequest {

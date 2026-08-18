@@ -89,9 +89,21 @@ export async function POST(
     // is "auto" -- a soft fallback for a genuinely ambiguous message, never
     // a forced override.
     conversationLanguage?: string;
+    // End-to-end voice turn correlation (2026-08-19): when this message
+    // originated from a voice-initiated turn, the client sends the SAME id
+    // already used for STT (use-voice-recording.ts's own attemptId) --
+    // never a new, independently-generated id. Absent for a typed
+    // message.
+    voiceTurnId?: string;
   };
   const message = typeof body.message === "string" ? body.message.trim() : "";
   const analysisId = typeof body.analysisId === "string" && body.analysisId.trim() ? body.analysisId.trim() : undefined;
+  // Same defensive posture as voice-transcript/route.ts's own attemptId
+  // handling -- a malformed/missing value simply means "no voice turn"
+  // (a typed message), never trusted blindly as a raw string beyond a
+  // safe charset/length cap, and never invented when absent.
+  const voiceTurnId =
+    typeof body.voiceTurnId === "string" && /^[A-Za-z0-9-]{1,100}$/.test(body.voiceTurnId) ? body.voiceTurnId : undefined;
 
   if (!message) {
     return NextResponse.json({ error: "message is required." }, { status: 400 });
@@ -110,14 +122,27 @@ export async function POST(
   const fallbackReplyLanguage =
     toConversationLanguageOrUndefined(body.conversationLanguage) ?? toConversationLanguageOrUndefined(sessionUser.locale);
 
-  const result = await sendConsultationMessage(sessionUser.id, client, message, analysisId, {}, {
-    forced: forcedReplyLanguage,
-    fallback: fallbackReplyLanguage,
-  });
+  const result = await sendConsultationMessage(
+    sessionUser.id,
+    client,
+    message,
+    analysisId,
+    {},
+    {
+      forced: forcedReplyLanguage,
+      fallback: fallbackReplyLanguage,
+    },
+    voiceTurnId,
+  );
 
   if (result.outcome === "failed") {
     return NextResponse.json(
-      { error: result.code },
+      // Production observability follow-up (2026-08-19): providerAttemptCount
+      // lets a voice-initiated caller report a real terminal diagnostic
+      // (see voice-latency-logic.ts) even on failure -- omitted entirely
+      // (not a fabricated 1) when the failure never reached the provider
+      // call stage at all (e.g. a config/persistence failure).
+      { error: result.code, ...(result.providerAttemptCount ? { providerAttemptCount: result.providerAttemptCount } : {}) },
       { status: CONSULTATION_CHAT_RESULT_HTTP_STATUS[result.code] }
     );
   }
@@ -137,7 +162,8 @@ export async function POST(
       ...(result.replyLanguage ? { replyLanguage: result.replyLanguage } : {})
     },
     needsClarification: result.needsClarification,
-    providerLatencyMs: result.providerLatencyMs
+    providerLatencyMs: result.providerLatencyMs,
+    providerAttemptCount: result.providerAttemptCount
   };
 
   return NextResponse.json(response, { status: 200 });
