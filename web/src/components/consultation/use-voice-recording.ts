@@ -31,7 +31,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { LanguageCode } from "@/lib/language-registry";
 
 import { decodeBlobAsWav } from "./audio-wav-encode";
-import { bindFetch, finishRecording, logClient } from "./teach-ai-panel-logic";
+import { bindFetch, classifyMicrophoneStartError, finishRecording, generateAttemptId, logClient } from "./teach-ai-panel-logic";
 import { evaluateVadSample, initVadState, shouldAutoSubmitTranscript, type VadState } from "./voice-activity-logic";
 
 const AUDIO_LEVEL_SAMPLE_INTERVAL_MS = 100;
@@ -39,6 +39,12 @@ const ANALYSER_FFT_SIZE = 512;
 
 const VOICE_INPUT_UNSUPPORTED_MESSAGE = "Voice input is not supported here. You can still type your message.";
 const MICROPHONE_UNAVAILABLE_MESSAGE = "Microphone access was not available. You can still type your message.";
+// Voice reliability hardening (2026-08-18): distinct from the generic
+// "unavailable" message above -- a denial is something only the stylist
+// can fix themselves (their browser's own site permission setting), so
+// they're told that specifically rather than a message that reads like a
+// transient glitch worth just trying again.
+const MICROPHONE_PERMISSION_DENIED_MESSAGE = "Microphone access was denied. Allow microphone access in your browser's site settings to use voice input.";
 
 export interface UseVoiceRecordingOptions {
   clientId: string;
@@ -100,6 +106,22 @@ export function useVoiceRecording({ clientId, language, onTranscript }: UseVoice
   // already been decided.
   const hasStoppedRef = useRef(false);
   const vadCleanupRef = useRef<(() => void) | null>(null);
+  // Voice reliability hardening (2026-08-18): guards the async window
+  // between a click and getUserMedia's own promise resolving -- `recording`
+  // (React state) does not flip to true until AFTER that promise settles,
+  // so a rapid second click in that window would otherwise see
+  // `recording === false` and start a SECOND, fully independent
+  // getUserMedia()/MediaRecorder setup, racing the first one for the same
+  // physical microphone. A plain ref (not state) so the check is exact and
+  // synchronous, unlike a state update which only takes effect on the next
+  // render.
+  const startingRef = useRef(false);
+  // One id per logical mic-press-to-result cycle, generated the moment a
+  // start is actually accepted (not on every click, which could double-
+  // generate if startingRef already rejected the click) -- carried through
+  // every log event for this cycle, including into finishRecording, so a
+  // stylist-reported incident can be found by this one id end to end.
+  const attemptIdRef = useRef<string | null>(null);
 
   const toggleRecording = useCallback(() => {
     if (recording) {
@@ -116,16 +138,30 @@ export function useVoiceRecording({ clientId, language, onTranscript }: UseVoice
       return;
     }
 
+    // See startingRef's own doc comment -- rejects a second start attempt
+    // that lands while the first one's getUserMedia() promise is still
+    // pending, before `recording` state has had a chance to become true.
+    if (startingRef.current) {
+      return;
+    }
+    startingRef.current = true;
+
     setError(null);
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      startingRef.current = false;
       setError(VOICE_INPUT_UNSUPPORTED_MESSAGE);
       return;
     }
 
+    const attemptId = generateAttemptId();
+    attemptIdRef.current = attemptId;
+
     void (async () => {
       try {
+        logClient("mic_requested", { attemptId, source: "chat_composer" });
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        logClient("mic_granted", { attemptId, source: "chat_composer" });
         streamRef.current = stream;
         chunks.current = [];
         hasStoppedRef.current = false;
@@ -139,6 +175,13 @@ export function useVoiceRecording({ clientId, language, onTranscript }: UseVoice
           vadCleanupRef.current?.();
           vadCleanupRef.current = null;
           streamRef.current = null;
+          // The MediaRecorder instance itself is genuinely done the
+          // moment onstop fires, regardless of how long the async
+          // upload below takes -- nulling it here (not just on unmount)
+          // guarantees the NEXT toggleRecording call always constructs a
+          // fully fresh MediaRecorder rather than retaining any
+          // reference to this now-inactive one.
+          recorder.current = null;
           void finishRecording(
             stream,
             chunks.current,
@@ -166,11 +209,13 @@ export function useVoiceRecording({ clientId, language, onTranscript }: UseVoice
             },
             { fetch: bindFetch(fetch), encodeAsWav: decodeBlobAsWav },
             language,
+            attemptId,
           );
         };
         media.start();
         setRecording(true);
-        logClient("recording_started", { mimeType: media.mimeType || null, source: "chat_composer" });
+        startingRef.current = false;
+        logClient("recorder_started", { attemptId, mimeType: media.mimeType || null, source: "chat_composer" });
 
         const AudioContextCtor = resolveAudioContextConstructor();
         if (AudioContextCtor) {
@@ -209,12 +254,16 @@ export function useVoiceRecording({ clientId, language, onTranscript }: UseVoice
           }
         }
       } catch (error) {
-        logClient("recording_start_failed", {
+        const reason = classifyMicrophoneStartError(error);
+        logClient(reason === "denied" ? "mic_denied" : "recording_start_failed", {
+          attemptId,
           errorName: error instanceof Error ? error.name : "unknown",
           errorMessage: error instanceof Error ? error.message : String(error),
           source: "chat_composer",
         });
-        setError(MICROPHONE_UNAVAILABLE_MESSAGE);
+        logClient("cleanup_completed", { attemptId });
+        startingRef.current = false;
+        setError(reason === "denied" ? MICROPHONE_PERMISSION_DENIED_MESSAGE : MICROPHONE_UNAVAILABLE_MESSAGE);
       }
     })();
   }, [recording, clientId, language, onTranscript]);
@@ -226,12 +275,14 @@ export function useVoiceRecording({ clientId, language, onTranscript }: UseVoice
   useEffect(() => {
     return () => {
       hasStoppedRef.current = true;
+      startingRef.current = false;
       vadCleanupRef.current?.();
       vadCleanupRef.current = null;
       if (recorder.current) {
         recorder.current.onstop = null;
         recorder.current.ondataavailable = null;
       }
+      recorder.current = null;
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     };

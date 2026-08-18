@@ -31,10 +31,16 @@ const ORIGINAL_ENV = { ...process.env };
 // upload (see audio-wav-encode.ts's decodeBlobAsWav), so that is the
 // realistic default for every test in this file EXCEPT the ones
 // specifically about the new format-rejection check below.
-function audioForm(overrides: { type?: string; size?: number } = {}): FormData {
+function audioForm(overrides: { type?: string; size?: number; attemptId?: string; attemptNumber?: number } = {}): FormData {
   const form = new FormData();
   const bytes = new Uint8Array(overrides.size ?? 1024);
   form.append("audio", new File([bytes], "note.wav", { type: overrides.type ?? "audio/wav" }));
+  if (overrides.attemptId) {
+    form.append("attemptId", overrides.attemptId);
+  }
+  if (overrides.attemptNumber !== undefined) {
+    form.append("attemptNumber", String(overrides.attemptNumber));
+  }
   return form;
 }
 
@@ -418,6 +424,36 @@ describe("AI usage metering", () => {
     const response = await invoke(audioForm());
 
     expect(response.status).toBe(200);
+  });
+
+  // Voice reliability hardening (2026-08-18): a client-driven retry of the
+  // same logical mic-press-to-result cycle (see finishRecording's own
+  // single-retry mechanism) sends the SAME attemptId with a different
+  // attemptNumber -- this is what lets a retry be recorded as two real,
+  // distinct provider attempts rather than either silently merged into
+  // one (losing real cost data) or double-counted as if two unrelated
+  // recordings happened.
+  it("uses the client-supplied attemptId as the usage event's correlationId, and the client-supplied attemptNumber, when both are sent", async () => {
+    await invoke(audioForm({ attemptId: "client-attempt-77", attemptNumber: 2 }));
+
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ correlationId: "client-attempt-77", attemptNumber: 2 }),
+    );
+  });
+
+  it("falls back to a fresh server-generated correlationId and attemptNumber 1 when the client sends neither -- e.g. a stale client bundle predating this change", async () => {
+    await invoke(audioForm());
+
+    const call = usageRepoMock.recordAiUsageEvent.mock.calls[0][0];
+    expect(typeof call.correlationId).toBe("string");
+    expect(call.correlationId.length).toBeGreaterThan(0);
+    expect(call.attemptNumber).toBe(1);
+  });
+
+  it("falls back to attemptNumber 1 when the client sends a malformed attemptNumber (never trusts an arbitrary string blindly)", async () => {
+    await invoke(audioForm({ attemptId: "client-attempt-1", attemptNumber: Number.NaN }));
+
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(expect.objectContaining({ attemptNumber: 1 }));
   });
 });
 

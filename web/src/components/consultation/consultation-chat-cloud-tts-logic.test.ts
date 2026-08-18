@@ -85,6 +85,45 @@ describe("synthesizeCloudVoiceReply", () => {
     expect(onFailure).toHaveBeenCalledWith("unavailable");
   });
 
+  // Voice reliability hardening (2026-08-18): when consultation-chat.tsx
+  // supersedes this attempt (a second message sent, or Stop pressed)
+  // before it resolves, it aborts the request via this optional signal --
+  // purely a network-efficiency improvement (the component's own
+  // voiceReplyAttemptRef token guard already makes acting on a stale
+  // response impossible regardless of whether the fetch itself is
+  // aborted).
+  it("forwards an optional AbortSignal to the fetch call when provided", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(new Blob(["audio"])));
+    const controller = new AbortController();
+
+    await synthesizeCloudVoiceReply("client-1", "text", "en", { fetch: fetchMock, signal: controller.signal }, { onSuccess: () => {}, onFailure: () => {} });
+
+    const init = fetchMock.mock.calls[0][1];
+    expect(init.signal).toBe(controller.signal);
+  });
+
+  it("never sends a signal field at all when none is provided -- existing call sites keep working unchanged", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okResponse(new Blob(["audio"])));
+
+    await synthesizeCloudVoiceReply("client-1", "text", "en", { fetch: fetchMock }, { onSuccess: () => {}, onFailure: () => {} });
+
+    const init = fetchMock.mock.calls[0][1];
+    expect("signal" in init).toBe(false);
+  });
+
+  it("calls onFailure('network') when the request is aborted mid-flight -- the same path as any other fetch-threw failure", async () => {
+    const onFailure = vi.fn();
+    const controller = new AbortController();
+    const abortingFetch = vi.fn(() => {
+      controller.abort();
+      return Promise.reject(new DOMException("The operation was aborted.", "AbortError"));
+    });
+
+    await synthesizeCloudVoiceReply("client-1", "text", "en", { fetch: abortingFetch, signal: controller.signal }, { onSuccess: () => {}, onFailure });
+
+    expect(onFailure).toHaveBeenCalledWith("network");
+  });
+
   it("works for languages well beyond en/ro -- Arabic, Japanese, Korean, Chinese", async () => {
     for (const language of ["ar", "ja", "ko", "zh-Hans"]) {
       const fetchMock = vi.fn().mockResolvedValue(okResponse(new Blob(["audio"])));

@@ -188,6 +188,22 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
   // broadly WebKit-compatible way to keep relying on that unlock.
   // stopCloudAudio (below) never nulls this ref, for the same reason.
   const cloudAudioRef = useRef<HTMLAudioElement | null>(null);
+  // Voice reliability hardening (2026-08-18): a monotonic token,
+  // incremented at the start of every speakMessage call AND by
+  // handleStopSpeaking. A cloud TTS request/playback callback only ever
+  // acts (plays audio, updates speaking/generating state) if the token it
+  // captured when it started is STILL the current one -- otherwise a
+  // second message sent while the first reply's audio is still being
+  // generated (or an explicit Stop click) would let the FIRST, now-stale
+  // attempt's response start playing audio for a message that is no
+  // longer the active one, or resurrect audio after the stylist
+  // explicitly said Stop. See speakMessage/handleStopSpeaking below.
+  const voiceReplyAttemptRef = useRef(0);
+  // Aborts a still-in-flight cloud TTS request the moment it's superseded
+  // (a newer speakMessage call, or Stop) -- purely a network-efficiency
+  // improvement; voiceReplyAttemptRef alone already guarantees a stale
+  // response can never be acted on even without this.
+  const voiceReplyAbortControllerRef = useRef<AbortController | null>(null);
 
   const sttLanguageHint = resolveSttLanguageHint(languageSelection, conversationLanguage);
   const {
@@ -462,6 +478,18 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
   // through to the exact same local path this component already had --
   // that path's own onVoiceUnavailable honesty guarantee is unchanged.
   function speakMessage(message: ConsultationMessageRecord) {
+    // Voice reliability hardening: see voiceReplyAttemptRef's own doc
+    // comment. Captured now so the async onSuccess/onFailure callbacks
+    // below can tell, once their own network round-trip resolves, whether
+    // THIS is still the most recent Voice Reply attempt -- a second
+    // message arriving (or an explicit Stop) before this one's cloud TTS
+    // response comes back must never start playing audio for a reply
+    // that is no longer the active one.
+    voiceReplyAttemptRef.current += 1;
+    const myAttempt = voiceReplyAttemptRef.current;
+    voiceReplyAbortControllerRef.current?.abort();
+    const abortController = new AbortController();
+    voiceReplyAbortControllerRef.current = abortController;
     stopCloudAudio();
     if (typeof window !== "undefined" && window.speechSynthesis) {
       window.speechSynthesis.cancel();
@@ -521,9 +549,19 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       // teach-ai-panel-logic.ts's own bindFetch already exists to fix
       // (see its own regression note) -- reused here rather than
       // re-solving the same problem a second, differently-worded way.
-      { fetch: bindFetch(fetch) },
+      { fetch: bindFetch(fetch), signal: abortController.signal },
       {
         onSuccess: (audioBlob) => {
+          // Voice reliability hardening: a NEWER speakMessage call (a
+          // second message sent, or handleStopSpeaking) already
+          // superseded this one while its cloud TTS request was still in
+          // flight -- acting on it now would start audio for a reply
+          // that is no longer current, or resurrect audio after an
+          // explicit Stop. A safe, logged no-op.
+          if (voiceReplyAttemptRef.current !== myAttempt) {
+            logVoiceReplyClientEvent("cloud_response_superseded", { stage: "success" });
+            return;
+          }
           setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
           logVoiceReplyClientEvent("cloud_audio_element_created", { audioBytes: audioBlob.size, blobType: audioBlob.type });
           // Reuses the SAME element the toggle's own click already
@@ -586,6 +624,11 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
           });
         },
         onFailure: () => {
+          // See the identical guard in onSuccess above.
+          if (voiceReplyAttemptRef.current !== myAttempt) {
+            logVoiceReplyClientEvent("cloud_response_superseded", { stage: "failure" });
+            return;
+          }
           setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
           speakMessageLocally(message, language, true);
         },
@@ -636,6 +679,13 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
   }
 
   function handleStopSpeaking() {
+    // Voice reliability hardening: invalidates any cloud TTS attempt still
+    // in flight (audio not yet playing -- the request is still generating)
+    // so its eventual response can never resurrect audio after the
+    // stylist explicitly said Stop. An attempt already playing is handled
+    // by stopCloudAudio below, unchanged.
+    voiceReplyAttemptRef.current += 1;
+    voiceReplyAbortControllerRef.current?.abort();
     if (typeof window !== "undefined" && window.speechSynthesis) {
       stopSpeaking(window.speechSynthesis as unknown as SpeechSynthesisLike);
     }

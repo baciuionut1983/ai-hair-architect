@@ -50,6 +50,15 @@ export type CloudVoiceReplyFailureReason = "network" | "unavailable";
 
 export interface SynthesizeCloudVoiceReplyDeps {
   fetch: typeof fetch;
+  // Voice reliability hardening (2026-08-18): optional -- when the caller
+  // supersedes this attempt (a second message sent, or Stop pressed)
+  // before this request resolves, aborting it stops wasting network/
+  // provider effort on a response nobody will act on (consultation-
+  // chat.tsx's own voiceReplyAttemptRef guard already makes acting on a
+  // stale response impossible regardless; this only avoids the wasted
+  // round-trip). Omitted entirely, the request simply runs to completion
+  // as it always has.
+  signal?: AbortSignal;
 }
 
 export interface SynthesizeCloudVoiceReplyCallbacks {
@@ -80,6 +89,7 @@ export async function synthesizeCloudVoiceReply(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, language }),
+      ...(deps.signal ? { signal: deps.signal } : {}),
     });
     logVoiceReplyClientEvent("cloud_response_received", { status: response.status, ok: response.ok });
   } catch (error) {

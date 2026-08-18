@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { bindFetch, finishRecording, type VoiceNoteStreamLike } from "./teach-ai-panel-logic";
+import { bindFetch, classifyMicrophoneStartError, finishRecording, type VoiceNoteStreamLike } from "./teach-ai-panel-logic";
 
 function fakeStream(): { stream: VoiceNoteStreamLike; stopped: boolean[] } {
   const stopped: boolean[] = [];
@@ -413,6 +413,207 @@ describe("finishRecording client-side diagnostics", () => {
 // this file) never checks `this` at all -- which is exactly why the bug
 // reached production invisibly despite full test coverage of
 // finishRecording itself.
+// Voice reliability hardening (2026-08-18): a controlled, single automatic
+// retry for genuinely transient failures, blob-size validation before ever
+// spending a network round-trip, and one attemptId correlating every log
+// line (and, per-attempt, every request) for one logical mic-press-to-
+// result cycle.
+describe("finishRecording voice reliability hardening", () => {
+  function loggedEvents(logSpy: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
+    return logSpy.mock.calls.map((call) => JSON.parse(call[0] as string));
+  }
+
+  it("retries exactly once, automatically, when the server reports a transient provider failure (VOICE_TRANSCRIPTION_FAILED), and succeeds on the retry", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ error: "VOICE_TRANSCRIPTION_FAILED", message: "Voice transcription failed. You can still type your note." }, false, 502))
+      .mockResolvedValueOnce(jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    expect(fetchStub).toHaveBeenCalledTimes(2);
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1");
+    expect(callbacks.onFailure).not.toHaveBeenCalled();
+  });
+
+  it("retries exactly once, never twice, when the server keeps reporting the same transient failure -- no infinite retry loop", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () => jsonResponse({ error: "VOICE_TRANSCRIPTION_FAILED" }, false, 502));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    expect(fetchStub).toHaveBeenCalledTimes(2);
+    expect(callbacks.onFailure).toHaveBeenCalledTimes(1);
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.");
+  });
+
+  it("does NOT retry a permanent failure (VOICE_PROVIDER_NOT_CONFIGURED) -- retrying could never change the outcome", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () =>
+      jsonResponse({ error: "VOICE_PROVIDER_NOT_CONFIGURED", message: "Voice transcription is not configured. You can still teach the AI by typing." }, false, 503),
+    );
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription is not configured. You can still teach the AI by typing.");
+  });
+
+  it("does NOT retry an invalid/unsupported audio format -- a permanent, format-level problem", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () =>
+      jsonResponse({ error: "UNSUPPORTED_AUDIO_FORMAT", message: "This recording format isn't supported for transcription. Please try again, or type your note." }, false, 400),
+    );
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT retry a rate-limit response -- an immediate retry would only be rate-limited again", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () => jsonResponse({ error: "Rate limit exceeded." }, false, 429));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a network-level failure (fetch threw) exactly once, and succeeds if the retry reaches the server", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    expect(fetchStub).toHaveBeenCalledTimes(2);
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1");
+  });
+
+  it("rejects an empty (0-byte) recording before ever calling fetch, with a clear, specific message", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn();
+
+    await finishRecording(stream, [], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    expect(fetchStub).not.toHaveBeenCalled();
+    expect(callbacks.onFailure).toHaveBeenCalledWith("The recording was empty. Please try again and speak for a moment before stopping.");
+    expect(callbacks.onSuccess).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty recording even after a successful WAV re-encode that itself produces 0 bytes", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn();
+    const encodeAsWav = vi.fn(async () => new Blob([], { type: "audio/wav" }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub, encodeAsWav });
+
+    expect(fetchStub).not.toHaveBeenCalled();
+    expect(callbacks.onFailure).toHaveBeenCalledWith("The recording was empty. Please try again and speak for a moment before stopping.");
+  });
+
+  it("uses one attemptId for every log line across both the initial attempt and its retry, and increments attemptNumber", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fetchStub = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ error: "VOICE_TRANSCRIPTION_FAILED" }, false, 502))
+      .mockResolvedValueOnce(jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    const events = loggedEvents(logSpy);
+    const attemptIds = new Set(events.map((e) => e.attemptId));
+    expect(attemptIds.size).toBe(1);
+    expect(events.find((e) => e.event === "retry_started")).toMatchObject({ attemptNumber: 2 });
+    expect(events.filter((e) => e.event === "request_initiated").map((e) => e.attemptNumber)).toEqual([1, 2]);
+    logSpy.mockRestore();
+  });
+
+  it("accepts a caller-supplied attemptId (so recording-start events can share it) instead of always generating a fresh one", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub }, undefined, "caller-supplied-id");
+
+    const events = loggedEvents(logSpy);
+    expect(events.every((e) => e.attemptId === "caller-supplied-id")).toBe(true);
+    logSpy.mockRestore();
+  });
+
+  it("logs cleanup_completed as the very last event on both success and failure, so the mic is always ready for a fresh attempt", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const { stream: streamOk } = fakeStream();
+    await finishRecording(streamOk, [new Blob(["x"])], "audio/webm", "client-1", callbackSpies(), {
+      fetch: vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1" })),
+    });
+    const successEvents = loggedEvents(logSpy);
+    expect(successEvents.at(-1)).toMatchObject({ event: "cleanup_completed" });
+    logSpy.mockClear();
+
+    const { stream: streamFail } = fakeStream();
+    await finishRecording(streamFail, [new Blob(["x"])], "audio/webm", "client-1", callbackSpies(), {
+      fetch: vi.fn(async () => jsonResponse({ error: "VOICE_PROVIDER_NOT_CONFIGURED", message: "not configured" }, false, 503)),
+    });
+    const failureEvents = loggedEvents(logSpy);
+    expect(failureEvents.at(-1)).toMatchObject({ event: "cleanup_completed" });
+
+    logSpy.mockRestore();
+  });
+
+  it("passes an AbortSignal on every fetch call, so a hung request can be aborted rather than waiting forever", async () => {
+    const { stream } = fakeStream();
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbackSpies(), { fetch: fetchStub });
+
+    const [, init] = fetchStub.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+});
+
+describe("classifyMicrophoneStartError", () => {
+  it("classifies NotAllowedError (the current DOM spec's permission-denial name) as denied", () => {
+    const error = new Error("Permission denied");
+    error.name = "NotAllowedError";
+    expect(classifyMicrophoneStartError(error)).toBe("denied");
+  });
+
+  it("classifies the older, non-standard PermissionDeniedError name as denied too", () => {
+    const error = new Error("Permission denied");
+    error.name = "PermissionDeniedError";
+    expect(classifyMicrophoneStartError(error)).toBe("denied");
+  });
+
+  it("classifies every other error (no device, device busy, MediaRecorder unsupported mimeType, etc.) as unavailable, not denied", () => {
+    const notFound = new Error("no microphone");
+    notFound.name = "NotFoundError";
+    expect(classifyMicrophoneStartError(notFound)).toBe("unavailable");
+
+    const notReadable = new Error("device busy");
+    notReadable.name = "NotReadableError";
+    expect(classifyMicrophoneStartError(notReadable)).toBe("unavailable");
+
+    expect(classifyMicrophoneStartError("not even an Error instance")).toBe("unavailable");
+    expect(classifyMicrophoneStartError(undefined)).toBe("unavailable");
+  });
+});
+
 describe("bindFetch", () => {
   // Simulates a real browser's native fetch: it only works when called
   // with `this === globalThis` (the actual window object in a browser) --

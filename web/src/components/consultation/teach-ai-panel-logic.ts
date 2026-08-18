@@ -14,6 +14,16 @@
 // fires regardless of whether the stop was a manual click or the browser/
 // OS ending the track itself -- and (b) wraps the entire transcription
 // request in a try/catch so no failure path can ever leave the UI stuck.
+//
+// Voice reliability hardening (2026-08-18): a production incident report
+// ("Voice transcription failed") could not be root-caused with certainty
+// (no reproducing evidence was ever obtained -- see the commit report for
+// this change). Rather than guess at a fix, this hardens the whole
+// attempt lifecycle so a transient failure of ANY kind -- network blip,
+// a momentary provider/DB hiccup, or landing on a different instance
+// mid-deploy -- recovers automatically at most once, and any failure
+// (transient or not) always leaves the mic ready for a fresh attempt
+// with no reload required.
 
 import type { LanguageCode } from "@/lib/language-registry";
 
@@ -44,6 +54,16 @@ export interface FinishRecordingDeps {
 }
 
 const GENERIC_TRANSCRIPTION_FAILURE_MESSAGE = "Voice transcription failed. You can still type your note.";
+const EMPTY_RECORDING_MESSAGE = "The recording was empty. Please try again and speak for a moment before stopping.";
+
+// A hung upload (a dropped connection, or landing on an instance that never
+// responds during a rolling deploy) must not leave the mic permanently
+// disabled -- the server's own Gemini call already bounds itself to 30s
+// (voice-transcript/route.ts's PROVIDER_TIMEOUT_MS); this client-side
+// budget is deliberately generous above that so a genuinely slow-but-
+// working request is never aborted prematurely, while a truly hung one
+// still resolves (as a retryable failure) instead of hanging forever.
+const CLIENT_UPLOAD_TIMEOUT_MS = 45_000;
 
 // Regression: a live report showed this exact generic message with no
 // further clue, and -- critically -- Railway's Deploy Logs showed zero
@@ -80,6 +100,134 @@ export function bindFetch(nativeFetch: typeof fetch): typeof fetch {
   return nativeFetch.bind(globalThis);
 }
 
+// Voice reliability hardening: one attemptId ties together every log line
+// (client console AND, once threaded through to the request, the server's
+// own VOICE_TRANSCRIPT lines and its AI usage metering row) for a single
+// logical mic-press-to-result cycle -- including its retry, if any, which
+// shares the same attemptId with a different attemptNumber. A stylist-
+// reported incident can now be found by this one id across both sides,
+// instead of correlating by approximate timestamp.
+export function generateAttemptId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `attempt-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+export type MicrophoneStartFailureReason = "denied" | "unavailable";
+
+// Shared by both microphone entry points (use-voice-recording.ts's chat
+// composer and teach-ai-panel.tsx's own recorder) so a permission denial
+// is never confused with every other kind of startup failure (no
+// microphone present, hardware already claimed by another app/tab, or
+// MediaRecorder itself throwing for an unsupported mimeType) -- the two
+// need different guidance: a denial is something only the stylist can fix
+// in their own browser's site settings, "unavailable" is worth a plain
+// retry. NotAllowedError is the current DOM spec's name for a user/OS
+// permission refusal; PermissionDeniedError is the older, non-standard
+// name some browsers historically used for the exact same condition.
+export function classifyMicrophoneStartError(error: unknown): MicrophoneStartFailureReason {
+  const name = error instanceof Error ? error.name : "";
+  return name === "NotAllowedError" || name === "PermissionDeniedError" ? "denied" : "unavailable";
+}
+
+// The exact server-side error codes (voice-transcript/route.ts's own
+// vocabulary) that represent a genuinely transient condition -- a provider
+// hiccup or a momentary persistence problem, never a permanent one.
+// Retrying VOICE_PROVIDER_NOT_CONFIGURED, an invalid/unsupported format,
+// a rate limit, or an auth failure would never change the outcome and
+// would only waste a second attempt (and, for the provider path, a second
+// real Gemini call) -- so only these two are ever eligible for the single
+// automatic retry below. VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE is a
+// deliberate inclusion despite the retry re-spending real provider cost
+// (the transcription itself already succeeded once) -- the alternative is
+// the stylist's note being silently lost, which is worse.
+const RETRYABLE_ERROR_CODES = new Set(["VOICE_TRANSCRIPTION_FAILED", "VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE"]);
+
+type UploadAttemptResult =
+  | { outcome: "success"; transcript: string; transcriptId: string | undefined }
+  | { outcome: "failure"; message: string; retryable: boolean };
+
+async function attemptUpload(
+  clientId: string,
+  audioBlob: Blob,
+  language: LanguageCode | undefined,
+  attemptId: string,
+  attemptNumber: number,
+  fetchFn: typeof fetch,
+): Promise<UploadAttemptResult> {
+  const form = new FormData();
+  form.append("audio", audioBlob, audioBlob.type === "audio/wav" ? "note.wav" : "note.webm");
+  if (language) {
+    form.append("language", language);
+  }
+  // Threaded straight through to recordAiUsageEvent's own correlationId/
+  // attemptNumber (see voice-transcript/route.ts) so a retry is recorded
+  // as a second, distinct usage event under the SAME logical attempt --
+  // never silently merged into one, since two real HTTP calls can mean
+  // two real provider charges.
+  form.append("attemptId", attemptId);
+  form.append("attemptNumber", String(attemptNumber));
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CLIENT_UPLOAD_TIMEOUT_MS);
+
+  let response: Response;
+  try {
+    logClient("request_initiated", { attemptId, attemptNumber });
+    response = await fetchFn(`/api/v1/clients/${clientId}/voice-transcript`, { method: "POST", body: form, signal: controller.signal });
+    logClient("response_received", { attemptId, attemptNumber, status: response.status, ok: response.ok });
+  } catch (error) {
+    // The exact previously-invisible failure mode: fetch itself throwing
+    // (a network error, a CORS/CSP rejection, the client-side timeout
+    // above firing, or the request never leaving the browser at all)
+    // means the backend's own VOICE_TRANSCRIPT logging (added separately)
+    // can never fire, no matter how thorough it is -- this is the only
+    // place that failure is observable. Treated as retryable: a dropped
+    // connection or a momentarily unreachable instance (e.g. mid-deploy)
+    // is exactly the class of failure a single retry is meant for.
+    logClient("fetch_threw", {
+      attemptId,
+      attemptNumber,
+      errorName: error instanceof Error ? error.name : "unknown",
+      errorMessage: error instanceof Error ? error.message : String(error),
+      aborted: controller.signal.aborted,
+    });
+    return { outcome: "failure", message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, retryable: true };
+  } finally {
+    clearTimeout(timer);
+  }
+
+  let payload: { transcript?: string; transcriptId?: string; message?: string; error?: string };
+  try {
+    payload = await response.json();
+  } catch (error) {
+    // Distinct from fetch_threw: the request DID reach some server (a
+    // response with a real status came back), but its body wasn't valid
+    // JSON -- e.g. an HTML error page from an edge/proxy layer in front
+    // of the Next.js app, never the app's own route handler at all, or a
+    // momentary mismatch while Railway rotates to a new deployment.
+    // Retryable for the same reason: the SAME request a moment later is
+    // very likely to land on a healthy instance.
+    logClient("response_json_parse_threw", {
+      attemptId,
+      attemptNumber,
+      status: response.status,
+      errorName: error instanceof Error ? error.name : "unknown",
+    });
+    return { outcome: "failure", message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, retryable: true };
+  }
+
+  if (!response.ok) {
+    logClient("response_not_ok", { attemptId, attemptNumber, status: response.status, errorCode: payload.error ?? null, hasMessage: Boolean(payload.message) });
+    const retryable = typeof payload.error === "string" && RETRYABLE_ERROR_CODES.has(payload.error);
+    return { outcome: "failure", message: payload.message || GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, retryable };
+  }
+
+  logClient("success", { attemptId, attemptNumber, transcriptLength: (payload.transcript ?? "").length });
+  return { outcome: "success", transcript: payload.transcript ?? "", transcriptId: payload.transcriptId };
+}
+
 export async function finishRecording(
   stream: VoiceNoteStreamLike,
   chunks: Blob[],
@@ -93,19 +241,26 @@ export async function finishRecording(
   // form field -- see that route for why this can only be a prompt-text
   // hint, never a real provider config option.
   language?: LanguageCode,
+  // Voice reliability hardening: lets a caller that already generated an
+  // attemptId at recording-start time (see use-voice-recording.ts's
+  // mic_requested/mic_granted/recorder_started events) carry the SAME id
+  // through to this call, so the full mic-press-to-result lifecycle is
+  // one traceable id, not two. Defaults to a fresh one so every pre-
+  // existing call site (which never passes this) keeps working unchanged.
+  attemptId: string = generateAttemptId(),
 ): Promise<void> {
   stream.getTracks().forEach((track) => track.stop());
   callbacks.onStopped();
-  logClient("recording_stopped");
+  logClient("recording_stopped", { attemptId });
 
   try {
     let blob = new Blob(chunks, { type: mimeType || "audio/webm" });
-    logClient("blob_created", { mimeType: blob.type, sizeBytes: blob.size });
+    logClient("blob_created", { attemptId, mimeType: blob.type, sizeBytes: blob.size });
 
     if (deps.encodeAsWav) {
       try {
         blob = await deps.encodeAsWav(blob);
-        logClient("wav_reencode_succeeded", { mimeType: blob.type, sizeBytes: blob.size });
+        logClient("wav_reencode_succeeded", { attemptId, mimeType: blob.type, sizeBytes: blob.size });
       } catch (error) {
         // Falls back to the original recording unchanged -- see
         // FinishRecordingDeps.encodeAsWav's own doc comment. Still worth
@@ -113,69 +268,59 @@ export async function finishRecording(
         // whole flow here: the original format may happen to be one
         // Gemini does accept (e.g. Safari's audio/mp4).
         logClient("wav_reencode_failed", {
+          attemptId,
           errorName: error instanceof Error ? error.name : "unknown",
           errorMessage: error instanceof Error ? error.message : String(error),
         });
       }
     }
 
-    const form = new FormData();
-    form.append("audio", blob, blob.type === "audio/wav" ? "note.wav" : "note.webm");
-    if (language) {
-      form.append("language", language);
-    }
-
-    let response: Response;
-    try {
-      logClient("request_initiated");
-      response = await deps.fetch(`/api/v1/clients/${clientId}/voice-transcript`, { method: "POST", body: form });
-      logClient("response_received", { status: response.status, ok: response.ok });
-    } catch (error) {
-      // The exact previously-invisible failure mode: fetch itself throwing
-      // (a network error, a CORS/CSP rejection, or the request never
-      // leaving the browser at all) means the backend's own VOICE_TRANSCRIPT
-      // logging (added separately) can never fire, no matter how thorough
-      // it is -- this is the only place that failure is observable.
-      logClient("fetch_threw", {
-        errorName: error instanceof Error ? error.name : "unknown",
-        errorMessage: error instanceof Error ? error.message : String(error),
-      });
-      callbacks.onFailure(GENERIC_TRANSCRIPTION_FAILURE_MESSAGE);
+    // Voice reliability hardening: a recording that produced literally no
+    // audio data (chunks.current stayed empty -- the mic was tapped and
+    // released faster than MediaRecorder's own first dataavailable event)
+    // is caught here, before ever spending a network round-trip or a real
+    // provider call on a request that could only ever come back empty.
+    // Deliberately the same "0 bytes" threshold the server itself already
+    // enforces (voice-transcript/route.ts's own audio.size === 0 check),
+    // not a fragile "too short in duration" heuristic that could reject a
+    // legitimate quick "yes"/"no" note.
+    if (blob.size === 0) {
+      logClient("request_failed", { attemptId, reason: "empty_recording" });
+      callbacks.onFailure(EMPTY_RECORDING_MESSAGE);
+      logClient("cleanup_completed", { attemptId });
       return;
     }
 
-    let payload: { transcript?: string; transcriptId?: string; message?: string };
-    try {
-      payload = await response.json();
-    } catch (error) {
-      // Distinct from fetch_threw: the request DID reach some server (a
-      // response with a real status came back), but its body wasn't valid
-      // JSON -- e.g. an HTML error page from an edge/proxy layer in front
-      // of the Next.js app, never the app's own route handler at all.
-      logClient("response_json_parse_threw", {
-        status: response.status,
-        errorName: error instanceof Error ? error.name : "unknown",
-      });
-      callbacks.onFailure(GENERIC_TRANSCRIPTION_FAILURE_MESSAGE);
-      return;
+    let attemptNumber = 1;
+    let result = await attemptUpload(clientId, blob, language, attemptId, attemptNumber, deps.fetch);
+
+    // Never more than one retry, and only for a failure explicitly
+    // classified as transient -- a permanent failure (wrong format, no
+    // provider configured, rate limited, unauthenticated) is retried zero
+    // times, since retrying could never change the outcome.
+    if (result.outcome === "failure" && result.retryable) {
+      attemptNumber = 2;
+      logClient("retry_started", { attemptId, attemptNumber });
+      result = await attemptUpload(clientId, blob, language, attemptId, attemptNumber, deps.fetch);
     }
 
-    if (!response.ok) {
-      logClient("response_not_ok", { status: response.status, hasMessage: Boolean(payload.message) });
-      callbacks.onFailure(payload.message || GENERIC_TRANSCRIPTION_FAILURE_MESSAGE);
-      return;
+    if (result.outcome === "success") {
+      callbacks.onSuccess(result.transcript, result.transcriptId);
+    } else {
+      logClient("request_failed", { attemptId, attemptNumber, reason: "upload_failed" });
+      callbacks.onFailure(result.message);
     }
-
-    logClient("success", { transcriptLength: (payload.transcript ?? "").length });
-    callbacks.onSuccess(payload.transcript ?? "", payload.transcriptId);
+    logClient("cleanup_completed", { attemptId });
   } catch (error) {
     // Defensive catch-all preserving the original fix's own guarantee:
     // nothing here can ever leave the UI stuck on "Listening...", even an
     // unexpected failure in Blob/FormData construction itself.
     logClient("unexpected_error", {
+      attemptId,
       errorName: error instanceof Error ? error.name : "unknown",
       errorMessage: error instanceof Error ? error.message : String(error),
     });
     callbacks.onFailure(GENERIC_TRANSCRIPTION_FAILURE_MESSAGE);
+    logClient("cleanup_completed", { attemptId });
   }
 }

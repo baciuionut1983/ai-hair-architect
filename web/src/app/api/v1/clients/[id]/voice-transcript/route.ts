@@ -95,6 +95,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // "Invalid audio." response, never an uncaught 500.
   let audio: FormDataEntryValue | null;
   let languageHint: FormDataEntryValue | null;
+  let clientAttemptId: FormDataEntryValue | null;
+  let clientAttemptNumber: FormDataEntryValue | null;
   try {
     const form = await request.formData();
     audio = form.get("audio");
@@ -104,10 +106,38 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     // text (see the transcription prompt built below), same technique as
     // consultation-chat-provider-gemini.ts's memory-proposal reminder line.
     languageHint = form.get("language");
+    // Voice reliability hardening (2026-08-18): optional, sent by
+    // finishRecording (teach-ai-panel-logic.ts) so this one HTTP call can
+    // be correlated with the client's own VOICE_TRANSCRIPT_CLIENT console
+    // logs, and so a client-driven retry of the SAME logical attempt
+    // shares one correlationId with a different attemptNumber for AI
+    // usage metering -- two real HTTP calls are two real provider
+    // attempts, never silently collapsed into one. Absent for any caller
+    // that doesn't send them (including a stale client bundle predating
+    // this change) -- handled identically to today: a fresh server-
+    // generated id, attempt 1.
+    clientAttemptId = form.get("attemptId");
+    clientAttemptNumber = form.get("attemptNumber");
   } catch {
     logVoiceTranscript("FAILED", "invalid_audio", { resultCode: "INVALID_AUDIO", reason: "form_data_parse_threw" });
     return NextResponse.json({ error: "Invalid audio." }, { status: 400 });
   }
+
+  // Voice reliability hardening: resolved once, immediately after the
+  // form is available, so every subsequent log line for this request
+  // (not just the ones after the Gemini call) carries the same
+  // client-supplied attemptId a stylist-reported incident can be grepped
+  // by. A malformed/missing value falls back to exactly today's
+  // behavior (a fresh server id, attempt 1) -- never trusted blindly as
+  // a raw string beyond a defensive length cap.
+  const attemptId =
+    typeof clientAttemptId === "string" && clientAttemptId.trim().length > 0
+      ? clientAttemptId.trim().slice(0, 100)
+      : randomUUID();
+  const attemptNumber = (() => {
+    const parsed = typeof clientAttemptNumber === "string" ? Number.parseInt(clientAttemptNumber, 10) : NaN;
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+  })();
 
   const user = await authenticateSessionRequest();
   if (!user) {
@@ -127,7 +157,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   if (process.env.SPEECH_TO_TEXT_PROVIDER !== "gemini") {
-    logVoiceTranscript("FAILED", "config_check", { resultCode: "VOICE_PROVIDER_NOT_CONFIGURED", reason: "provider_not_gemini" });
+    logVoiceTranscript("FAILED", "config_check", { attemptId, resultCode: "VOICE_PROVIDER_NOT_CONFIGURED", reason: "provider_not_gemini" });
     return NextResponse.json(
       { error: "VOICE_PROVIDER_NOT_CONFIGURED", message: "Voice transcription is not configured. You can still teach the AI by typing." },
       { status: 503 },
@@ -137,7 +167,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const apiKey = process.env.AI_ANALYSIS_API_KEY;
   const model = process.env.SPEECH_TO_TEXT_MODEL || process.env.AI_ANALYSIS_MODEL || "gemini-2.5-flash";
   if (!apiKey) {
-    logVoiceTranscript("FAILED", "config_check", { resultCode: "VOICE_PROVIDER_NOT_CONFIGURED", reason: "api_key_missing" });
+    logVoiceTranscript("FAILED", "config_check", { attemptId, resultCode: "VOICE_PROVIDER_NOT_CONFIGURED", reason: "api_key_missing" });
     return NextResponse.json(
       { error: "VOICE_PROVIDER_NOT_CONFIGURED", message: "Voice transcription is not configured. You can still teach the AI by typing." },
       { status: 503 },
@@ -146,6 +176,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   if (!(audio instanceof File) || audio.size === 0 || audio.size > MAX_AUDIO_BYTES || !audio.type.startsWith("audio/")) {
     logVoiceTranscript("FAILED", "invalid_audio", {
+      attemptId,
       resultCode: "INVALID_AUDIO",
       hasFile: audio instanceof File,
       mimeType: audio instanceof File ? audio.type : null,
@@ -170,6 +201,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // genuine format problem be misread as a provider outage.
   if (!GEMINI_SUPPORTED_AUDIO_MIME_TYPES.has(baseMimeType(audio.type))) {
     logVoiceTranscript("FAILED", "invalid_audio", {
+      attemptId,
       resultCode: "UNSUPPORTED_AUDIO_FORMAT",
       reason: "mime_type_not_supported_by_provider",
       mimeType: audio.type,
@@ -197,9 +229,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // (no provider abstraction, see this function's own comment above), so
   // usage is captured and recorded right here rather than via the
   // onUsage-callback pattern the three Gemini-SDK-based providers use.
-  // correlationId identifies this one logical transcription attempt --
-  // this route never retries internally, so attemptNumber is always 1.
-  const correlationId = randomUUID();
+  // correlationId/attemptNumber identify this one logical transcription
+  // attempt -- resolved above from the client's own attemptId/
+  // attemptNumber when present (a client-driven retry of the same
+  // logical attempt), a fresh id/attempt 1 otherwise.
+  const correlationId = attemptId;
   const providerCallStartedAt = Date.now();
 
   let response: Response;
@@ -221,6 +255,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     );
   } catch (error) {
     logVoiceTranscript("FAILED", "provider_call", {
+      attemptId,
+      attemptNumber,
       resultCode: "VOICE_TRANSCRIPTION_FAILED",
       reason: "fetch_threw",
       errorName: error instanceof Error ? error.name : "unknown",
@@ -239,6 +275,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         feature: "voice_transcript",
         modality: "STT",
         correlationId,
+        attemptNumber,
         provider: "gemini",
         model,
         outcome: "FAILED",
@@ -254,6 +291,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (!response.ok) {
     const providerErrorBody = await response.text().catch(() => "");
     logVoiceTranscript("FAILED", "provider_call", {
+      attemptId,
+      attemptNumber,
       resultCode: "VOICE_TRANSCRIPTION_FAILED",
       reason: "provider_response_not_ok",
       providerHttpStatus: response.status,
@@ -270,6 +309,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         feature: "voice_transcript",
         modality: "STT",
         correlationId,
+        attemptNumber,
         provider: "gemini",
         model,
         outcome: "FAILED",
@@ -299,6 +339,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
   if (!transcript) {
     logVoiceTranscript("FAILED", "provider_call", {
+      attemptId,
+      attemptNumber,
       resultCode: "VOICE_TRANSCRIPTION_FAILED",
       reason: "empty_transcript",
       providerHttpStatus: response.status,
@@ -314,6 +356,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         feature: "voice_transcript",
         modality: "STT",
         correlationId,
+        attemptNumber,
         provider: "gemini",
         model,
         providerRequestId,
@@ -338,6 +381,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       feature: "voice_transcript",
       modality: "STT",
       correlationId,
+      attemptNumber,
       provider: "gemini",
       model,
       providerRequestId,
@@ -354,7 +398,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // persistence problem is reported as a clear 503, never silently
   // degraded, even though the transcription call itself already succeeded.
   if (!isDatabaseConfigured()) {
-    logVoiceTranscript("FAILED", "persistence", { resultCode: "VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE", reason: "database_not_configured" });
+    logVoiceTranscript("FAILED", "persistence", { attemptId, attemptNumber, resultCode: "VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE", reason: "database_not_configured" });
     return NextResponse.json(
       { error: "VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE", message: "The transcript could not be saved right now. You can still type your note." },
       { status: 503 },
@@ -373,6 +417,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       },
     });
     logVoiceTranscript("SUCCEEDED", "complete", {
+      attemptId,
+      attemptNumber,
       model,
       audioMimeType: audio.type,
       audioSizeBytes: audio.size,
@@ -385,6 +431,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json({ transcriptId: row.id, transcript: row.transcript, persistedAsMemory: false });
   } catch (error) {
     logVoiceTranscript("FAILED", "persistence", {
+      attemptId,
+      attemptNumber,
       resultCode: "VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE",
       reason: "prisma_create_threw",
       errorName: error instanceof Error ? error.name : "unknown",
