@@ -1,5 +1,8 @@
+import { randomUUID } from "crypto";
+
 import type { AnalysisState } from "@/lib/milestone2-types";
 import { findAnalysisForOwner, findLatestAnalysisForClient } from "@/lib/analysis-repository";
+import { recordAiUsageEvent } from "@/lib/ai-usage-repository";
 import type { ClientRecord } from "@/lib/contracts";
 import {
   listRecentConsultationMessages,
@@ -60,6 +63,11 @@ export interface SendConsultationMessageDependencies {
   env?: Readonly<Record<string, string | undefined>>;
   createProvider?: (config: { apiKey: string; model: string }) => ConsultationChatProvider;
   now?: () => Date;
+  // AI Usage & Cost Metering Phase 1: injectable like createProvider, so
+  // tests never need a real database connection just because this
+  // function now also records usage -- defaults to the real,
+  // never-throwing recorder.
+  recordAiUsageEvent?: typeof recordAiUsageEvent;
 }
 
 // Mirrors ConsultationChatContext's forcedReplyLanguage/fallbackReplyLanguage
@@ -191,6 +199,7 @@ export async function sendConsultationMessage(
 
     const createProvider = dependencies.createProvider ?? defaultCreateProvider;
     const provider = createProvider({ apiKey: config.apiKey, model: config.model });
+    const recordUsage = dependencies.recordAiUsageEvent ?? recordAiUsageEvent;
 
     let memories: Awaited<ReturnType<typeof retrieveRelevantMemories>>;
     let clientMemory: Awaited<ReturnType<typeof buildClientProfessionalMemory>>;
@@ -214,6 +223,12 @@ export async function sendConsultationMessage(
     const context = buildChatContext(client, analysis, priorMessages, memories, clientMemory, languageHint);
 
     const controller = new AbortController();
+    // AI Usage & Cost Metering Phase 1: one correlationId per logical send
+    // attempt, shared by the success and failure recording calls below --
+    // this route never retries internally, so attemptNumber is always the
+    // default (1).
+    const usageCorrelationId = randomUUID();
+    const providerCallStartedAt = Date.now();
     let result;
     try {
       result = await provider.respond(message, context, controller.signal);
@@ -232,7 +247,49 @@ export async function sendConsultationMessage(
         providerErrorCode: providerError?.code,
         providerErrorStatus: providerError?.status,
       });
+      // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
+      // contract: a metering problem must never turn an already-failed
+      // provider call into a DIFFERENT, worse failure for the caller.
+      try {
+        await recordUsage({
+          ownerUserId,
+          clientId: client.id,
+          analysisId,
+          feature: "consultation_chat",
+          modality: "TEXT_GENERATION",
+          correlationId: usageCorrelationId,
+          provider: provider.name,
+          model: provider.modelVersion,
+          outcome: "FAILED",
+          errorCategory: providerError?.code ?? resultCode,
+          latencyMs: Date.now() - providerCallStartedAt,
+        });
+      } catch {
+        // Intentionally swallowed -- see comment above.
+      }
       return failure(resultCode);
+    }
+
+    // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
+    // contract: a metering problem must never turn a successful reply
+    // into a user-visible failure.
+    try {
+      await recordUsage({
+        ownerUserId,
+        clientId: client.id,
+        analysisId,
+        feature: "consultation_chat",
+        modality: "TEXT_GENERATION",
+        correlationId: usageCorrelationId,
+        provider: provider.name,
+        model: provider.modelVersion,
+        providerRequestId: result.providerRequestId,
+        usage: result.usage,
+        outcome: "SUCCEEDED",
+        latencyMs: Date.now() - providerCallStartedAt,
+      });
+    } catch {
+      // Intentionally swallowed -- see comment above.
     }
 
     let replyRow;

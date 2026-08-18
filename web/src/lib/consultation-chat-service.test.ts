@@ -26,11 +26,17 @@ const memoryRepoMock = vi.hoisted(() => ({
     ["save_client_memory", "save_professional_rule", "mark_preference", "save_outcome"].includes(value),
 }));
 const clientContextMock = vi.hoisted(() => ({ buildClientProfessionalMemory: vi.fn().mockResolvedValue({ recentCorrections: [], recentConsultations: [], recentFormulas: [], recentTreatments: [] }) }));
+// AI Usage & Cost Metering Phase 1: this service now also records usage
+// after every provider call -- mocked here like every other repository
+// this file depends on, so existing/new tests never need a real database
+// connection just to exercise sendConsultationMessage's own logic.
+const usageRepoMock = vi.hoisted(() => ({ recordAiUsageEvent: vi.fn().mockResolvedValue(undefined) }));
 
 vi.mock("@/lib/analysis-repository", () => analysisRepoMock);
 vi.mock("@/lib/consultation-message-repository", () => messageRepoMock);
 vi.mock("@/lib/professional-memory-repository", () => memoryRepoMock);
 vi.mock("@/lib/consultation-client-context", () => clientContextMock);
+vi.mock("@/lib/ai-usage-repository", () => usageRepoMock);
 
 import { sendConsultationMessage } from "./consultation-chat-service";
 import type { ConsultationChatProvider } from "./consultation-chat-provider";
@@ -95,6 +101,7 @@ beforeEach(() => {
     recentFormulas: [],
     recentTreatments: [],
   });
+  usageRepoMock.recordAiUsageEvent.mockResolvedValue(undefined);
 });
 
 function stubProvider(respond: (message: string, ctx: unknown, signal: AbortSignal) => Promise<unknown>) {
@@ -330,6 +337,58 @@ describe("sendConsultationMessage", () => {
     // stylist's own message (recorded before the provider call) exists.
     expect(messageRepoMock.recordConsultationMessage).toHaveBeenCalledTimes(1);
     expect(messageRepoMock.recordConsultationMessage).toHaveBeenCalledWith(expect.objectContaining({ role: "stylist" }));
+  });
+
+  // AI Usage & Cost Metering Phase 1: this function now also records
+  // usage after every real provider call -- success and failure alike.
+  it("AI usage: records a SUCCEEDED usage event with the provider's real usage/providerRequestId after a successful reply", async () => {
+    analysisRepoMock.findAnalysisForOwner.mockResolvedValue(analysisState());
+    const provider = stubProvider(async () => ({
+      reply: "Sure!",
+      needsClarification: false,
+      usage: { inputTokens: 120, outputTokens: 30 },
+      providerRequestId: "resp-abc",
+    }));
+
+    await sendConsultationMessage("owner-1", CLIENT_A, "hi", "analysis-1", { env: GEMINI_ENV, createProvider: provider });
+
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledTimes(1);
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerUserId: "owner-1",
+        clientId: CLIENT_A.id,
+        analysisId: "analysis-1",
+        feature: "consultation_chat",
+        modality: "TEXT_GENERATION",
+        provider: "stub",
+        model: "stub-1",
+        providerRequestId: "resp-abc",
+        usage: { inputTokens: 120, outputTokens: 30 },
+        outcome: "SUCCEEDED",
+      }),
+    );
+  });
+
+  it("AI usage: records a FAILED usage event (with the classified error category) when the provider call throws, still without breaking the caller's own failure response", async () => {
+    const timeoutProvider = stubProvider(async () => {
+      throw Object.assign(new Error("timed out"), { code: "TIMEOUT", retryable: true });
+    });
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: timeoutProvider });
+
+    expect(result).toEqual({ outcome: "failed", code: "PROVIDER_TIMEOUT" });
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "FAILED", errorCategory: "TIMEOUT", feature: "consultation_chat" }),
+    );
+  });
+
+  it("AI usage: a metering failure never turns a successful reply into a user-visible failure", async () => {
+    usageRepoMock.recordAiUsageEvent.mockRejectedValueOnce(new Error("this should never surface"));
+    const provider = stubProvider(async () => ({ reply: "Sure!", needsClarification: false }));
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+    expect(result.outcome).toBe("succeeded");
   });
 
   // The provider-level fail-closed consistency check (reply promises a

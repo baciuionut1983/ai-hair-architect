@@ -1,8 +1,9 @@
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { Readable } from "stream";
 
 import type { Prisma } from "@prisma/client";
 
+import { recordAiUsageEvent } from "@/lib/ai-usage-repository";
 import { prisma } from "@/lib/prisma";
 import {
   ANALYSIS_STATUS_DRAFT,
@@ -95,6 +96,11 @@ export interface ProcessImageAnalysisDependencies {
   beforeClaim?: () => Promise<void>;
   /** Test-only hook invoked immediately before persisting the terminal outcome. Never used by the route. */
   beforePersist?: () => Promise<void>;
+  // AI Usage & Cost Metering Phase 1: injectable like createProvider, so
+  // tests never need a real database connection just because this
+  // function now also records usage -- defaults to the real,
+  // never-throwing recorder.
+  recordAiUsageEvent?: typeof recordAiUsageEvent;
 }
 
 /**
@@ -121,6 +127,7 @@ export async function processImageAnalysis(
     const env = dependencies.env ?? process.env;
     const resolveObjectStorage = dependencies.resolveObjectStorage ?? createObjectStorageAliasResolver();
     const createProvider = dependencies.createProvider ?? defaultCreateProvider;
+    const recordUsage = dependencies.recordAiUsageEvent ?? recordAiUsageEvent;
 
     const config = resolveImageAnalysisProviderConfig(env);
     if (config.status === "disabled") {
@@ -216,6 +223,12 @@ export async function processImageAnalysis(
 
     let analyzed: Awaited<ReturnType<ImageAnalysisProvider["analyze"]>>;
     const providerCallStartedAt = Date.now();
+    // AI Usage & Cost Metering Phase 1: one correlationId per logical
+    // analyze attempt -- this function never retries the provider call
+    // itself internally (a stylist re-request is a brand new call to this
+    // whole function, with its own id), so attemptNumber is always the
+    // default (1).
+    const usageCorrelationId = randomUUID();
     try {
       analyzed = await provider.analyze({
         imageBuffer: buffer,
@@ -235,6 +248,26 @@ export async function processImageAnalysis(
         resultCode,
         error,
       });
+      // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
+      // contract: a metering problem must never turn an already-failed
+      // provider call into a DIFFERENT, worse failure for the caller.
+      try {
+        await recordUsage({
+          ownerUserId,
+          clientId: asset.clientId,
+          analysisId,
+          feature: "image_analysis",
+          modality: "IMAGE_ANALYSIS",
+          correlationId: usageCorrelationId,
+          provider: GEMINI_PROVIDER_NAME,
+          model: config.model,
+          outcome: "FAILED",
+          errorCategory: resultCode,
+          latencyMs: Date.now() - providerCallStartedAt,
+        });
+      } catch {
+        // Intentionally swallowed -- see comment above.
+      }
       if (dependencies.beforePersist) {
         await dependencies.beforePersist();
       }
@@ -244,6 +277,28 @@ export async function processImageAnalysis(
         return failure("PERSISTENCE_FAILURE");
       }
       return failure(resultCode);
+    }
+
+    // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
+    // contract: a metering problem must never turn a successful analysis
+    // into a user-visible failure.
+    try {
+      await recordUsage({
+        ownerUserId,
+        clientId: asset.clientId,
+        analysisId,
+        feature: "image_analysis",
+        modality: "IMAGE_ANALYSIS",
+        correlationId: usageCorrelationId,
+        provider: GEMINI_PROVIDER_NAME,
+        model: config.model,
+        providerRequestId: analyzed.providerRequestId,
+        usage: analyzed.usage,
+        outcome: "SUCCEEDED",
+        latencyMs: Date.now() - providerCallStartedAt,
+      });
+    } catch {
+      // Intentionally swallowed -- see comment above.
     }
 
     if (dependencies.beforePersist) {

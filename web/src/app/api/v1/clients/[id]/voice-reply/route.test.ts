@@ -9,10 +9,15 @@ const ttsProviderMock = vi.hoisted(() => ({ synthesize: vi.fn(), lastConstructed
 // to prove the route's own fail-closed WAV validation actually catches
 // a malformed result rather than shipping it to the browser.
 const audioFormatOverride = vi.hoisted(() => ({ wrapPcmAsWav: undefined as ((pcm: Buffer, rate?: number) => Buffer) | undefined }));
+// AI Usage & Cost Metering Phase 1: this route now also records usage
+// after every provider call -- mocked here like every other dependency,
+// so this route's own unit tests never need a real database connection.
+const usageRepoMock = vi.hoisted(() => ({ recordAiUsageEvent: vi.fn().mockResolvedValue(undefined) }));
 
 vi.mock("@/lib/session-request-auth", () => authMock);
 vi.mock("@/lib/client-repository", () => clientRepoMock);
 vi.mock("@/lib/hardening", () => hardeningMock);
+vi.mock("@/lib/ai-usage-repository", () => usageRepoMock);
 vi.mock("@/lib/tts-provider-gemini", () => ({
   GeminiTtsProvider: class {
     constructor(options: unknown) {
@@ -69,6 +74,7 @@ beforeEach(() => {
   hardeningMock.checkRateLimit.mockReturnValue({ allowed: true, remaining: 19 });
   ttsProviderMock.synthesize.mockResolvedValue(SAMPLE_AUDIO);
   audioFormatOverride.wrapPcmAsWav = undefined;
+  usageRepoMock.recordAiUsageEvent.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -273,6 +279,46 @@ describe("POST /api/v1/clients/[id]/voice-reply", () => {
     const body = await response.json();
 
     expect(body.message.toLowerCase()).toContain("still available");
+  });
+});
+
+describe("AI usage metering", () => {
+  it("records a SUCCEEDED TTS usage event with the provider's real usage/providerRequestId on success", async () => {
+    ttsProviderMock.synthesize.mockResolvedValue({ ...SAMPLE_AUDIO, usage: { characterCount: 40 }, providerRequestId: "resp-1" });
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(response.status).toBe(200);
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerUserId: "owner-1",
+        clientId: "client-1",
+        feature: "voice_reply",
+        modality: "TTS",
+        provider: "gemini",
+        providerRequestId: "resp-1",
+        usage: { characterCount: 40 },
+        outcome: "SUCCEEDED",
+      }),
+    );
+  });
+
+  it("records a FAILED TTS usage event with the classified error code when the provider call throws", async () => {
+    ttsProviderMock.synthesize.mockRejectedValue(createTtsProviderError("RATE_LIMITED", true, 429));
+
+    await invoke({ text: "hello", language: "en" });
+
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ feature: "voice_reply", modality: "TTS", outcome: "FAILED", errorCategory: "RATE_LIMITED" }),
+    );
+  });
+
+  it("a metering failure never turns a successful voice reply into a user-visible failure", async () => {
+    usageRepoMock.recordAiUsageEvent.mockRejectedValueOnce(new Error("this should never surface"));
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(response.status).toBe(200);
   });
 });
 

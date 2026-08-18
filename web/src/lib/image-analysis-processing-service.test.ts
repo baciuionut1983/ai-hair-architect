@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "crypto";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ANALYSIS_STATUS_DRAFT,
@@ -127,6 +127,12 @@ integrationSuite("image-analysis-processing-service (real Postgres)", () => {
 
   afterEach(async () => {
     const { prisma } = await import("@/lib/prisma");
+    // AI Usage & Cost Metering Phase 1: AiUsageEvent.owner is onDelete:
+    // Restrict (a cost ledger must never silently lose history to a
+    // cascade) -- so any row this suite's real recordAiUsageEvent calls
+    // wrote for these owners must be cleared before the owner deleteMany
+    // below, or that delete is rejected by the same FK constraint.
+    await prisma.aiUsageEvent.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
     await prisma.imageAnalysisProviderAttempt.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
     await prisma.imageAnalysis.deleteMany({ where: { asset: { ownerUserId: { in: [...owners] } } } });
     await prisma.imageAsset.deleteMany({ where: { ownerUserId: { in: [...owners] } } });
@@ -322,6 +328,74 @@ integrationSuite("image-analysis-processing-service (real Postgres)", () => {
     const { prisma } = await import("@/lib/prisma");
     const row = await prisma.imageAnalysis.findUniqueOrThrow({ where: { id: result.outcome === "succeeded" ? (result as { analysis: { id: string } }).analysis.id : "" } });
     expect(JSON.stringify(row.analysisPayload)).not.toMatch(/[A-Za-z0-9+/]{100,}={0,2}/);
+  });
+
+  // AI Usage & Cost Metering Phase 1
+  it("AI usage: records a SUCCEEDED usage event with the provider's real usage/providerRequestId on a successful analysis", async () => {
+    const ownerUserId = await createOwner(owners);
+    const { assetId } = await createLegacyLocalFixture(ownerUserId, VALID_JPEG_BYTES, localPaths);
+    await createQueuedAnalysis(assetId, { consent: true });
+
+    class UsageReportingProvider extends ImageAnalysisProvider {
+      readonly name = "fake-gemini";
+      readonly modelVersion = "fake-model";
+      async analyze() {
+        const base = await new SuccessProvider().analyze({} as AnalysisOptions);
+        return { ...base, usage: { inputTokens: 200, outputTokens: 60 }, providerRequestId: "resp-img-1" };
+      }
+    }
+
+    const recordAiUsageEvent = vi.fn().mockResolvedValue(undefined);
+    const result = await processImageAnalysis(assetId, ownerUserId, {
+      env: GEMINI_ENV,
+      createProvider: () => new UsageReportingProvider(),
+      recordAiUsageEvent,
+    });
+
+    expect(result.outcome).toBe("succeeded");
+    expect(recordAiUsageEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerUserId,
+        feature: "image_analysis",
+        modality: "IMAGE_ANALYSIS",
+        provider: "gemini",
+        providerRequestId: "resp-img-1",
+        usage: { inputTokens: 200, outputTokens: 60 },
+        outcome: "SUCCEEDED",
+      }),
+    );
+  });
+
+  it("AI usage: records a FAILED usage event with the classified error category when the provider call throws", async () => {
+    const ownerUserId = await createOwner(owners);
+    const { assetId } = await createLegacyLocalFixture(ownerUserId, VALID_JPEG_BYTES, localPaths);
+    await createQueuedAnalysis(assetId, { consent: true });
+
+    const recordAiUsageEvent = vi.fn().mockResolvedValue(undefined);
+    await processImageAnalysis(assetId, ownerUserId, {
+      env: GEMINI_ENV,
+      createProvider: () => new FailingProvider(providerError("TIMEOUT", true)),
+      recordAiUsageEvent,
+    });
+
+    expect(recordAiUsageEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ feature: "image_analysis", modality: "IMAGE_ANALYSIS", outcome: "FAILED", errorCategory: "PROVIDER_TIMEOUT" }),
+    );
+  });
+
+  it("AI usage: a metering failure never turns a successful analysis into a user-visible failure", async () => {
+    const ownerUserId = await createOwner(owners);
+    const { assetId } = await createLegacyLocalFixture(ownerUserId, VALID_JPEG_BYTES, localPaths);
+    await createQueuedAnalysis(assetId, { consent: true });
+
+    const recordAiUsageEvent = vi.fn().mockRejectedValue(new Error("this should never surface"));
+    const result = await processImageAnalysis(assetId, ownerUserId, {
+      env: GEMINI_ENV,
+      createProvider: () => new SuccessProvider(),
+      recordAiUsageEvent,
+    });
+
+    expect(result.outcome).toBe("succeeded");
   });
 
   it("full successful flow (object-backed, exact version): claims and persists correctly", async () => {

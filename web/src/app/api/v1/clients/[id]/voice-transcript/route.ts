@@ -2,7 +2,9 @@ import { randomUUID } from "crypto";
 
 import { NextResponse } from "next/server";
 
+import { recordAiUsageEvent } from "@/lib/ai-usage-repository";
 import { resolveOwnedClient } from "@/lib/client-repository";
+import { mapGeminiUsageMetadata, type GeminiRawUsageMetadata } from "@/lib/gemini-usage-mapper";
 import { checkRateLimit } from "@/lib/hardening";
 import { getLanguageDefinition, isSttLanguageCode } from "@/lib/language-registry";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
@@ -191,6 +193,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       "the transcript, with no commentary."
     : "Transcribe this audio faithfully. Return only the transcript, with no commentary.";
 
+  // AI Usage & Cost Metering Phase 1: this route calls Gemini directly
+  // (no provider abstraction, see this function's own comment above), so
+  // usage is captured and recorded right here rather than via the
+  // onUsage-callback pattern the three Gemini-SDK-based providers use.
+  // correlationId identifies this one logical transcription attempt --
+  // this route never retries internally, so attemptNumber is always 1.
+  const correlationId = randomUUID();
+  const providerCallStartedAt = Date.now();
+
   let response: Response;
   try {
     response = await fetch(
@@ -218,6 +229,25 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       audioMimeType: audio.type,
       audioSizeBytes: audio.size,
     });
+    // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
+    // contract: a metering problem must never turn an already-failed
+    // transcription attempt into a DIFFERENT, worse failure for the caller.
+    try {
+      await recordAiUsageEvent({
+        ownerUserId: user.id,
+        clientId: id,
+        feature: "voice_transcript",
+        modality: "STT",
+        correlationId,
+        provider: "gemini",
+        model,
+        outcome: "FAILED",
+        errorCategory: "FETCH_THREW",
+        latencyMs: Date.now() - providerCallStartedAt,
+      });
+    } catch {
+      // Intentionally swallowed -- see comment above.
+    }
     return NextResponse.json({ error: "VOICE_TRANSCRIPTION_FAILED", message: "Voice transcription timed out or failed. You can still type your note." }, { status: 502 });
   }
 
@@ -232,13 +262,38 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       audioMimeType: audio.type,
       audioSizeBytes: audio.size,
     });
+    // Defense-in-depth -- see the fetch-threw branch's identical comment above.
+    try {
+      await recordAiUsageEvent({
+        ownerUserId: user.id,
+        clientId: id,
+        feature: "voice_transcript",
+        modality: "STT",
+        correlationId,
+        provider: "gemini",
+        model,
+        outcome: "FAILED",
+        errorCategory: `PROVIDER_HTTP_${response.status}`,
+        latencyMs: Date.now() - providerCallStartedAt,
+      });
+    } catch {
+      // Intentionally swallowed -- see comment above.
+    }
     return NextResponse.json({ error: "VOICE_TRANSCRIPTION_FAILED", message: "Voice transcription failed. You can still type your note." }, { status: 502 });
   }
 
   let transcript: string | undefined;
+  let rawUsageMetadata: GeminiRawUsageMetadata | undefined;
+  let providerRequestId: string | undefined;
   try {
-    const payload = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    const payload = (await response.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      usageMetadata?: GeminiRawUsageMetadata;
+      responseId?: string;
+    };
     transcript = payload.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("").trim();
+    rawUsageMetadata = payload.usageMetadata;
+    providerRequestId = payload.responseId;
   } catch {
     transcript = undefined;
   }
@@ -251,7 +306,47 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       audioMimeType: audio.type,
       audioSizeBytes: audio.size,
     });
+    // Defense-in-depth -- see the fetch-threw branch's identical comment above.
+    try {
+      await recordAiUsageEvent({
+        ownerUserId: user.id,
+        clientId: id,
+        feature: "voice_transcript",
+        modality: "STT",
+        correlationId,
+        provider: "gemini",
+        model,
+        providerRequestId,
+        usage: mapGeminiUsageMetadata(rawUsageMetadata),
+        outcome: "FAILED",
+        errorCategory: "EMPTY_TRANSCRIPT",
+        latencyMs: Date.now() - providerCallStartedAt,
+      });
+    } catch {
+      // Intentionally swallowed -- see comment above.
+    }
     return NextResponse.json({ error: "VOICE_TRANSCRIPTION_FAILED", message: "Voice transcription returned no text. You can still type your note." }, { status: 502 });
+  }
+
+  // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
+  // contract: a metering problem must never turn a successful
+  // transcription into a user-visible failure.
+  try {
+    await recordAiUsageEvent({
+      ownerUserId: user.id,
+      clientId: id,
+      feature: "voice_transcript",
+      modality: "STT",
+      correlationId,
+      provider: "gemini",
+      model,
+      providerRequestId,
+      usage: mapGeminiUsageMetadata(rawUsageMetadata),
+      outcome: "SUCCEEDED",
+      latencyMs: Date.now() - providerCallStartedAt,
+    });
+  } catch {
+    // Intentionally swallowed -- see comment above.
   }
 
   // Same fail-closed convention as every other repository in this app

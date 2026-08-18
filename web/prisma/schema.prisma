@@ -161,6 +161,7 @@ model User {
   professionalMemories          ProfessionalMemory[]         @relation("MemoryOwner")
   professionalMemoryAudits      ProfessionalMemoryAudit[]    @relation("MemoryAuditActor")
   voiceTranscripts              VoiceTranscript[]
+  aiUsageEvents                 AiUsageEvent[]
 }
 
 model Session {
@@ -1189,4 +1190,127 @@ model BillingWebhookEvent {
   @@index([ownerUserId, receivedAt])
   @@index([status, receivedAt])
   @@index([providerSubscriptionId])
+}
+
+// AI Usage & Cost Metering Phase 1: the fixed, small set of billable AI
+// operation shapes this platform's provider cost genuinely varies by
+// (token-metered text/vision calls vs. duration/count-metered audio,
+// image, or video). A real Postgres enum, not an app-level string, because
+// this vocabulary is expected to change rarely -- matching this schema's
+// existing convention for closed operation vocabularies (WebhookFailureDomain,
+// BillingSubscriptionStatus, etc.), unlike `feature` below, which is
+// expected to grow every time a new AI-touching capability ships.
+// IMAGE_GENERATION and VIDEO_GENERATION are not produced by any code path
+// yet (AI Proposed Look Phase 2 and beyond) -- included now, per the AI
+// Usage & Cost Metering Phase 1 task's explicit future-readiness
+// requirement, so that work never needs a schema migration just to start
+// recording usage.
+enum AiUsageModality {
+  TEXT_GENERATION
+  IMAGE_ANALYSIS
+  IMAGE_GENERATION
+  VIDEO_GENERATION
+  STT
+  TTS
+}
+
+enum AiUsageOutcome {
+  SUCCEEDED
+  FAILED
+}
+
+// Mirrors Step 2's explicit accounting requirement: a cost figure must
+// never be presented as more certain than it actually is. EXACT: the
+// provider itself returned a cost (no provider used by this app does
+// today). CALCULATED: a real usage quantity (e.g. real token counts) was
+// multiplied by an authoritative, versioned price. ESTIMATED: a cost was
+// derived without a real usage quantity (e.g. from a rough duration/size
+// proxy). UNAVAILABLE: no cost could be produced at all -- the honest
+// default, never silently coerced to 0.
+enum AiUsageCostBasis {
+  EXACT
+  CALCULATED
+  ESTIMATED
+  UNAVAILABLE
+}
+
+// AI Usage & Cost Metering Phase 1: one row per real provider call
+// (never per logical retry group -- see attemptNumber/correlationId),
+// covering every AI-touching feature (Consult AI, image analysis, STT,
+// TTS today; image/video generation later) uniformly. This is an
+// accounting/observability ledger, not a second conversation database --
+// see Step 5's data-minimization requirement -- so it never stores a
+// prompt, a reply, a transcript, audio, or a photo; correlationId is a
+// soft pointer (no FK, mirroring AuditLog.resourceId's existing
+// precedent) to the feature's own authoritative record
+// (ConsultationMessage/ImageAnalysis/VoiceTranscript id) when one exists.
+//
+// `usage` is a single Json column, not one nullable column per possible
+// billable quantity (input/output/cached/reasoning tokens, audio
+// seconds, characters, image/video counts) -- deliberately mirroring
+// this schema's own established precedent for the exact same kind of
+// variable-shaped-by-type data (Analysis.technicalCutPlan/colorPlan/
+// treatmentPlan, AnalysisCorrection.previousValue/newValue), rather than
+// the "giant nullable table" the task's own Step 2 explicitly warns
+// against. Shape: AiUsageQuantities in ai-usage-contracts.ts.
+//
+// clientId/analysisId are deliberately plain, unconstrained strings, not
+// FKs (unlike VoiceTranscript's clientId) -- this ledger must never block
+// or complicate an unrelated future Client/Analysis lifecycle operation
+// (e.g. a right-to-erasure hard delete) just because an old cost record
+// still names it, the same reasoning AuditLog.resourceId already applies
+// in this schema. workspaceId is reserved for a real multi-stylist
+// workspace/salon concept that does not exist yet in this product (see
+// AnalysisCorrection's own comment on WorkspaceRecord being legacy/
+// in-memory only) -- always null today, kept so aggregation-by-salon
+// (Step 7) does not need a second migration the day a real Workspace
+// model is introduced.
+model AiUsageEvent {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+
+  ownerUserId String
+  workspaceId String?
+  clientId    String?
+  analysisId  String?
+
+  feature       String          @db.VarChar(64)
+  modality      AiUsageModality
+  correlationId String          @db.VarChar(64)
+  attemptNumber Int             @default(1)
+  // Deterministically derived from (correlationId, attemptNumber) by the
+  // one recording entry point (recordAiUsageEvent) when a caller does not
+  // supply its own -- see Step 4's duplicate-submission requirement. A
+  // unique-constraint violation on write is treated as "already recorded",
+  // never as an error the caller sees.
+  idempotencyKey String @db.VarChar(160)
+
+  provider          String  @db.VarChar(32)
+  model             String  @db.VarChar(64)
+  providerRequestId String? @db.VarChar(128)
+
+  usage          Json    @default("{}")
+  // False whenever the provider response never exposed real usage
+  // metadata (or the call failed before any response existed) -- Step 6's
+  // explicit "mark unavailable, never fabricate" requirement made
+  // directly queryable, not just inferable from an empty `usage` object.
+  usageAvailable Boolean @default(false)
+
+  estimatedCostMicros BigInt?
+  currency            String?          @db.VarChar(3)
+  pricingVersion      String?          @db.VarChar(32)
+  costBasis           AiUsageCostBasis @default(UNAVAILABLE)
+
+  outcome       AiUsageOutcome
+  errorCategory String?        @db.VarChar(64)
+  latencyMs     Int?
+
+  owner User @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([idempotencyKey])
+  @@index([ownerUserId, createdAt])
+  @@index([feature, createdAt])
+  @@index([provider, model, createdAt])
+  @@index([createdAt])
+  @@index([correlationId])
 }

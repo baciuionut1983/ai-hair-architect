@@ -1,3 +1,5 @@
+import type { AiUsageQuantities } from "./ai-usage-contracts";
+
 export interface ImageAnalysisResult {
   hairType: 'straight' | 'wavy' | 'curly' | 'coily' | 'unknown';
   density: 'low' | 'medium' | 'high' | 'unknown';
@@ -36,6 +38,11 @@ export abstract class ImageAnalysisProvider {
     confidences: FieldConfidence;
     warnings: string[];
     limitations: string[];
+    // AI Usage & Cost Metering Phase 1: absent (never a fabricated object
+    // of zeros) whenever the provider didn't expose real usage metadata
+    // for this call.
+    usage?: AiUsageQuantities;
+    providerRequestId?: string;
   }>;
 
   protected createProviderError(

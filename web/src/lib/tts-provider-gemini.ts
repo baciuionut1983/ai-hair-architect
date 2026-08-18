@@ -1,5 +1,8 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 
+import type { AiUsageQuantities } from "./ai-usage-contracts";
+import { mapGeminiUsageMetadata, type GeminiRawUsageMetadata } from "./gemini-usage-mapper";
+
 // Speech generation via Gemini's native TTS (generateContent +
 // responseModalities:[AUDIO] + speechConfig) -- the SAME @google/genai
 // SDK, and the SAME generateContent call shape, already used by
@@ -34,6 +37,11 @@ export interface SynthesizeSpeechInput {
   languageCode: string;
   model: string;
   signal: AbortSignal;
+  // AI Usage & Cost Metering Phase 1: see GeminiChatGenerateInput's own
+  // onUsage comment (consultation-chat-provider-gemini.ts) -- identical
+  // reasoning and identical backward-compatibility guarantee for this
+  // file's own existing tests.
+  onUsage?: (usage: GeminiRawUsageMetadata | undefined, providerRequestId: string | undefined) => void;
 }
 
 export interface SynthesizeSpeechResult {
@@ -41,6 +49,8 @@ export interface SynthesizeSpeechResult {
   // needs a WAV header before it's playable).
   audioBase64: string;
   mimeType: string;
+  usage?: AiUsageQuantities;
+  providerRequestId?: string;
 }
 
 /**
@@ -85,12 +95,31 @@ export class GeminiTtsProvider {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
+    // Captured via closure, not provider-instance state -- see
+    // GeminiConsultationChatProvider.respond's identical comment for why.
+    let capturedUsage: GeminiRawUsageMetadata | undefined;
+    let capturedRequestId: string | undefined;
+
     try {
-      const result = await this.client.synthesizeSpeech({ text, languageCode, model: this.model, signal: controller.signal });
+      const result = await this.client.synthesizeSpeech({
+        text,
+        languageCode,
+        model: this.model,
+        signal: controller.signal,
+        onUsage: (usage, requestId) => {
+          capturedUsage = usage;
+          capturedRequestId = requestId;
+        },
+      });
       if (!result || !result.audioBase64) {
         throw createTtsProviderError("INVALID_FORMAT", "Gemini TTS returned no audio.");
       }
-      return result;
+      const usage = mapGeminiUsageMetadata(capturedUsage);
+      return {
+        ...result,
+        ...(usage ? { usage } : {}),
+        ...(capturedRequestId ? { providerRequestId: capturedRequestId } : {}),
+      };
     } catch (error) {
       throw classifyTtsError(error, controller.signal);
     } finally {
@@ -103,7 +132,7 @@ function createDefaultGeminiTtsClient(apiKey: string, timeoutMs: number): Gemini
   const ai = new GoogleGenAI({ apiKey });
 
   return {
-    async synthesizeSpeech({ text, languageCode, model, signal }: SynthesizeSpeechInput) {
+    async synthesizeSpeech({ text, languageCode, model, signal, onUsage }: SynthesizeSpeechInput) {
       const response = await ai.models.generateContent({
         model,
         contents: [{ role: "user", parts: [{ text }] }],
@@ -117,6 +146,7 @@ function createDefaultGeminiTtsClient(apiKey: string, timeoutMs: number): Gemini
           },
         },
       });
+      onUsage?.(response.usageMetadata, response.responseId);
 
       const inlineData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData;
       if (!inlineData?.data) return undefined;

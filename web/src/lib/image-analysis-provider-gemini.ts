@@ -1,5 +1,7 @@
 import { GoogleGenAI, Type, type Schema } from "@google/genai";
 
+import type { AiUsageQuantities } from "./ai-usage-contracts";
+import { mapGeminiUsageMetadata, type GeminiRawUsageMetadata } from "./gemini-usage-mapper";
 import {
   ImageAnalysisProvider,
   type AnalysisOptions,
@@ -113,6 +115,11 @@ export interface GeminiGenerateContentInput {
   mimeType: string;
   model: string;
   signal: AbortSignal;
+  // AI Usage & Cost Metering Phase 1: see GeminiChatGenerateInput's own
+  // onUsage comment (consultation-chat-provider-gemini.ts) -- identical
+  // reasoning and identical backward-compatibility guarantee for this
+  // file's own existing tests.
+  onUsage?: (usage: GeminiRawUsageMetadata | undefined, providerRequestId: string | undefined) => void;
 }
 
 /**
@@ -154,9 +161,16 @@ export class GeminiImageAnalysisProvider extends ImageAnalysisProvider {
     confidences: FieldConfidence;
     warnings: string[];
     limitations: string[];
+    usage?: AiUsageQuantities;
+    providerRequestId?: string;
   }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    // Captured via closure, not provider-instance state -- see
+    // GeminiConsultationChatProvider.respond's identical comment for why.
+    let capturedUsage: GeminiRawUsageMetadata | undefined;
+    let capturedRequestId: string | undefined;
 
     try {
       const rawText = await this.client.generateContent({
@@ -164,8 +178,18 @@ export class GeminiImageAnalysisProvider extends ImageAnalysisProvider {
         mimeType: options.mimeType,
         model: this.model,
         signal: controller.signal,
+        onUsage: (usage, requestId) => {
+          capturedUsage = usage;
+          capturedRequestId = requestId;
+        },
       });
-      return this.parseAndValidate(rawText);
+      const parsed = this.parseAndValidate(rawText);
+      const usage = mapGeminiUsageMetadata(capturedUsage);
+      return {
+        ...parsed,
+        ...(usage ? { usage } : {}),
+        ...(capturedRequestId ? { providerRequestId: capturedRequestId } : {}),
+      };
     } catch (error) {
       throw this.classifyError(error, controller.signal);
     } finally {
@@ -297,7 +321,7 @@ function createDefaultGeminiClient(apiKey: string, timeoutMs: number): GeminiGen
   const ai = new GoogleGenAI({ apiKey });
 
   return {
-    async generateContent({ imageBase64, mimeType, model, signal }: GeminiGenerateContentInput) {
+    async generateContent({ imageBase64, mimeType, model, signal, onUsage }: GeminiGenerateContentInput) {
       const response = await ai.models.generateContent({
         model,
         contents: [
@@ -313,6 +337,7 @@ function createDefaultGeminiClient(apiKey: string, timeoutMs: number): GeminiGen
           responseSchema: RESPONSE_SCHEMA,
         },
       });
+      onUsage?.(response.usageMetadata, response.responseId);
       return response.text;
     },
   };

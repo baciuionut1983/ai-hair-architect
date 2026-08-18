@@ -4,10 +4,16 @@ const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const clientRepoMock = vi.hoisted(() => ({ resolveOwnedClient: vi.fn() }));
 const hardeningMock = vi.hoisted(() => ({ checkRateLimit: vi.fn() }));
 const prismaMocks = vi.hoisted(() => ({ configured: true, create: vi.fn() }));
+// AI Usage & Cost Metering Phase 1: this route now also records usage
+// after every provider call -- mocked here like every other dependency,
+// so this route's own unit tests never need prisma.aiUsageEvent to exist
+// on the (otherwise deliberately narrow) prisma mock above.
+const usageRepoMock = vi.hoisted(() => ({ recordAiUsageEvent: vi.fn().mockResolvedValue(undefined) }));
 
 vi.mock("@/lib/session-request-auth", () => authMock);
 vi.mock("@/lib/client-repository", () => clientRepoMock);
 vi.mock("@/lib/hardening", () => hardeningMock);
+vi.mock("@/lib/ai-usage-repository", () => usageRepoMock);
 vi.mock("@/lib/prisma", () => ({
   isDatabaseConfigured: () => prismaMocks.configured,
   prisma: { voiceTranscript: { create: prismaMocks.create } },
@@ -39,8 +45,11 @@ function invoke(form: FormData | null): Promise<Response> {
   );
 }
 
-function geminiTranscriptResponse(text: string): Response {
-  return Response.json({ candidates: [{ content: { parts: [{ text }] } }] }, { status: 200 });
+function geminiTranscriptResponse(text: string, usageMetadata?: Record<string, number>, responseId?: string): Response {
+  return Response.json(
+    { candidates: [{ content: { parts: [{ text }] } }], ...(usageMetadata ? { usageMetadata } : {}), ...(responseId ? { responseId } : {}) },
+    { status: 200 },
+  );
 }
 
 beforeEach(() => {
@@ -51,6 +60,7 @@ beforeEach(() => {
   hardeningMock.checkRateLimit.mockReturnValue({ allowed: true, remaining: 9 });
   prismaMocks.configured = true;
   prismaMocks.create.mockResolvedValue({ id: "transcript-1", transcript: "She had bleach six weeks ago.", createdAt: new Date() });
+  usageRepoMock.recordAiUsageEvent.mockResolvedValue(undefined);
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(geminiTranscriptResponse("She had bleach six weeks ago.")));
 });
 
@@ -352,6 +362,62 @@ describe("POST /api/v1/clients/[id]/voice-transcript", () => {
     expect(response.status).toBe(503);
     const body = await response.json();
     expect(body.error).toBe("VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE");
+  });
+});
+
+describe("AI usage metering", () => {
+  it("records a SUCCEEDED STT usage event, mapping the real Gemini usageMetadata to provider-neutral field names", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        geminiTranscriptResponse("She had bleach six weeks ago.", { promptTokenCount: 50, candidatesTokenCount: 12 }, "resp-42"),
+      ),
+    );
+
+    await invoke(audioForm());
+
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerUserId: "owner-1",
+        clientId: "client-1",
+        feature: "voice_transcript",
+        modality: "STT",
+        provider: "gemini",
+        providerRequestId: "resp-42",
+        usage: { inputTokens: 50, outputTokens: 12 },
+        outcome: "SUCCEEDED",
+      }),
+    );
+  });
+
+  it("records a FAILED usage event, explicitly marking usage unavailable, when the provider fetch itself throws", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+
+    await invoke(audioForm());
+
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ feature: "voice_transcript", modality: "STT", outcome: "FAILED", errorCategory: "FETCH_THREW" }),
+    );
+    const call = usageRepoMock.recordAiUsageEvent.mock.calls[0][0];
+    expect(call.usage).toBeUndefined();
+  });
+
+  it("records a FAILED usage event with the provider's real HTTP status when the response is not ok", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "quota" }, { status: 429 })));
+
+    await invoke(audioForm());
+
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "FAILED", errorCategory: "PROVIDER_HTTP_429" }),
+    );
+  });
+
+  it("a metering failure never turns a successful transcription into a user-visible failure", async () => {
+    usageRepoMock.recordAiUsageEvent.mockRejectedValueOnce(new Error("this should never surface"));
+
+    const response = await invoke(audioForm());
+
+    expect(response.status).toBe(200);
   });
 });
 

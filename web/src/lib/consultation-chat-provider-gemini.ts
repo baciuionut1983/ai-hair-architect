@@ -1,6 +1,7 @@
 import { GoogleGenAI, Type, type Schema } from "@google/genai";
 
 import { CORRECTABLE_ANALYSIS_FIELDS, CORRECTABLE_FIELD_ENUMS, type CorrectableAnalysisField } from "./analysis-repository";
+import { mapGeminiUsageMetadata, type GeminiRawUsageMetadata } from "./gemini-usage-mapper";
 import { MEMORY_PROPOSAL_ACTION_KEYS, isMemoryProposalAction } from "./professional-memory-repository";
 import { conversationSupportedLanguages, getLanguageDefinition, isConversationLanguageCode, type LanguageCode } from "./language-registry";
 import {
@@ -191,6 +192,16 @@ export interface GeminiChatGenerateInput {
   prompt: string;
   model: string;
   signal: AbortSignal;
+  // AI Usage & Cost Metering Phase 1: an optional per-call sink for the
+  // real usageMetadata/responseId Gemini's SDK response carries, invoked
+  // synchronously by the real client right after the call resolves (see
+  // createDefaultGeminiChatClient below). Deliberately NOT a change to
+  // this interface's return type (still plain string | undefined) --
+  // every existing mock-based test in this file continues to construct a
+  // mock exactly as before; a mock that never calls onUsage simply
+  // leaves usage honestly unavailable, which is itself a correct, already
+  // -covered state, not a gap this needed new tests to paper over.
+  onUsage?: (usage: GeminiRawUsageMetadata | undefined, providerRequestId: string | undefined) => void;
 }
 
 export interface GeminiChatGenerateClient {
@@ -227,13 +238,32 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
     outerSignal.addEventListener("abort", onOuterAbort);
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
+    // Captured via closure, not provider-instance state -- this provider
+    // may be reused across concurrent requests (e.g. a module-level
+    // singleton), and a mutable instance field here would risk one
+    // request's usage being attributed to a different, overlapping one.
+    // Local to this single respond() call, exactly like the AbortController
+    // above.
+    let capturedUsage: GeminiRawUsageMetadata | undefined;
+    let capturedRequestId: string | undefined;
+
     try {
       const rawText = await this.client.generateContent({
         prompt: buildPrompt(message, context),
         model: this.model,
         signal: controller.signal,
+        onUsage: (usage, requestId) => {
+          capturedUsage = usage;
+          capturedRequestId = requestId;
+        },
       });
-      return this.parseAndValidate(rawText, message);
+      const result = this.parseAndValidate(rawText, message);
+      const usage = mapGeminiUsageMetadata(capturedUsage);
+      return {
+        ...result,
+        ...(usage ? { usage } : {}),
+        ...(capturedRequestId ? { providerRequestId: capturedRequestId } : {}),
+      };
     } catch (error) {
       throw this.classifyError(error, controller.signal);
     } finally {
@@ -535,7 +565,7 @@ function createDefaultGeminiChatClient(apiKey: string, timeoutMs: number): Gemin
   const ai = new GoogleGenAI({ apiKey });
 
   return {
-    async generateContent({ prompt, model, signal }: GeminiChatGenerateInput) {
+    async generateContent({ prompt, model, signal, onUsage }: GeminiChatGenerateInput) {
       const response = await ai.models.generateContent({
         model,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -546,6 +576,7 @@ function createDefaultGeminiChatClient(apiKey: string, timeoutMs: number): Gemin
           responseSchema: RESPONSE_SCHEMA,
         },
       });
+      onUsage?.(response.usageMetadata, response.responseId);
       return response.text;
     },
   };

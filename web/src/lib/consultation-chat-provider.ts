@@ -1,3 +1,4 @@
+import type { AiUsageQuantities } from "./ai-usage-contracts";
 import type { LanguageCode } from "./language-registry";
 
 export interface ConsultationChatCurrentAnalysis {
@@ -164,6 +165,13 @@ export interface ConsultationChatResult {
   // (forced hint -> this field -> local detection -> soft fallback)
   // covers its absence.
   replyLanguageCode?: LanguageCode;
+  // AI Usage & Cost Metering Phase 1: the real provider usage for THIS
+  // response, when the provider exposed any -- absent (never a fabricated
+  // object of zeros) whenever it didn't. See GeminiConsultationChatProvider's
+  // own `respond` for how this is captured without changing what
+  // generateContent returns to existing callers/tests.
+  usage?: AiUsageQuantities;
+  providerRequestId?: string;
 }
 
 export interface ChatProviderError extends Error {

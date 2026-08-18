@@ -1,5 +1,8 @@
+import { randomUUID } from "crypto";
+
 import { NextResponse } from "next/server";
 
+import { recordAiUsageEvent } from "@/lib/ai-usage-repository";
 import { resolveOwnedClient } from "@/lib/client-repository";
 import { checkRateLimit } from "@/lib/hardening";
 import { isCloudTtsLanguageCode, toCloudTtsLanguageCode } from "@/lib/language-registry";
@@ -150,6 +153,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   const provider = new GeminiTtsProvider({ apiKey, model, timeoutMs: PROVIDER_TIMEOUT_MS });
   const languageCode = toCloudTtsLanguageCode(language);
 
+  // AI Usage & Cost Metering Phase 1: one correlationId per logical
+  // synthesize attempt -- this route never retries the provider call
+  // itself internally, so attemptNumber is always the default (1).
+  // Purely additive instrumentation: no existing behavior, timing, or
+  // response above/below this block changes.
+  const usageCorrelationId = randomUUID();
+  const providerCallStartedAt = Date.now();
+
   let result;
   try {
     result = await provider.synthesize(text, languageCode);
@@ -166,7 +177,47 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       languageCode,
       textLength: text.length,
     });
+    // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
+    // contract: a metering problem must never turn an already-failed
+    // synthesis attempt into a DIFFERENT, worse failure for the caller.
+    try {
+      await recordAiUsageEvent({
+        ownerUserId: user.id,
+        clientId: id,
+        feature: "voice_reply",
+        modality: "TTS",
+        correlationId: usageCorrelationId,
+        provider: "gemini",
+        model,
+        outcome: "FAILED",
+        errorCategory: providerError.code,
+        latencyMs: Date.now() - providerCallStartedAt,
+      });
+    } catch {
+      // Intentionally swallowed -- see comment above.
+    }
     return NextResponse.json(errorBody, { status });
+  }
+
+  // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
+  // contract: a metering problem must never turn a successful voice
+  // reply into a user-visible failure.
+  try {
+    await recordAiUsageEvent({
+      ownerUserId: user.id,
+      clientId: id,
+      feature: "voice_reply",
+      modality: "TTS",
+      correlationId: usageCorrelationId,
+      provider: "gemini",
+      model,
+      providerRequestId: result.providerRequestId,
+      usage: result.usage,
+      outcome: "SUCCEEDED",
+      latencyMs: Date.now() - providerCallStartedAt,
+    });
+  } catch {
+    // Intentionally swallowed -- see comment above.
   }
 
   const sampleRateHz = parseSampleRateFromMimeType(result.mimeType);
