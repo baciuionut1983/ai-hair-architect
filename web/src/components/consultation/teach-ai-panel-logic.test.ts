@@ -119,7 +119,16 @@ describe("finishRecording", () => {
 
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
-    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription is not configured. You can still teach the AI by typing.");
+    // Voice reliability hardening: VOICE_PROVIDER_NOT_CONFIGURED now also
+    // carries the "providerUnavailable" reason -- see
+    // reasonForServerErrorCode's own doc comment for why a config problem
+    // and a transient provider hiccup are honestly indistinguishable from
+    // the stylist's point of view (both mean "the AI service isn't
+    // available right now"), even though they are NOT retried the same way.
+    expect(callbacks.onFailure).toHaveBeenCalledWith(
+      "Voice transcription is not configured. You can still teach the AI by typing.",
+      "providerUnavailable",
+    );
     expect(callbacks.onSuccess).not.toHaveBeenCalled();
   });
 
@@ -130,7 +139,7 @@ describe("finishRecording", () => {
 
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
-    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "providerUnavailable");
   });
 
   // The exact previously-silent failure mode: the fetch call itself throws
@@ -143,7 +152,7 @@ describe("finishRecording", () => {
 
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: throwingFetch });
 
-    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "unknown");
     expect(callbacks.onSuccess).not.toHaveBeenCalled();
   });
 
@@ -157,7 +166,7 @@ describe("finishRecording", () => {
 
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
-    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "unknown");
     expect(callbacks.onSuccess).not.toHaveBeenCalled();
   });
 
@@ -398,7 +407,7 @@ describe("finishRecording client-side diagnostics", () => {
 
     await finishRecording(stream, malformedChunks, "audio/webm", "client-1", callbacks, { fetch: vi.fn() });
 
-    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "unknown");
     expect(loggedEvents(logSpy).some((e) => e.event === "unexpected_error")).toBe(true);
     logSpy.mockRestore();
   });
@@ -447,7 +456,7 @@ describe("finishRecording voice reliability hardening", () => {
 
     expect(fetchStub).toHaveBeenCalledTimes(2);
     expect(callbacks.onFailure).toHaveBeenCalledTimes(1);
-    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "providerUnavailable");
   });
 
   it("does NOT retry a permanent failure (VOICE_PROVIDER_NOT_CONFIGURED) -- retrying could never change the outcome", async () => {
@@ -460,7 +469,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
     expect(fetchStub).toHaveBeenCalledTimes(1);
-    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription is not configured. You can still teach the AI by typing.");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription is not configured. You can still teach the AI by typing.", "providerUnavailable");
   });
 
   it("does NOT retry an invalid/unsupported audio format -- a permanent, format-level problem", async () => {
@@ -473,6 +482,21 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
     expect(fetchStub).toHaveBeenCalledTimes(1);
+  });
+
+  // Task requirement E: a malformed/unreadable recording (the server's own
+  // "Invalid audio." rejection, no separate error code) is a deterministic
+  // validation failure -- retrying the exact same bytes could never
+  // produce a different result.
+  it("does NOT retry 'Invalid audio.' -- a deterministic validation failure on the exact bytes already sent", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () => jsonResponse({ error: "Invalid audio." }, false, 400));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(callbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "invalidAudio");
   });
 
   it("does NOT retry a rate-limit response -- an immediate retry would only be rate-limited again", async () => {
@@ -499,6 +523,45 @@ describe("finishRecording voice reliability hardening", () => {
     expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1");
   });
 
+  // Task requirement D: a genuinely hung connection (never rejects,
+  // never resolves on its own) must not leave the mic disabled forever --
+  // the client-side upload timeout aborts it, which is classified and
+  // retried exactly like any other network-level failure, recovering
+  // automatically on the second attempt.
+  it("a client-side upload timeout (a hung connection) is treated as a retryable failure and recovers on retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const { stream } = fakeStream();
+      const callbacks = callbackSpies();
+      let callCount = 0;
+      const fetchStub = vi.fn((_url: string, init?: RequestInit) => {
+        callCount += 1;
+        if (callCount === 1) {
+          // Never resolves on its own -- only the client-side timeout's
+          // own AbortController can end it, exactly like a real hung
+          // connection.
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new DOMException("The operation was aborted.", "AbortError")));
+          });
+        }
+        return Promise.resolve(jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+      });
+
+      const pending = finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, {
+        fetch: fetchStub as unknown as typeof fetch,
+      });
+
+      await vi.advanceTimersByTimeAsync(45_000);
+      await pending;
+
+      expect(fetchStub).toHaveBeenCalledTimes(2);
+      expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1");
+      expect(callbacks.onFailure).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects an empty (0-byte) recording before ever calling fetch, with a clear, specific message", async () => {
     const { stream } = fakeStream();
     const callbacks = callbackSpies();
@@ -507,7 +570,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
     expect(fetchStub).not.toHaveBeenCalled();
-    expect(callbacks.onFailure).toHaveBeenCalledWith("The recording was empty. Please try again and speak for a moment before stopping.");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("The recording was empty. Please try again and speak for a moment before stopping.", "emptyRecording");
     expect(callbacks.onSuccess).not.toHaveBeenCalled();
   });
 
@@ -520,7 +583,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub, encodeAsWav });
 
     expect(fetchStub).not.toHaveBeenCalled();
-    expect(callbacks.onFailure).toHaveBeenCalledWith("The recording was empty. Please try again and speak for a moment before stopping.");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("The recording was empty. Please try again and speak for a moment before stopping.", "emptyRecording");
   });
 
   it("uses one attemptId for every log line across both the initial attempt and its retry, and increments attemptNumber", async () => {
@@ -574,6 +637,100 @@ describe("finishRecording voice reliability hardening", () => {
     expect(failureEvents.at(-1)).toMatchObject({ event: "cleanup_completed" });
 
     logSpy.mockRestore();
+  });
+
+  // Proven production evidence (2026-08-18): a real Gemini 503 (mapped by
+  // the server to a 502 VOICE_TRANSCRIPTION_FAILED response) was reported
+  // with only attemptNumber: 1 in the logs. Investigated and disproven as
+  // a code defect: this exact scenario, reproduced here with the real
+  // server response shape, retries automatically and correctly.
+  it("PROVEN EVIDENCE scenario: a real Gemini 503 (mapped to 502 VOICE_TRANSCRIPTION_FAILED) retries once and recovers, never blaming the microphone", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ error: "VOICE_TRANSCRIPTION_FAILED", message: "Voice transcription failed. You can still type your note." }, false, 502),
+      )
+      .mockResolvedValueOnce(jsonResponse({ transcript: "She had bleach six weeks ago.", transcriptId: "t-1" }));
+
+    await finishRecording(stream, [new Blob(["real-audio-bytes"])], "audio/wav", "client-1", callbacks, { fetch: fetchStub });
+
+    expect(fetchStub).toHaveBeenCalledTimes(2);
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("She had bleach six weeks ago.", "t-1");
+    expect(callbacks.onFailure).not.toHaveBeenCalled();
+  });
+
+  it("PROVEN EVIDENCE scenario, retry also fails: an honest 'AI service unavailable' reason, never implying the microphone is broken", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () =>
+      jsonResponse({ error: "VOICE_TRANSCRIPTION_FAILED", message: "Voice transcription failed. You can still type your note." }, false, 502),
+    );
+
+    await finishRecording(stream, [new Blob(["real-audio-bytes"])], "audio/wav", "client-1", callbacks, { fetch: fetchStub });
+
+    expect(fetchStub).toHaveBeenCalledTimes(2);
+    expect(callbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "providerUnavailable");
+  });
+
+  // Task requirement C/H: after Gemini 503s twice in a row (retry
+  // exhausted) and the UI shows a temporary-service error, the NEXT
+  // microphone click must start a completely fresh, independent session
+  // that can succeed -- no reload, no leftover state from the failed
+  // attempt, and no risk of double-submitting the SAME recording.
+  it("after attempt 1 -> 503, attempt 2 -> 503 (retry exhausted), a completely separate next recording succeeds cleanly -- proving the mic always recovers", async () => {
+    const failingFetch = vi.fn(async () =>
+      jsonResponse({ error: "VOICE_TRANSCRIPTION_FAILED", message: "Voice transcription failed. You can still type your note." }, false, 502),
+    );
+    const { stream: firstStream } = fakeStream();
+    const firstCallbacks = callbackSpies();
+    await finishRecording(firstStream, [new Blob(["first-recording"])], "audio/wav", "client-1", firstCallbacks, { fetch: failingFetch });
+
+    expect(failingFetch).toHaveBeenCalledTimes(2);
+    expect(firstCallbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "providerUnavailable");
+    expect(firstCallbacks.onSuccess).not.toHaveBeenCalled();
+
+    // A brand new mic press -- its own stream, its own chunks, its own
+    // finishRecording call (exactly what use-voice-recording.ts's
+    // toggleRecording produces on the next click, since recorder.current/
+    // streamRef.current were already fully nulled by the first attempt's
+    // own onstop handler).
+    const succeedingFetch = vi.fn(async () => jsonResponse({ transcript: "second recording works", transcriptId: "t-2" }));
+    const { stream: secondStream } = fakeStream();
+    const secondCallbacks = callbackSpies();
+    await finishRecording(secondStream, [new Blob(["second-recording"])], "audio/wav", "client-1", secondCallbacks, { fetch: succeedingFetch });
+
+    expect(succeedingFetch).toHaveBeenCalledTimes(1);
+    expect(secondCallbacks.onSuccess).toHaveBeenCalledWith("second recording works", "t-2");
+    expect(secondCallbacks.onFailure).not.toHaveBeenCalled();
+  });
+
+  it("maps UNSUPPORTED_AUDIO_FORMAT to the unsupportedFormat reason, never providerUnavailable", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () =>
+      jsonResponse({ error: "UNSUPPORTED_AUDIO_FORMAT", message: "This recording format isn't supported for transcription. Please try again, or type your note." }, false, 400),
+    );
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    expect(callbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "unsupportedFormat");
+  });
+
+  it("maps VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE to the saveUnavailable reason -- the transcription itself succeeded, only saving failed, never blamed on the AI service or the microphone", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () =>
+      jsonResponse({ error: "VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE", message: "The transcript could not be saved right now. You can still type your note." }, false, 503),
+    );
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    // Retryable -- a DB hiccup is transient -- so two attempts, both
+    // reporting the same code, then an honest final reason.
+    expect(fetchStub).toHaveBeenCalledTimes(2);
+    expect(callbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "saveUnavailable");
   });
 
   it("passes an AbortSignal on every fetch call, so a hung request can be aborted rather than waiting forever", async () => {

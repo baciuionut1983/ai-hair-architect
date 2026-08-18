@@ -29,22 +29,47 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { LanguageCode } from "@/lib/language-registry";
+import type { TranslationKey } from "@/lib/translations";
 
 import { decodeBlobAsWav } from "./audio-wav-encode";
-import { bindFetch, classifyMicrophoneStartError, finishRecording, generateAttemptId, logClient } from "./teach-ai-panel-logic";
+import {
+  bindFetch,
+  classifyMicrophoneStartError,
+  finishRecording,
+  generateAttemptId,
+  logClient,
+  type VoiceTranscriptionFailureReason,
+} from "./teach-ai-panel-logic";
 import { evaluateVadSample, initVadState, shouldAutoSubmitTranscript, type VadState } from "./voice-activity-logic";
 
 const AUDIO_LEVEL_SAMPLE_INTERVAL_MS = 100;
 const ANALYSER_FFT_SIZE = 512;
 
-const VOICE_INPUT_UNSUPPORTED_MESSAGE = "Voice input is not supported here. You can still type your message.";
-const MICROPHONE_UNAVAILABLE_MESSAGE = "Microphone access was not available. You can still type your message.";
-// Voice reliability hardening (2026-08-18): distinct from the generic
-// "unavailable" message above -- a denial is something only the stylist
-// can fix themselves (their browser's own site permission setting), so
-// they're told that specifically rather than a message that reads like a
-// transient glitch worth just trying again.
-const MICROPHONE_PERMISSION_DENIED_MESSAGE = "Microphone access was denied. Allow microphone access in your browser's site settings to use voice input.";
+// Voice reliability hardening (2026-08-18): maps finishRecording's own
+// honest failure reason to this app's centralized i18n dictionary (see
+// translations.ts's consultAi.voiceError.* keys) -- the caller's `t`
+// translates it into the stylist's own UI language. A getUserMedia/
+// MediaRecorder unsupported-browser failure (never reaches finishRecording
+// at all) reuses "microphoneUnavailable": from the stylist's point of
+// view, "voice input doesn't work here" and "the mic isn't available" are
+// the same honest situation.
+function translationKeyForReason(reason: VoiceTranscriptionFailureReason): TranslationKey {
+  switch (reason) {
+    case "providerUnavailable":
+      return "consultAi.voiceError.providerUnavailable";
+    case "saveUnavailable":
+      return "consultAi.voiceError.saveUnavailable";
+    case "unsupportedFormat":
+      return "consultAi.voiceError.unsupportedFormat";
+    case "invalidAudio":
+      return "consultAi.voiceError.invalidAudio";
+    case "emptyRecording":
+      return "consultAi.voiceError.emptyRecording";
+    case "unknown":
+    default:
+      return "consultAi.voiceError.unknown";
+  }
+}
 
 export interface UseVoiceRecordingOptions {
   clientId: string;
@@ -52,6 +77,12 @@ export interface UseVoiceRecordingOptions {
   // selector) -- forwarded straight through to finishRecording's own
   // trailing optional param, prompt-text-only, never a forced constraint.
   language?: LanguageCode;
+  // The app's own UI-language translator (see useUiLanguage) -- every
+  // stylist-facing failure message this hook produces is translated
+  // through it, never a hardcoded English string, so a stylist working in
+  // any of the app's supported UI languages sees an honest message in
+  // their own language, not just en/ro.
+  t: (key: TranslationKey) => string;
   // Fired ONLY with a real, non-empty transcript -- never for a failed
   // transcription, never for an empty one. The caller is expected to treat
   // this as "the stylist finished speaking a real message" and act on it
@@ -92,7 +123,7 @@ function computeRmsLevel(analyser: AnalyserNode, buffer: Uint8Array<ArrayBuffer>
   return Math.sqrt(sumSquares / buffer.length);
 }
 
-export function useVoiceRecording({ clientId, language, onTranscript }: UseVoiceRecordingOptions): UseVoiceRecordingResult {
+export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVoiceRecordingOptions): UseVoiceRecordingResult {
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -150,7 +181,7 @@ export function useVoiceRecording({ clientId, language, onTranscript }: UseVoice
 
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       startingRef.current = false;
-      setError(VOICE_INPUT_UNSUPPORTED_MESSAGE);
+      setError(t("consultAi.voiceError.microphoneUnavailable"));
       return;
     }
 
@@ -192,9 +223,9 @@ export function useVoiceRecording({ clientId, language, onTranscript }: UseVoice
                 setRecording(false);
                 setProcessing(true);
               },
-              onFailure: (message) => {
+              onFailure: (_message, reason) => {
                 setProcessing(false);
-                setError(message);
+                setError(t(translationKeyForReason(reason)));
               },
               onSuccess: (transcript) => {
                 setProcessing(false);
@@ -263,10 +294,10 @@ export function useVoiceRecording({ clientId, language, onTranscript }: UseVoice
         });
         logClient("cleanup_completed", { attemptId });
         startingRef.current = false;
-        setError(reason === "denied" ? MICROPHONE_PERMISSION_DENIED_MESSAGE : MICROPHONE_UNAVAILABLE_MESSAGE);
+        setError(t(reason === "denied" ? "consultAi.voiceError.permissionDenied" : "consultAi.voiceError.microphoneUnavailable"));
       }
     })();
-  }, [recording, clientId, language, onTranscript]);
+  }, [recording, clientId, language, t, onTranscript]);
 
   // Cleanup on unmount: release the microphone and stop VAD sampling even
   // if the component goes away mid-recording -- detaching the recorder's

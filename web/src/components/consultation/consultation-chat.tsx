@@ -214,6 +214,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
   } = useVoiceRecording({
     clientId,
     language: sttLanguageHint,
+    t,
     // Natural-conversation flow: speaking and pausing (or a manual Stop)
     // sends immediately, exactly like a typed Send -- no separate review
     // step. Still structurally isolated from Teach the AI: this hook has

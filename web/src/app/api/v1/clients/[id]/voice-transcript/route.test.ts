@@ -1,9 +1,10 @@
+import { Prisma } from "@prisma/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const clientRepoMock = vi.hoisted(() => ({ resolveOwnedClient: vi.fn() }));
 const hardeningMock = vi.hoisted(() => ({ checkRateLimit: vi.fn() }));
-const prismaMocks = vi.hoisted(() => ({ configured: true, create: vi.fn() }));
+const prismaMocks = vi.hoisted(() => ({ configured: true, create: vi.fn(), findUnique: vi.fn() }));
 // AI Usage & Cost Metering Phase 1: this route now also records usage
 // after every provider call -- mocked here like every other dependency,
 // so this route's own unit tests never need prisma.aiUsageEvent to exist
@@ -16,7 +17,7 @@ vi.mock("@/lib/hardening", () => hardeningMock);
 vi.mock("@/lib/ai-usage-repository", () => usageRepoMock);
 vi.mock("@/lib/prisma", () => ({
   isDatabaseConfigured: () => prismaMocks.configured,
-  prisma: { voiceTranscript: { create: prismaMocks.create } },
+  prisma: { voiceTranscript: { create: prismaMocks.create, findUnique: prismaMocks.findUnique } },
 }));
 
 import { POST } from "./route";
@@ -454,6 +455,115 @@ describe("AI usage metering", () => {
     await invoke(audioForm({ attemptId: "client-attempt-1", attemptNumber: Number.NaN }));
 
     expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(expect.objectContaining({ attemptNumber: 1 }));
+  });
+});
+
+// Voice reliability hardening (2026-08-18): a real Gemini 503 was proven
+// in production, correctly retried once (see finishRecording's own
+// RETRYABLE_ERROR_CODES) but still failed. STT_FALLBACK_MODEL lets an
+// operator configure a genuinely different model for the retry attempt
+// only, without ever inventing one here -- unset (the default in every
+// environment today) means attempt 2 uses the exact same model as
+// attempt 1, zero behavior change.
+describe("STT fallback model", () => {
+  it("uses the primary model for attempt 1 and the configured fallback for attempt 2, when STT_FALLBACK_MODEL is set", async () => {
+    process.env.STT_FALLBACK_MODEL = "gemini-3.6-flash-fallback";
+
+    await invoke(audioForm({ attemptId: "a-1", attemptNumber: 1 }));
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenLastCalledWith(expect.objectContaining({ model: "gemini-3.6-flash" }));
+
+    usageRepoMock.recordAiUsageEvent.mockClear();
+    await invoke(audioForm({ attemptId: "a-1", attemptNumber: 2 }));
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenLastCalledWith(expect.objectContaining({ model: "gemini-3.6-flash-fallback" }));
+  });
+
+  it("uses the SAME primary model for attempt 2 when STT_FALLBACK_MODEL is not configured -- no model is ever invented", async () => {
+    delete process.env.STT_FALLBACK_MODEL;
+
+    await invoke(audioForm({ attemptId: "a-1", attemptNumber: 2 }));
+
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(expect.objectContaining({ model: "gemini-3.6-flash" }));
+  });
+
+  it("each attempt (primary and fallback model alike) is recorded as its own, separately accountable AI usage event -- never merged", async () => {
+    process.env.STT_FALLBACK_MODEL = "gemini-3.6-flash-fallback";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "quota" }, { status: 503 })));
+
+    await invoke(audioForm({ attemptId: "shared-attempt", attemptNumber: 1 }));
+    await invoke(audioForm({ attemptId: "shared-attempt", attemptNumber: 2 }));
+
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledTimes(2);
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ correlationId: "shared-attempt", attemptNumber: 1, model: "gemini-3.6-flash", outcome: "FAILED" }),
+    );
+    expect(usageRepoMock.recordAiUsageEvent).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ correlationId: "shared-attempt", attemptNumber: 2, model: "gemini-3.6-flash-fallback", outcome: "FAILED" }),
+    );
+  });
+});
+
+// Voice reliability hardening (2026-08-18), task requirement H: a retry
+// must never create a duplicate persisted transcript for the same
+// logical spoken note. The real (narrow) risk this closes: attempt 1
+// actually persists successfully, but its HTTP response is lost in
+// transit before the client sees it -- the client classifies that as a
+// retryable failure (fetch_threw/response_json_parse_threw) and retries
+// automatically. Using the client's own stable attemptId as the row's
+// primary key turns the retry's second create() into a unique-constraint
+// collision (P2002), handled here as an idempotent success (the already-
+// persisted row is returned) rather than either a silent duplicate or a
+// false failure.
+describe("idempotent persistence on retry", () => {
+  it("uses the client's attemptId as the transcript row's own id", async () => {
+    await invoke(audioForm({ attemptId: "attempt-abc", attemptNumber: 1 }));
+
+    expect(prismaMocks.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ id: "attempt-abc" }) }),
+    );
+  });
+
+  it("a P2002 collision on retry (attempt 1 actually persisted, its response was lost) returns the ALREADY-persisted row as a success, never a duplicate or a failure", async () => {
+    const collision = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", { code: "P2002", clientVersion: "test" });
+    prismaMocks.create.mockRejectedValueOnce(collision);
+    prismaMocks.findUnique.mockResolvedValueOnce({
+      id: "attempt-abc",
+      ownerUserId: "owner-1",
+      transcript: "She had bleach six weeks ago.",
+    });
+
+    const response = await invoke(audioForm({ attemptId: "attempt-abc", attemptNumber: 2 }));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toEqual({ transcriptId: "attempt-abc", transcript: "She had bleach six weeks ago.", persistedAsMemory: false });
+    expect(prismaMocks.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("never returns another owner's transcript on a P2002 collision -- an id collision with a DIFFERENT owner's row is treated as a genuine persistence failure, not idempotent success", async () => {
+    const collision = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", { code: "P2002", clientVersion: "test" });
+    prismaMocks.create.mockRejectedValueOnce(collision);
+    prismaMocks.findUnique.mockResolvedValueOnce({
+      id: "attempt-abc",
+      ownerUserId: "some-other-owner",
+      transcript: "unrelated content",
+    });
+
+    const response = await invoke(audioForm({ attemptId: "attempt-abc", attemptNumber: 1 }));
+
+    expect(response.status).toBe(503);
+    const body = await response.json();
+    expect(body.error).toBe("VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE");
+  });
+
+  it("a genuine (non-P2002) persistence failure is never mistaken for an idempotent retry", async () => {
+    prismaMocks.create.mockRejectedValueOnce(new Error("connection refused"));
+
+    const response = await invoke(audioForm({ attemptId: "attempt-abc", attemptNumber: 1 }));
+
+    expect(response.status).toBe(503);
+    expect(prismaMocks.findUnique).not.toHaveBeenCalled();
   });
 });
 

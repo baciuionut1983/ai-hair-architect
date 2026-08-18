@@ -31,9 +31,31 @@ export interface VoiceNoteStreamLike {
   getTracks(): { stop(): void }[];
 }
 
+// Voice reliability hardening (2026-08-18) -- proven production evidence
+// (a real Gemini 503, correctly retried once, still failed) showed the
+// generic "Voice transcription failed" message read as "the microphone is
+// broken" even though the recording completed and uploaded successfully.
+// This reason is ALWAYS derivable from what genuinely happened (never
+// guessed): "providerUnavailable" only after a real request reached the
+// server and the server reported a transient provider/network problem;
+// "saveUnavailable" only when the transcription itself succeeded but
+// persisting it did not; "unsupportedFormat"/"invalidAudio" only from the
+// server's own specific rejection codes; "emptyRecording" only from this
+// file's own 0-byte check, before any request is ever sent. The caller
+// (use-voice-recording.ts, teach-ai-panel.tsx) maps this to a translated,
+// honest message -- never implying the microphone failed when it
+// demonstrably didn't.
+export type VoiceTranscriptionFailureReason =
+  | "providerUnavailable"
+  | "saveUnavailable"
+  | "unsupportedFormat"
+  | "invalidAudio"
+  | "emptyRecording"
+  | "unknown";
+
 export interface FinishRecordingCallbacks {
   onStopped: () => void;
-  onFailure: (message: string) => void;
+  onFailure: (message: string, reason: VoiceTranscriptionFailureReason) => void;
   onSuccess: (transcript: string, transcriptId: string | undefined) => void;
 }
 
@@ -144,9 +166,37 @@ export function classifyMicrophoneStartError(error: unknown): MicrophoneStartFai
 // the stylist's note being silently lost, which is worse.
 const RETRYABLE_ERROR_CODES = new Set(["VOICE_TRANSCRIPTION_FAILED", "VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE"]);
 
+// Maps the server's own error vocabulary (voice-transcript/route.ts) to the
+// honest, distinguishable reason shown to the stylist. Every code the
+// server can genuinely return is listed explicitly -- an unrecognized one
+// (should never happen, but never trusted blindly) falls back to
+// "unknown", the same generic message this app always showed before this
+// change, never a fabricated specific claim.
+function reasonForServerErrorCode(errorCode: string | null): VoiceTranscriptionFailureReason {
+  switch (errorCode) {
+    case "VOICE_TRANSCRIPTION_FAILED":
+    case "VOICE_PROVIDER_NOT_CONFIGURED":
+      // Both genuinely mean "the AI transcription service isn't available
+      // right now" from the stylist's point of view -- whether the real
+      // cause is a transient provider hiccup or a missing server
+      // configuration is an operator-facing distinction (see the
+      // corresponding Railway logs), never a useful one for the stylist,
+      // and conflating them here never overstates certainty either way.
+      return "providerUnavailable";
+    case "VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE":
+      return "saveUnavailable";
+    case "UNSUPPORTED_AUDIO_FORMAT":
+      return "unsupportedFormat";
+    case "Invalid audio.":
+      return "invalidAudio";
+    default:
+      return "unknown";
+  }
+}
+
 type UploadAttemptResult =
   | { outcome: "success"; transcript: string; transcriptId: string | undefined }
-  | { outcome: "failure"; message: string; retryable: boolean };
+  | { outcome: "failure"; message: string; reason: VoiceTranscriptionFailureReason; retryable: boolean };
 
 async function attemptUpload(
   clientId: string,
@@ -193,7 +243,13 @@ async function attemptUpload(
       errorMessage: error instanceof Error ? error.message : String(error),
       aborted: controller.signal.aborted,
     });
-    return { outcome: "failure", message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, retryable: true };
+    // A network-level failure never distinguishes "recording problem" from
+    // "service problem" the way a real server response does -- honestly
+    // the least specific case, so "unknown" here (the same generic
+    // message this app always showed) rather than overclaiming the AI
+    // service specifically is at fault when the request may never have
+    // reached it at all.
+    return { outcome: "failure", message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, reason: "unknown", retryable: true };
   } finally {
     clearTimeout(timer);
   }
@@ -215,13 +271,19 @@ async function attemptUpload(
       status: response.status,
       errorName: error instanceof Error ? error.name : "unknown",
     });
-    return { outcome: "failure", message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, retryable: true };
+    return { outcome: "failure", message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, reason: "unknown", retryable: true };
   }
 
   if (!response.ok) {
-    logClient("response_not_ok", { attemptId, attemptNumber, status: response.status, errorCode: payload.error ?? null, hasMessage: Boolean(payload.message) });
-    const retryable = typeof payload.error === "string" && RETRYABLE_ERROR_CODES.has(payload.error);
-    return { outcome: "failure", message: payload.message || GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, retryable };
+    const errorCode = payload.error ?? null;
+    logClient("response_not_ok", { attemptId, attemptNumber, status: response.status, errorCode, hasMessage: Boolean(payload.message) });
+    const retryable = typeof errorCode === "string" && RETRYABLE_ERROR_CODES.has(errorCode);
+    return {
+      outcome: "failure",
+      message: payload.message || GENERIC_TRANSCRIPTION_FAILURE_MESSAGE,
+      reason: reasonForServerErrorCode(errorCode),
+      retryable,
+    };
   }
 
   logClient("success", { attemptId, attemptNumber, transcriptLength: (payload.transcript ?? "").length });
@@ -286,7 +348,7 @@ export async function finishRecording(
     // legitimate quick "yes"/"no" note.
     if (blob.size === 0) {
       logClient("request_failed", { attemptId, reason: "empty_recording" });
-      callbacks.onFailure(EMPTY_RECORDING_MESSAGE);
+      callbacks.onFailure(EMPTY_RECORDING_MESSAGE, "emptyRecording");
       logClient("cleanup_completed", { attemptId });
       return;
     }
@@ -307,8 +369,8 @@ export async function finishRecording(
     if (result.outcome === "success") {
       callbacks.onSuccess(result.transcript, result.transcriptId);
     } else {
-      logClient("request_failed", { attemptId, attemptNumber, reason: "upload_failed" });
-      callbacks.onFailure(result.message);
+      logClient("request_failed", { attemptId, attemptNumber, reason: "upload_failed", failureReason: result.reason });
+      callbacks.onFailure(result.message, result.reason);
     }
     logClient("cleanup_completed", { attemptId });
   } catch (error) {
@@ -320,7 +382,7 @@ export async function finishRecording(
       errorName: error instanceof Error ? error.name : "unknown",
       errorMessage: error instanceof Error ? error.message : String(error),
     });
-    callbacks.onFailure(GENERIC_TRANSCRIPTION_FAILURE_MESSAGE);
+    callbacks.onFailure(GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, "unknown");
     logClient("cleanup_completed", { attemptId });
   }
 }

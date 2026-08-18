@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 
+import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 
 import { recordAiUsageEvent } from "@/lib/ai-usage-repository";
@@ -165,7 +166,19 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   const apiKey = process.env.AI_ANALYSIS_API_KEY;
-  const model = process.env.SPEECH_TO_TEXT_MODEL || process.env.AI_ANALYSIS_MODEL || "gemini-2.5-flash";
+  const primaryModel = process.env.SPEECH_TO_TEXT_MODEL || process.env.AI_ANALYSIS_MODEL || "gemini-2.5-flash";
+  // Voice reliability hardening (2026-08-18): a client-driven retry
+  // (finishRecording's own single retry, see teach-ai-panel-logic.ts)
+  // sends attemptNumber > 1 -- if an operator has explicitly configured a
+  // fallback model (STT_FALLBACK_MODEL), the retry uses it instead of
+  // repeating the exact same call against a model that may itself be the
+  // thing that's overloaded. Unset by default -- no model is ever
+  // invented here; a real fallback model is only ever used once an
+  // operator has confirmed and configured one. Every attempt still gets
+  // its own, correctly-attributed AI Usage Metering row via `model`
+  // below, whichever model actually ran.
+  const fallbackModel = process.env.STT_FALLBACK_MODEL;
+  const model = attemptNumber > 1 && fallbackModel ? fallbackModel : primaryModel;
   if (!apiKey) {
     logVoiceTranscript("FAILED", "config_check", { attemptId, resultCode: "VOICE_PROVIDER_NOT_CONFIGURED", reason: "api_key_missing" });
     return NextResponse.json(
@@ -407,9 +420,21 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   const truncatedTranscript = transcript.slice(0, MAX_TRANSCRIPT_LENGTH);
   try {
+    // Voice reliability hardening (2026-08-18): the row's own primary key
+    // is the client's attemptId (stable across a retry of the SAME
+    // logical mic-press-to-result cycle), not a fresh id per HTTP call.
+    // Closes a real, if narrow, duplicate-submission path: if attempt 1
+    // actually persisted successfully but its response was lost in
+    // transit (a dropped connection after the write already committed),
+    // the client classifies that as a retryable failure and retries --
+    // without this, attempt 2 would create a second, genuinely duplicate
+    // transcript row for the exact same spoken note. The catch block
+    // below turns that exact collision into an idempotent success
+    // (returning the already-persisted row) instead of either a
+    // duplicate or a false failure.
     const row = await prisma.voiceTranscript.create({
       data: {
-        id: randomUUID(),
+        id: attemptId,
         ownerUserId: user.id,
         clientId: id,
         transcript: truncatedTranscript,
@@ -430,6 +455,25 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     // before this transcript becomes anything the AI treats as memory.
     return NextResponse.json({ transcriptId: row.id, transcript: row.transcript, persistedAsMemory: false });
   } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const existing = await prisma.voiceTranscript.findUnique({ where: { id: attemptId } });
+      // The ownership check guards against the astronomically unlikely
+      // (but not impossible) case of a genuine id collision between two
+      // different owners' attemptIds -- never treat someone else's
+      // transcript as this caller's own idempotent retry result.
+      if (existing && existing.ownerUserId === user.id) {
+        logVoiceTranscript("SUCCEEDED", "complete", {
+          attemptId,
+          attemptNumber,
+          model,
+          audioMimeType: audio.type,
+          audioSizeBytes: audio.size,
+          transcriptLength: existing.transcript.length,
+          reason: "idempotent_retry_already_persisted",
+        });
+        return NextResponse.json({ transcriptId: existing.id, transcript: existing.transcript, persistedAsMemory: false });
+      }
+    }
     logVoiceTranscript("FAILED", "persistence", {
       attemptId,
       attemptNumber,
