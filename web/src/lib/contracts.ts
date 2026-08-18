@@ -413,6 +413,15 @@ export interface ConsultationMessageRecord {
 export interface ConsultationChatResponse {
   reply: ConsultationMessageRecord;
   needsClarification: boolean;
+  // Voice latency audit (2026-08-18): the real, server-measured duration
+  // of just the provider.respond() call (see consultation-chat-service.ts) --
+  // the same number already computed for AI Usage Metering, reused here
+  // rather than a second measurement. Lets a voice-driven turn report a
+  // real consultationProviderMs distinct from its own client-measured
+  // round-trip total. Present on every successful reply, not only
+  // voice-originated ones -- harmless, and avoids a second response shape
+  // just for voice.
+  providerLatencyMs?: number;
 }
 
 export interface ConsultationCreateRequest {

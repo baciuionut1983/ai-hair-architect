@@ -49,7 +49,13 @@ import {
 } from "./consultation-chat-tts-logic";
 import { TeachAiPanel } from "./teach-ai-panel";
 import { bindFetch } from "./teach-ai-panel-logic";
-import { useVoiceRecording } from "./use-voice-recording";
+import { useVoiceRecording, type VoiceTurnLatencyInfo } from "./use-voice-recording";
+import {
+  computeVoiceLatencySummary,
+  logVoiceLatencySummary,
+  markVoiceLatencyStage,
+  type VoiceLatencyMarks,
+} from "./voice-latency-logic";
 
 export interface ConsultationChatProps {
   clientId: string;
@@ -78,6 +84,17 @@ export interface ConsultationChatProps {
 }
 
 type HistoryStatus = "loading" | "ready" | "error";
+
+// Voice latency audit (2026-08-18): carries a voice-initiated turn's marks
+// and already-known provider timings (STT, Consult AI) into speakMessage,
+// so the TTS phase can extend the SAME marks object rather than starting a
+// second, disconnected one -- see sendMessage's own call sites below.
+interface VoiceTurnLatencyContext {
+  attemptId: string;
+  marks: VoiceLatencyMarks;
+  sttProviderMs: number | null;
+  consultationProviderMs?: number;
+}
 
 const MEMORY_ACTION_LABELS: Record<string, string> = {
   save_client_memory: "Save to client memory",
@@ -204,6 +221,13 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
   // improvement; voiceReplyAttemptRef alone already guarantees a stale
   // response can never be acted on even without this.
   const voiceReplyAbortControllerRef = useRef<AbortController | null>(null);
+  // Voice latency audit (2026-08-18): the in-progress voice turn's own
+  // marks/attemptId, set the moment a chat-composer voice transcript
+  // arrives and consumed (cleared) by the very next sendMessage call --
+  // see sendMessage/speakMessage below for how this is carried through
+  // Consult AI and TTS to one final VOICE_LATENCY summary. Always null for
+  // a typed message, so typed sends never produce a latency log.
+  const voiceTurnRef = useRef<VoiceTurnLatencyInfo | null>(null);
 
   const sttLanguageHint = resolveSttLanguageHint(languageSelection, conversationLanguage);
   const {
@@ -221,7 +245,8 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
     // no knowledge of its draft/transcriptId state at all, so a
     // chat-composer voice note can never reach it or trigger a memory
     // proposal.
-    onTranscript: (transcript) => {
+    onTranscript: (transcript, latency) => {
+      voiceTurnRef.current = latency;
       void sendMessage(transcript.trim());
     },
   });
@@ -421,6 +446,14 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       return;
     }
 
+    // Consumed here, synchronously, before any `await` -- onTranscript
+    // (use-voice-recording.ts) sets voiceTurnRef and calls sendMessage in
+    // the same tick, so no other code can run between the two. A typed
+    // send always sees this as null (no voice turn ever set it).
+    const voiceTurn = voiceTurnRef.current;
+    voiceTurnRef.current = null;
+    let marks: VoiceLatencyMarks = voiceTurn?.marks ?? {};
+
     const optimistic: ConsultationMessageRecord = {
       id: `pending-${Date.now()}`,
       role: "stylist",
@@ -439,6 +472,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         ...(analysisId ? { analysisId } : {}),
         ...buildChatLanguageFields(languageSelection, conversationLanguage),
       };
+      if (voiceTurn) marks = markVoiceLatencyStage(marks, "consultation_request_started", performance.now());
       const response = await fetch(`/api/v1/clients/${clientId}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -447,16 +481,52 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
 
       if (!response.ok) {
         setSendError(describeSendFailure(response.status));
+        if (voiceTurn) {
+          // The turn ends here -- Consult AI failed, so TTS is never
+          // reached for this attempt.
+          marks = markVoiceLatencyStage(marks, "consultation_response_received", performance.now());
+          logVoiceLatencySummary(
+            voiceTurn.attemptId,
+            computeVoiceLatencySummary(marks, { sttProviderMs: voiceTurn.sttProviderMs ?? undefined }),
+          );
+        }
         return;
       }
 
       const payload = (await response.json()) as ConsultationChatResponse;
+      if (voiceTurn) marks = markVoiceLatencyStage(marks, "consultation_response_received", performance.now());
       setMessages((prev) => [...prev, payload.reply]);
       if (voiceReplyEnabled) {
-        speakMessage(payload.reply);
+        speakMessage(
+          payload.reply,
+          voiceTurn
+            ? {
+                attemptId: voiceTurn.attemptId,
+                marks,
+                sttProviderMs: voiceTurn.sttProviderMs,
+                consultationProviderMs: payload.providerLatencyMs,
+              }
+            : undefined,
+        );
+      } else if (voiceTurn) {
+        // Voice Reply is off -- the turn ends at the text reply, no TTS
+        // stage will ever run.
+        logVoiceLatencySummary(
+          voiceTurn.attemptId,
+          computeVoiceLatencySummary(marks, {
+            sttProviderMs: voiceTurn.sttProviderMs ?? undefined,
+            consultationProviderMs: payload.providerLatencyMs,
+          }),
+        );
       }
     } catch {
       setSendError(describeSendFailure(0));
+      if (voiceTurn) {
+        logVoiceLatencySummary(
+          voiceTurn.attemptId,
+          computeVoiceLatencySummary(marks, { sttProviderMs: voiceTurn.sttProviderMs ?? undefined }),
+        );
+      }
     } finally {
       setSending(false);
     }
@@ -478,7 +548,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
   // (network, rate-limited, unsupported language, provider error) falls
   // through to the exact same local path this component already had --
   // that path's own onVoiceUnavailable honesty guarantee is unchanged.
-  function speakMessage(message: ConsultationMessageRecord) {
+  function speakMessage(message: ConsultationMessageRecord, voiceLatency?: VoiceTurnLatencyContext) {
     // Voice reliability hardening: see voiceReplyAttemptRef's own doc
     // comment. Captured now so the async onSuccess/onFailure callbacks
     // below can tell, once their own network round-trip resolves, whether
@@ -531,10 +601,35 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
 
     if (!cloudSupported) {
       speakMessageLocally(message, language, false);
+      if (voiceLatency) {
+        // No TTS provider is ever called for a language with no cloud
+        // coverage -- the turn ends here with whatever stages were
+        // already reached (STT, Consult AI), never a fabricated TTS mark.
+        logVoiceLatencySummary(
+          voiceLatency.attemptId,
+          computeVoiceLatencySummary(voiceLatency.marks, {
+            sttProviderMs: voiceLatency.sttProviderMs ?? undefined,
+            consultationProviderMs: voiceLatency.consultationProviderMs,
+          }),
+        );
+      }
       return;
     }
 
     setVoiceGeneratingMessageId(message.id);
+    let ttsMarks: VoiceLatencyMarks = voiceLatency?.marks ?? {};
+    if (voiceLatency) ttsMarks = markVoiceLatencyStage(ttsMarks, "tts_request_started", performance.now());
+    const logVoiceTurnLatency = (finalMarks: VoiceLatencyMarks, ttsProviderMs: number | null) => {
+      if (!voiceLatency) return;
+      logVoiceLatencySummary(
+        voiceLatency.attemptId,
+        computeVoiceLatencySummary(finalMarks, {
+          sttProviderMs: voiceLatency.sttProviderMs ?? undefined,
+          consultationProviderMs: voiceLatency.consultationProviderMs,
+          ttsProviderMs: ttsProviderMs ?? undefined,
+        }),
+      );
+    };
     void synthesizeCloudVoiceReply(
       clientId,
       message.content,
@@ -552,7 +647,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       // re-solving the same problem a second, differently-worded way.
       { fetch: bindFetch(fetch), signal: abortController.signal },
       {
-        onSuccess: (audioBlob) => {
+        onSuccess: (audioBlob, ttsProviderMs) => {
           // Voice reliability hardening: a NEWER speakMessage call (a
           // second message sent, or handleStopSpeaking) already
           // superseded this one while its cloud TTS request was still in
@@ -565,6 +660,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
           }
           setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
           logVoiceReplyClientEvent("cloud_audio_element_created", { audioBytes: audioBlob.size, blobType: audioBlob.type });
+          if (voiceLatency) ttsMarks = markVoiceLatencyStage(ttsMarks, "tts_audio_received", performance.now());
           // Reuses the SAME element the toggle's own click already
           // unlocked (see getOrCreateCloudAudioElement/
           // unlockAudioPlayback) -- never `new Audio(...)` here, which
@@ -585,6 +681,10 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
             setSpeakingMessageId((current) => (current === message.id ? null : current));
             stopCloudAudio();
             speakMessageLocally(message, language, true);
+            // Cloud audio never played -- the turn ends here (falling
+            // back to the local Web Speech path, which has no provider
+            // timing to report), with whatever real marks were reached.
+            logVoiceTurnLatency(ttsMarks, ttsProviderMs);
           });
 
           // Playback-stage diagnostics (requirement: audio received ->
@@ -596,16 +696,24 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
           // detail needed to tell a malformed/unsupported audio format
           // apart from an autoplay-policy rejection or a network hiccup,
           // which nothing before this logged at all.
-          audio.onloadedmetadata = () => logVoiceReplyClientEvent("cloud_loadedmetadata", { durationSeconds: audio.duration });
+          audio.onloadedmetadata = () => {
+            logVoiceReplyClientEvent("cloud_loadedmetadata", { durationSeconds: audio.duration });
+            if (voiceLatency) ttsMarks = markVoiceLatencyStage(ttsMarks, "audio_ready", performance.now());
+          };
           audio.oncanplay = () => logVoiceReplyClientEvent("cloud_canplay");
           audio.onplay = () => {
             logVoiceReplyClientEvent("cloud_playing");
             setSpeakingMessageId(message.id);
+            if (voiceLatency) ttsMarks = markVoiceLatencyStage(ttsMarks, "playback_started", performance.now());
           };
           audio.onended = () => {
             logVoiceReplyClientEvent("cloud_ended");
             setSpeakingMessageId((current) => (current === message.id ? null : current));
             stopCloudAudio();
+            if (voiceLatency) {
+              ttsMarks = markVoiceLatencyStage(ttsMarks, "playback_ended", performance.now());
+              logVoiceTurnLatency(ttsMarks, ttsProviderMs);
+            }
           };
           audio.onerror = () => {
             logVoiceReplyClientEvent("cloud_playback_error", {
@@ -632,6 +740,10 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
           }
           setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
           speakMessageLocally(message, language, true);
+          // The cloud request never produced audio at all -- no
+          // tts_audio_received/audio_ready/playback marks, no
+          // ttsProviderMs (no response to read one from).
+          logVoiceTurnLatency(ttsMarks, null);
         },
       },
     );

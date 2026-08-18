@@ -187,6 +187,19 @@ describe("POST /api/v1/clients/[id]/voice-reply", () => {
     expect(String.fromCharCode(...bytes.subarray(0, 4))).toBe("RIFF");
   });
 
+  // Voice latency audit (2026-08-18): the success body is raw audio bytes,
+  // not JSON, so the real, measured provider duration (the same number
+  // AI Usage Metering already computes) is exposed as a response header
+  // instead -- lets the client report a real ttsProviderMs.
+  it("exposes the real, measured provider duration as an X-Provider-Latency-Ms header on success", async () => {
+    const response = await invoke({ text: "hello", language: "en" });
+
+    const header = response.headers.get("X-Provider-Latency-Ms");
+    expect(header).not.toBeNull();
+    expect(Number.isInteger(Number(header))).toBe(true);
+    expect(Number(header)).toBeGreaterThanOrEqual(0);
+  });
+
   // Playback investigation: proves the route's own fail-closed safety net
   // (isValidWavHeader) actually catches a malformed result and refuses to
   // ship it to the browser -- rather than the browser being the first

@@ -218,6 +218,24 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     });
   });
 
+  // Voice latency audit (2026-08-18): surfaces the service's own real,
+  // measured provider duration so a voice-driven turn can report
+  // consultationProviderMs -- distinct from the client's own round-trip
+  // measurement -- without a second, separate measurement mechanism.
+  it("surfaces providerLatencyMs in the response when the service reports one", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({
+      outcome: "succeeded",
+      reply: { id: "msg-2", role: "assistant", content: "Got it!", createdAt: "2026-08-14T10:00:00.000Z" },
+      needsClarification: false,
+      providerLatencyMs: 842,
+    });
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    const body = await response.json();
+    expect(body.providerLatencyMs).toBe(842);
+  });
+
   it("includes proposedCorrection in the response when the reply carries one -- E: the correction is visible to the caller as a proposal, never marked as applied", async () => {
     serviceMock.sendConsultationMessage.mockResolvedValue({
       outcome: "succeeded",

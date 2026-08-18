@@ -199,6 +199,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json(errorBody, { status });
   }
 
+  // Voice latency audit (2026-08-18): the exact same measurement AI Usage
+  // Metering already computes below, captured once and reused rather than
+  // calling Date.now() twice for what must be the same number. Exposed as
+  // a response header (the success body is raw audio bytes, not JSON, so
+  // it cannot carry a field the way the STT/Consult AI routes do) --
+  // X-Provider-Latency-Ms, read by the client so it can report a real
+  // ttsProviderMs distinct from its own round-trip measurement.
+  const providerLatencyMs = Date.now() - providerCallStartedAt;
+
   // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
   // contract: a metering problem must never turn a successful voice
   // reply into a user-visible failure.
@@ -214,7 +223,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       providerRequestId: result.providerRequestId,
       usage: result.usage,
       outcome: "SUCCEEDED",
-      latencyMs: Date.now() - providerCallStartedAt,
+      latencyMs: providerLatencyMs,
     });
   } catch {
     // Intentionally swallowed -- see comment above.
@@ -274,6 +283,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     headers: {
       "Content-Type": "audio/wav",
       "Cache-Control": "no-store",
+      "X-Provider-Latency-Ms": String(providerLatencyMs),
     },
   });
 }

@@ -163,6 +163,38 @@ describe("sendConsultationMessage", () => {
     expect(messageRepoMock.recordConsultationMessage).not.toHaveBeenCalled();
   });
 
+  // Voice latency audit (2026-08-18): the analysis lookup and the prior-
+  // messages read now start concurrently (see the service's own comment)
+  // rather than fully serially -- these two tests prove that change never
+  // altered the two behaviors it would be easiest to accidentally break:
+  // (1) the read that's still in flight when the OTHER one fails/rejects
+  // validation is simply discarded, with no unhandled-rejection crash, and
+  // (2) the stylist's message is still NEVER persisted for a request that
+  // gets rejected as ANALYSIS_NOT_FOUND, even though the history read was
+  // already kicked off (and may have already resolved) by that point.
+  it("still never persists the stylist message for ANALYSIS_NOT_FOUND, even though the (now-concurrent) history read already resolved successfully", async () => {
+    analysisRepoMock.findAnalysisForOwner.mockResolvedValue(null);
+    messageRepoMock.listRecentConsultationMessages.mockResolvedValue([
+      { id: "m-1", role: "stylist", content: "earlier note", createdAt: "2026-08-14T00:00:00.000Z" },
+    ]);
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", "foreign-analysis", { env: GEMINI_ENV });
+
+    expect(result).toEqual({ outcome: "failed", code: "ANALYSIS_NOT_FOUND" });
+    expect(messageRepoMock.recordConsultationMessage).not.toHaveBeenCalled();
+  });
+
+  it("both the analysis lookup and the history read are started (concurrently) even though only the analysis failure is ever reported -- the discarded history-read rejection never crashes the request", async () => {
+    analysisRepoMock.findAnalysisForOwner.mockRejectedValue(new Error("analysis db down"));
+    messageRepoMock.listRecentConsultationMessages.mockRejectedValue(new Error("history db down too"));
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", "analysis-1", { env: GEMINI_ENV });
+
+    expect(result).toEqual({ outcome: "failed", code: "PERSISTENCE_FAILURE" });
+    expect(messageRepoMock.listRecentConsultationMessages).toHaveBeenCalledWith("owner-1", "client-a", 10);
+    expect(messageRepoMock.recordConsultationMessage).not.toHaveBeenCalled();
+  });
+
   // Regression: a failed history read used to escape the two explicit
   // PERSISTENCE_FAILURE try/catch blocks entirely and fall through to the
   // outer catch-all, misclassifying a database problem as
@@ -596,6 +628,27 @@ describe("sendConsultationMessage", () => {
     expect(result.outcome).toBe("succeeded");
     if (result.outcome === "succeeded") {
       expect(result.replyLanguage).toBeNull();
+    }
+  });
+
+  // Voice latency audit (2026-08-18): a real, measured duration of just
+  // the provider.respond() call -- reused from AI Usage Metering's own
+  // latencyMs computation, never a second, separate (or fabricated) value.
+  it("providerLatencyMs reflects the real, measured duration of the provider call, not the whole request", async () => {
+    const provider = stubProvider(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { reply: "ok", needsClarification: false };
+    });
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+    expect(result.outcome).toBe("succeeded");
+    if (result.outcome === "succeeded") {
+      expect(result.providerLatencyMs).toBeGreaterThanOrEqual(20);
+      // An upper bound loose enough to never flake under normal CI load,
+      // but tight enough to prove this measures the provider call itself,
+      // not some much larger unrelated duration.
+      expect(result.providerLatencyMs).toBeLessThan(2000);
     }
   });
 

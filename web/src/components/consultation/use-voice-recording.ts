@@ -41,6 +41,13 @@ import {
   type VoiceTranscriptionFailureReason,
 } from "./teach-ai-panel-logic";
 import { evaluateVadSample, initVadState, shouldAutoSubmitTranscript, type VadState } from "./voice-activity-logic";
+import {
+  computeVoiceLatencySummary,
+  logVoiceLatencySummary,
+  markVoiceLatencyStage,
+  mergeVoiceLatencyMarks,
+  type VoiceLatencyMarks,
+} from "./voice-latency-logic";
 
 const AUDIO_LEVEL_SAMPLE_INTERVAL_MS = 100;
 const ANALYSER_FFT_SIZE = 512;
@@ -87,7 +94,20 @@ export interface UseVoiceRecordingOptions {
   // transcription, never for an empty one. The caller is expected to treat
   // this as "the stylist finished speaking a real message" and act on it
   // immediately (e.g. auto-submit), same as a typed Send.
-  onTranscript: (transcript: string) => void;
+  //
+  // Voice latency audit (2026-08-18): `latency` carries the mic+STT phase
+  // marks/attemptId for this exact turn, so the caller (consultation-
+  // chat.tsx) can continue the SAME turn's instrumentation through
+  // Consult AI and TTS, ending in one combined VOICE_LATENCY summary --
+  // see voice-latency-logic.ts's own module comment for why this is
+  // threaded through callbacks rather than a shared event bus.
+  onTranscript: (transcript: string, latency: VoiceTurnLatencyInfo) => void;
+}
+
+export interface VoiceTurnLatencyInfo {
+  attemptId: string;
+  marks: VoiceLatencyMarks;
+  sttProviderMs: number | null;
 }
 
 export interface UseVoiceRecordingResult {
@@ -153,6 +173,15 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
   // every log event for this cycle, including into finishRecording, so a
   // stylist-reported incident can be found by this one id end to end.
   const attemptIdRef = useRef<string | null>(null);
+  // Voice latency audit (2026-08-18): mic-phase marks (mic_requested,
+  // mic_ready, recording_started) for the CURRENT attempt cycle only --
+  // reset the moment a new attemptId is generated. Merged with
+  // finishRecording's own (recording_stopped..transcript_ready) marks at
+  // the onSuccess/onFailure boundary below, since those are the two
+  // structurally separate layers this turn's timeline spans before
+  // Consult AI/TTS (see use-voice-recording.ts's own onTranscript doc
+  // comment above).
+  const micMarksRef = useRef<VoiceLatencyMarks>({});
 
   const toggleRecording = useCallback(() => {
     if (recording) {
@@ -187,12 +216,15 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
 
     const attemptId = generateAttemptId();
     attemptIdRef.current = attemptId;
+    micMarksRef.current = {};
 
     void (async () => {
       try {
         logClient("mic_requested", { attemptId, source: "chat_composer" });
+        micMarksRef.current = markVoiceLatencyStage(micMarksRef.current, "mic_requested", performance.now());
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         logClient("mic_granted", { attemptId, source: "chat_composer" });
+        micMarksRef.current = markVoiceLatencyStage(micMarksRef.current, "mic_ready", performance.now());
         streamRef.current = stream;
         chunks.current = [];
         hasStoppedRef.current = false;
@@ -223,18 +255,34 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                 setRecording(false);
                 setProcessing(true);
               },
-              onFailure: (_message, reason) => {
+              onFailure: (_message, reason, marks) => {
                 setProcessing(false);
                 setError(t(translationKeyForReason(reason)));
+                // The turn ends here (no Consult AI/TTS stage will ever
+                // run for a failed transcription) -- log the summary now
+                // rather than deferring to a caller that will never
+                // receive this attempt at all.
+                const mergedMarks = mergeVoiceLatencyMarks(micMarksRef.current, marks);
+                logVoiceLatencySummary(attemptId, computeVoiceLatencySummary(mergedMarks));
               },
-              onSuccess: (transcript) => {
+              onSuccess: (transcript, _transcriptId, marks, sttProviderMs) => {
                 setProcessing(false);
+                const mergedMarks = mergeVoiceLatencyMarks(micMarksRef.current, marks);
                 // Empty/whitespace-only would only ever come from a
                 // genuinely unexpected backend response (the route itself
                 // already fails closed on an empty transcript) -- this is
                 // belt-and-suspenders, not the primary guard.
                 if (shouldAutoSubmitTranscript(transcript)) {
-                  onTranscript(transcript);
+                  onTranscript(transcript, { attemptId, marks: mergedMarks, sttProviderMs });
+                } else {
+                  // Same reasoning as the onFailure branch above: this
+                  // turn also ends here, since onTranscript (and therefore
+                  // any downstream Consult AI/TTS instrumentation) is
+                  // never reached.
+                  logVoiceLatencySummary(
+                    attemptId,
+                    computeVoiceLatencySummary(mergedMarks, { sttProviderMs: sttProviderMs ?? undefined }),
+                  );
                 }
               },
             },
@@ -247,6 +295,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
         setRecording(true);
         startingRef.current = false;
         logClient("recorder_started", { attemptId, mimeType: media.mimeType || null, source: "chat_composer" });
+        micMarksRef.current = markVoiceLatencyStage(micMarksRef.current, "recording_started", performance.now());
 
         const AudioContextCtor = resolveAudioContextConstructor();
         if (AudioContextCtor) {

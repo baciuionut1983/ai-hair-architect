@@ -62,7 +62,13 @@ export interface SynthesizeCloudVoiceReplyDeps {
 }
 
 export interface SynthesizeCloudVoiceReplyCallbacks {
-  onSuccess: (audioBlob: Blob) => void;
+  // Voice latency audit (2026-08-18): ttsProviderMs is the SERVER's own
+  // measured Gemini TTS call duration (see voice-reply/route.ts's
+  // X-Provider-Latency-Ms response header -- the same number it already
+  // computes for AI Usage Metering), never a client-side approximation.
+  // `null` when the header is absent (e.g. an older cached/proxied
+  // response) -- never fabricated.
+  onSuccess: (audioBlob: Blob, ttsProviderMs: number | null) => void;
   // "network": the request never completed (fetch threw -- offline, CORS,
   // the request never left the browser). "unavailable": a real HTTP
   // response came back, but not 2xx (provider not configured, rate
@@ -117,8 +123,10 @@ export async function synthesizeCloudVoiceReply(
 
   try {
     const blob = await response.blob();
+    const headerValue = response.headers.get("X-Provider-Latency-Ms");
+    const ttsProviderMs = headerValue !== null && Number.isFinite(Number(headerValue)) ? Number(headerValue) : null;
     logVoiceReplyClientEvent("cloud_success", { audioBytes: blob.size });
-    callbacks.onSuccess(blob);
+    callbacks.onSuccess(blob, ttsProviderMs);
   } catch (error) {
     logVoiceReplyClientEvent("cloud_blob_read_threw", {
       errorName: error instanceof Error ? error.name : "unknown",

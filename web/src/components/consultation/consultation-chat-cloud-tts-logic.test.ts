@@ -4,8 +4,12 @@ import { logVoiceReplyClientEvent, synthesizeCloudVoiceReply } from "./consultat
 import { speakReply, type SpeakReplyDeps } from "./consultation-chat-tts-logic";
 import { bindFetch } from "./teach-ai-panel-logic";
 
-function okResponse(blob: Blob): Response {
-  return { ok: true, blob: async () => blob } as unknown as Response;
+function okResponse(blob: Blob, headers: Record<string, string> = {}): Response {
+  return {
+    ok: true,
+    blob: async () => blob,
+    headers: { get: (name: string) => headers[name] ?? null },
+  } as unknown as Response;
 }
 
 function notOkResponse(status: number, errorBody: { error?: string; message?: string } = { error: "VOICE_REPLY_UNAVAILABLE" }): Response {
@@ -45,7 +49,36 @@ describe("synthesizeCloudVoiceReply", () => {
       { fetch: vi.fn().mockResolvedValue(okResponse(blob)) },
       { onSuccess, onFailure: () => {} },
     );
-    expect(onSuccess).toHaveBeenCalledWith(blob);
+    expect(onSuccess).toHaveBeenCalledWith(blob, null);
+  });
+
+  // Voice latency audit (2026-08-18): the server exposes its own measured
+  // Gemini TTS duration via X-Provider-Latency-Ms (see voice-reply/route.ts)
+  // -- proves this is read from the real response header, never invented.
+  it("extracts ttsProviderMs from the X-Provider-Latency-Ms response header when present", async () => {
+    const blob = new Blob(["fake-wav-bytes"]);
+    const onSuccess = vi.fn();
+    await synthesizeCloudVoiceReply(
+      "client-1",
+      "text",
+      "en",
+      { fetch: vi.fn().mockResolvedValue(okResponse(blob, { "X-Provider-Latency-Ms": "742" })) },
+      { onSuccess, onFailure: () => {} },
+    );
+    expect(onSuccess).toHaveBeenCalledWith(blob, 742);
+  });
+
+  it("passes ttsProviderMs as null, never a fabricated number, when the header is absent", async () => {
+    const blob = new Blob(["fake-wav-bytes"]);
+    const onSuccess = vi.fn();
+    await synthesizeCloudVoiceReply(
+      "client-1",
+      "text",
+      "en",
+      { fetch: vi.fn().mockResolvedValue(okResponse(blob)) },
+      { onSuccess, onFailure: () => {} },
+    );
+    expect(onSuccess).toHaveBeenCalledWith(blob, null);
   });
 
   it("calls onFailure('unavailable') for a non-2xx response, without throwing", async () => {

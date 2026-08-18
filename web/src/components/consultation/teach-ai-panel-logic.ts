@@ -27,6 +27,8 @@
 
 import type { LanguageCode } from "@/lib/language-registry";
 
+import { markVoiceLatencyStage, type VoiceLatencyMarks } from "./voice-latency-logic";
+
 export interface VoiceNoteStreamLike {
   getTracks(): { stop(): void }[];
 }
@@ -55,8 +57,15 @@ export type VoiceTranscriptionFailureReason =
 
 export interface FinishRecordingCallbacks {
   onStopped: () => void;
-  onFailure: (message: string, reason: VoiceTranscriptionFailureReason) => void;
-  onSuccess: (transcript: string, transcriptId: string | undefined) => void;
+  onFailure: (message: string, reason: VoiceTranscriptionFailureReason, marks: VoiceLatencyMarks) => void;
+  // Voice latency audit (2026-08-18): marks covers every recording_stopped
+  // through transcript_ready stage this call reached; sttProviderMs is the
+  // server's own real, measured Gemini-call duration (voice-transcript/
+  // route.ts's providerLatencyMs), null only when the response genuinely
+  // didn't include one (never fabricated). The caller (use-voice-
+  // recording.ts) merges these with its own earlier mic-phase marks and
+  // carries them into the rest of the voice turn.
+  onSuccess: (transcript: string, transcriptId: string | undefined, marks: VoiceLatencyMarks, sttProviderMs: number | null) => void;
 }
 
 export interface FinishRecordingDeps {
@@ -195,8 +204,8 @@ function reasonForServerErrorCode(errorCode: string | null): VoiceTranscriptionF
 }
 
 type UploadAttemptResult =
-  | { outcome: "success"; transcript: string; transcriptId: string | undefined }
-  | { outcome: "failure"; message: string; reason: VoiceTranscriptionFailureReason; retryable: boolean };
+  | { outcome: "success"; transcript: string; transcriptId: string | undefined; respondedAt: number; sttProviderMs: number | null }
+  | { outcome: "failure"; message: string; reason: VoiceTranscriptionFailureReason; retryable: boolean; respondedAt: number };
 
 async function attemptUpload(
   clientId: string,
@@ -249,12 +258,12 @@ async function attemptUpload(
     // message this app always showed) rather than overclaiming the AI
     // service specifically is at fault when the request may never have
     // reached it at all.
-    return { outcome: "failure", message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, reason: "unknown", retryable: true };
+    return { outcome: "failure", message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, reason: "unknown", retryable: true, respondedAt: performance.now() };
   } finally {
     clearTimeout(timer);
   }
 
-  let payload: { transcript?: string; transcriptId?: string; message?: string; error?: string };
+  let payload: { transcript?: string; transcriptId?: string; message?: string; error?: string; providerLatencyMs?: number };
   try {
     payload = await response.json();
   } catch (error) {
@@ -271,7 +280,7 @@ async function attemptUpload(
       status: response.status,
       errorName: error instanceof Error ? error.name : "unknown",
     });
-    return { outcome: "failure", message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, reason: "unknown", retryable: true };
+    return { outcome: "failure", message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, reason: "unknown", retryable: true, respondedAt: performance.now() };
   }
 
   if (!response.ok) {
@@ -283,11 +292,21 @@ async function attemptUpload(
       message: payload.message || GENERIC_TRANSCRIPTION_FAILURE_MESSAGE,
       reason: reasonForServerErrorCode(errorCode),
       retryable,
+      respondedAt: performance.now(),
     };
   }
 
   logClient("success", { attemptId, attemptNumber, transcriptLength: (payload.transcript ?? "").length });
-  return { outcome: "success", transcript: payload.transcript ?? "", transcriptId: payload.transcriptId };
+  return {
+    outcome: "success",
+    transcript: payload.transcript ?? "",
+    transcriptId: payload.transcriptId,
+    respondedAt: performance.now(),
+    // Voice latency audit: the server's own real, measured Gemini-call
+    // duration (voice-transcript/route.ts's providerLatencyMs) -- never
+    // fabricated when the response genuinely didn't include one.
+    sttProviderMs: typeof payload.providerLatencyMs === "number" ? payload.providerLatencyMs : null,
+  };
 }
 
 export async function finishRecording(
@@ -311,24 +330,42 @@ export async function finishRecording(
   // existing call site (which never passes this) keeps working unchanged.
   attemptId: string = generateAttemptId(),
 ): Promise<void> {
+  // Voice latency audit (2026-08-18): performance.now() -- a monotonic,
+  // sub-millisecond clock, deliberately not Date.now() (wall-clock, can
+  // jump) -- marked at each stage this function itself reaches. Merged by
+  // the caller (use-voice-recording.ts) with its own earlier mic-phase
+  // marks (mic_requested/mic_ready/recording_started, all reached before
+  // finishRecording is ever called) into one timeline for the whole voice
+  // turn. Never a duplicate of the existing VOICE_TRANSCRIPT_CLIENT event
+  // log above -- this is purely numeric timing, reusing the same
+  // attemptId for correlation.
+  let marks: VoiceLatencyMarks = {};
+
   stream.getTracks().forEach((track) => track.stop());
   callbacks.onStopped();
+  marks = markVoiceLatencyStage(marks, "recording_stopped", performance.now());
   logClient("recording_stopped", { attemptId });
 
   try {
     let blob = new Blob(chunks, { type: mimeType || "audio/webm" });
+    marks = markVoiceLatencyStage(marks, "blob_created", performance.now());
     logClient("blob_created", { attemptId, mimeType: blob.type, sizeBytes: blob.size });
 
     if (deps.encodeAsWav) {
+      marks = markVoiceLatencyStage(marks, "conversion_started", performance.now());
       try {
         blob = await deps.encodeAsWav(blob);
+        marks = markVoiceLatencyStage(marks, "conversion_completed", performance.now());
         logClient("wav_reencode_succeeded", { attemptId, mimeType: blob.type, sizeBytes: blob.size });
       } catch (error) {
         // Falls back to the original recording unchanged -- see
         // FinishRecordingDeps.encodeAsWav's own doc comment. Still worth
         // an honest attempt at transcription rather than failing the
         // whole flow here: the original format may happen to be one
-        // Gemini does accept (e.g. Safari's audio/mp4).
+        // Gemini does accept (e.g. Safari's audio/mp4). No
+        // conversion_completed mark in this branch -- conversionMs
+        // correctly stays unmeasurable (null) rather than reporting a
+        // duration for work that didn't actually finish.
         logClient("wav_reencode_failed", {
           attemptId,
           errorName: error instanceof Error ? error.name : "unknown",
@@ -348,11 +385,12 @@ export async function finishRecording(
     // legitimate quick "yes"/"no" note.
     if (blob.size === 0) {
       logClient("request_failed", { attemptId, reason: "empty_recording" });
-      callbacks.onFailure(EMPTY_RECORDING_MESSAGE, "emptyRecording");
+      callbacks.onFailure(EMPTY_RECORDING_MESSAGE, "emptyRecording", marks);
       logClient("cleanup_completed", { attemptId });
       return;
     }
 
+    marks = markVoiceLatencyStage(marks, "stt_request_started", performance.now());
     let attemptNumber = 1;
     let result = await attemptUpload(clientId, blob, language, attemptId, attemptNumber, deps.fetch);
 
@@ -366,11 +404,18 @@ export async function finishRecording(
       result = await attemptUpload(clientId, blob, language, attemptId, attemptNumber, deps.fetch);
     }
 
+    // Reflects whichever attempt actually determined the outcome (the
+    // retry, if one happened) -- never the first, now-superseded
+    // attempt's own timing, which would misreport how long the stylist
+    // actually waited.
+    marks = markVoiceLatencyStage(marks, "stt_response_received", result.respondedAt);
+
     if (result.outcome === "success") {
-      callbacks.onSuccess(result.transcript, result.transcriptId);
+      marks = markVoiceLatencyStage(marks, "transcript_ready", result.respondedAt);
+      callbacks.onSuccess(result.transcript, result.transcriptId, marks, result.sttProviderMs);
     } else {
       logClient("request_failed", { attemptId, attemptNumber, reason: "upload_failed", failureReason: result.reason });
-      callbacks.onFailure(result.message, result.reason);
+      callbacks.onFailure(result.message, result.reason, marks);
     }
     logClient("cleanup_completed", { attemptId });
   } catch (error) {
@@ -382,7 +427,7 @@ export async function finishRecording(
       errorName: error instanceof Error ? error.name : "unknown",
       errorMessage: error instanceof Error ? error.message : String(error),
     });
-    callbacks.onFailure(GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, "unknown");
+    callbacks.onFailure(GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, "unknown", marks);
     logClient("cleanup_completed", { attemptId });
   }
 }

@@ -244,7 +244,10 @@ describe("POST /api/v1/clients/[id]/voice-transcript", () => {
       expect.objectContaining({ data: expect.objectContaining({ ownerUserId: "owner-1", clientId: "client-1", provider: "gemini" }) }),
     );
     const body = await response.json();
-    expect(body).toEqual({ transcriptId: "transcript-1", transcript: "She had bleach six weeks ago.", persistedAsMemory: false });
+    // Voice latency audit: providerLatencyMs is now also present -- a
+    // real, measured number (see the dedicated latency describe block
+    // below), never asserted here as an exact value.
+    expect(body).toMatchObject({ transcriptId: "transcript-1", transcript: "She had bleach six weeks ago.", persistedAsMemory: false });
   });
 
   // Gemini's REST API has no dedicated language-hint config field, so
@@ -537,7 +540,7 @@ describe("idempotent persistence on retry", () => {
 
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body).toEqual({ transcriptId: "attempt-abc", transcript: "She had bleach six weeks ago.", persistedAsMemory: false });
+    expect(body).toMatchObject({ transcriptId: "attempt-abc", transcript: "She had bleach six weeks ago.", persistedAsMemory: false });
     expect(prismaMocks.create).toHaveBeenCalledTimes(1);
   });
 
@@ -564,6 +567,31 @@ describe("idempotent persistence on retry", () => {
 
     expect(response.status).toBe(503);
     expect(prismaMocks.findUnique).not.toHaveBeenCalled();
+  });
+});
+
+// Voice latency audit (2026-08-18): the exact same measurement AI Usage
+// Metering already computes, reused (not a second, separate or fabricated
+// number) and exposed to the client so it can report a real sttProviderMs
+// distinct from its own round-trip measurement.
+describe("voice latency: providerLatencyMs", () => {
+  it("is present in the success response as a real, non-negative integer", async () => {
+    const response = await invoke(audioForm());
+
+    const body = await response.json();
+    expect(Number.isInteger(body.providerLatencyMs)).toBe(true);
+    expect(body.providerLatencyMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("is present on an idempotent-retry success response too", async () => {
+    const collision = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", { code: "P2002", clientVersion: "test" });
+    prismaMocks.create.mockRejectedValueOnce(collision);
+    prismaMocks.findUnique.mockResolvedValueOnce({ id: "attempt-abc", ownerUserId: "owner-1", transcript: "note" });
+
+    const response = await invoke(audioForm({ attemptId: "attempt-abc", attemptNumber: 2 }));
+
+    const body = await response.json();
+    expect(Number.isInteger(body.providerLatencyMs)).toBe(true);
   });
 });
 

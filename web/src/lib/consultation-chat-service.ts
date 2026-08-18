@@ -56,6 +56,11 @@ export type SendConsultationMessageResult =
       // language and the voice that reads it aloud can never independently
       // disagree. null only when truly nothing was available.
       replyLanguage: LanguageCode | null;
+      // Voice latency audit (2026-08-18): the real, measured duration of
+      // just the provider.respond() call below -- the SAME number AI Usage
+      // Metering's own latencyMs already computes, reused rather than a
+      // second measurement.
+      providerLatencyMs: number;
     }
   | { outcome: "failed"; code: ConsultationChatResultCode };
 
@@ -133,22 +138,40 @@ export async function sendConsultationMessage(
       return failure("PROVIDER_CONFIGURATION_INVALID");
     }
 
-    let analysis: AnalysisState | null = null;
-    try {
-      if (analysisId) {
-        analysis = await findAnalysisForOwner(ownerUserId, analysisId);
-        if (!analysis || analysis.clientId !== client.id) {
-          return failure("ANALYSIS_NOT_FOUND");
-        }
-      } else {
-        // No explicit analysisId (Consult AI opened from the client page,
+    // Voice latency audit (2026-08-18): the analysis lookup and the prior-
+    // messages read are independent of each other (neither's inputs depend
+    // on the other's result) -- started here, together, so their real I/O
+    // overlaps instead of running fully serially, then awaited below in
+    // the SAME order/try-catch structure as before, preserving each
+    // operation's own failure-stage log attribution exactly. The stylist
+    // message write intentionally still waits for analysis validation to
+    // pass first (see below) -- it must never be persisted for a request
+    // that gets rejected as ANALYSIS_NOT_FOUND, unlike these two reads,
+    // whose result is simply discarded on an early return.
+    const analysisPromise = analysisId
+      ? findAnalysisForOwner(ownerUserId, analysisId)
+      : // No explicit analysisId (Consult AI opened from the client page,
         // not a specific analysis page) -- auto-resolve the client's own
         // most recent analysis so the AI has real baseline context without
         // the stylist having to re-describe a hair profile the platform
         // already has on file. null here is a legitimate, honest "this
         // client has no analysis yet", not an error.
-        analysis = await findLatestAnalysisForClient(ownerUserId, client.id);
-      }
+        findLatestAnalysisForClient(ownerUserId, client.id);
+    const priorMessagesPromise = listRecentConsultationMessages(ownerUserId, client.id, 10);
+    // Node treats a promise rejection with no attached handler as an
+    // unhandled rejection the moment it rejects -- even if the SAME
+    // promise is later properly awaited in a try/catch below. Without
+    // this, an analysis-lookup failure that causes an early return before
+    // priorMessagesPromise is ever awaited (or vice versa) would log a
+    // spurious unhandled-rejection warning for the one that was never
+    // reached. This no-op handler only marks the rejection "observed";
+    // the real error handling still happens at each await below.
+    analysisPromise.catch(() => {});
+    priorMessagesPromise.catch(() => {});
+
+    let analysis: AnalysisState | null = null;
+    try {
+      analysis = await analysisPromise;
     } catch {
       logConsultationChatFailure({
         stage: "analysis_lookup",
@@ -160,10 +183,13 @@ export async function sendConsultationMessage(
       });
       return failure("PERSISTENCE_FAILURE");
     }
+    if (analysisId && (!analysis || analysis.clientId !== client.id)) {
+      return failure("ANALYSIS_NOT_FOUND");
+    }
 
     let priorMessages;
     try {
-      priorMessages = await listRecentConsultationMessages(ownerUserId, client.id, 10);
+      priorMessages = await priorMessagesPromise;
     } catch {
       logConsultationChatFailure({
         stage: "history_read",
@@ -346,7 +372,13 @@ export async function sendConsultationMessage(
       needsClarification: result.needsClarification,
     });
 
-    return { outcome: "succeeded", reply: replyRow, needsClarification: result.needsClarification, replyLanguage };
+    return {
+      outcome: "succeeded",
+      reply: replyRow,
+      needsClarification: result.needsClarification,
+      replyLanguage,
+      providerLatencyMs: Date.now() - providerCallStartedAt,
+    };
   } catch (error) {
     logConsultationChatFailure({
       stage: "unexpected",

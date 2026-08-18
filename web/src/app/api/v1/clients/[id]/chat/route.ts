@@ -136,7 +136,8 @@ export async function POST(
         : {}),
       ...(result.replyLanguage ? { replyLanguage: result.replyLanguage } : {})
     },
-    needsClarification: result.needsClarification
+    needsClarification: result.needsClarification,
+    providerLatencyMs: result.providerLatencyMs
   };
 
   return NextResponse.json(response, { status: 200 });

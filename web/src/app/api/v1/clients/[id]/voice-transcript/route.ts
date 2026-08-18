@@ -384,6 +384,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     return NextResponse.json({ error: "VOICE_TRANSCRIPTION_FAILED", message: "Voice transcription returned no text. You can still type your note." }, { status: 502 });
   }
 
+  // Voice latency audit (2026-08-18): the exact same measurement AI Usage
+  // Metering already computes below, captured once and reused rather than
+  // calling Date.now() twice for what must be the same number. Exposed in
+  // the success response (providerLatencyMs) so the client can report a
+  // real sttProviderMs -- vs. sttTotalMs, the client's own round-trip
+  // measurement -- without a second, separate measurement mechanism.
+  const providerLatencyMs = Date.now() - providerCallStartedAt;
+
   // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
   // contract: a metering problem must never turn a successful
   // transcription into a user-visible failure.
@@ -400,7 +408,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       providerRequestId,
       usage: mapGeminiUsageMetadata(rawUsageMetadata),
       outcome: "SUCCEEDED",
-      latencyMs: Date.now() - providerCallStartedAt,
+      latencyMs: providerLatencyMs,
     });
   } catch {
     // Intentionally swallowed -- see comment above.
@@ -453,7 +461,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     // ProfessionalMemory row -- a separate, explicit POST to
     // /api/v1/clients/{id}/memories (with confirmed: true) is required
     // before this transcript becomes anything the AI treats as memory.
-    return NextResponse.json({ transcriptId: row.id, transcript: row.transcript, persistedAsMemory: false });
+    return NextResponse.json({ transcriptId: row.id, transcript: row.transcript, persistedAsMemory: false, providerLatencyMs });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       const existing = await prisma.voiceTranscript.findUnique({ where: { id: attemptId } });
@@ -471,7 +479,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           transcriptLength: existing.transcript.length,
           reason: "idempotent_retry_already_persisted",
         });
-        return NextResponse.json({ transcriptId: existing.id, transcript: existing.transcript, persistedAsMemory: false });
+        return NextResponse.json({ transcriptId: existing.id, transcript: existing.transcript, persistedAsMemory: false, providerLatencyMs });
       }
     }
     logVoiceTranscript("FAILED", "persistence", {

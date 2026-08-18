@@ -106,7 +106,7 @@ describe("finishRecording", () => {
 
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
-    expect(callbacks.onSuccess).toHaveBeenCalledWith("Low density in the temporal areas.", "t-9");
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("Low density in the temporal areas.", "t-9", expect.any(Object), null);
     expect(callbacks.onFailure).not.toHaveBeenCalled();
   });
 
@@ -128,6 +128,7 @@ describe("finishRecording", () => {
     expect(callbacks.onFailure).toHaveBeenCalledWith(
       "Voice transcription is not configured. You can still teach the AI by typing.",
       "providerUnavailable",
+      expect.any(Object),
     );
     expect(callbacks.onSuccess).not.toHaveBeenCalled();
   });
@@ -139,7 +140,7 @@ describe("finishRecording", () => {
 
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
-    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "providerUnavailable");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "providerUnavailable", expect.any(Object));
   });
 
   // The exact previously-silent failure mode: the fetch call itself throws
@@ -152,7 +153,7 @@ describe("finishRecording", () => {
 
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: throwingFetch });
 
-    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "unknown");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "unknown", expect.any(Object));
     expect(callbacks.onSuccess).not.toHaveBeenCalled();
   });
 
@@ -166,7 +167,7 @@ describe("finishRecording", () => {
 
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
-    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "unknown");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "unknown", expect.any(Object));
     expect(callbacks.onSuccess).not.toHaveBeenCalled();
   });
 
@@ -270,7 +271,7 @@ describe("finishRecording WAV re-encoding", () => {
     expect(uploaded.type).toBe("audio/webm");
     expect(await uploaded.text()).toBe("original");
     expect(callbacks.onFailure).not.toHaveBeenCalled();
-    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1");
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1", expect.any(Object), null);
   });
 
   it("logs wav_reencode_failed (not audio bytes) when encodeAsWav rejects", async () => {
@@ -407,7 +408,7 @@ describe("finishRecording client-side diagnostics", () => {
 
     await finishRecording(stream, malformedChunks, "audio/webm", "client-1", callbacks, { fetch: vi.fn() });
 
-    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "unknown");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "unknown", expect.any(Object));
     expect(loggedEvents(logSpy).some((e) => e.event === "unexpected_error")).toBe(true);
     logSpy.mockRestore();
   });
@@ -443,7 +444,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
     expect(fetchStub).toHaveBeenCalledTimes(2);
-    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1");
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1", expect.any(Object), null);
     expect(callbacks.onFailure).not.toHaveBeenCalled();
   });
 
@@ -456,7 +457,7 @@ describe("finishRecording voice reliability hardening", () => {
 
     expect(fetchStub).toHaveBeenCalledTimes(2);
     expect(callbacks.onFailure).toHaveBeenCalledTimes(1);
-    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "providerUnavailable");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription failed. You can still type your note.", "providerUnavailable", expect.any(Object));
   });
 
   it("does NOT retry a permanent failure (VOICE_PROVIDER_NOT_CONFIGURED) -- retrying could never change the outcome", async () => {
@@ -469,7 +470,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
     expect(fetchStub).toHaveBeenCalledTimes(1);
-    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription is not configured. You can still teach the AI by typing.", "providerUnavailable");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("Voice transcription is not configured. You can still teach the AI by typing.", "providerUnavailable", expect.any(Object));
   });
 
   it("does NOT retry an invalid/unsupported audio format -- a permanent, format-level problem", async () => {
@@ -496,7 +497,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
     expect(fetchStub).toHaveBeenCalledTimes(1);
-    expect(callbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "invalidAudio");
+    expect(callbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "invalidAudio", expect.any(Object));
   });
 
   it("does NOT retry a rate-limit response -- an immediate retry would only be rate-limited again", async () => {
@@ -520,7 +521,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
     expect(fetchStub).toHaveBeenCalledTimes(2);
-    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1");
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1", expect.any(Object), null);
   });
 
   // Task requirement D: a genuinely hung connection (never rejects,
@@ -555,7 +556,7 @@ describe("finishRecording voice reliability hardening", () => {
       await pending;
 
       expect(fetchStub).toHaveBeenCalledTimes(2);
-      expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1");
+      expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1", expect.any(Object), null);
       expect(callbacks.onFailure).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -570,7 +571,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
     expect(fetchStub).not.toHaveBeenCalled();
-    expect(callbacks.onFailure).toHaveBeenCalledWith("The recording was empty. Please try again and speak for a moment before stopping.", "emptyRecording");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("The recording was empty. Please try again and speak for a moment before stopping.", "emptyRecording", expect.any(Object));
     expect(callbacks.onSuccess).not.toHaveBeenCalled();
   });
 
@@ -583,7 +584,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub, encodeAsWav });
 
     expect(fetchStub).not.toHaveBeenCalled();
-    expect(callbacks.onFailure).toHaveBeenCalledWith("The recording was empty. Please try again and speak for a moment before stopping.", "emptyRecording");
+    expect(callbacks.onFailure).toHaveBeenCalledWith("The recording was empty. Please try again and speak for a moment before stopping.", "emptyRecording", expect.any(Object));
   });
 
   it("uses one attemptId for every log line across both the initial attempt and its retry, and increments attemptNumber", async () => {
@@ -657,7 +658,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [new Blob(["real-audio-bytes"])], "audio/wav", "client-1", callbacks, { fetch: fetchStub });
 
     expect(fetchStub).toHaveBeenCalledTimes(2);
-    expect(callbacks.onSuccess).toHaveBeenCalledWith("She had bleach six weeks ago.", "t-1");
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("She had bleach six weeks ago.", "t-1", expect.any(Object), null);
     expect(callbacks.onFailure).not.toHaveBeenCalled();
   });
 
@@ -671,7 +672,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [new Blob(["real-audio-bytes"])], "audio/wav", "client-1", callbacks, { fetch: fetchStub });
 
     expect(fetchStub).toHaveBeenCalledTimes(2);
-    expect(callbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "providerUnavailable");
+    expect(callbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "providerUnavailable", expect.any(Object));
   });
 
   // Task requirement C/H: after Gemini 503s twice in a row (retry
@@ -688,7 +689,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(firstStream, [new Blob(["first-recording"])], "audio/wav", "client-1", firstCallbacks, { fetch: failingFetch });
 
     expect(failingFetch).toHaveBeenCalledTimes(2);
-    expect(firstCallbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "providerUnavailable");
+    expect(firstCallbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "providerUnavailable", expect.any(Object));
     expect(firstCallbacks.onSuccess).not.toHaveBeenCalled();
 
     // A brand new mic press -- its own stream, its own chunks, its own
@@ -702,7 +703,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(secondStream, [new Blob(["second-recording"])], "audio/wav", "client-1", secondCallbacks, { fetch: succeedingFetch });
 
     expect(succeedingFetch).toHaveBeenCalledTimes(1);
-    expect(secondCallbacks.onSuccess).toHaveBeenCalledWith("second recording works", "t-2");
+    expect(secondCallbacks.onSuccess).toHaveBeenCalledWith("second recording works", "t-2", expect.any(Object), null);
     expect(secondCallbacks.onFailure).not.toHaveBeenCalled();
   });
 
@@ -715,7 +716,7 @@ describe("finishRecording voice reliability hardening", () => {
 
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
-    expect(callbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "unsupportedFormat");
+    expect(callbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "unsupportedFormat", expect.any(Object));
   });
 
   it("maps VOICE_TRANSCRIPT_PERSISTENCE_UNAVAILABLE to the saveUnavailable reason -- the transcription itself succeeded, only saving failed, never blamed on the AI service or the microphone", async () => {
@@ -730,7 +731,7 @@ describe("finishRecording voice reliability hardening", () => {
     // Retryable -- a DB hiccup is transient -- so two attempts, both
     // reporting the same code, then an honest final reason.
     expect(fetchStub).toHaveBeenCalledTimes(2);
-    expect(callbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "saveUnavailable");
+    expect(callbacks.onFailure).toHaveBeenCalledWith(expect.any(String), "saveUnavailable", expect.any(Object));
   });
 
   it("passes an AbortSignal on every fetch call, so a hung request can be aborted rather than waiting forever", async () => {
@@ -741,6 +742,83 @@ describe("finishRecording voice reliability hardening", () => {
 
     const [, init] = fetchStub.mock.calls[0] as unknown as [string, RequestInit];
     expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  // Voice latency audit (2026-08-18): proves the marks object passed to
+  // onSuccess/onFailure actually reflects the stages this specific call
+  // reached, using real timestamps -- never a stub/placeholder object.
+  it("passes real, monotonically-increasing latency marks for every stage reached, on success", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1", providerLatencyMs: 250 }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    const [, , marks, sttProviderMs] = callbacks.onSuccess.mock.calls[0];
+    expect(marks.recording_stopped).toEqual(expect.any(Number));
+    expect(marks.blob_created).toEqual(expect.any(Number));
+    expect(marks.stt_request_started).toEqual(expect.any(Number));
+    expect(marks.stt_response_received).toEqual(expect.any(Number));
+    expect(marks.transcript_ready).toEqual(expect.any(Number));
+    // Real ordering, not just presence -- each stage genuinely happens no
+    // earlier than the one before it.
+    expect(marks.blob_created).toBeGreaterThanOrEqual(marks.recording_stopped);
+    expect(marks.stt_response_received).toBeGreaterThanOrEqual(marks.stt_request_started);
+    expect(sttProviderMs).toBe(250);
+  });
+
+  it("extracts sttProviderMs from the server's own providerLatencyMs field, never fabricating one when the server didn't include it", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    const [, , , sttProviderMs] = callbacks.onSuccess.mock.calls[0];
+    expect(sttProviderMs).toBeNull();
+  });
+
+  it("marks reflect the RETRY's own response timing, not the first (superseded) attempt's, when a retry succeeds", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ error: "VOICE_TRANSCRIPTION_FAILED" }, false, 502))
+      .mockResolvedValueOnce(jsonResponse({ transcript: "note", transcriptId: "t-1", providerLatencyMs: 400 }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    const [, , marks, sttProviderMs] = callbacks.onSuccess.mock.calls[0];
+    expect(marks.stt_response_received).toEqual(expect.any(Number));
+    expect(sttProviderMs).toBe(400);
+  });
+
+  it("passes marks even on failure, covering every stage reached before the failure", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () =>
+      jsonResponse({ error: "VOICE_PROVIDER_NOT_CONFIGURED", message: "not configured" }, false, 503),
+    );
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    const [, , marks] = callbacks.onFailure.mock.calls[0];
+    expect(marks.recording_stopped).toEqual(expect.any(Number));
+    expect(marks.stt_request_started).toEqual(expect.any(Number));
+    expect(marks.stt_response_received).toEqual(expect.any(Number));
+    // Never reached for a failed attempt.
+    expect(marks.transcript_ready).toBeUndefined();
+  });
+
+  it("passes only the marks reached so far (recording_stopped) for an empty recording, rejected before any request", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+
+    await finishRecording(stream, [], "audio/webm", "client-1", callbacks, { fetch: vi.fn() });
+
+    const [, , marks] = callbacks.onFailure.mock.calls[0];
+    expect(marks.recording_stopped).toEqual(expect.any(Number));
+    expect(marks.stt_request_started).toBeUndefined();
   });
 });
 
