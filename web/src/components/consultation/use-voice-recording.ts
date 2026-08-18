@@ -46,6 +46,7 @@ import {
   logVoiceLatencySummary,
   markVoiceLatencyStage,
   mergeVoiceLatencyMarks,
+  reportVoiceLatencySummary,
   type VoiceLatencyMarks,
 } from "./voice-latency-logic";
 
@@ -261,9 +262,14 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                 // The turn ends here (no Consult AI/TTS stage will ever
                 // run for a failed transcription) -- log the summary now
                 // rather than deferring to a caller that will never
-                // receive this attempt at all.
+                // receive this attempt at all. Reported server-side too
+                // (see voice-latency-logic.ts's own doc comment) -- the
+                // browser-only console.log above is not, on its own,
+                // visible in Railway.
                 const mergedMarks = mergeVoiceLatencyMarks(micMarksRef.current, marks);
-                logVoiceLatencySummary(attemptId, computeVoiceLatencySummary(mergedMarks));
+                const summary = computeVoiceLatencySummary(mergedMarks);
+                logVoiceLatencySummary(attemptId, summary);
+                reportVoiceLatencySummary(clientId, attemptId, "stt_failed", summary, { fetch: bindFetch(fetch) });
               },
               onSuccess: (transcript, _transcriptId, marks, sttProviderMs) => {
                 setProcessing(false);
@@ -279,10 +285,9 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                   // turn also ends here, since onTranscript (and therefore
                   // any downstream Consult AI/TTS instrumentation) is
                   // never reached.
-                  logVoiceLatencySummary(
-                    attemptId,
-                    computeVoiceLatencySummary(mergedMarks, { sttProviderMs: sttProviderMs ?? undefined }),
-                  );
+                  const summary = computeVoiceLatencySummary(mergedMarks, { sttProviderMs: sttProviderMs ?? undefined });
+                  logVoiceLatencySummary(attemptId, summary);
+                  reportVoiceLatencySummary(clientId, attemptId, "stt_success_not_submitted", summary, { fetch: bindFetch(fetch) });
                 }
               },
             },

@@ -20,6 +20,22 @@
 // speakMessage's own audio.onplay), is the smallest mechanism that can
 // reconstruct the full timeline without introducing a new cross-component
 // event system this app does not otherwise have.
+//
+// Follow-up (2026-08-19): a real production test proved this file's own
+// console.log-based logVoiceLatencySummary below is NOT enough on its own
+// -- it runs inside "use client" components, so it executes in the
+// stylist's browser and never reaches the Node server process, and
+// therefore never appears in Railway Deploy Logs no matter what string is
+// searched for. reportVoiceLatencySummary (bottom of this file) is the
+// fix: a fire-and-forget POST of the SAME summary to the new
+// POST /api/v1/clients/[id]/voice-latency endpoint, whose own server-side
+// log line is what actually becomes visible in Railway. The outcome enum
+// it uses is owned by @/lib/voice-latency-telemetry-logic (the server's
+// own strict validation contract), not duplicated here.
+
+import { VOICE_LATENCY_TURN_OUTCOMES, type VoiceLatencyTurnOutcome } from "@/lib/voice-latency-telemetry-logic";
+
+export { VOICE_LATENCY_TURN_OUTCOMES, type VoiceLatencyTurnOutcome };
 
 export type VoiceLatencyStage =
   | "mic_requested"
@@ -158,4 +174,36 @@ const VOICE_LATENCY_TAG = "VOICE_LATENCY";
 // AI reply text, never audio bytes.
 export function logVoiceLatencySummary(attemptId: string, summary: VoiceLatencySummary): void {
   console.log(JSON.stringify({ tag: VOICE_LATENCY_TAG, attemptId, ...summary }));
+}
+
+export interface ReportVoiceLatencySummaryDeps {
+  fetch: typeof fetch;
+}
+
+// Fire-and-forget: ships the SAME summary already logged locally (see
+// logVoiceLatencySummary above) to the server, so it also becomes visible
+// in Railway Deploy Logs (see that route's own doc comment for the root
+// cause this closes). `outcome` records WHERE this turn actually
+// concluded (STT failure, Consult AI failure, TTS fallback, full
+// playback, ...) -- purely a technical/timing classification, never
+// derived from or containing any conversation content.
+//
+// A failure here (network error, non-2xx response, an ad-blocker) is
+// deliberately swallowed and NEVER surfaced to the stylist or allowed to
+// affect the voice pipeline in any way -- this is best-effort
+// observability, not a required step of the voice turn itself.
+export function reportVoiceLatencySummary(
+  clientId: string,
+  attemptId: string,
+  outcome: VoiceLatencyTurnOutcome,
+  summary: VoiceLatencySummary,
+  deps: ReportVoiceLatencySummaryDeps,
+): void {
+  void deps
+    .fetch(`/api/v1/clients/${clientId}/voice-latency`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ attemptId, outcome, summary }),
+    })
+    .catch(() => {});
 }

@@ -54,7 +54,9 @@ import {
   computeVoiceLatencySummary,
   logVoiceLatencySummary,
   markVoiceLatencyStage,
+  reportVoiceLatencySummary,
   type VoiceLatencyMarks,
+  type VoiceLatencyTurnOutcome,
 } from "./voice-latency-logic";
 
 export interface ConsultationChatProps {
@@ -453,6 +455,18 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
     const voiceTurn = voiceTurnRef.current;
     voiceTurnRef.current = null;
     let marks: VoiceLatencyMarks = voiceTurn?.marks ?? {};
+    // Logs locally (browser console) AND reports server-side (see
+    // voice-latency-logic.ts's own doc comment for why both are needed --
+    // the console.log alone never reaches Railway).
+    const concludeVoiceTurn = (finalMarks: VoiceLatencyMarks, outcome: VoiceLatencyTurnOutcome, consultationProviderMs?: number) => {
+      if (!voiceTurn) return;
+      const summary = computeVoiceLatencySummary(finalMarks, {
+        sttProviderMs: voiceTurn.sttProviderMs ?? undefined,
+        consultationProviderMs,
+      });
+      logVoiceLatencySummary(voiceTurn.attemptId, summary);
+      reportVoiceLatencySummary(clientId, voiceTurn.attemptId, outcome, summary, { fetch: bindFetch(fetch) });
+    };
 
     const optimistic: ConsultationMessageRecord = {
       id: `pending-${Date.now()}`,
@@ -485,10 +499,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
           // The turn ends here -- Consult AI failed, so TTS is never
           // reached for this attempt.
           marks = markVoiceLatencyStage(marks, "consultation_response_received", performance.now());
-          logVoiceLatencySummary(
-            voiceTurn.attemptId,
-            computeVoiceLatencySummary(marks, { sttProviderMs: voiceTurn.sttProviderMs ?? undefined }),
-          );
+          concludeVoiceTurn(marks, "consultation_failed");
         }
         return;
       }
@@ -511,21 +522,12 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       } else if (voiceTurn) {
         // Voice Reply is off -- the turn ends at the text reply, no TTS
         // stage will ever run.
-        logVoiceLatencySummary(
-          voiceTurn.attemptId,
-          computeVoiceLatencySummary(marks, {
-            sttProviderMs: voiceTurn.sttProviderMs ?? undefined,
-            consultationProviderMs: payload.providerLatencyMs,
-          }),
-        );
+        concludeVoiceTurn(marks, "consultation_succeeded_no_voice_reply", payload.providerLatencyMs);
       }
     } catch {
       setSendError(describeSendFailure(0));
       if (voiceTurn) {
-        logVoiceLatencySummary(
-          voiceTurn.attemptId,
-          computeVoiceLatencySummary(marks, { sttProviderMs: voiceTurn.sttProviderMs ?? undefined }),
-        );
+        concludeVoiceTurn(marks, "consultation_failed");
       }
     } finally {
       setSending(false);
@@ -599,37 +601,32 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
     const cloudSupported = isCloudTtsLanguageCode(language);
     logVoiceReplyClientEvent("speak_message_branch_decision", { language, cloudSupported });
 
+    // Logs locally (browser console) AND reports server-side (see
+    // voice-latency-logic.ts's own doc comment for why both are needed --
+    // the console.log alone never reaches Railway).
+    const concludeVoiceTurn = (finalMarks: VoiceLatencyMarks, outcome: VoiceLatencyTurnOutcome, ttsProviderMs: number | null) => {
+      if (!voiceLatency) return;
+      const summary = computeVoiceLatencySummary(finalMarks, {
+        sttProviderMs: voiceLatency.sttProviderMs ?? undefined,
+        consultationProviderMs: voiceLatency.consultationProviderMs,
+        ttsProviderMs: ttsProviderMs ?? undefined,
+      });
+      logVoiceLatencySummary(voiceLatency.attemptId, summary);
+      reportVoiceLatencySummary(clientId, voiceLatency.attemptId, outcome, summary, { fetch: bindFetch(fetch) });
+    };
+
     if (!cloudSupported) {
       speakMessageLocally(message, language, false);
-      if (voiceLatency) {
-        // No TTS provider is ever called for a language with no cloud
-        // coverage -- the turn ends here with whatever stages were
-        // already reached (STT, Consult AI), never a fabricated TTS mark.
-        logVoiceLatencySummary(
-          voiceLatency.attemptId,
-          computeVoiceLatencySummary(voiceLatency.marks, {
-            sttProviderMs: voiceLatency.sttProviderMs ?? undefined,
-            consultationProviderMs: voiceLatency.consultationProviderMs,
-          }),
-        );
-      }
+      // No TTS provider is ever called for a language with no cloud
+      // coverage -- the turn ends here with whatever stages were already
+      // reached (STT, Consult AI), never a fabricated TTS mark.
+      concludeVoiceTurn(voiceLatency?.marks ?? {}, "tts_unsupported_language", null);
       return;
     }
 
     setVoiceGeneratingMessageId(message.id);
     let ttsMarks: VoiceLatencyMarks = voiceLatency?.marks ?? {};
     if (voiceLatency) ttsMarks = markVoiceLatencyStage(ttsMarks, "tts_request_started", performance.now());
-    const logVoiceTurnLatency = (finalMarks: VoiceLatencyMarks, ttsProviderMs: number | null) => {
-      if (!voiceLatency) return;
-      logVoiceLatencySummary(
-        voiceLatency.attemptId,
-        computeVoiceLatencySummary(finalMarks, {
-          sttProviderMs: voiceLatency.sttProviderMs ?? undefined,
-          consultationProviderMs: voiceLatency.consultationProviderMs,
-          ttsProviderMs: ttsProviderMs ?? undefined,
-        }),
-      );
-    };
     void synthesizeCloudVoiceReply(
       clientId,
       message.content,
@@ -684,7 +681,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
             // Cloud audio never played -- the turn ends here (falling
             // back to the local Web Speech path, which has no provider
             // timing to report), with whatever real marks were reached.
-            logVoiceTurnLatency(ttsMarks, ttsProviderMs);
+            concludeVoiceTurn(ttsMarks, "tts_fallback_local", ttsProviderMs);
           });
 
           // Playback-stage diagnostics (requirement: audio received ->
@@ -712,7 +709,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
             stopCloudAudio();
             if (voiceLatency) {
               ttsMarks = markVoiceLatencyStage(ttsMarks, "playback_ended", performance.now());
-              logVoiceTurnLatency(ttsMarks, ttsProviderMs);
+              concludeVoiceTurn(ttsMarks, "tts_completed", ttsProviderMs);
             }
           };
           audio.onerror = () => {
@@ -743,7 +740,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
           // The cloud request never produced audio at all -- no
           // tts_audio_received/audio_ready/playback marks, no
           // ttsProviderMs (no response to read one from).
-          logVoiceTurnLatency(ttsMarks, null);
+          concludeVoiceTurn(ttsMarks, "tts_failed", null);
         },
       },
     );
