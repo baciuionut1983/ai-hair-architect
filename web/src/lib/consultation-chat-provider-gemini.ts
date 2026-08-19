@@ -458,6 +458,28 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
 function buildPrompt(message: string, context: ConsultationChatContext): string {
   const lines: string[] = [SYSTEM_INSTRUCTION, "", `Client: ${context.clientFullName}`];
 
+  // Voice latency optimization (2026-08-20): appended (never baked into
+  // SYSTEM_INSTRUCTION itself) so a typed message's prompt is byte-for-
+  // byte unchanged -- this only ever applies when
+  // consultation-chat-service.ts set preferConciseReply, i.e. this turn
+  // originated from a voice-initiated conversation. A real production
+  // measurement showed a single reply generating roughly 26 seconds of
+  // spoken audio, directly inflating both Consult AI generation time and
+  // TTS synthesis/transfer/decode time downstream. This asks for LENGTH
+  // appropriate to being read aloud, never for omitting genuinely
+  // necessary professional detail -- rule 7 (never invent facts) and
+  // every correction/memory rule above still apply in full.
+  if (context.preferConciseReply) {
+    lines.push(
+      "",
+      "12. VOICE REPLY LENGTH: this reply will be read ALOUD to the stylist by a voice assistant, not just " +
+        "displayed as text. Keep `reply` conversational and reasonably concise -- the way a colleague would " +
+        "answer out loud in the chair, typically a few sentences -- rather than a long written report. Only " +
+        "go longer when the stylist's question genuinely requires more detail to answer correctly; never omit " +
+        "professionally necessary information just to be short.",
+    );
+  }
+
   // Root-cause fix (live production report): a proposedCorrection's
   // `value` was never given a concrete vocabulary anywhere in this
   // prompt -- the model was left to invent a plausible-sounding string

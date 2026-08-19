@@ -126,6 +126,17 @@ export interface ConsultationChatContext {
   //   consultation-chat-provider-gemini.ts for the exact rule.
   forcedReplyLanguage?: LanguageCode;
   fallbackReplyLanguage?: LanguageCode;
+  // Voice latency optimization (2026-08-20): true only when this turn
+  // originated from a voice-initiated conversation (see consultation-
+  // chat-service.ts's own voiceTurnId parameter) -- a real production
+  // measurement showed a ~26-second spoken reply contributing directly to
+  // slow Consult AI generation time AND slow TTS synthesis/transfer/decode
+  // time downstream. Never set for a typed message, so typed-chat replies
+  // are completely unaffected -- this only nudges the model toward a
+  // reply LENGTH appropriate for being read aloud, never toward omitting
+  // genuinely necessary professional detail (see SYSTEM_INSTRUCTION rule
+  // 12 in consultation-chat-provider-gemini.ts for the exact wording).
+  preferConciseReply?: boolean;
 }
 
 export interface ConsultationChatProposedCorrection {

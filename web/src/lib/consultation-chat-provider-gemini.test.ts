@@ -189,6 +189,65 @@ describe("GeminiConsultationChatProvider", () => {
     expect(sink.input?.prompt).toContain("targetShape: precision_bob, graduated_bob");
   });
 
+  // Voice latency optimization (2026-08-20): a real production measurement
+  // showed a ~26-second spoken reply contributing directly to slow
+  // Consult AI generation AND slow TTS synthesis/transfer/decode
+  // downstream. This proves the rule is appended ONLY when
+  // preferConciseReply is true, and that a typed message's prompt (no
+  // preferConciseReply at all) is completely unaffected -- never a
+  // silent, blanket behavior change for text chat.
+  describe("preferConciseReply (voice reply length optimization)", () => {
+    it("appends the voice-reply-length rule to the prompt when preferConciseReply is true", async () => {
+      const sink: { input?: GeminiChatGenerateInput } = {};
+      const provider = new GeminiConsultationChatProvider(
+        { apiKey: "key", model: "gemini-3.6-flash" },
+        recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+      );
+
+      await provider.respond("msg", context({ preferConciseReply: true }), new AbortController().signal);
+
+      expect(sink.input?.prompt).toContain("VOICE REPLY LENGTH");
+      expect(sink.input?.prompt).toContain("read ALOUD");
+    });
+
+    it("never appends the voice-reply-length rule when preferConciseReply is absent -- a typed message's prompt is completely unaffected", async () => {
+      const sink: { input?: GeminiChatGenerateInput } = {};
+      const provider = new GeminiConsultationChatProvider(
+        { apiKey: "key", model: "gemini-3.6-flash" },
+        recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+      );
+
+      await provider.respond("msg", context(), new AbortController().signal);
+
+      expect(sink.input?.prompt).not.toContain("VOICE REPLY LENGTH");
+      expect(sink.input?.prompt).not.toContain("read ALOUD");
+    });
+
+    it("never appends the rule when preferConciseReply is explicitly false", async () => {
+      const sink: { input?: GeminiChatGenerateInput } = {};
+      const provider = new GeminiConsultationChatProvider(
+        { apiKey: "key", model: "gemini-3.6-flash" },
+        recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+      );
+
+      await provider.respond("msg", context({ preferConciseReply: false }), new AbortController().signal);
+
+      expect(sink.input?.prompt).not.toContain("VOICE REPLY LENGTH");
+    });
+
+    it("still requires professionally necessary detail -- the rule text itself never instructs omitting information", async () => {
+      const sink: { input?: GeminiChatGenerateInput } = {};
+      const provider = new GeminiConsultationChatProvider(
+        { apiKey: "key", model: "gemini-3.6-flash" },
+        recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+      );
+
+      await provider.respond("msg", context({ preferConciseReply: true }), new AbortController().signal);
+
+      expect(sink.input?.prompt).toContain("never omit professionally necessary information");
+    });
+  });
+
   // A: the AI can recognize a "remember this" professional observation and
   // propose it as a memory candidate -- never create it itself.
   it("parses a reply with a proposed memory candidate, never applying anything itself", async () => {

@@ -320,7 +320,7 @@ export async function sendConsultationMessage(
     // round's own scope).
     const preProviderReadsMs = (firstReadsCompletedAt - readsStartedAt) + (memoryReadCompletedAt - memoryReadStartedAt);
 
-    const context = buildChatContext(client, analysis, priorMessages, memories, clientMemory, languageHint);
+    const context = buildChatContext(client, analysis, priorMessages, memories, clientMemory, languageHint, voiceTurnId !== undefined);
 
     const controller = new AbortController();
     // AI Usage & Cost Metering Phase 1: one correlationId per logical send
@@ -382,12 +382,24 @@ export async function sendConsultationMessage(
     let activeProvider = provider;
     let attemptNumber: 1 | 2 = 1;
     let providerCallStartedAt = Date.now();
+    // Latency instrumentation follow-up (2026-08-20): a real production
+    // measurement showed unattributedMs at ~21.7s in a turn where
+    // providerAttemptCount reached 2 -- tracing it through the code
+    // confirmed the FAILED first attempt's own duration was never
+    // measured anywhere: providerLatencyMs only ever reflects whichever
+    // attempt ultimately succeeded, so a slow-to-503 first attempt
+    // (however long Gemini actually took to reject it) was silently
+    // absorbed into "everything else" instead of its own honest field.
+    // 0 when no retry happens, matching every other duration's own
+    // "never fabricated" convention.
+    let failedFirstAttemptMs = 0;
     let result: Awaited<ReturnType<ConsultationChatProvider["respond"]>>;
     try {
       result = await activeProvider.respond(message, context, controller.signal);
     } catch (firstError) {
       const firstResultCode = classifyProviderFailure(firstError);
       const firstProviderError = firstError as Partial<ChatProviderError> | undefined;
+      failedFirstAttemptMs = Date.now() - providerCallStartedAt;
       logConsultationChatFailure({
         stage: "provider_call",
         resultCode: firstResultCode,
@@ -402,7 +414,7 @@ export async function sendConsultationMessage(
         voiceTurnId,
         providerAttemptNumber: attemptNumber,
       });
-      await recordAttempt(activeProvider, attemptNumber, "FAILED", Date.now() - providerCallStartedAt, {
+      await recordAttempt(activeProvider, attemptNumber, "FAILED", failedFirstAttemptMs, {
         errorCategory: firstProviderError?.code ?? firstResultCode,
       });
 
@@ -507,13 +519,18 @@ export async function sendConsultationMessage(
     // total and its pre-existing bucket -- the SAME instant, never two
     // slightly different Date.now() reads for what claims to be one
     // number. unattributedMs is the honest remainder: total minus the
-    // three named windows above -- still includes the stylist message
+    // four named windows above -- still includes the stylist message
     // write and the config/language-detection/logging overhead this
     // round deliberately did not break out further (see preProviderReadsMs's
     // own comment) -- never hidden, never silently absorbed into one of
-    // the other three numbers.
+    // the other numbers. failedFirstAttemptMs (2026-08-20 follow-up) is
+    // now its own named field, no longer part of this remainder -- see
+    // its own declaration above for the real production gap this closes.
     const consultationTotalMs = Date.now() - startedAt;
-    const unattributedMs = Math.max(0, consultationTotalMs - preProviderReadsMs - providerOnlyMs - replyWriteMs);
+    const unattributedMs = Math.max(
+      0,
+      consultationTotalMs - preProviderReadsMs - providerOnlyMs - replyWriteMs - failedFirstAttemptMs,
+    );
     logConsultationChatSuccess({
       ownerUserId,
       clientId: client.id,
@@ -527,6 +544,7 @@ export async function sendConsultationMessage(
       preProviderReadsMs,
       providerLatencyMs: providerOnlyMs,
       replyWriteMs,
+      failedFirstAttemptMs,
       consultationTotalMs,
       unattributedMs,
     });
@@ -561,6 +579,7 @@ function buildChatContext(
   memories: Awaited<ReturnType<typeof retrieveRelevantMemories>>,
   clientMemory: Awaited<ReturnType<typeof buildClientProfessionalMemory>>,
   languageHint: ConsultationChatLanguageHint,
+  preferConciseReply: boolean,
 ): ConsultationChatContext {
   return {
     clientFullName: client.fullName,
@@ -570,6 +589,7 @@ function buildChatContext(
     })),
     professionalMemory: memories.map(({ scope, kind, content, source, confidence }) => ({ scope, kind, content, source, confidence })),
     clientProfessionalMemory: clientMemory,
+    ...(preferConciseReply ? { preferConciseReply: true } : {}),
     ...(languageHint.forced ? { forcedReplyLanguage: languageHint.forced } : {}),
     ...(!languageHint.forced && languageHint.fallback ? { fallbackReplyLanguage: languageHint.fallback } : {}),
     ...(analysis
@@ -731,6 +751,13 @@ function logConsultationChatSuccess(input: {
   preProviderReadsMs?: number;
   providerLatencyMs?: number;
   replyWriteMs?: number;
+  // Latency instrumentation follow-up (2026-08-20): the FAILED first
+  // attempt's own duration when providerAttemptCount reached 2 -- 0 when
+  // no retry happened. Previously invisible anywhere, silently absorbed
+  // into unattributedMs; a real production turn showed ~21.7s of
+  // unattributedMs on a retried turn, and this is exactly the field that
+  // was missing to confirm (or rule out) the failed attempt as the cause.
+  failedFirstAttemptMs?: number;
   consultationTotalMs?: number;
   unattributedMs?: number;
 }): void {
@@ -750,6 +777,7 @@ function logConsultationChatSuccess(input: {
       preProviderReadsMs: input.preProviderReadsMs ?? null,
       providerLatencyMs: input.providerLatencyMs ?? null,
       replyWriteMs: input.replyWriteMs ?? null,
+      failedFirstAttemptMs: input.failedFirstAttemptMs ?? null,
       consultationTotalMs: input.consultationTotalMs ?? null,
       unattributedMs: input.unattributedMs ?? null,
     }),

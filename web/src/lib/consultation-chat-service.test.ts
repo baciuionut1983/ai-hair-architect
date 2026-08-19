@@ -783,6 +783,38 @@ describe("sendConsultationMessage", () => {
     expect(capturedContext).not.toHaveProperty("fallbackReplyLanguage");
   });
 
+  // Voice latency optimization (2026-08-20): a real production measurement
+  // showed a ~26-second spoken reply contributing directly to slow
+  // Consult AI generation AND slow TTS synthesis/transfer/decode
+  // downstream -- preferConciseReply nudges the model toward a reply
+  // length appropriate for being read aloud, ONLY for voice-initiated
+  // turns, never for typed chat.
+  describe("preferConciseReply (voice reply length optimization)", () => {
+    it("sets preferConciseReply when this call originated from a voice-initiated turn (voiceTurnId present)", async () => {
+      let capturedContext: unknown;
+      const provider = stubProvider(async (_msg, ctx) => {
+        capturedContext = ctx;
+        return { reply: "ok", needsClarification: false };
+      });
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider }, {}, "voice-turn-abc");
+
+      expect(capturedContext).toMatchObject({ preferConciseReply: true });
+    });
+
+    it("never sets preferConciseReply for a typed message (no voiceTurnId) -- typed-chat replies are completely unaffected", async () => {
+      let capturedContext: unknown;
+      const provider = stubProvider(async (_msg, ctx) => {
+        capturedContext = ctx;
+        return { reply: "ok", needsClarification: false };
+      });
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      expect(capturedContext).not.toHaveProperty("preferConciseReply");
+    });
+  });
+
   // replyLanguage is the ONE canonical language decision for a reply,
   // computed once here and consumed by both the wire response and (via
   // ConsultationMessageRecord.replyLanguage) the frontend's TTS locale --
@@ -944,6 +976,52 @@ describe("sendConsultationMessage", () => {
       expect(logged.preProviderReadsMs).toBeGreaterThanOrEqual(100);
       expect(logged.providerLatencyMs).toBeLessThan(80);
       expect(logged.replyWriteMs).toBeLessThan(80);
+      logSpy.mockRestore();
+    });
+
+    // Latency instrumentation follow-up (2026-08-20): a real production
+    // turn showed unattributedMs at ~21.7s on a turn where
+    // providerAttemptCount reached 2 -- this proves the exact mechanism:
+    // a slow FAILED first attempt used to be completely invisible,
+    // silently absorbed into unattributedMs instead of its own field.
+    it("failedFirstAttemptMs captures a slow FAILED first attempt's own duration, and unattributedMs no longer absorbs it", async () => {
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      let calls = 0;
+      const provider = stubProvider(async () => {
+        calls += 1;
+        if (calls === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          throw Object.assign(new Error("service unavailable"), { code: "PROVIDER_ERROR", retryable: true, status: 503 });
+        }
+        return { reply: "ok", needsClarification: false };
+      });
+
+      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      expect(result).toMatchObject({ outcome: "succeeded", providerAttemptCount: 2 });
+
+      const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
+      expect(logged.status).toBe("SUCCEEDED");
+      expect(logged.providerAttemptCount).toBe(2);
+      // The failed first attempt's own ~150ms is now its own named field...
+      expect(logged.failedFirstAttemptMs).toBeGreaterThanOrEqual(150);
+      // ...never counted a second time inside unattributedMs.
+      expect(logged.unattributedMs).toBeLessThan(80);
+      // providerLatencyMs still reflects ONLY the successful retry, never
+      // the failed first attempt's time -- unchanged guarantee from the
+      // previous round's own fix.
+      expect(logged.providerLatencyMs).toBeLessThan(80);
+      logSpy.mockRestore();
+    });
+
+    it("failedFirstAttemptMs is 0 (never fabricated) when no retry happens", async () => {
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
+      expect(logged.failedFirstAttemptMs).toBe(0);
       logSpy.mockRestore();
     });
   });
