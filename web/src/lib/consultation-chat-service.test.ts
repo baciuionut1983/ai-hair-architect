@@ -854,6 +854,100 @@ describe("sendConsultationMessage", () => {
     }
   });
 
+  // Consultation instrumentation fix (2026-08-19): a real production
+  // report showed CONSULTATION_CHAT taking 15-30s total while providerAttemptCount
+  // was 1 (no retry) -- the root cause was providerLatencyMs itself being
+  // measured at the function's own return statement, AFTER the assistant
+  // reply's DB write had already run, silently folding that write's time
+  // into a field whose name promises pure provider latency. These tests
+  // prove the fix directly: a SLOW provider call and a SLOW reply write
+  // are cleanly separated, never conflated.
+  describe("consultation instrumentation: providerLatencyMs excludes the reply DB write", () => {
+    it("providerLatencyMs stays small even when the assistant reply's DB write is slow -- the exact bug a real production report traced", async () => {
+      const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+      // Delay ONLY the assistant reply write (not the stylist message
+      // write) -- simulating exactly the class of DB-write latency that
+      // used to be silently folded into providerLatencyMs.
+      messageRepoMock.recordConsultationMessage.mockImplementation(async (input: Parameters<typeof fakeStoredMessage>[0]) => {
+        if (input.role === "assistant") {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+        }
+        return fakeStoredMessage(input);
+      });
+
+      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      expect(result.outcome).toBe("succeeded");
+      if (result.outcome === "succeeded") {
+        // The reply write took >=120ms, but providerLatencyMs must stay
+        // tiny -- proving it measures ONLY provider.respond(), never any
+        // work that happens after it resolves.
+        expect(result.providerLatencyMs).toBeLessThan(80);
+      }
+    });
+
+    it("providerLatencyMs stays small even when the STYLIST message write (before the provider call) is slow", async () => {
+      const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+      messageRepoMock.recordConsultationMessage.mockImplementation(async (input: Parameters<typeof fakeStoredMessage>[0]) => {
+        if (input.role === "stylist") {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+        }
+        return fakeStoredMessage(input);
+      });
+
+      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      expect(result.outcome).toBe("succeeded");
+      if (result.outcome === "succeeded") {
+        expect(result.providerLatencyMs).toBeLessThan(80);
+      }
+    });
+
+    it("logs a real breakdown (preProviderReadsMs/providerLatencyMs/replyWriteMs/consultationTotalMs/unattributedMs) that correctly attributes a slow reply write to replyWriteMs, not providerLatencyMs", async () => {
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+      messageRepoMock.recordConsultationMessage.mockImplementation(async (input: Parameters<typeof fakeStoredMessage>[0]) => {
+        if (input.role === "assistant") {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+        }
+        return fakeStoredMessage(input);
+      });
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
+      expect(logged.status).toBe("SUCCEEDED");
+      expect(logged.providerLatencyMs).toBeLessThan(80);
+      expect(logged.replyWriteMs).toBeGreaterThanOrEqual(120);
+      // consultationTotalMs must account for the slow write somewhere --
+      // proving the total isn't ALSO silently shrunk by the same bug.
+      expect(logged.consultationTotalMs).toBeGreaterThanOrEqual(120);
+      // The three named windows plus the remainder must never exceed the
+      // real total -- an honest accounting, not numbers that overcount.
+      const sum = logged.preProviderReadsMs + logged.providerLatencyMs + logged.replyWriteMs + logged.unattributedMs;
+      expect(sum).toBeLessThanOrEqual(logged.consultationTotalMs + 5); // +5ms slack for timer granularity
+      expect(logged.unattributedMs).toBeGreaterThanOrEqual(0);
+      logSpy.mockRestore();
+    });
+
+    it("preProviderReadsMs reflects slow analysis/history/memory reads, never the provider call or the reply write", async () => {
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      analysisRepoMock.findLatestAnalysisForClient.mockImplementation(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return null;
+      });
+      const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
+      expect(logged.preProviderReadsMs).toBeGreaterThanOrEqual(100);
+      expect(logged.providerLatencyMs).toBeLessThan(80);
+      expect(logged.replyWriteMs).toBeLessThan(80);
+      logSpy.mockRestore();
+    });
+  });
+
   it("professional memory is an explicit empty array (not omitted) when there is none, so the model sees a real empty state", async () => {
     let capturedContext: unknown;
     const provider = stubProvider(async (_msg, ctx) => {

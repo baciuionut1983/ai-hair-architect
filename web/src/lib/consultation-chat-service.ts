@@ -169,6 +169,21 @@ export async function sendConsultationMessage(
       return failure("PROVIDER_CONFIGURATION_INVALID");
     }
 
+    // Consultation instrumentation fix (2026-08-19): a real production
+    // report showed CONSULTATION_CHAT taking 15-30s total while all three
+    // provider legs (STT/Consultation/TTS) reported succeeding on the
+    // first attempt -- proving the SLOWNESS wasn't a retry, but the
+    // returned providerLatencyMs field itself was measured incorrectly:
+    // it was computed at the function's own return statement, AFTER the
+    // assistant reply's DB write had already run, silently folding that
+    // write's time into a field whose name promises pure provider
+    // latency. These marks fix that (readsStartedAt below, plus
+    // providerOnlyMs/replyWriteStartedAt further down) and additionally
+    // expose the reads-before-provider and reply-write windows as their
+    // own named durations, purely as instrumentation -- no retry,
+    // metering, model, ordering, or persistence behavior changes here.
+    const readsStartedAt = Date.now();
+
     // Voice latency audit (2026-08-18): the analysis lookup and the prior-
     // messages read are independent of each other (neither's inputs depend
     // on the other's result) -- started here, together, so their real I/O
@@ -234,6 +249,7 @@ export async function sendConsultationMessage(
       });
       return failure("PERSISTENCE_FAILURE");
     }
+    const firstReadsCompletedAt = Date.now();
 
     let stored;
     try {
@@ -274,6 +290,7 @@ export async function sendConsultationMessage(
         : provider;
     const recordUsage = dependencies.recordAiUsageEvent ?? recordAiUsageEvent;
 
+    const memoryReadStartedAt = Date.now();
     let memories: Awaited<ReturnType<typeof retrieveRelevantMemories>>;
     let clientMemory: Awaited<ReturnType<typeof buildClientProfessionalMemory>>;
     try {
@@ -293,6 +310,15 @@ export async function sendConsultationMessage(
       });
       return failure("PERSISTENCE_FAILURE");
     }
+    const memoryReadCompletedAt = Date.now();
+    // Pure reads needed to build the provider's context -- the analysis
+    // lookup + prior-messages read (overlapped, see above) plus the
+    // professional-memory read (also overlapped internally), EXCLUDING
+    // the stylist message write sitting between them in real execution
+    // order (that write is a real, separate cost, folded into
+    // unattributedMs below rather than a 6th named field -- see this
+    // round's own scope).
+    const preProviderReadsMs = (firstReadsCompletedAt - readsStartedAt) + (memoryReadCompletedAt - memoryReadStartedAt);
 
     const context = buildChatContext(client, analysis, priorMessages, memories, clientMemory, languageHint);
 
@@ -413,11 +439,22 @@ export async function sendConsultationMessage(
       }
     }
 
-    await recordAttempt(activeProvider, attemptNumber, "SUCCEEDED", Date.now() - providerCallStartedAt, {
+    // Consultation instrumentation fix (2026-08-19): captured ONCE, right
+    // here -- the exact instant the provider call resolved, before
+    // anything else runs -- and reused below for both AI Usage Metering's
+    // latencyMs (unchanged behavior, just no longer recomputed a second,
+    // staler way) and the returned providerLatencyMs field (THE fix: that
+    // field used to be recomputed at the function's own return statement,
+    // after the reply DB write below had already run, silently including
+    // that write's time in a field whose name promises pure provider
+    // latency).
+    const providerOnlyMs = Date.now() - providerCallStartedAt;
+    await recordAttempt(activeProvider, attemptNumber, "SUCCEEDED", providerOnlyMs, {
       providerRequestId: result.providerRequestId,
       usage: result.usage,
     });
 
+    const replyWriteStartedAt = Date.now();
     let replyRow;
     try {
       replyRow = await recordConsultationMessage({
@@ -442,6 +479,7 @@ export async function sendConsultationMessage(
       });
       return failure("PERSISTENCE_FAILURE", attemptNumber);
     }
+    const replyWriteMs = Date.now() - replyWriteStartedAt;
 
     void stored; // the stylist's own message is already durably persisted above
 
@@ -464,16 +502,33 @@ export async function sendConsultationMessage(
     // could be a real wiring bug, or -- as this specific stage distinguishes
     // -- the provider genuinely not having populated the field, which is a
     // prompt-reliability question, not a code one.
+    // Consultation instrumentation fix (2026-08-19): consultationTotalMs
+    // is computed once, here, and reused for both the log's own exact
+    // total and its pre-existing bucket -- the SAME instant, never two
+    // slightly different Date.now() reads for what claims to be one
+    // number. unattributedMs is the honest remainder: total minus the
+    // three named windows above -- still includes the stylist message
+    // write and the config/language-detection/logging overhead this
+    // round deliberately did not break out further (see preProviderReadsMs's
+    // own comment) -- never hidden, never silently absorbed into one of
+    // the other three numbers.
+    const consultationTotalMs = Date.now() - startedAt;
+    const unattributedMs = Math.max(0, consultationTotalMs - preProviderReadsMs - providerOnlyMs - replyWriteMs);
     logConsultationChatSuccess({
       ownerUserId,
       clientId: client.id,
       analysisId,
-      durationMs: Date.now() - startedAt,
+      durationMs: consultationTotalMs,
       hadProposedCorrection: result.proposedCorrection != null,
       hadProposedMemory: result.proposedMemory != null,
       needsClarification: result.needsClarification,
       voiceTurnId,
       providerAttemptCount: attemptNumber,
+      preProviderReadsMs,
+      providerLatencyMs: providerOnlyMs,
+      replyWriteMs,
+      consultationTotalMs,
+      unattributedMs,
     });
 
     return {
@@ -481,7 +536,7 @@ export async function sendConsultationMessage(
       reply: replyRow,
       needsClarification: result.needsClarification,
       replyLanguage,
-      providerLatencyMs: Date.now() - providerCallStartedAt,
+      providerLatencyMs: providerOnlyMs,
       providerAttemptCount: attemptNumber,
     };
   } catch (error) {
@@ -660,6 +715,24 @@ function logConsultationChatSuccess(input: {
   needsClarification: boolean;
   voiceTurnId?: string;
   providerAttemptCount?: number;
+  // Consultation instrumentation fix (2026-08-19): a real breakdown of
+  // where consultationTotalMs actually went, so "why was this turn slow"
+  // is answerable from this ONE log line without cross-referencing the
+  // client's own voice latency telemetry. preProviderReadsMs = analysis
+  // lookup + prior-messages read + professional-memory read (each
+  // internally overlapped, per this file's own comments above); this
+  // field is their sum, excluding the stylist message write that sits
+  // between them. providerLatencyMs here is the SAME, now-corrected
+  // number returned to the caller as providerLatencyMs -- pure
+  // provider.respond() time only, never including the reply write below
+  // it. replyWriteMs is the assistant reply's own DB write. unattributedMs
+  // is the honest remainder (never negative) -- see its own computation
+  // comment for exactly what it still contains.
+  preProviderReadsMs?: number;
+  providerLatencyMs?: number;
+  replyWriteMs?: number;
+  consultationTotalMs?: number;
+  unattributedMs?: number;
 }): void {
   console.log(
     JSON.stringify({
@@ -674,6 +747,11 @@ function logConsultationChatSuccess(input: {
       needsClarification: input.needsClarification,
       voiceTurnId: input.voiceTurnId ?? null,
       providerAttemptCount: input.providerAttemptCount ?? null,
+      preProviderReadsMs: input.preProviderReadsMs ?? null,
+      providerLatencyMs: input.providerLatencyMs ?? null,
+      replyWriteMs: input.replyWriteMs ?? null,
+      consultationTotalMs: input.consultationTotalMs ?? null,
+      unattributedMs: input.unattributedMs ?? null,
     }),
   );
 }
