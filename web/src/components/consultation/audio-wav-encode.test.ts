@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { isValidWavHeader } from "@/lib/tts-audio-format";
 
-import { encodePcmAsWav } from "./audio-wav-encode";
+import { encodePcmAsWav, openAudioContext } from "./audio-wav-encode";
 
 function asBuffer(wav: ArrayBuffer): Buffer {
   return Buffer.from(wav);
@@ -48,5 +48,54 @@ describe("encodePcmAsWav", () => {
     const buffer = asBuffer(wav);
     expect(buffer.readUInt16LE(22)).toBe(1); // channel count
     expect(buffer.readUInt16LE(34)).toBe(16); // bits per sample
+  });
+});
+
+// STT payload-size optimization (2026-08-19, Round 7): openAudioContext is
+// the fallback-safe half of decodeBlobAsWav's new 16kHz downsampling --
+// decodeBlobAsWav itself stays untested DOM glue (this file's own
+// long-standing convention, since jsdom does not implement AudioContext
+// and vitest.config.ts runs this suite in the "node" environment, where
+// `window` itself does not exist), but this pure function accepts the
+// constructor directly, so the fallback-on-throw behavior that keeps a
+// browser with no 16kHz support fully working is directly demonstrable,
+// not just asserted by comment.
+describe("openAudioContext", () => {
+  class FakeAudioContext {
+    sampleRate: number;
+    constructor(options?: { sampleRate?: number }) {
+      this.sampleRate = options?.sampleRate ?? 44100;
+    }
+    decodeAudioData(): Promise<never> {
+      return Promise.reject(new Error("not used by this test"));
+    }
+    close(): Promise<void> {
+      return Promise.resolve();
+    }
+  }
+
+  class RejectsExplicitSampleRate {
+    sampleRate = 48000;
+    constructor(options?: { sampleRate?: number }) {
+      if (options?.sampleRate !== undefined) {
+        throw new Error("Unsupported sample rate.");
+      }
+    }
+    decodeAudioData(): Promise<never> {
+      return Promise.reject(new Error("not used by this test"));
+    }
+    close(): Promise<void> {
+      return Promise.resolve();
+    }
+  }
+
+  it("opens at the 16kHz STT target rate when the platform supports it", () => {
+    const context = openAudioContext(FakeAudioContext);
+    expect(context.sampleRate).toBe(16000);
+  });
+
+  it("falls back to the default (native-rate) constructor when 16kHz construction throws", () => {
+    const context = openAudioContext(RejectsExplicitSampleRate);
+    expect(context.sampleRate).toBe(48000);
   });
 });

@@ -74,7 +74,14 @@ describe("synthesizeCloudVoiceReply", () => {
       { fetch: vi.fn().mockResolvedValue(okResponse(blob)) },
       { onSuccess, onFailure: () => {} },
     );
-    expect(onSuccess).toHaveBeenCalledWith(blob, null, null);
+    expect(onSuccess).toHaveBeenCalledWith(blob, {
+      ttsProviderMs: null,
+      providerAttemptCount: null,
+      preProviderMs: null,
+      usageWriteMs: null,
+      audioProcessingMs: null,
+      serverTotalMs: null,
+    });
   });
 
   // Voice latency audit (2026-08-18): the server exposes its own measured
@@ -90,7 +97,7 @@ describe("synthesizeCloudVoiceReply", () => {
       { fetch: vi.fn().mockResolvedValue(okResponse(blob, { "X-Provider-Latency-Ms": "742" })) },
       { onSuccess, onFailure: () => {} },
     );
-    expect(onSuccess).toHaveBeenCalledWith(blob, 742, null);
+    expect(onSuccess).toHaveBeenCalledWith(blob, expect.objectContaining({ ttsProviderMs: 742 }));
   });
 
   it("passes ttsProviderMs as null, never a fabricated number, when the header is absent", async () => {
@@ -103,7 +110,7 @@ describe("synthesizeCloudVoiceReply", () => {
       { fetch: vi.fn().mockResolvedValue(okResponse(blob)) },
       { onSuccess, onFailure: () => {} },
     );
-    expect(onSuccess).toHaveBeenCalledWith(blob, null, null);
+    expect(onSuccess).toHaveBeenCalledWith(blob, expect.objectContaining({ ttsProviderMs: null }));
   });
 
   // TTS reliability hardening (2026-08-19): the server exposes its own
@@ -119,7 +126,42 @@ describe("synthesizeCloudVoiceReply", () => {
       { fetch: vi.fn().mockResolvedValue(okResponse(blob, { "X-Provider-Attempt-Count": "2" })) },
       { onSuccess, onFailure: () => {} },
     );
-    expect(onSuccess).toHaveBeenCalledWith(blob, null, 2);
+    expect(onSuccess).toHaveBeenCalledWith(blob, expect.objectContaining({ providerAttemptCount: 2 }));
+  });
+
+  // Round 7: the server's granular TTS breakdown (see voice-reply/route.ts's
+  // X-Pre-Provider-Ms/X-Usage-Write-Ms/X-Audio-Processing-Ms/
+  // X-Server-Total-Ms) -- each read independently from its own header,
+  // never fabricated when absent.
+  it("extracts the full server timing breakdown from its own response headers when present", async () => {
+    const blob = new Blob(["fake-wav-bytes"]);
+    const onSuccess = vi.fn();
+    await synthesizeCloudVoiceReply(
+      "client-1",
+      "text",
+      "en",
+      {
+        fetch: vi.fn().mockResolvedValue(
+          okResponse(blob, {
+            "X-Provider-Latency-Ms": "19573",
+            "X-Provider-Attempt-Count": "1",
+            "X-Pre-Provider-Ms": "45",
+            "X-Usage-Write-Ms": "18300",
+            "X-Audio-Processing-Ms": "12",
+            "X-Server-Total-Ms": "19930",
+          }),
+        ),
+      },
+      { onSuccess, onFailure: () => {} },
+    );
+    expect(onSuccess).toHaveBeenCalledWith(blob, {
+      ttsProviderMs: 19573,
+      providerAttemptCount: 1,
+      preProviderMs: 45,
+      usageWriteMs: 18300,
+      audioProcessingMs: 12,
+      serverTotalMs: 19930,
+    });
   });
 
   it("calls onFailure('unavailable') for a non-2xx response, without throwing", async () => {

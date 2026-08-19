@@ -200,6 +200,31 @@ describe("POST /api/v1/clients/[id]/voice-reply", () => {
     expect(Number(header)).toBeGreaterThanOrEqual(0);
   });
 
+  // TTS latency root-cause (2026-08-19, Round 7): a real production test
+  // showed ttsTotalMs roughly double ttsProviderMs with no way to tell
+  // why -- these headers are the server's own granular breakdown of that
+  // gap (pre-provider auth/DB overhead, the awaited AI Usage Metering DB
+  // write, in-memory audio processing, and the authoritative server
+  // total), each a real, non-negative integer, never fabricated.
+  it("exposes the full granular timing breakdown (pre-provider, usage write, audio processing, server total) as response headers on success", async () => {
+    const response = await invoke({ text: "hello", language: "en" });
+
+    for (const name of ["X-Pre-Provider-Ms", "X-Usage-Write-Ms", "X-Audio-Processing-Ms", "X-Server-Total-Ms"]) {
+      const header = response.headers.get(name);
+      expect(header, `${name} should be present`).not.toBeNull();
+      expect(Number.isInteger(Number(header))).toBe(true);
+      expect(Number(header)).toBeGreaterThanOrEqual(0);
+    }
+
+    // The server's own total must be at least as large as the provider
+    // call alone -- it is measured end-to-end (requestReceivedAt to just
+    // before the response is built), not summed from parts, so this holds
+    // regardless of how the pre/post buckets individually split.
+    const providerMs = Number(response.headers.get("X-Provider-Latency-Ms"));
+    const serverTotalMs = Number(response.headers.get("X-Server-Total-Ms"));
+    expect(serverTotalMs).toBeGreaterThanOrEqual(providerMs);
+  });
+
   // End-to-end voice turn correlation (2026-08-19): when the client sends
   // voiceTurnId (the SAME id already used for STT), it's echoed into this
   // route's own structured log so a single stylist-reported incident can

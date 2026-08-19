@@ -83,6 +83,11 @@ function writeAsciiString(view: DataView, offset: number, value: string): void {
 }
 
 export interface AudioContextLike {
+  // The context's own operating rate -- real AudioContext instances always
+  // expose this (readonly), matched here so openAudioContext's own
+  // fallback-on-throw behavior is directly observable in a test without
+  // needing to go through decodeAudioData at all.
+  sampleRate: number;
   decodeAudioData(data: ArrayBuffer): Promise<{
     sampleRate: number;
     numberOfChannels: number;
@@ -91,12 +96,50 @@ export interface AudioContextLike {
   close(): Promise<void>;
 }
 
-type AudioContextConstructorLike = new () => AudioContextLike;
+type AudioContextConstructorLike = new (options?: { sampleRate?: number }) => AudioContextLike;
 
 function resolveAudioContextConstructor(): AudioContextConstructorLike | null {
   if (typeof window === "undefined") return null;
   const w = window as typeof window & { webkitAudioContext?: AudioContextConstructorLike };
   return (w.AudioContext as unknown as AudioContextConstructorLike | undefined) ?? w.webkitAudioContext ?? null;
+}
+
+// STT payload-size optimization (2026-08-19): a real production test
+// (Round 7) showed STT provider time -- the Gemini call itself, audio
+// upload included, since voice-transcript/route.ts embeds the audio
+// directly in the same request body it times -- dominating STT almost
+// entirely (25.9s of 26.5s total; server/network overhead outside the
+// provider call was only ~600ms). Google's own Gemini audio docs
+// (https://ai.google.dev/gemini-api/docs/audio) confirm the provider
+// downsamples and combines audio to mono internally regardless of what's
+// uploaded, so recording/encoding at the device's native rate (typically
+// 44.1-48kHz, via decodeAudioData's own default behavior of resampling to
+// the AudioContext's operating rate) uploads roughly 3x more PCM data
+// than Gemini will actually use, directly inflating the one bucket that
+// dominates STT latency without improving transcription quality.
+//
+// AudioContext's own `sampleRate` constructor option is standard Web
+// Audio API (AudioContextOptions.sampleRate), supported by every browser
+// this app targets including iOS Safari since 14.1 -- decodeAudioData
+// resamples straight to that rate as part of the same spec-compliant
+// decode step already in use today, no separate manual resampling code.
+// openAudioContext falls back to the default (native-rate) constructor if
+// opening at 16kHz throws for any reason (a real, if unlikely, platform
+// restriction) -- WAV conversion succeeding at all remains strictly more
+// important than this payload-size optimization, so a browser that
+// rejects the explicit rate still gets exactly today's behavior, never a
+// broken upload. Exported (rather than inlined in decodeBlobAsWav) so
+// this fallback is directly unit-testable without a real AudioContext --
+// decodeBlobAsWav itself stays untestable DOM glue, per this file's own
+// documented split.
+const STT_TARGET_SAMPLE_RATE_HZ = 16000;
+
+export function openAudioContext(Ctor: AudioContextConstructorLike): AudioContextLike {
+  try {
+    return new Ctor({ sampleRate: STT_TARGET_SAMPLE_RATE_HZ });
+  } catch {
+    return new Ctor();
+  }
 }
 
 // The DOM-dependent half: decodes whatever container the browser actually
@@ -112,7 +155,7 @@ export async function decodeBlobAsWav(blob: Blob): Promise<Blob> {
     throw new Error("AudioContext is not available in this browser.");
   }
 
-  const audioContext = new AudioContextCtor();
+  const audioContext = openAudioContext(AudioContextCtor);
   try {
     const arrayBuffer = await blob.arrayBuffer();
     const decoded = await audioContext.decodeAudioData(arrayBuffer);

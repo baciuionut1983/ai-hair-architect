@@ -76,6 +76,11 @@ describe("computeVoiceLatencySummary", () => {
       consultationTotalMs: 3000,
       ttsProviderMs: 1300,
       ttsTotalMs: 1500,
+      ttsPreProviderMs: null,
+      ttsUsageWriteMs: null,
+      ttsAudioProcessingMs: null,
+      ttsServerTotalMs: null,
+      ttsNetworkAndTransferMs: null,
       audioPreparationMs: 50,
       timeToFirstAudioMs: 5800, // playback_started(10800) - recording_stopped(5000)
       voiceTurnTotalMs: 10800, // playback_started(10800) - mic_requested(0)
@@ -133,6 +138,47 @@ describe("computeVoiceLatencySummary", () => {
     expect(summary.sttTotalMs).toBe(1200);
     expect(summary.sttProviderMs).toBe(900);
     expect(summary.sttNetworkAndServerMs).toBe(300);
+  });
+
+  // Round 7: mirrors the sttNetworkAndServerMs tests above exactly, but for
+  // TTS's own new, more granular server-side breakdown (see voice-reply/
+  // route.ts's X-Pre-Provider-Ms/X-Usage-Write-Ms/X-Audio-Processing-Ms/
+  // X-Server-Total-Ms) -- proving the real production question this round
+  // exists to answer: given ttsTotalMs and the server's own authoritative
+  // ttsServerTotalMs, how much of the gap is genuinely network/client-side
+  // versus already accounted for server-side.
+  it("threads through the full TTS server timing breakdown when the server reported one, never inventing a number it didn't", () => {
+    const marks: VoiceLatencyMarks = { tts_request_started: 0, tts_audio_received: 40265 };
+
+    const summary = computeVoiceLatencySummary(marks, {
+      ttsProviderMs: 19573,
+      ttsPreProviderMs: 45,
+      ttsUsageWriteMs: 18300,
+      ttsAudioProcessingMs: 12,
+      ttsServerTotalMs: 19930,
+    });
+
+    expect(summary.ttsTotalMs).toBe(40265);
+    expect(summary.ttsProviderMs).toBe(19573);
+    expect(summary.ttsPreProviderMs).toBe(45);
+    expect(summary.ttsUsageWriteMs).toBe(18300);
+    expect(summary.ttsAudioProcessingMs).toBe(12);
+    expect(summary.ttsServerTotalMs).toBe(19930);
+    // The real, measured answer this round exists to get: 40265 total -
+    // 19930 the server itself accounts for (pre-provider + provider +
+    // usage write + audio processing) leaves ~20.3s that is genuinely
+    // network/client-side (request+response transfer, response.blob()).
+    expect(summary.ttsNetworkAndTransferMs).toBe(20335);
+  });
+
+  it("returns ttsNetworkAndTransferMs as null (never fabricated) when the server never reported ttsServerTotalMs", () => {
+    const marks: VoiceLatencyMarks = { tts_request_started: 0, tts_audio_received: 40265 };
+
+    const summary = computeVoiceLatencySummary(marks, { ttsProviderMs: 19573 });
+
+    expect(summary.ttsTotalMs).toBe(40265);
+    expect(summary.ttsServerTotalMs).toBeNull();
+    expect(summary.ttsNetworkAndTransferMs).toBeNull();
   });
 
   it("returns an all-null summary for an empty marks object -- no stage ever reached", () => {

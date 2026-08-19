@@ -100,6 +100,20 @@ export interface VoiceLatencySummary {
   consultationTotalMs: number | null;
   ttsProviderMs: number | null;
   ttsTotalMs: number | null;
+  // TTS latency root-cause (2026-08-19, Round 7): the server-side
+  // decomposition of ttsTotalMs - ttsProviderMs (see voice-reply/route.ts's
+  // own preProviderMs/usageWriteMs/audioProcessingMs/serverTotalMs and
+  // CloudVoiceReplyServerTiming) -- null whenever the corresponding
+  // response header was absent, never fabricated. ttsNetworkAndTransferMs
+  // is computed here exactly like sttNetworkAndServerMs: ttsTotalMs minus
+  // the server's own authoritative ttsServerTotalMs, isolating pure
+  // network/client-side time (request + response transfer, response.blob()
+  // read) from anything the server itself accounted for.
+  ttsPreProviderMs: number | null;
+  ttsUsageWriteMs: number | null;
+  ttsAudioProcessingMs: number | null;
+  ttsServerTotalMs: number | null;
+  ttsNetworkAndTransferMs: number | null;
   audioPreparationMs: number | null;
   timeToFirstAudioMs: number | null;
   voiceTurnTotalMs: number | null;
@@ -135,6 +149,13 @@ export interface VoiceLatencyProviderTimings {
   sttProviderMs?: number;
   consultationProviderMs?: number;
   ttsProviderMs?: number;
+  // Round 7: threaded through from CloudVoiceReplyServerTiming exactly
+  // like ttsProviderMs above -- undefined (never a fabricated 0) whenever
+  // the caller never received the corresponding response header.
+  ttsPreProviderMs?: number;
+  ttsUsageWriteMs?: number;
+  ttsAudioProcessingMs?: number;
+  ttsServerTotalMs?: number;
 }
 
 export function computeVoiceLatencySummary(
@@ -148,6 +169,13 @@ export function computeVoiceLatencySummary(
     typeof providerTimings.consultationProviderMs === "number" ? Math.round(providerTimings.consultationProviderMs) : null;
   const ttsTotalMs = diff(marks, "tts_request_started", "tts_audio_received");
   const ttsProviderMs = typeof providerTimings.ttsProviderMs === "number" ? Math.round(providerTimings.ttsProviderMs) : null;
+  const ttsPreProviderMs = typeof providerTimings.ttsPreProviderMs === "number" ? Math.round(providerTimings.ttsPreProviderMs) : null;
+  const ttsUsageWriteMs = typeof providerTimings.ttsUsageWriteMs === "number" ? Math.round(providerTimings.ttsUsageWriteMs) : null;
+  const ttsAudioProcessingMs =
+    typeof providerTimings.ttsAudioProcessingMs === "number" ? Math.round(providerTimings.ttsAudioProcessingMs) : null;
+  const ttsServerTotalMs = typeof providerTimings.ttsServerTotalMs === "number" ? Math.round(providerTimings.ttsServerTotalMs) : null;
+  const ttsNetworkAndTransferMs =
+    ttsTotalMs !== null && ttsServerTotalMs !== null ? Math.max(0, ttsTotalMs - ttsServerTotalMs) : null;
 
   return {
     recordingFinalizeMs: diff(marks, "recording_stopped", "blob_created"),
@@ -159,6 +187,11 @@ export function computeVoiceLatencySummary(
     consultationTotalMs,
     ttsProviderMs,
     ttsTotalMs,
+    ttsPreProviderMs,
+    ttsUsageWriteMs,
+    ttsAudioProcessingMs,
+    ttsServerTotalMs,
+    ttsNetworkAndTransferMs,
     audioPreparationMs: diff(marks, "tts_audio_received", "audio_ready"),
     // Requirement: "utilizatorul trebuie să simtă că AI-ul răspunde cât mai
     // natural după ce termină de vorbit" -- measured from the moment

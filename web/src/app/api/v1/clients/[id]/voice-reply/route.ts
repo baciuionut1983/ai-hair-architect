@@ -83,6 +83,17 @@ function mapProviderErrorToResponse(error: TtsProviderError): { status: number; 
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
+  // TTS latency root-cause (2026-08-19, Round 7): a real production test
+  // showed ttsTotalMs (client-measured, request-sent to audio-received)
+  // roughly DOUBLE ttsProviderMs (this route's own X-Provider-Latency-Ms,
+  // the Gemini synthesize() call alone) -- a ~20.7s gap with no prior way
+  // to tell whether it was auth/DB overhead before the provider call,
+  // response processing after it, or pure network transfer of the audio
+  // bytes. requestReceivedAt anchors that full breakdown: every stage
+  // below reports its own duration relative to this one instant, mirroring
+  // consultation-chat-service.ts's own preProviderReadsMs/replyWriteMs
+  // split -- measure precisely before optimizing, never guess.
+  const requestReceivedAt = Date.now();
   logVoiceReply("INFO", "endpoint_entered");
 
   let body: { text?: unknown; language?: unknown; voiceTurnId?: unknown };
@@ -192,6 +203,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // consultation-chat-service.ts's own recordAttempt scheme exactly.
   const usageCorrelationId = randomUUID();
 
+  // Everything above this point -- request.json(), voiceTurnId validation,
+  // authenticateSessionRequest (a real DB-backed session lookup),
+  // checkRateLimit, resolveOwnedClient (a real DB lookup), and every
+  // validation/config check -- is exactly the bucket consultation-chat-
+  // service.ts calls preProviderReadsMs. Never previously measured for
+  // this route at all.
+  const preProviderMs = Date.now() - requestReceivedAt;
+
   let activeModel = primaryModel;
   let attemptNumber: 1 | 2 = 1;
   let providerCallStartedAt = Date.now();
@@ -289,6 +308,19 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // whichever attempt (1 or 2) actually succeeded.
   const providerLatencyMs = Date.now() - providerCallStartedAt;
 
+  // TTS latency root-cause (2026-08-19, Round 7): this AWAITED DB write
+  // sits directly in the critical path between the provider call finishing
+  // and the audio response being sent -- structurally identical to the
+  // consultationProviderMs bug fixed earlier (a DB write silently
+  // inflating a number that looks like pure provider time), except here
+  // it inflates the client's ttsTotalMs instead of a mislabeled provider
+  // field. Measured, not yet changed: whether to make this fire-and-forget
+  // is a real trade-off against AI Usage Metering's accounting integrity
+  // (every other route in this app awaits the identical call) -- a
+  // decision documented for Round 8, not made unilaterally here. This
+  // round's job is only to prove, with a real number, how much of the
+  // ~20.7s gap this actually accounts for.
+  const usageWriteStartedAt = Date.now();
   // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
   // contract: a metering problem must never turn a successful voice
   // reply into a user-visible failure.
@@ -310,7 +342,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   } catch {
     // Intentionally swallowed -- see comment above.
   }
+  const usageWriteMs = Date.now() - usageWriteStartedAt;
 
+  const audioProcessingStartedAt = Date.now();
   const sampleRateHz = parseSampleRateFromMimeType(result.mimeType);
   const pcm = Buffer.from(result.audioBase64, "base64");
   const wav = wrapPcmAsWav(pcm, sampleRateHz);
@@ -346,6 +380,23 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     );
   }
 
+  // audioProcessingMs covers base64-decoding the provider's response,
+  // building the WAV header/buffer, and validating the actual bytes --
+  // entirely in-memory, no I/O, so this is the bucket expected to be
+  // small; if a real test shows otherwise, that itself is a finding.
+  const audioProcessingMs = Date.now() - audioProcessingStartedAt;
+  // The single authoritative "how much of ttsTotalMs did the server
+  // itself account for" number -- measured end-to-end from
+  // requestReceivedAt rather than summed from the parts above, so it's
+  // correct regardless of whether a retry happened (a failed first
+  // attempt's own duration is automatically included, with no separate
+  // failedFirstAttemptMs bookkeeping needed the way consultation-chat-
+  // service.ts required -- there the total was reconstructed by
+  // subtracting named parts; here it's measured directly). The client
+  // computes ttsNetworkAndTransferMs as ttsTotalMs - ttsServerTotalMs,
+  // mirroring sttNetworkAndServerMs's own subtraction exactly.
+  const serverTotalMs = Date.now() - requestReceivedAt;
+
   // providerMimeType/sampleRateHz/pcmBytes are logged explicitly (not
   // just the final wav.length) so a live retest can directly confirm
   // what Gemini actually returned -- e.g. that it really is the assumed
@@ -362,6 +413,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     audioBytes: wav.length,
     voiceTurnId,
     providerAttemptNumber: attemptNumber,
+    preProviderMs,
+    usageWriteMs,
+    audioProcessingMs,
+    serverTotalMs,
   });
 
   return new Response(new Uint8Array(wav), {
@@ -375,6 +430,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       // Consult AI's own providerAttemptCount field -- 1 unless the single
       // automatic retry above recovered a transient failure.
       "X-Provider-Attempt-Count": String(attemptNumber),
+      // TTS latency root-cause (2026-08-19, Round 7): see the doc comments
+      // at requestReceivedAt/preProviderMs/usageWriteMs/audioProcessingMs/
+      // serverTotalMs above -- the full server-side decomposition of the
+      // gap between ttsProviderMs and the client's own ttsTotalMs.
+      "X-Pre-Provider-Ms": String(preProviderMs),
+      "X-Usage-Write-Ms": String(usageWriteMs),
+      "X-Audio-Processing-Ms": String(audioProcessingMs),
+      "X-Server-Total-Ms": String(serverTotalMs),
     },
   });
 }

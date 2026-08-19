@@ -17,7 +17,7 @@ import { conversationSupportedLanguages, getLanguageDefinition, isCloudTtsLangua
 import type { TranslationKey } from "@/lib/translations";
 import { useUiLanguage } from "@/lib/ui-language-context";
 
-import { logVoiceReplyClientEvent, synthesizeCloudVoiceReply } from "./consultation-chat-cloud-tts-logic";
+import { logVoiceReplyClientEvent, synthesizeCloudVoiceReply, type CloudVoiceReplyServerTiming } from "./consultation-chat-cloud-tts-logic";
 import { AUDIO_UNLOCK_DATA_URI, dataUriToBlob, resolveVoiceReplyEnableOutcome } from "./voice-reply-unlock-logic";
 import {
   buildChatLanguageFields,
@@ -630,7 +630,10 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
     const concludeVoiceTurn = (
       finalMarks: VoiceLatencyMarks,
       outcome: VoiceLatencyTurnOutcome,
-      ttsProviderMs: number | null,
+      // Round 7: the server's full breakdown, or null when TTS never
+      // returned one at all (unsupported language, or a failure with no
+      // successful response to read headers from) -- never fabricated.
+      ttsTiming: CloudVoiceReplyServerTiming | null,
       errorCode?: string,
       providerAttemptCount?: number,
     ) => {
@@ -638,7 +641,11 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       const summary = computeVoiceLatencySummary(finalMarks, {
         sttProviderMs: voiceLatency.sttProviderMs ?? undefined,
         consultationProviderMs: voiceLatency.consultationProviderMs,
-        ttsProviderMs: ttsProviderMs ?? undefined,
+        ttsProviderMs: ttsTiming?.ttsProviderMs ?? undefined,
+        ttsPreProviderMs: ttsTiming?.preProviderMs ?? undefined,
+        ttsUsageWriteMs: ttsTiming?.usageWriteMs ?? undefined,
+        ttsAudioProcessingMs: ttsTiming?.audioProcessingMs ?? undefined,
+        ttsServerTotalMs: ttsTiming?.serverTotalMs ?? undefined,
       });
       logVoiceLatencySummary(voiceLatency.attemptId, summary);
       reportVoiceLatencySummary(clientId, voiceLatency.attemptId, outcome, summary, { fetch: bindFetch(fetch) }, {
@@ -677,7 +684,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       // re-solving the same problem a second, differently-worded way.
       { fetch: bindFetch(fetch), signal: abortController.signal },
       {
-        onSuccess: (audioBlob, ttsProviderMs, ttsProviderAttemptCount) => {
+        onSuccess: (audioBlob, ttsTiming) => {
           // Voice reliability hardening: a NEWER speakMessage call (a
           // second message sent, or handleStopSpeaking) already
           // superseded this one while its cloud TTS request was still in
@@ -714,7 +721,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
             // Cloud audio never played -- the turn ends here (falling
             // back to the local Web Speech path, which has no provider
             // timing to report), with whatever real marks were reached.
-            concludeVoiceTurn(ttsMarks, "tts_fallback_local", ttsProviderMs, "tts_playback_error", ttsProviderAttemptCount ?? undefined);
+            concludeVoiceTurn(ttsMarks, "tts_fallback_local", ttsTiming, "tts_playback_error", ttsTiming.providerAttemptCount ?? undefined);
           });
 
           // Playback-stage diagnostics (requirement: audio received ->
@@ -742,7 +749,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
             stopCloudAudio();
             if (voiceLatency) {
               ttsMarks = markVoiceLatencyStage(ttsMarks, "playback_ended", performance.now());
-              concludeVoiceTurn(ttsMarks, "tts_completed", ttsProviderMs, undefined, ttsProviderAttemptCount ?? undefined);
+              concludeVoiceTurn(ttsMarks, "tts_completed", ttsTiming, undefined, ttsTiming.providerAttemptCount ?? undefined);
             }
           };
           audio.onerror = () => {

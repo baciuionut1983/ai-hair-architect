@@ -48,6 +48,22 @@ export function logVoiceReplyClientEvent(event: string, details: Record<string, 
 
 export type CloudVoiceReplyFailureReason = "network" | "unavailable";
 
+// TTS latency root-cause (2026-08-19, Round 7): a real production test
+// showed ttsTotalMs roughly double ttsProviderMs with no way to tell why.
+// This bundles the server's own granular breakdown (voice-reply/route.ts's
+// new X-Pre-Provider-Ms/X-Usage-Write-Ms/X-Audio-Processing-Ms/
+// X-Server-Total-Ms headers) so the caller can compute exactly where the
+// rest of that gap goes, the same "never fabricate, null when the header
+// is genuinely absent" contract every other field here already follows.
+export interface CloudVoiceReplyServerTiming {
+  ttsProviderMs: number | null;
+  providerAttemptCount: number | null;
+  preProviderMs: number | null;
+  usageWriteMs: number | null;
+  audioProcessingMs: number | null;
+  serverTotalMs: number | null;
+}
+
 export interface SynthesizeCloudVoiceReplyDeps {
   fetch: typeof fetch;
   // Voice reliability hardening (2026-08-18): optional -- when the caller
@@ -62,17 +78,13 @@ export interface SynthesizeCloudVoiceReplyDeps {
 }
 
 export interface SynthesizeCloudVoiceReplyCallbacks {
-  // Voice latency audit (2026-08-18): ttsProviderMs is the SERVER's own
-  // measured Gemini TTS call duration (see voice-reply/route.ts's
-  // X-Provider-Latency-Ms response header -- the same number it already
-  // computes for AI Usage Metering), never a client-side approximation.
-  // `null` when the header is absent (e.g. an older cached/proxied
-  // response) -- never fabricated. TTS reliability hardening
-  // (2026-08-19): providerAttemptCount is the server's own real count (1,
-  // or 2 if its single automatic retry recovered a transient failure),
-  // read from X-Provider-Attempt-Count -- null only when the header is
-  // genuinely absent.
-  onSuccess: (audioBlob: Blob, ttsProviderMs: number | null, providerAttemptCount: number | null) => void;
+  // Voice latency audit (2026-08-18) / Round 7: `timing` is entirely the
+  // SERVER's own measured breakdown (see CloudVoiceReplyServerTiming's own
+  // field docs and voice-reply/route.ts's X-*-Ms response headers), never
+  // a client-side approximation -- each field is `null` individually when
+  // its header is absent (e.g. an older cached/proxied response), never
+  // fabricated.
+  onSuccess: (audioBlob: Blob, timing: CloudVoiceReplyServerTiming) => void;
   // "network": the request never completed (fetch threw -- offline, CORS,
   // the request never left the browser). "unavailable": a real HTTP
   // response came back, but not 2xx (provider not configured, rate
@@ -140,13 +152,20 @@ export async function synthesizeCloudVoiceReply(
 
   try {
     const blob = await response.blob();
-    const latencyHeader = response.headers.get("X-Provider-Latency-Ms");
-    const ttsProviderMs = latencyHeader !== null && Number.isFinite(Number(latencyHeader)) ? Number(latencyHeader) : null;
-    const attemptCountHeader = response.headers.get("X-Provider-Attempt-Count");
-    const providerAttemptCount =
-      attemptCountHeader !== null && Number.isFinite(Number(attemptCountHeader)) ? Number(attemptCountHeader) : null;
+    const numericHeader = (name: string): number | null => {
+      const raw = response.headers.get(name);
+      return raw !== null && Number.isFinite(Number(raw)) ? Number(raw) : null;
+    };
+    const timing: CloudVoiceReplyServerTiming = {
+      ttsProviderMs: numericHeader("X-Provider-Latency-Ms"),
+      providerAttemptCount: numericHeader("X-Provider-Attempt-Count"),
+      preProviderMs: numericHeader("X-Pre-Provider-Ms"),
+      usageWriteMs: numericHeader("X-Usage-Write-Ms"),
+      audioProcessingMs: numericHeader("X-Audio-Processing-Ms"),
+      serverTotalMs: numericHeader("X-Server-Total-Ms"),
+    };
     logVoiceReplyClientEvent("cloud_success", { audioBytes: blob.size });
-    callbacks.onSuccess(blob, ttsProviderMs, providerAttemptCount);
+    callbacks.onSuccess(blob, timing);
   } catch (error) {
     logVoiceReplyClientEvent("cloud_blob_read_threw", {
       errorName: error instanceof Error ? error.name : "unknown",
