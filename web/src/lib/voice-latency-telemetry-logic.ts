@@ -108,6 +108,13 @@ export interface VoiceLatencyTelemetryInput {
   // null in production despite the server computing real values for all
   // of them). Bounded to real HTTP header name characters only.
   ttsResponseHeaders?: string;
+  // Round 9: the git commit SHA the CLIENT bundle was actually built from
+  // (see next.config.ts's resolveBuildCommitSha) -- lets an operator
+  // confirm, directly from this one log line, whether a given test really
+  // ran the code a given round shipped, rather than a stale cached
+  // bundle from before that deploy. A 40-char hex SHA, or "unknown" if
+  // git was unavailable at build time.
+  clientBuildSha?: string;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -139,6 +146,11 @@ const ERROR_CODE_PATTERN = /^[A-Za-z0-9_]{1,64}$/;
 // response's header count while still rejecting an attempt to smuggle
 // anything else through this field.
 const TTS_RESPONSE_HEADERS_PATTERN = /^[A-Za-z0-9,-]{0,500}$/;
+
+// A real git SHA (full 40-char or the "unknown" fallback resolveBuildCommitSha
+// returns when git itself was unavailable at build time) -- never a
+// free-form string.
+const CLIENT_BUILD_SHA_PATTERN = /^([A-Fa-f0-9]{7,40}|unknown)$/;
 
 // Mirrors STT/Consult AI's own "at most one retry" policy (max 2 real
 // attempts) with a little headroom -- rejects only an implausible value,
@@ -230,6 +242,14 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     ttsResponseHeaders = input.ttsResponseHeaders;
   }
 
+  let clientBuildSha: string | undefined;
+  if (input.clientBuildSha !== undefined) {
+    if (typeof input.clientBuildSha !== "string" || !CLIENT_BUILD_SHA_PATTERN.test(input.clientBuildSha)) {
+      return { ok: false, reason: "invalid_client_build_sha" };
+    }
+    clientBuildSha = input.clientBuildSha;
+  }
+
   // Unknown extra keys on `summary` (or on the top-level body) are simply
   // never read, not rejected -- an allow-list extraction is exactly as
   // strict against injection/type-confusion as an exact-shape check, and
@@ -245,6 +265,7 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(providerAttemptCount !== undefined ? { providerAttemptCount } : {}),
       ...(elapsedSinceMicRequestMs !== undefined ? { elapsedSinceMicRequestMs } : {}),
       ...(ttsResponseHeaders !== undefined ? { ttsResponseHeaders } : {}),
+      ...(clientBuildSha !== undefined ? { clientBuildSha } : {}),
     },
   };
 }

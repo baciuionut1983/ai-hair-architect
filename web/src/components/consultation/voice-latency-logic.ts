@@ -317,7 +317,19 @@ export function reportVoiceLatencySummary(
     .fetch(`/api/v1/clients/${clientId}/voice-latency`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ attemptId, outcome, summary, ...diagnostics }),
+      // Round 9: clientBuildSha rides along on every report automatically
+      // (never left to individual call sites to remember) -- see
+      // next.config.ts's own doc comment on resolveBuildCommitSha for why
+      // this exists. NEXT_PUBLIC_APP_COMMIT_SHA is statically inlined at
+      // build time, so this is always the SHA of whatever bundle is
+      // actually executing, not a runtime guess.
+      body: JSON.stringify({
+        attemptId,
+        outcome,
+        summary,
+        ...diagnostics,
+        clientBuildSha: process.env.NEXT_PUBLIC_APP_COMMIT_SHA,
+      }),
     })
     .catch(() => {});
 }

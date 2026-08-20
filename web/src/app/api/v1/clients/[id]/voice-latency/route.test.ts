@@ -204,4 +204,35 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     });
     logSpy.mockRestore();
   });
+
+  // Round 9 (stale-client-bundle diagnosis): clientBuildSha is the one
+  // field that lets an operator directly confirm, from this log line
+  // alone, whether a given production test actually ran the code a given
+  // round shipped -- see next.config.ts's own doc comment.
+  it("logs clientBuildSha when the client reported one", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-101",
+      outcome: "tts_completed",
+      summary: validSummary(),
+      clientBuildSha: "c491a32bede0dd2c4e94c18681314edd3373f047",
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({ clientBuildSha: "c491a32bede0dd2c4e94c18681314edd3373f047" });
+    logSpy.mockRestore();
+  });
+
+  it("logs clientBuildSha as null (never fabricated) when the client didn't report one", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-102", outcome: "tts_completed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({ clientBuildSha: null });
+    logSpy.mockRestore();
+  });
 });

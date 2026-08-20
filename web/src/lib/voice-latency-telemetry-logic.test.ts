@@ -328,6 +328,90 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // Round 8: the header-visibility diagnostic used to investigate why 5 TTS
+  // timing fields read as null despite the server logging real values.
+  describe("ttsResponseHeaders", () => {
+    it("accepts a comma-separated list of real HTTP header names", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        ttsResponseHeaders: "Content-Type,X-Provider-Latency-Ms,X-Pre-Provider-Ms",
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ ttsResponseHeaders: "Content-Type,X-Provider-Latency-Ms,X-Pre-Provider-Ms" }),
+      });
+    });
+
+    it("accepts an empty string (a response with no readable headers at all)", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        ttsResponseHeaders: "",
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ ttsResponseHeaders: "" }) });
+    });
+
+    it("rejects anything outside real header-name characters -- never a raw string smuggled through", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        ttsResponseHeaders: "Content-Type; DROP TABLE users;",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_tts_response_headers" });
+    });
+
+    it("omits the field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect("ttsResponseHeaders" in result.value).toBe(false);
+    });
+  });
+
+  // Round 9 (stale-client-bundle diagnosis): see next.config.ts's own doc
+  // comment on resolveBuildCommitSha.
+  describe("clientBuildSha", () => {
+    it("accepts a real 40-char git SHA", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        clientBuildSha: "c491a32bede0dd2c4e94c18681314edd3373f047",
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ clientBuildSha: "c491a32bede0dd2c4e94c18681314edd3373f047" }),
+      });
+    });
+
+    it("accepts the 'unknown' fallback resolveBuildCommitSha returns when git was unavailable at build time", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        clientBuildSha: "unknown",
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ clientBuildSha: "unknown" }) });
+    });
+
+    it("rejects a non-hex, non-'unknown' value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        clientBuildSha: "not a real sha at all",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_client_build_sha" });
+    });
+  });
+
   describe("terminalStageForOutcome", () => {
     it("maps every outcome to exactly one of the four real pipeline stages, matching where each outcome actually concludes", () => {
       expect(terminalStageForOutcome("stt_failed")).toBe("stt");

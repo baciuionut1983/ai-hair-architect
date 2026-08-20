@@ -5,6 +5,7 @@ import {
   logVoiceLatencySummary,
   markVoiceLatencyStage,
   mergeVoiceLatencyMarks,
+  reportVoiceLatencySummary,
   type VoiceLatencyMarks,
 } from "./voice-latency-logic";
 
@@ -282,5 +283,54 @@ describe("logVoiceLatencySummary", () => {
     }
 
     logSpy.mockRestore();
+  });
+});
+
+// Round 9 (stale-client-bundle diagnosis): a real production test showed 5
+// TTS timing fields still null despite Round 8 shipping them, while an
+// OLDER field kept working -- the only explanation covering every symptom
+// is a browser tab running a JS bundle built before those changes shipped.
+// clientBuildSha (NEXT_PUBLIC_APP_COMMIT_SHA, statically inlined at build
+// time -- see next.config.ts) rides along on every report automatically,
+// so the next real test settles this with real evidence instead of
+// presuming again.
+describe("reportVoiceLatencySummary", () => {
+  it("includes clientBuildSha (from NEXT_PUBLIC_APP_COMMIT_SHA) in every POST body, without any call site having to pass it", async () => {
+    const originalSha = process.env.NEXT_PUBLIC_APP_COMMIT_SHA;
+    process.env.NEXT_PUBLIC_APP_COMMIT_SHA = "abc1234567890abc1234567890abc1234567890";
+    try {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(null));
+      const summary = computeVoiceLatencySummary({ stt_request_started: 0, transcript_ready: 500 });
+
+      reportVoiceLatencySummary("client-1", "attempt-123", "stt_failed", summary, { fetch: fetchMock });
+
+      await Promise.resolve();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [, init] = fetchMock.mock.calls[0];
+      const body = JSON.parse((init as { body: string }).body);
+      expect(body.clientBuildSha).toBe("abc1234567890abc1234567890abc1234567890");
+    } finally {
+      process.env.NEXT_PUBLIC_APP_COMMIT_SHA = originalSha;
+    }
+  });
+
+  it("posts to the voice-latency endpoint for the given clientId with the attemptId/outcome/summary", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null));
+    const summary = computeVoiceLatencySummary({ stt_request_started: 0, transcript_ready: 500 });
+
+    reportVoiceLatencySummary("client-42", "attempt-abc", "tts_completed", summary, { fetch: fetchMock });
+
+    await Promise.resolve();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/v1/clients/client-42/voice-latency");
+    const body = JSON.parse((init as { body: string }).body);
+    expect(body).toMatchObject({ attemptId: "attempt-abc", outcome: "tts_completed" });
+  });
+
+  it("never throws or rejects when the fetch itself fails -- best-effort observability only", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    const summary = computeVoiceLatencySummary({ stt_request_started: 0, transcript_ready: 500 });
+
+    expect(() => reportVoiceLatencySummary("client-1", "attempt-1", "stt_failed", summary, { fetch: fetchMock })).not.toThrow();
   });
 });

@@ -1,6 +1,33 @@
+import { execSync } from "child_process";
+
 import type { NextConfig } from "next";
 
+// Stale-client-bundle diagnosis (2026-08-20, Round 9): a real production
+// test showed 5 TTS timing fields (introduced in the immediately prior
+// deploy) still reading as null, while an OLDER field (ttsProviderMs,
+// introduced two deploys earlier) worked correctly -- traced by code to
+// the exact old vs. new onSuccess callback signatures, and the only
+// coherent explanation covering every symptom at once (including the
+// 16kHz STT downsampling appearing to have zero effect) is that the
+// browser tab ran a JS bundle built before these changes shipped, never
+// reloaded since. This build-time git SHA is embedded into the client
+// bundle (NEXT_PUBLIC_* vars are statically inlined at build time) so
+// the VOICE_LATENCY_SUMMARY log line can directly answer "was this
+// browser actually running the code we think it was" on the next real
+// test, instead of presuming again. Falls back to "unknown" -- never
+// blocks a build -- if git is unavailable in the build environment.
+function resolveBuildCommitSha(): string {
+  try {
+    return execSync("git rev-parse HEAD").toString().trim();
+  } catch {
+    return "unknown";
+  }
+}
+
 const nextConfig: NextConfig = {
+  env: {
+    NEXT_PUBLIC_APP_COMMIT_SHA: resolveBuildCommitSha(),
+  },
   allowedDevOrigins: ["127.0.0.1"],
   async headers() {
     return [

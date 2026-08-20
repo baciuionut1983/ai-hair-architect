@@ -79,6 +79,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       providerAttemptCount: parsed.value.providerAttemptCount ?? null,
       elapsedSinceMicRequestMs: parsed.value.elapsedSinceMicRequestMs ?? null,
       ttsResponseHeaders: parsed.value.ttsResponseHeaders ?? null,
+      // Round 9: see voice-latency-telemetry-logic.ts's own doc comment on
+      // VoiceLatencyTelemetryInput.clientBuildSha -- compare this against
+      // the currently-deployed HEAD commit to confirm whether a given test
+      // actually ran the round's code, or a stale cached bundle.
+      clientBuildSha: parsed.value.clientBuildSha ?? null,
       ...parsed.value.summary,
     })}`,
   );
