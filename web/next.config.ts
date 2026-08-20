@@ -2,6 +2,8 @@ import { execSync } from "child_process";
 
 import type { NextConfig } from "next";
 
+import { resolveBuildCommitSha } from "./src/lib/resolve-build-commit-sha";
+
 // Stale-client-bundle diagnosis (2026-08-20, Round 9): a real production
 // test showed 5 TTS timing fields (introduced in the immediately prior
 // deploy) still reading as null, while an OLDER field (ttsProviderMs,
@@ -14,19 +16,19 @@ import type { NextConfig } from "next";
 // bundle (NEXT_PUBLIC_* vars are statically inlined at build time) so
 // the VOICE_LATENCY_SUMMARY log line can directly answer "was this
 // browser actually running the code we think it was" on the next real
-// test, instead of presuming again. Falls back to "unknown" -- never
-// blocks a build -- if git is unavailable in the build environment.
-function resolveBuildCommitSha(): string {
-  try {
-    return execSync("git rev-parse HEAD").toString().trim();
-  } catch {
-    return "unknown";
-  }
-}
-
+// test, instead of presuming again.
+//
+// Round 10 fix: the very first real production report of clientBuildSha
+// came back "unknown" despite Railway building and deploying the exact
+// right commit -- see resolve-build-commit-sha.ts's own doc comment for
+// the root cause (Railway's containerized build environment doesn't
+// guarantee `git rev-parse` works) and the fix (prefer Railway's own
+// RAILWAY_GIT_COMMIT_SHA, which IS available during the build step per
+// Railway's own docs, falling back to git rev-parse for local dev builds
+// where that variable is never set).
 const nextConfig: NextConfig = {
   env: {
-    NEXT_PUBLIC_APP_COMMIT_SHA: resolveBuildCommitSha(),
+    NEXT_PUBLIC_APP_COMMIT_SHA: resolveBuildCommitSha({ env: process.env, execSync }),
   },
   allowedDevOrigins: ["127.0.0.1"],
   async headers() {
