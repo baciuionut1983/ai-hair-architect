@@ -868,21 +868,36 @@ describe("sendConsultationMessage", () => {
   // Voice latency audit (2026-08-18): a real, measured duration of just
   // the provider.respond() call -- reused from AI Usage Metering's own
   // latencyMs computation, never a second, separate (or fabricated) value.
+  //
+  // CI reliability follow-up (2026-08-20, Round 11): this used a real
+  // setTimeout(20) racing a >=20 assertion -- the same tight-threshold
+  // real-timer pattern that already flaked once this session
+  // (failedFirstAttemptMs, fixed in c9208e2). A real CI run measured 19ms.
+  // Switched to fake timers, same fix, same reasoning: Date.now() advances
+  // in lockstep with vi.advanceTimersByTimeAsync, so this is now
+  // deterministic every run instead of a real-clock race.
   it("providerLatencyMs reflects the real, measured duration of the provider call, not the whole request", async () => {
-    const provider = stubProvider(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      return { reply: "ok", needsClarification: false };
-    });
+    vi.useFakeTimers();
+    try {
+      const provider = stubProvider(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { reply: "ok", needsClarification: false };
+      });
 
-    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+      const pending = sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+      await vi.advanceTimersByTimeAsync(20);
+      const result = await pending;
 
-    expect(result.outcome).toBe("succeeded");
-    if (result.outcome === "succeeded") {
-      expect(result.providerLatencyMs).toBeGreaterThanOrEqual(20);
-      // An upper bound loose enough to never flake under normal CI load,
-      // but tight enough to prove this measures the provider call itself,
-      // not some much larger unrelated duration.
-      expect(result.providerLatencyMs).toBeLessThan(2000);
+      expect(result.outcome).toBe("succeeded");
+      if (result.outcome === "succeeded") {
+        expect(result.providerLatencyMs).toBeGreaterThanOrEqual(20);
+        // An upper bound loose enough to never flake under normal CI load,
+        // but tight enough to prove this measures the provider call itself,
+        // not some much larger unrelated duration.
+        expect(result.providerLatencyMs).toBeLessThan(2000);
+      }
+    } finally {
+      vi.useRealTimers();
     }
   });
 
@@ -895,88 +910,120 @@ describe("sendConsultationMessage", () => {
   // prove the fix directly: a SLOW provider call and a SLOW reply write
   // are cleanly separated, never conflated.
   describe("consultation instrumentation: providerLatencyMs excludes the reply DB write", () => {
+    // CI reliability follow-up (2026-08-20, Round 11): all four tests below
+    // switched to fake timers for the same reason as the providerLatencyMs
+    // test above -- real setTimeout + a tight >= threshold is a proven,
+    // repeat source of CI flakiness on this exact file this session.
     it("providerLatencyMs stays small even when the assistant reply's DB write is slow -- the exact bug a real production report traced", async () => {
-      const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
-      // Delay ONLY the assistant reply write (not the stylist message
-      // write) -- simulating exactly the class of DB-write latency that
-      // used to be silently folded into providerLatencyMs.
-      messageRepoMock.recordConsultationMessage.mockImplementation(async (input: Parameters<typeof fakeStoredMessage>[0]) => {
-        if (input.role === "assistant") {
-          await new Promise((resolve) => setTimeout(resolve, 120));
+      vi.useFakeTimers();
+      try {
+        const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+        // Delay ONLY the assistant reply write (not the stylist message
+        // write) -- simulating exactly the class of DB-write latency that
+        // used to be silently folded into providerLatencyMs.
+        messageRepoMock.recordConsultationMessage.mockImplementation(async (input: Parameters<typeof fakeStoredMessage>[0]) => {
+          if (input.role === "assistant") {
+            await new Promise((resolve) => setTimeout(resolve, 120));
+          }
+          return fakeStoredMessage(input);
+        });
+
+        const pending = sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+        await vi.advanceTimersByTimeAsync(120);
+        const result = await pending;
+
+        expect(result.outcome).toBe("succeeded");
+        if (result.outcome === "succeeded") {
+          // The reply write took >=120ms, but providerLatencyMs must stay
+          // tiny -- proving it measures ONLY provider.respond(), never any
+          // work that happens after it resolves.
+          expect(result.providerLatencyMs).toBeLessThan(80);
         }
-        return fakeStoredMessage(input);
-      });
-
-      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
-
-      expect(result.outcome).toBe("succeeded");
-      if (result.outcome === "succeeded") {
-        // The reply write took >=120ms, but providerLatencyMs must stay
-        // tiny -- proving it measures ONLY provider.respond(), never any
-        // work that happens after it resolves.
-        expect(result.providerLatencyMs).toBeLessThan(80);
+      } finally {
+        vi.useRealTimers();
       }
     });
 
     it("providerLatencyMs stays small even when the STYLIST message write (before the provider call) is slow", async () => {
-      const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
-      messageRepoMock.recordConsultationMessage.mockImplementation(async (input: Parameters<typeof fakeStoredMessage>[0]) => {
-        if (input.role === "stylist") {
-          await new Promise((resolve) => setTimeout(resolve, 120));
+      vi.useFakeTimers();
+      try {
+        const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+        messageRepoMock.recordConsultationMessage.mockImplementation(async (input: Parameters<typeof fakeStoredMessage>[0]) => {
+          if (input.role === "stylist") {
+            await new Promise((resolve) => setTimeout(resolve, 120));
+          }
+          return fakeStoredMessage(input);
+        });
+
+        const pending = sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+        await vi.advanceTimersByTimeAsync(120);
+        const result = await pending;
+
+        expect(result.outcome).toBe("succeeded");
+        if (result.outcome === "succeeded") {
+          expect(result.providerLatencyMs).toBeLessThan(80);
         }
-        return fakeStoredMessage(input);
-      });
-
-      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
-
-      expect(result.outcome).toBe("succeeded");
-      if (result.outcome === "succeeded") {
-        expect(result.providerLatencyMs).toBeLessThan(80);
+      } finally {
+        vi.useRealTimers();
       }
     });
 
     it("logs a real breakdown (preProviderReadsMs/providerLatencyMs/replyWriteMs/consultationTotalMs/unattributedMs) that correctly attributes a slow reply write to replyWriteMs, not providerLatencyMs", async () => {
-      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-      const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
-      messageRepoMock.recordConsultationMessage.mockImplementation(async (input: Parameters<typeof fakeStoredMessage>[0]) => {
-        if (input.role === "assistant") {
-          await new Promise((resolve) => setTimeout(resolve, 120));
-        }
-        return fakeStoredMessage(input);
-      });
+      vi.useFakeTimers();
+      try {
+        const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+        const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+        messageRepoMock.recordConsultationMessage.mockImplementation(async (input: Parameters<typeof fakeStoredMessage>[0]) => {
+          if (input.role === "assistant") {
+            await new Promise((resolve) => setTimeout(resolve, 120));
+          }
+          return fakeStoredMessage(input);
+        });
 
-      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+        const pending = sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+        await vi.advanceTimersByTimeAsync(120);
+        await pending;
 
-      const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
-      expect(logged.status).toBe("SUCCEEDED");
-      expect(logged.providerLatencyMs).toBeLessThan(80);
-      expect(logged.replyWriteMs).toBeGreaterThanOrEqual(120);
-      // consultationTotalMs must account for the slow write somewhere --
-      // proving the total isn't ALSO silently shrunk by the same bug.
-      expect(logged.consultationTotalMs).toBeGreaterThanOrEqual(120);
-      // The three named windows plus the remainder must never exceed the
-      // real total -- an honest accounting, not numbers that overcount.
-      const sum = logged.preProviderReadsMs + logged.providerLatencyMs + logged.replyWriteMs + logged.unattributedMs;
-      expect(sum).toBeLessThanOrEqual(logged.consultationTotalMs + 5); // +5ms slack for timer granularity
-      expect(logged.unattributedMs).toBeGreaterThanOrEqual(0);
-      logSpy.mockRestore();
+        const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
+        expect(logged.status).toBe("SUCCEEDED");
+        expect(logged.providerLatencyMs).toBeLessThan(80);
+        expect(logged.replyWriteMs).toBeGreaterThanOrEqual(120);
+        // consultationTotalMs must account for the slow write somewhere --
+        // proving the total isn't ALSO silently shrunk by the same bug.
+        expect(logged.consultationTotalMs).toBeGreaterThanOrEqual(120);
+        // The three named windows plus the remainder must never exceed the
+        // real total -- an honest accounting, not numbers that overcount.
+        const sum = logged.preProviderReadsMs + logged.providerLatencyMs + logged.replyWriteMs + logged.unattributedMs;
+        expect(sum).toBeLessThanOrEqual(logged.consultationTotalMs + 5); // +5ms slack for timer granularity
+        expect(logged.unattributedMs).toBeGreaterThanOrEqual(0);
+        logSpy.mockRestore();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("preProviderReadsMs reflects slow analysis/history/memory reads, never the provider call or the reply write", async () => {
-      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-      analysisRepoMock.findLatestAnalysisForClient.mockImplementation(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        return null;
-      });
-      const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+      vi.useFakeTimers();
+      try {
+        const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+        analysisRepoMock.findLatestAnalysisForClient.mockImplementation(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          return null;
+        });
+        const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
 
-      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+        const pending = sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+        await vi.advanceTimersByTimeAsync(100);
+        await pending;
 
-      const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
-      expect(logged.preProviderReadsMs).toBeGreaterThanOrEqual(100);
-      expect(logged.providerLatencyMs).toBeLessThan(80);
-      expect(logged.replyWriteMs).toBeLessThan(80);
-      logSpy.mockRestore();
+        const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
+        expect(logged.preProviderReadsMs).toBeGreaterThanOrEqual(100);
+        expect(logged.providerLatencyMs).toBeLessThan(80);
+        expect(logged.replyWriteMs).toBeLessThan(80);
+        logSpy.mockRestore();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     // Latency instrumentation follow-up (2026-08-20): a real production
