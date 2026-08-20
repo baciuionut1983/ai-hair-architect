@@ -265,4 +265,58 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     expect(parsed).toMatchObject({ sttModel: null });
     logSpy.mockRestore();
   });
+
+  // End-of-speech hardening (2026-08-20): the end-to-end telemetry for the
+  // production VAD/background-music fix.
+  it("logs the full VAD diagnostics breakdown when the client reported one", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-105",
+      outcome: "tts_completed",
+      summary: validSummary(),
+      vadAutoStopReason: "stop_silence",
+      vadRecordingDurationMs: 4500,
+      vadSpeechDurationMs: 2200,
+      vadSilenceAfterSpeechMs: 2000,
+      vadSpeechDetectedAtMs: 300,
+      vadSpeechEndedAtMs: 2500,
+      vadMaxDurationTriggered: false,
+      vadMode: "heuristic-rms-spectral-v1",
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadAutoStopReason: "stop_silence",
+      vadRecordingDurationMs: 4500,
+      vadSpeechDurationMs: 2200,
+      vadSilenceAfterSpeechMs: 2000,
+      vadSpeechDetectedAtMs: 300,
+      vadSpeechEndedAtMs: 2500,
+      vadMaxDurationTriggered: false,
+      vadMode: "heuristic-rms-spectral-v1",
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs every VAD diagnostic field as null (never fabricated) when the client didn't report VAD at all -- e.g. VAD setup failed", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-106", outcome: "tts_completed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadAutoStopReason: null,
+      vadRecordingDurationMs: null,
+      vadSpeechDurationMs: null,
+      vadSilenceAfterSpeechMs: null,
+      vadSpeechDetectedAtMs: null,
+      vadSpeechEndedAtMs: null,
+      vadMaxDurationTriggered: null,
+      vadMode: null,
+    });
+    logSpy.mockRestore();
+  });
 });

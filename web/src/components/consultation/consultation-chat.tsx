@@ -49,7 +49,8 @@ import {
 } from "./consultation-chat-tts-logic";
 import { TeachAiPanel } from "./teach-ai-panel";
 import { bindFetch } from "./teach-ai-panel-logic";
-import { useVoiceRecording, type VoiceTurnLatencyInfo } from "./use-voice-recording";
+import { useVoiceRecording, vadDiagnosticsToReportFields, type VoiceTurnLatencyInfo } from "./use-voice-recording";
+import type { VoiceActivityDiagnostics } from "./voice-activity-logic";
 import {
   computeElapsedSinceMicRequestMs,
   computeVoiceLatencySummary,
@@ -103,6 +104,10 @@ interface VoiceTurnLatencyContext {
   // STT-only failure) can still be attributed to a model -- never
   // fabricated when absent.
   sttModel?: string | null;
+  // End-of-speech hardening (2026-08-20): carried through the same way as
+  // sttModel, for the same reason -- never fabricated when VAD never ran
+  // for this attempt.
+  vadDiagnostics?: VoiceActivityDiagnostics | null;
 }
 
 const MEMORY_ACTION_LABELS: Record<string, string> = {
@@ -483,6 +488,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         // genuinely didn't include a model string.
         sttModel: voiceTurn.sttModel ?? undefined,
         elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(finalMarks, performance.now()),
+        ...vadDiagnosticsToReportFields(voiceTurn.vadDiagnostics ?? null),
       });
     };
 
@@ -546,6 +552,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
                 marks,
                 sttProviderMs: voiceTurn.sttProviderMs,
                 sttModel: voiceTurn.sttModel,
+                vadDiagnostics: voiceTurn.vadDiagnostics,
                 consultationProviderMs: payload.providerLatencyMs,
               }
             : undefined,
@@ -671,6 +678,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         // tts_completed/tts_fallback_local/tts_failed, not just an
         // STT-only outcome -- still attributes to the STT model that ran.
         sttModel: voiceLatency.sttModel ?? undefined,
+        ...vadDiagnosticsToReportFields(voiceLatency.vadDiagnostics ?? null),
       });
     };
 

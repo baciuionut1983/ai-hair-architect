@@ -119,6 +119,17 @@ export interface VoiceLatencyTelemetryInput {
   // string voice-transcript/route.ts actually resolved and used --
   // real Gemini model identifiers (letters, digits, dots, hyphens).
   sttModel?: string;
+  // End-of-speech hardening (2026-08-20): see voice-activity-logic.ts's own
+  // VoiceActivityDiagnostics doc comments for exactly what each of these
+  // means -- never audio, never a transcript, purely technical/timing.
+  vadAutoStopReason?: string;
+  vadRecordingDurationMs?: number;
+  vadSpeechDurationMs?: number;
+  vadSilenceAfterSpeechMs?: number;
+  vadSpeechDetectedAtMs?: number;
+  vadSpeechEndedAtMs?: number;
+  vadMaxDurationTriggered?: boolean;
+  vadMode?: string;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -165,6 +176,25 @@ const STT_MODEL_PATTERN = /^[A-Za-z0-9.-]{1,100}$/;
 // attempts) with a little headroom -- rejects only an implausible value,
 // never a real one.
 const MAX_PLAUSIBLE_PROVIDER_ATTEMPTS = 5;
+
+// Every real value voice-activity-logic.ts's VoiceActivityAutoStopReason
+// can produce -- a fixed enum, never a free-form string.
+const VAD_AUTO_STOP_REASONS = new Set(["continue", "stop_silence", "stop_no_speech_timeout", "stop_max_duration", "manual_stop"]);
+
+// Shared bound for every vad*DurationMs/*Ms offset field -- same reasoning
+// as MAX_PLAUSIBLE_DURATION_MS, reused directly since these are the same
+// class of "one real voice turn" duration.
+function parseOptionalDurationField(
+  input: Record<string, unknown>,
+  field: string,
+): { ok: true; value: number | undefined } | { ok: false } {
+  const raw = input[field];
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0 || raw > MAX_PLAUSIBLE_DURATION_MS) {
+    return { ok: false };
+  }
+  return { ok: true, value: Math.round(raw) };
+}
 
 export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTelemetryValidationResult {
   if (typeof body !== "object" || body === null) {
@@ -267,6 +297,41 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     sttModel = input.sttModel;
   }
 
+  let vadAutoStopReason: string | undefined;
+  if (input.vadAutoStopReason !== undefined) {
+    if (typeof input.vadAutoStopReason !== "string" || !VAD_AUTO_STOP_REASONS.has(input.vadAutoStopReason)) {
+      return { ok: false, reason: "invalid_vad_auto_stop_reason" };
+    }
+    vadAutoStopReason = input.vadAutoStopReason;
+  }
+
+  const vadRecordingDurationMs = parseOptionalDurationField(input, "vadRecordingDurationMs");
+  if (!vadRecordingDurationMs.ok) return { ok: false, reason: "invalid_vad_recording_duration_ms" };
+  const vadSpeechDurationMs = parseOptionalDurationField(input, "vadSpeechDurationMs");
+  if (!vadSpeechDurationMs.ok) return { ok: false, reason: "invalid_vad_speech_duration_ms" };
+  const vadSilenceAfterSpeechMs = parseOptionalDurationField(input, "vadSilenceAfterSpeechMs");
+  if (!vadSilenceAfterSpeechMs.ok) return { ok: false, reason: "invalid_vad_silence_after_speech_ms" };
+  const vadSpeechDetectedAtMs = parseOptionalDurationField(input, "vadSpeechDetectedAtMs");
+  if (!vadSpeechDetectedAtMs.ok) return { ok: false, reason: "invalid_vad_speech_detected_at_ms" };
+  const vadSpeechEndedAtMs = parseOptionalDurationField(input, "vadSpeechEndedAtMs");
+  if (!vadSpeechEndedAtMs.ok) return { ok: false, reason: "invalid_vad_speech_ended_at_ms" };
+
+  let vadMaxDurationTriggered: boolean | undefined;
+  if (input.vadMaxDurationTriggered !== undefined) {
+    if (typeof input.vadMaxDurationTriggered !== "boolean") {
+      return { ok: false, reason: "invalid_vad_max_duration_triggered" };
+    }
+    vadMaxDurationTriggered = input.vadMaxDurationTriggered;
+  }
+
+  let vadMode: string | undefined;
+  if (input.vadMode !== undefined) {
+    if (typeof input.vadMode !== "string" || !STT_MODEL_PATTERN.test(input.vadMode)) {
+      return { ok: false, reason: "invalid_vad_mode" };
+    }
+    vadMode = input.vadMode;
+  }
+
   // Unknown extra keys on `summary` (or on the top-level body) are simply
   // never read, not rejected -- an allow-list extraction is exactly as
   // strict against injection/type-confusion as an exact-shape check, and
@@ -284,6 +349,14 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(ttsResponseHeaders !== undefined ? { ttsResponseHeaders } : {}),
       ...(clientBuildSha !== undefined ? { clientBuildSha } : {}),
       ...(sttModel !== undefined ? { sttModel } : {}),
+      ...(vadAutoStopReason !== undefined ? { vadAutoStopReason } : {}),
+      ...(vadRecordingDurationMs.value !== undefined ? { vadRecordingDurationMs: vadRecordingDurationMs.value } : {}),
+      ...(vadSpeechDurationMs.value !== undefined ? { vadSpeechDurationMs: vadSpeechDurationMs.value } : {}),
+      ...(vadSilenceAfterSpeechMs.value !== undefined ? { vadSilenceAfterSpeechMs: vadSilenceAfterSpeechMs.value } : {}),
+      ...(vadSpeechDetectedAtMs.value !== undefined ? { vadSpeechDetectedAtMs: vadSpeechDetectedAtMs.value } : {}),
+      ...(vadSpeechEndedAtMs.value !== undefined ? { vadSpeechEndedAtMs: vadSpeechEndedAtMs.value } : {}),
+      ...(vadMaxDurationTriggered !== undefined ? { vadMaxDurationTriggered } : {}),
+      ...(vadMode !== undefined ? { vadMode } : {}),
     },
   };
 }

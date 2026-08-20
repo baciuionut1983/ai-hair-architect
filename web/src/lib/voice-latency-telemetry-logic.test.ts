@@ -447,6 +447,125 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // End-of-speech hardening (2026-08-20): the end-to-end telemetry for the
+  // production VAD/background-music fix -- see voice-activity-logic.ts's
+  // own VoiceActivityDiagnostics doc comments for what each field means.
+  describe("VAD diagnostics (vadAutoStopReason / vadRecordingDurationMs / etc.)", () => {
+    it("accepts a fully-populated set of VAD diagnostic fields", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadAutoStopReason: "stop_silence",
+        vadRecordingDurationMs: 4500,
+        vadSpeechDurationMs: 2200,
+        vadSilenceAfterSpeechMs: 2000,
+        vadSpeechDetectedAtMs: 300,
+        vadSpeechEndedAtMs: 2500,
+        vadMaxDurationTriggered: false,
+        vadMode: "heuristic-rms-spectral-v1",
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadAutoStopReason: "stop_silence",
+          vadRecordingDurationMs: 4500,
+          vadSpeechDurationMs: 2200,
+          vadSilenceAfterSpeechMs: 2000,
+          vadSpeechDetectedAtMs: 300,
+          vadSpeechEndedAtMs: 2500,
+          vadMaxDurationTriggered: false,
+          vadMode: "heuristic-rms-spectral-v1",
+        }),
+      });
+    });
+
+    it("accepts every real VoiceActivityAutoStopReason value, including manual_stop", () => {
+      for (const reason of ["stop_silence", "stop_no_speech_timeout", "stop_max_duration", "manual_stop"]) {
+        const result = parseVoiceLatencyTelemetryPayload({
+          attemptId: "attempt-1",
+          outcome: "tts_completed",
+          summary: validSummary(),
+          vadAutoStopReason: reason,
+        });
+        expect(result).toEqual({ ok: true, value: expect.objectContaining({ vadAutoStopReason: reason }) });
+      }
+    });
+
+    it("rejects a vadAutoStopReason outside the fixed enum -- never a free-form string", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadAutoStopReason: "the music was too loud",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_auto_stop_reason" });
+    });
+
+    it("rejects a negative or implausibly large vad*Ms field", () => {
+      expect(
+        parseVoiceLatencyTelemetryPayload({
+          attemptId: "attempt-1",
+          outcome: "tts_completed",
+          summary: validSummary(),
+          vadRecordingDurationMs: -5,
+        }),
+      ).toEqual({ ok: false, reason: "invalid_vad_recording_duration_ms" });
+
+      expect(
+        parseVoiceLatencyTelemetryPayload({
+          attemptId: "attempt-1",
+          outcome: "tts_completed",
+          summary: validSummary(),
+          vadSpeechDurationMs: 99_999_999,
+        }),
+      ).toEqual({ ok: false, reason: "invalid_vad_speech_duration_ms" });
+    });
+
+    it("rejects a non-boolean vadMaxDurationTriggered", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadMaxDurationTriggered: "yes",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_max_duration_triggered" });
+    });
+
+    it("rejects a vadMode outside safe identifier characters", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadMode: "not a real mode; DROP TABLE users;",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_mode" });
+    });
+
+    it("omits every VAD field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of [
+          "vadAutoStopReason",
+          "vadRecordingDurationMs",
+          "vadSpeechDurationMs",
+          "vadSilenceAfterSpeechMs",
+          "vadSpeechDetectedAtMs",
+          "vadSpeechEndedAtMs",
+          "vadMaxDurationTriggered",
+          "vadMode",
+        ]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   describe("terminalStageForOutcome", () => {
     it("maps every outcome to exactly one of the four real pipeline stages, matching where each outcome actually concludes", () => {
       expect(terminalStageForOutcome("stt_failed")).toBe("stt");

@@ -298,6 +298,19 @@ export interface VoiceLatencyTerminalDiagnostics {
   // attributed to a model directly from this one log line, never
   // fabricated when the STT response genuinely didn't include one.
   sttModel?: string;
+  // End-of-speech hardening (2026-08-20): see voice-activity-logic.ts's own
+  // VoiceActivityDiagnostics doc comments for exactly what each of these
+  // means and when it's null/omitted -- never fabricated, and
+  // vadSilenceAfterSpeechMs specifically is only ever populated for
+  // autoStopReason "stop_silence".
+  vadAutoStopReason?: string;
+  vadRecordingDurationMs?: number;
+  vadSpeechDurationMs?: number;
+  vadSilenceAfterSpeechMs?: number;
+  vadSpeechDetectedAtMs?: number;
+  vadSpeechEndedAtMs?: number;
+  vadMaxDurationTriggered?: boolean;
+  vadMode?: string;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see

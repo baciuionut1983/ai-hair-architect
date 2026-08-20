@@ -40,7 +40,15 @@ import {
   logClient,
   type VoiceTranscriptionFailureReason,
 } from "./teach-ai-panel-logic";
-import { evaluateVadSample, initVadState, shouldAutoSubmitTranscript, type VadState } from "./voice-activity-logic";
+import {
+  computeVoiceActivityDiagnostics,
+  evaluateVadSample,
+  initVadState,
+  shouldAutoSubmitTranscript,
+  type VadState,
+  type VoiceActivityAutoStopReason,
+  type VoiceActivityDiagnostics,
+} from "./voice-activity-logic";
 import {
   computeElapsedSinceMicRequestMs,
   computeVoiceLatencySummary,
@@ -49,10 +57,31 @@ import {
   mergeVoiceLatencyMarks,
   reportVoiceLatencySummary,
   type VoiceLatencyMarks,
+  type VoiceLatencyTerminalDiagnostics,
 } from "./voice-latency-logic";
 
 const AUDIO_LEVEL_SAMPLE_INTERVAL_MS = 100;
-const ANALYSER_FFT_SIZE = 512;
+// End-of-speech hardening (2026-08-20): bumped from 512 -> 1024 for finer
+// frequency-bin resolution, needed by computeSpeechBandRatio below to
+// isolate the ~300-3400 Hz speech band cleanly. Still a tiny, cheap FFT --
+// this analysis runs at most 10 times/second (AUDIO_LEVEL_SAMPLE_INTERVAL_MS),
+// nowhere near enough for the doubled bin count to be CPU-meaningful on any
+// device this app targets.
+const ANALYSER_FFT_SIZE = 1024;
+// The ~300-3400 Hz "telephony band" -- a standard signal-processing range
+// known to capture the large majority of speech intelligibility (the
+// fundamental plus the first few formants for most voices). Real ambient
+// sources this product's own salon environment contains -- music, a hair
+// dryer, general room hum -- typically do NOT concentrate energy here the
+// way a voice does; see voice-activity-logic.ts's own module comment for
+// the full reasoning.
+const SPEECH_BAND_MIN_HZ = 300;
+const SPEECH_BAND_MAX_HZ = 3400;
+// Identifies which VAD algorithm version produced a given telemetry
+// report -- lets a future round's production data be filtered/compared
+// against the OLD amplitude-only classifier's own historical reports
+// without ambiguity.
+const VAD_MODE = "heuristic-rms-spectral-v1";
 
 // Voice reliability hardening (2026-08-18): maps finishRecording's own
 // honest failure reason to this app's centralized i18n dictionary (see
@@ -113,6 +142,10 @@ export interface VoiceTurnLatencyInfo {
   // Round 11 (gemini-2.5-flash-lite STT evaluation): the server's own
   // resolved STT model string, never fabricated when absent.
   sttModel: string | null;
+  // End-of-speech hardening (2026-08-20): null only when VAD itself never
+  // ran for this attempt (setup failed -- see the try/catch in
+  // toggleRecording), never fabricated.
+  vadDiagnostics: VoiceActivityDiagnostics | null;
 }
 
 export interface UseVoiceRecordingResult {
@@ -146,6 +179,52 @@ function computeRmsLevel(analyser: AnalyserNode, buffer: Uint8Array<ArrayBuffer>
     sumSquares += normalized * normalized;
   }
   return Math.sqrt(sumSquares / buffer.length);
+}
+
+// End-of-speech hardening (2026-08-20): the second, independent signal
+// voice-activity-logic.ts's evaluateVadSample needs -- see that module's
+// own doc comment for why amplitude alone (computeRmsLevel above) cannot
+// tell a stylist's voice apart from sustained ambient background music.
+// Reuses the SAME AnalyserNode already sampled for RMS, just its
+// frequency-domain output (getByteFrequencyData) instead of time-domain --
+// no new browser API, no new dependency. Returns 0 (never speech-shaped)
+// when there is no energy at all to compute a ratio from, rather than
+// dividing by zero.
+function computeSpeechBandRatio(analyser: AnalyserNode, audioContext: AudioContext, freqBuffer: Uint8Array<ArrayBuffer>): number {
+  analyser.getByteFrequencyData(freqBuffer);
+  const binHz = audioContext.sampleRate / analyser.fftSize;
+  const minBin = Math.max(0, Math.floor(SPEECH_BAND_MIN_HZ / binHz));
+  const maxBin = Math.min(freqBuffer.length - 1, Math.ceil(SPEECH_BAND_MAX_HZ / binHz));
+
+  let speechBandEnergy = 0;
+  let totalEnergy = 0;
+  for (let i = 0; i < freqBuffer.length; i += 1) {
+    const magnitude = freqBuffer[i];
+    totalEnergy += magnitude;
+    if (i >= minBin && i <= maxBin) {
+      speechBandEnergy += magnitude;
+    }
+  }
+  return totalEnergy > 0 ? speechBandEnergy / totalEnergy : 0;
+}
+
+// End-of-speech hardening (2026-08-20), Task E: maps the pure
+// VoiceActivityDiagnostics shape onto reportVoiceLatencySummary's own flat,
+// vad-prefixed diagnostic fields -- {} (nothing added) when VAD never ran
+// at all for this attempt (setup failed, see the try/catch below), never
+// fabricated zeros.
+export function vadDiagnosticsToReportFields(diagnostics: VoiceActivityDiagnostics | null): Partial<VoiceLatencyTerminalDiagnostics> {
+  if (!diagnostics) return {};
+  return {
+    vadAutoStopReason: diagnostics.autoStopReason ?? undefined,
+    vadRecordingDurationMs: diagnostics.recordingDurationMs ?? undefined,
+    vadSpeechDurationMs: diagnostics.speechDurationMs ?? undefined,
+    vadSilenceAfterSpeechMs: diagnostics.silenceAfterSpeechMs ?? undefined,
+    vadSpeechDetectedAtMs: diagnostics.speechDetectedAtMs ?? undefined,
+    vadSpeechEndedAtMs: diagnostics.speechEndedAtMs ?? undefined,
+    vadMaxDurationTriggered: diagnostics.maxDurationTriggered,
+    vadMode: diagnostics.vadMode,
+  };
 }
 
 export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVoiceRecordingOptions): UseVoiceRecordingResult {
@@ -187,6 +266,33 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
   // Consult AI/TTS (see use-voice-recording.ts's own onTranscript doc
   // comment above).
   const micMarksRef = useRef<VoiceLatencyMarks>({});
+  // End-of-speech hardening (2026-08-20), Task E: raw ingredients for
+  // computeVoiceActivityDiagnostics, populated by the VAD interval (or the
+  // manual-stop branch) below and read once, in media.onstop, to build the
+  // actual telemetry report -- see readVoiceActivityDiagnostics. All reset
+  // to null at the start of every new recording. vadRecordingStartedAtRef
+  // stays null if VAD setup itself failed (see the try/catch around the
+  // AudioContext graph below) -- readVoiceActivityDiagnostics treats that
+  // as "no VAD diagnostics to report" rather than fabricating zeros.
+  const vadRecordingStartedAtRef = useRef<number | null>(null);
+  const vadSpeechDetectedAtRef = useRef<number | null>(null);
+  const vadLastSpeechAtRef = useRef<number | null>(null);
+  const vadAutoStopReasonRef = useRef<VoiceActivityAutoStopReason | null>(null);
+  const vadStopDecidedAtRef = useRef<number | null>(null);
+
+  const readVoiceActivityDiagnostics = useCallback((): VoiceActivityDiagnostics | null => {
+    if (vadRecordingStartedAtRef.current === null || vadStopDecidedAtRef.current === null || vadAutoStopReasonRef.current === null) {
+      return null;
+    }
+    return computeVoiceActivityDiagnostics({
+      recordingStartedAt: vadRecordingStartedAtRef.current,
+      stopDecidedAt: vadStopDecidedAtRef.current,
+      speechDetectedAt: vadSpeechDetectedAtRef.current,
+      lastSpeechAt: vadLastSpeechAtRef.current,
+      autoStopReason: vadAutoStopReasonRef.current,
+      vadMode: VAD_MODE,
+    });
+  }, []);
 
   const toggleRecording = useCallback(() => {
     if (recording) {
@@ -198,6 +304,12 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
       // ever runs once regardless, this just avoids the redundant call.
       if (!hasStoppedRef.current) {
         hasStoppedRef.current = true;
+        // Recorded BEFORE stop() -- a manual click racing VAD's own
+        // interval must never be misattributed as a VAD decision (VAD's
+        // own interval bails out immediately once hasStoppedRef is true,
+        // so whichever of the two set these refs first wins honestly).
+        vadAutoStopReasonRef.current = "manual_stop";
+        vadStopDecidedAtRef.current = performance.now();
         recorder.current?.stop();
       }
       return;
@@ -222,6 +334,11 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
     const attemptId = generateAttemptId();
     attemptIdRef.current = attemptId;
     micMarksRef.current = {};
+    vadRecordingStartedAtRef.current = null;
+    vadSpeechDetectedAtRef.current = null;
+    vadLastSpeechAtRef.current = null;
+    vadAutoStopReasonRef.current = null;
+    vadStopDecidedAtRef.current = null;
 
     void (async () => {
       try {
@@ -277,17 +394,19 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                   errorCode: reason,
                   ...(attemptNumber > 0 ? { providerAttemptCount: attemptNumber } : {}),
                   elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(mergedMarks, performance.now()),
+                  ...vadDiagnosticsToReportFields(readVoiceActivityDiagnostics()),
                 });
               },
               onSuccess: (transcript, _transcriptId, marks, sttProviderMs, attemptNumber, sttModel) => {
                 setProcessing(false);
                 const mergedMarks = mergeVoiceLatencyMarks(micMarksRef.current, marks);
+                const vadDiagnostics = readVoiceActivityDiagnostics();
                 // Empty/whitespace-only would only ever come from a
                 // genuinely unexpected backend response (the route itself
                 // already fails closed on an empty transcript) -- this is
                 // belt-and-suspenders, not the primary guard.
                 if (shouldAutoSubmitTranscript(transcript)) {
-                  onTranscript(transcript, { attemptId, marks: mergedMarks, sttProviderMs, sttModel });
+                  onTranscript(transcript, { attemptId, marks: mergedMarks, sttProviderMs, sttModel, vadDiagnostics });
                 } else {
                   // Same reasoning as the onFailure branch above: this
                   // turn also ends here, since onTranscript (and therefore
@@ -299,6 +418,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                     providerAttemptCount: attemptNumber,
                     sttModel: sttModel ?? undefined,
                     elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(mergedMarks, performance.now()),
+                    ...vadDiagnosticsToReportFields(vadDiagnostics),
                   });
                 }
               },
@@ -322,16 +442,35 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
             const analyser = audioContext.createAnalyser();
             analyser.fftSize = ANALYSER_FFT_SIZE;
             source.connect(analyser);
-            const buffer = new Uint8Array(new ArrayBuffer(analyser.fftSize));
+            const timeBuffer = new Uint8Array(new ArrayBuffer(analyser.fftSize));
+            const freqBuffer = new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount));
             let vadState: VadState = initVadState(performance.now());
+            vadRecordingStartedAtRef.current = vadState.recordingStartedAt;
 
             const intervalId = window.setInterval(() => {
               if (hasStoppedRef.current) return;
-              const level = computeRmsLevel(analyser, buffer);
-              const { state, decision } = evaluateVadSample(vadState, level, performance.now());
+              const rmsLevel = computeRmsLevel(analyser, timeBuffer);
+              const speechBandRatio = computeSpeechBandRatio(analyser, audioContext, freqBuffer);
+              const now = performance.now();
+              const wasSpeechConfirmed = vadState.hasDetectedSpeech;
+              const { state, decision } = evaluateVadSample(vadState, { rmsLevel, speechBandRatio }, now);
               vadState = state;
+              // End-of-speech hardening (2026-08-20): captures exactly
+              // when hasDetectedSpeech first flips true (Task E's
+              // speechDetectedAt), and the most recent speech-like sample
+              // continuously (speechEndedAt, read at whatever moment the
+              // recording actually stops) -- both feed
+              // computeVoiceActivityDiagnostics once recording ends.
+              if (!wasSpeechConfirmed && vadState.hasDetectedSpeech) {
+                vadSpeechDetectedAtRef.current = now;
+              }
+              if (vadState.lastSpeechAt !== null) {
+                vadLastSpeechAtRef.current = vadState.lastSpeechAt;
+              }
               if (decision !== "continue") {
                 hasStoppedRef.current = true;
+                vadAutoStopReasonRef.current = decision;
+                vadStopDecidedAtRef.current = now;
                 recorder.current?.stop();
               }
             }, AUDIO_LEVEL_SAMPLE_INTERVAL_MS);
@@ -363,7 +502,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
         setError(t(reason === "denied" ? "consultAi.voiceError.permissionDenied" : "consultAi.voiceError.microphoneUnavailable"));
       }
     })();
-  }, [recording, clientId, language, t, onTranscript]);
+  }, [recording, clientId, language, t, onTranscript, readVoiceActivityDiagnostics]);
 
   // Cleanup on unmount: release the microphone and stop VAD sampling even
   // if the component goes away mid-recording -- detaching the recorder's

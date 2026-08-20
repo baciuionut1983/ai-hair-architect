@@ -89,6 +89,17 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       // VoiceLatencyTelemetryInput.sttModel -- lets a real production test
       // be attributed to a model directly from this one log line.
       sttModel: parsed.value.sttModel ?? null,
+      // End-of-speech hardening (2026-08-20): see voice-activity-logic.ts's
+      // own VoiceActivityDiagnostics doc comments for exactly what each of
+      // these means -- never audio, never a transcript.
+      vadAutoStopReason: parsed.value.vadAutoStopReason ?? null,
+      vadRecordingDurationMs: parsed.value.vadRecordingDurationMs ?? null,
+      vadSpeechDurationMs: parsed.value.vadSpeechDurationMs ?? null,
+      vadSilenceAfterSpeechMs: parsed.value.vadSilenceAfterSpeechMs ?? null,
+      vadSpeechDetectedAtMs: parsed.value.vadSpeechDetectedAtMs ?? null,
+      vadSpeechEndedAtMs: parsed.value.vadSpeechEndedAtMs ?? null,
+      vadMaxDurationTriggered: parsed.value.vadMaxDurationTriggered ?? null,
+      vadMode: parsed.value.vadMode ?? null,
       ...parsed.value.summary,
     })}`,
   );
