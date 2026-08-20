@@ -651,6 +651,22 @@ describe("voice latency: model", () => {
     const restored = await invoke(audioForm({ attemptId: "attempt-restored" }));
     expect((await restored.json()).model).toBe("gemini-3.6-flash");
   });
+
+  // STT model migration (2026-08-21): a real production 404/NOT_FOUND
+  // proved gemini-2.5-flash-lite is no longer available to this project --
+  // Google's own error.message named gemini-3.1-flash-lite as the
+  // replacement. This is the true last-resort default (both
+  // SPEECH_TO_TEXT_MODEL and AI_ANALYSIS_MODEL absent) -- never itself a
+  // model already proven dead.
+  it("falls back to gemini-3.1-flash-lite when neither SPEECH_TO_TEXT_MODEL nor AI_ANALYSIS_MODEL is set", async () => {
+    delete process.env.SPEECH_TO_TEXT_MODEL;
+    delete process.env.AI_ANALYSIS_MODEL;
+
+    const response = await invoke(audioForm());
+
+    const body = await response.json();
+    expect(body.model).toBe("gemini-3.1-flash-lite");
+  });
 });
 
 // Regression: a live report ("Voice transcription failed. You can still

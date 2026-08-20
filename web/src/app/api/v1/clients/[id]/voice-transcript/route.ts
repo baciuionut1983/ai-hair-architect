@@ -179,7 +179,18 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   }
 
   const apiKey = process.env.AI_ANALYSIS_API_KEY;
-  const primaryModel = process.env.SPEECH_TO_TEXT_MODEL || process.env.AI_ANALYSIS_MODEL || "gemini-2.5-flash";
+  // STT model migration (2026-08-21): a real production 404/NOT_FOUND
+  // proved gemini-2.5-flash-lite is no longer available to this project ("no
+  // longer available to new users" -- Google's own error.message, captured
+  // via sttProviderErrorMessage), which Google's own response body names
+  // gemini-3.1-flash-lite as the replacement for. The actual model used
+  // today is controlled by the SPEECH_TO_TEXT_MODEL env var (an operator
+  // action -- see this route's own resolution order below), not this
+  // hardcoded string; this default only ever applies if BOTH
+  // SPEECH_TO_TEXT_MODEL and AI_ANALYSIS_MODEL are unset. Updated here too
+  // so that last-resort fallback doesn't itself point at a model already
+  // proven dead for this project.
+  const primaryModel = process.env.SPEECH_TO_TEXT_MODEL || process.env.AI_ANALYSIS_MODEL || "gemini-3.1-flash-lite";
   // Voice reliability hardening (2026-08-18): a client-driven retry
   // (finishRecording's own single retry, see teach-ai-panel-logic.ts)
   // sends attemptNumber > 1 -- if an operator has explicitly configured a
