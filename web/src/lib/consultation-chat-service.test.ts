@@ -984,34 +984,50 @@ describe("sendConsultationMessage", () => {
     // providerAttemptCount reached 2 -- this proves the exact mechanism:
     // a slow FAILED first attempt used to be completely invisible,
     // silently absorbed into unattributedMs instead of its own field.
+    // CI reliability follow-up (2026-08-20, Round 9): this test used a real
+    // setTimeout(150) racing against a >=150 assertion -- exactly the kind
+    // of tight-threshold real-timer test that's fine on a quiet local
+    // machine but genuinely flaky under CI runner scheduling jitter
+    // (a real CI run measured 149ms). Switched to fake timers, mirroring
+    // teach-ai-panel-logic.test.ts's own "hung connection" test exactly:
+    // Date.now() advances in lockstep with vi.advanceTimersByTimeAsync,
+    // so failedFirstAttemptMs is now deterministically >=150 every run,
+    // not a real-clock race.
     it("failedFirstAttemptMs captures a slow FAILED first attempt's own duration, and unattributedMs no longer absorbs it", async () => {
-      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-      let calls = 0;
-      const provider = stubProvider(async () => {
-        calls += 1;
-        if (calls === 1) {
-          await new Promise((resolve) => setTimeout(resolve, 150));
-          throw Object.assign(new Error("service unavailable"), { code: "PROVIDER_ERROR", retryable: true, status: 503 });
-        }
-        return { reply: "ok", needsClarification: false };
-      });
+      vi.useFakeTimers();
+      try {
+        const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+        let calls = 0;
+        const provider = stubProvider(async () => {
+          calls += 1;
+          if (calls === 1) {
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            throw Object.assign(new Error("service unavailable"), { code: "PROVIDER_ERROR", retryable: true, status: 503 });
+          }
+          return { reply: "ok", needsClarification: false };
+        });
 
-      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+        const pending = sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+        await vi.advanceTimersByTimeAsync(150);
+        const result = await pending;
 
-      expect(result).toMatchObject({ outcome: "succeeded", providerAttemptCount: 2 });
+        expect(result).toMatchObject({ outcome: "succeeded", providerAttemptCount: 2 });
 
-      const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
-      expect(logged.status).toBe("SUCCEEDED");
-      expect(logged.providerAttemptCount).toBe(2);
-      // The failed first attempt's own ~150ms is now its own named field...
-      expect(logged.failedFirstAttemptMs).toBeGreaterThanOrEqual(150);
-      // ...never counted a second time inside unattributedMs.
-      expect(logged.unattributedMs).toBeLessThan(80);
-      // providerLatencyMs still reflects ONLY the successful retry, never
-      // the failed first attempt's time -- unchanged guarantee from the
-      // previous round's own fix.
-      expect(logged.providerLatencyMs).toBeLessThan(80);
-      logSpy.mockRestore();
+        const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
+        expect(logged.status).toBe("SUCCEEDED");
+        expect(logged.providerAttemptCount).toBe(2);
+        // The failed first attempt's own ~150ms is now its own named field...
+        expect(logged.failedFirstAttemptMs).toBeGreaterThanOrEqual(150);
+        // ...never counted a second time inside unattributedMs.
+        expect(logged.unattributedMs).toBeLessThan(80);
+        // providerLatencyMs still reflects ONLY the successful retry, never
+        // the failed first attempt's time -- unchanged guarantee from the
+        // previous round's own fix.
+        expect(logged.providerLatencyMs).toBeLessThan(80);
+        logSpy.mockRestore();
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("failedFirstAttemptMs is 0 (never fabricated) when no retry happens", async () => {
