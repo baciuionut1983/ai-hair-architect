@@ -84,6 +84,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       // the currently-deployed HEAD commit to confirm whether a given test
       // actually ran the round's code, or a stale cached bundle.
       clientBuildSha: parsed.value.clientBuildSha ?? null,
+      // Round 11 (gemini-2.5-flash-lite STT evaluation): see
+      // voice-latency-telemetry-logic.ts's own doc comment on
+      // VoiceLatencyTelemetryInput.sttModel -- lets a real production test
+      // be attributed to a model directly from this one log line.
+      sttModel: parsed.value.sttModel ?? null,
       ...parsed.value.summary,
     })}`,
   );

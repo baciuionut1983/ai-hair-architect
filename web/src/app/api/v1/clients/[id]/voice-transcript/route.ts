@@ -461,7 +461,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     // ProfessionalMemory row -- a separate, explicit POST to
     // /api/v1/clients/{id}/memories (with confirmed: true) is required
     // before this transcript becomes anything the AI treats as memory.
-    return NextResponse.json({ transcriptId: row.id, transcript: row.transcript, persistedAsMemory: false, providerLatencyMs });
+    //
+    // Round 11 (gemini-2.5-flash-lite STT evaluation): `model` -- the
+    // exact model string that actually ran, whichever of
+    // SPEECH_TO_TEXT_MODEL/AI_ANALYSIS_MODEL/the hardcoded default resolved
+    // -- is included so a real production test can be attributed to a
+    // model without needing to cross-reference the separate VOICE_TRANSCRIPT
+    // log line by attemptId every time.
+    return NextResponse.json({ transcriptId: row.id, transcript: row.transcript, persistedAsMemory: false, providerLatencyMs, model });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       const existing = await prisma.voiceTranscript.findUnique({ where: { id: attemptId } });
@@ -479,7 +486,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           transcriptLength: existing.transcript.length,
           reason: "idempotent_retry_already_persisted",
         });
-        return NextResponse.json({ transcriptId: existing.id, transcript: existing.transcript, persistedAsMemory: false, providerLatencyMs });
+        return NextResponse.json({ transcriptId: existing.id, transcript: existing.transcript, persistedAsMemory: false, providerLatencyMs, model });
       }
     }
     logVoiceTranscript("FAILED", "persistence", {

@@ -412,6 +412,41 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // Round 11 (gemini-2.5-flash-lite STT evaluation): lets a real production
+  // test be attributed to the STT model that actually ran, directly from
+  // this one log line.
+  describe("sttModel", () => {
+    it("accepts a real Gemini model identifier", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        sttModel: "gemini-2.5-flash-lite",
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ sttModel: "gemini-2.5-flash-lite" }) });
+    });
+
+    it("rejects a value outside real model-identifier characters -- never a raw string smuggled through", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        sttModel: "gemini-2.5-flash-lite; DROP TABLE users;",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_stt_model" });
+    });
+
+    it("omits the field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect("sttModel" in result.value).toBe(false);
+    });
+  });
+
   describe("terminalStageForOutcome", () => {
     it("maps every outcome to exactly one of the four real pipeline stages, matching where each outcome actually concludes", () => {
       expect(terminalStageForOutcome("stt_failed")).toBe("stt");

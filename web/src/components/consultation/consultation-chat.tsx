@@ -97,6 +97,12 @@ interface VoiceTurnLatencyContext {
   marks: VoiceLatencyMarks;
   sttProviderMs: number | null;
   consultationProviderMs?: number;
+  // Round 11 (gemini-2.5-flash-lite STT evaluation): the server's own
+  // resolved STT model string, carried through so the turn's FINAL
+  // VOICE_LATENCY_SUMMARY (concluded from speakMessage, not just an
+  // STT-only failure) can still be attributed to a model -- never
+  // fabricated when absent.
+  sttModel?: string | null;
 }
 
 const MEMORY_ACTION_LABELS: Record<string, string> = {
@@ -473,6 +479,9 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       logVoiceLatencySummary(voiceTurn.attemptId, summary);
       reportVoiceLatencySummary(clientId, voiceTurn.attemptId, outcome, summary, { fetch: bindFetch(fetch) }, {
         ...diagnostics,
+        // Round 11: never fabricated -- undefined when the STT response
+        // genuinely didn't include a model string.
+        sttModel: voiceTurn.sttModel ?? undefined,
         elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(finalMarks, performance.now()),
       });
     };
@@ -536,6 +545,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
                 attemptId: voiceTurn.attemptId,
                 marks,
                 sttProviderMs: voiceTurn.sttProviderMs,
+                sttModel: voiceTurn.sttModel,
                 consultationProviderMs: payload.providerLatencyMs,
               }
             : undefined,
@@ -656,6 +666,11 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         // inspect (see CloudVoiceReplyServerTiming.responseHeaderNames) --
         // undefined for every non-TTS outcome, never fabricated.
         ttsResponseHeaders: ttsTiming?.responseHeaderNames,
+        // Round 11: carried through from voiceLatency (see
+        // VoiceTurnLatencyContext.sttModel) so the turn's FINAL summary --
+        // tts_completed/tts_fallback_local/tts_failed, not just an
+        // STT-only outcome -- still attributes to the STT model that ran.
+        sttModel: voiceLatency.sttModel ?? undefined,
       });
     };
 

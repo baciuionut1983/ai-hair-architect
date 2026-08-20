@@ -115,6 +115,10 @@ export interface VoiceLatencyTelemetryInput {
   // bundle from before that deploy. A 40-char hex SHA, or "unknown" if
   // git was unavailable at build time.
   clientBuildSha?: string;
+  // Round 11 (gemini-2.5-flash-lite STT evaluation): the exact STT model
+  // string voice-transcript/route.ts actually resolved and used --
+  // real Gemini model identifiers (letters, digits, dots, hyphens).
+  sttModel?: string;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -151,6 +155,11 @@ const TTS_RESPONSE_HEADERS_PATTERN = /^[A-Za-z0-9,-]{0,500}$/;
 // returns when git itself was unavailable at build time) -- never a
 // free-form string.
 const CLIENT_BUILD_SHA_PATTERN = /^([A-Fa-f0-9]{7,40}|unknown)$/;
+
+// Real Gemini model identifiers (e.g. "gemini-2.5-flash",
+// "gemini-2.5-flash-lite") -- letters, digits, dots, hyphens only, never a
+// free-form string.
+const STT_MODEL_PATTERN = /^[A-Za-z0-9.-]{1,100}$/;
 
 // Mirrors STT/Consult AI's own "at most one retry" policy (max 2 real
 // attempts) with a little headroom -- rejects only an implausible value,
@@ -250,6 +259,14 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     clientBuildSha = input.clientBuildSha;
   }
 
+  let sttModel: string | undefined;
+  if (input.sttModel !== undefined) {
+    if (typeof input.sttModel !== "string" || !STT_MODEL_PATTERN.test(input.sttModel)) {
+      return { ok: false, reason: "invalid_stt_model" };
+    }
+    sttModel = input.sttModel;
+  }
+
   // Unknown extra keys on `summary` (or on the top-level body) are simply
   // never read, not rejected -- an allow-list extraction is exactly as
   // strict against injection/type-confusion as an exact-shape check, and
@@ -266,6 +283,7 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(elapsedSinceMicRequestMs !== undefined ? { elapsedSinceMicRequestMs } : {}),
       ...(ttsResponseHeaders !== undefined ? { ttsResponseHeaders } : {}),
       ...(clientBuildSha !== undefined ? { clientBuildSha } : {}),
+      ...(sttModel !== undefined ? { sttModel } : {}),
     },
   };
 }

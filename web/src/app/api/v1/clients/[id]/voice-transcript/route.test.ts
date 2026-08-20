@@ -595,6 +595,64 @@ describe("voice latency: providerLatencyMs", () => {
   });
 });
 
+// Round 11 (gemini-2.5-flash-lite STT evaluation): `model` is the exact
+// model string that actually ran -- included in the success response so a
+// real production test can be attributed to a model directly from
+// VOICE_LATENCY_SUMMARY, without cross-referencing the separate
+// VOICE_TRANSCRIPT log line by attemptId every time.
+describe("voice latency: model", () => {
+  it("is present in the success response, reflecting whichever env var actually resolved", async () => {
+    const response = await invoke(audioForm());
+
+    const body = await response.json();
+    // beforeEach sets AI_ANALYSIS_MODEL -- SPEECH_TO_TEXT_MODEL is unset by
+    // default, so AI_ANALYSIS_MODEL is exactly what resolves.
+    expect(body.model).toBe("gemini-3.6-flash");
+  });
+
+  it("is present on an idempotent-retry success response too", async () => {
+    const collision = new Prisma.PrismaClientKnownRequestError("Unique constraint failed", { code: "P2002", clientVersion: "test" });
+    prismaMocks.create.mockRejectedValueOnce(collision);
+    prismaMocks.findUnique.mockResolvedValueOnce({ id: "attempt-abc", ownerUserId: "owner-1", transcript: "note" });
+
+    const response = await invoke(audioForm({ attemptId: "attempt-abc", attemptNumber: 2 }));
+
+    const body = await response.json();
+    expect(body.model).toBe("gemini-3.6-flash");
+  });
+
+  // The actual "safe, reversible" mechanism Round 11's Task B asks for:
+  // SPEECH_TO_TEXT_MODEL, an explicit env var already supported by this
+  // route (see primaryModel's own resolution order), takes priority over
+  // AI_ANALYSIS_MODEL -- an operator can point STT at gemini-2.5-flash-lite
+  // for a controlled evaluation, and restore the default by simply unsetting
+  // the variable, with zero code change either way.
+  it("SPEECH_TO_TEXT_MODEL overrides AI_ANALYSIS_MODEL for STT specifically, when explicitly set", async () => {
+    process.env.SPEECH_TO_TEXT_MODEL = "gemini-2.5-flash-lite";
+
+    const response = await invoke(audioForm());
+
+    const body = await response.json();
+    expect(body.model).toBe("gemini-2.5-flash-lite");
+  });
+
+  it("restores the previous default the instant SPEECH_TO_TEXT_MODEL is unset -- proving the rollback is real, not just conceptual", async () => {
+    // A fresh Response per call -- the default beforeEach fetch mock
+    // resolves a single shared Response instance, whose body can only be
+    // read once; reusing it across two invoke() calls in one test would
+    // make the second's response.json() see an already-consumed stream.
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => geminiTranscriptResponse("She had bleach six weeks ago.")));
+
+    process.env.SPEECH_TO_TEXT_MODEL = "gemini-2.5-flash-lite";
+    const overridden = await invoke(audioForm());
+    expect((await overridden.json()).model).toBe("gemini-2.5-flash-lite");
+
+    delete process.env.SPEECH_TO_TEXT_MODEL;
+    const restored = await invoke(audioForm({ attemptId: "attempt-restored" }));
+    expect((await restored.json()).model).toBe("gemini-3.6-flash");
+  });
+});
+
 // Regression: a live report ("Voice transcription failed. You can still
 // type your note.") could not be root-caused because this route had zero
 // diagnostic logging on any branch -- every failure was silent from

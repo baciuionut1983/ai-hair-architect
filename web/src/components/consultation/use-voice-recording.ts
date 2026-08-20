@@ -110,6 +110,9 @@ export interface VoiceTurnLatencyInfo {
   attemptId: string;
   marks: VoiceLatencyMarks;
   sttProviderMs: number | null;
+  // Round 11 (gemini-2.5-flash-lite STT evaluation): the server's own
+  // resolved STT model string, never fabricated when absent.
+  sttModel: string | null;
 }
 
 export interface UseVoiceRecordingResult {
@@ -276,7 +279,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                   elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(mergedMarks, performance.now()),
                 });
               },
-              onSuccess: (transcript, _transcriptId, marks, sttProviderMs, attemptNumber) => {
+              onSuccess: (transcript, _transcriptId, marks, sttProviderMs, attemptNumber, sttModel) => {
                 setProcessing(false);
                 const mergedMarks = mergeVoiceLatencyMarks(micMarksRef.current, marks);
                 // Empty/whitespace-only would only ever come from a
@@ -284,7 +287,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                 // already fails closed on an empty transcript) -- this is
                 // belt-and-suspenders, not the primary guard.
                 if (shouldAutoSubmitTranscript(transcript)) {
-                  onTranscript(transcript, { attemptId, marks: mergedMarks, sttProviderMs });
+                  onTranscript(transcript, { attemptId, marks: mergedMarks, sttProviderMs, sttModel });
                 } else {
                   // Same reasoning as the onFailure branch above: this
                   // turn also ends here, since onTranscript (and therefore
@@ -294,6 +297,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                   logVoiceLatencySummary(attemptId, summary);
                   reportVoiceLatencySummary(clientId, attemptId, "stt_success_not_submitted", summary, { fetch: bindFetch(fetch) }, {
                     providerAttemptCount: attemptNumber,
+                    sttModel: sttModel ?? undefined,
                     elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(mergedMarks, performance.now()),
                   });
                 }

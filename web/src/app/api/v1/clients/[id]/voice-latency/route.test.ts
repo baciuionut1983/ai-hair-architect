@@ -235,4 +235,34 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     expect(parsed).toMatchObject({ clientBuildSha: null });
     logSpy.mockRestore();
   });
+
+  // Round 11 (gemini-2.5-flash-lite STT evaluation): sttModel is what lets
+  // a real production test be attributed to a model directly from this log
+  // line -- the entire point of this round's controlled evaluation.
+  it("logs sttModel when the client reported one", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-103",
+      outcome: "tts_completed",
+      summary: validSummary(),
+      sttModel: "gemini-2.5-flash-lite",
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({ sttModel: "gemini-2.5-flash-lite" });
+    logSpy.mockRestore();
+  });
+
+  it("logs sttModel as null (never fabricated) when the client didn't report one", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-104", outcome: "tts_completed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({ sttModel: null });
+    logSpy.mockRestore();
+  });
 });

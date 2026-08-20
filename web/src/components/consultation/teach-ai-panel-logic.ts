@@ -70,12 +70,19 @@ export interface FinishRecordingCallbacks {
   // didn't include one (never fabricated). The caller (use-voice-
   // recording.ts) merges these with its own earlier mic-phase marks and
   // carries them into the rest of the voice turn.
+  // Round 11 (gemini-2.5-flash-lite STT evaluation): sttModel is the
+  // server's own real, resolved model string (voice-transcript/route.ts's
+  // `model`, whichever of SPEECH_TO_TEXT_MODEL/AI_ANALYSIS_MODEL/its
+  // hardcoded default actually ran) -- null only when the response
+  // genuinely didn't include one, never fabricated. Lets a real production
+  // test be attributed to a model directly from VOICE_LATENCY_SUMMARY.
   onSuccess: (
     transcript: string,
     transcriptId: string | undefined,
     marks: VoiceLatencyMarks,
     sttProviderMs: number | null,
     attemptNumber: number,
+    sttModel: string | null,
   ) => void;
 }
 
@@ -215,7 +222,14 @@ function reasonForServerErrorCode(errorCode: string | null): VoiceTranscriptionF
 }
 
 type UploadAttemptResult =
-  | { outcome: "success"; transcript: string; transcriptId: string | undefined; respondedAt: number; sttProviderMs: number | null }
+  | {
+      outcome: "success";
+      transcript: string;
+      transcriptId: string | undefined;
+      respondedAt: number;
+      sttProviderMs: number | null;
+      sttModel: string | null;
+    }
   | { outcome: "failure"; message: string; reason: VoiceTranscriptionFailureReason; retryable: boolean; respondedAt: number };
 
 async function attemptUpload(
@@ -274,7 +288,7 @@ async function attemptUpload(
     clearTimeout(timer);
   }
 
-  let payload: { transcript?: string; transcriptId?: string; message?: string; error?: string; providerLatencyMs?: number };
+  let payload: { transcript?: string; transcriptId?: string; message?: string; error?: string; providerLatencyMs?: number; model?: string };
   try {
     payload = await response.json();
   } catch (error) {
@@ -317,6 +331,9 @@ async function attemptUpload(
     // duration (voice-transcript/route.ts's providerLatencyMs) -- never
     // fabricated when the response genuinely didn't include one.
     sttProviderMs: typeof payload.providerLatencyMs === "number" ? payload.providerLatencyMs : null,
+    // Round 11: the server's own resolved model string (voice-transcript/
+    // route.ts's `model`) -- never fabricated when absent.
+    sttModel: typeof payload.model === "string" ? payload.model : null,
   };
 }
 
@@ -429,7 +446,7 @@ export async function finishRecording(
 
     if (result.outcome === "success") {
       marks = markVoiceLatencyStage(marks, "transcript_ready", result.respondedAt);
-      callbacks.onSuccess(result.transcript, result.transcriptId, marks, result.sttProviderMs, attemptNumber);
+      callbacks.onSuccess(result.transcript, result.transcriptId, marks, result.sttProviderMs, attemptNumber, result.sttModel);
     } else {
       logClient("request_failed", { attemptId, attemptNumber, reason: "upload_failed", failureReason: result.reason });
       callbacks.onFailure(result.message, result.reason, marks, attemptNumber);

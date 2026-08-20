@@ -106,7 +106,7 @@ describe("finishRecording", () => {
 
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
-    expect(callbacks.onSuccess).toHaveBeenCalledWith("Low density in the temporal areas.", "t-9", expect.any(Object), null, 1);
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("Low density in the temporal areas.", "t-9", expect.any(Object), null, 1, null);
     expect(callbacks.onFailure).not.toHaveBeenCalled();
   });
 
@@ -272,7 +272,7 @@ describe("finishRecording WAV re-encoding", () => {
     expect(uploaded.type).toBe("audio/webm");
     expect(await uploaded.text()).toBe("original");
     expect(callbacks.onFailure).not.toHaveBeenCalled();
-    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1", expect.any(Object), null, 1);
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1", expect.any(Object), null, 1, null);
   });
 
   it("logs wav_reencode_failed (not audio bytes) when encodeAsWav rejects", async () => {
@@ -445,7 +445,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
     expect(fetchStub).toHaveBeenCalledTimes(2);
-    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1", expect.any(Object), null, 2);
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1", expect.any(Object), null, 2, null);
     expect(callbacks.onFailure).not.toHaveBeenCalled();
   });
 
@@ -522,7 +522,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
 
     expect(fetchStub).toHaveBeenCalledTimes(2);
-    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1", expect.any(Object), null, 2);
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1", expect.any(Object), null, 2, null);
   });
 
   // Task requirement D: a genuinely hung connection (never rejects,
@@ -557,7 +557,7 @@ describe("finishRecording voice reliability hardening", () => {
       await pending;
 
       expect(fetchStub).toHaveBeenCalledTimes(2);
-      expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1", expect.any(Object), null, 2);
+      expect(callbacks.onSuccess).toHaveBeenCalledWith("note", "t-1", expect.any(Object), null, 2, null);
       expect(callbacks.onFailure).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
@@ -677,7 +677,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(stream, [new Blob(["real-audio-bytes"])], "audio/wav", "client-1", callbacks, { fetch: fetchStub });
 
     expect(fetchStub).toHaveBeenCalledTimes(2);
-    expect(callbacks.onSuccess).toHaveBeenCalledWith("She had bleach six weeks ago.", "t-1", expect.any(Object), null, 2);
+    expect(callbacks.onSuccess).toHaveBeenCalledWith("She had bleach six weeks ago.", "t-1", expect.any(Object), null, 2, null);
     expect(callbacks.onFailure).not.toHaveBeenCalled();
   });
 
@@ -722,7 +722,7 @@ describe("finishRecording voice reliability hardening", () => {
     await finishRecording(secondStream, [new Blob(["second-recording"])], "audio/wav", "client-1", secondCallbacks, { fetch: succeedingFetch });
 
     expect(succeedingFetch).toHaveBeenCalledTimes(1);
-    expect(secondCallbacks.onSuccess).toHaveBeenCalledWith("second recording works", "t-2", expect.any(Object), null, 1);
+    expect(secondCallbacks.onSuccess).toHaveBeenCalledWith("second recording works", "t-2", expect.any(Object), null, 1, null);
     expect(secondCallbacks.onFailure).not.toHaveBeenCalled();
   });
 
@@ -810,6 +810,31 @@ describe("finishRecording voice reliability hardening", () => {
     const [, , marks, sttProviderMs] = callbacks.onSuccess.mock.calls[0];
     expect(marks.stt_response_received).toEqual(expect.any(Number));
     expect(sttProviderMs).toBe(400);
+  });
+
+  // Round 11 (gemini-2.5-flash-lite STT evaluation): sttModel mirrors
+  // sttProviderMs's own "read from the server's real field, never
+  // fabricated" contract exactly.
+  it("extracts sttModel from the server's own model field", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1", model: "gemini-2.5-flash-lite" }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    const [, , , , , sttModel] = callbacks.onSuccess.mock.calls[0];
+    expect(sttModel).toBe("gemini-2.5-flash-lite");
+  });
+
+  it("passes sttModel as null, never fabricated, when the server response didn't include one", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "note", transcriptId: "t-1" }));
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    const [, , , , , sttModel] = callbacks.onSuccess.mock.calls[0];
+    expect(sttModel).toBeNull();
   });
 
   it("passes marks even on failure, covering every stage reached before the failure", async () => {

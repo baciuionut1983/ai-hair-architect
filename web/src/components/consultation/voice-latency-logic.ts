@@ -291,6 +291,13 @@ export interface VoiceLatencyTerminalDiagnostics {
   // inspect (both tts_completed and tts_fallback_local originate from a
   // successful HTTP response; tts_failed and other outcomes have none).
   ttsResponseHeaders?: string;
+  // Round 11 (gemini-2.5-flash-lite STT evaluation): the exact STT model
+  // string the server actually resolved and used for this turn
+  // (voice-transcript/route.ts's own SPEECH_TO_TEXT_MODEL/AI_ANALYSIS_MODEL/
+  // hardcoded-default resolution) -- lets a real production test be
+  // attributed to a model directly from this one log line, never
+  // fabricated when the STT response genuinely didn't include one.
+  sttModel?: string;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see
