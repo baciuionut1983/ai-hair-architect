@@ -75,6 +75,12 @@ describe("computeVoiceLatencySummary", () => {
       sttTotalMs: 1000,
       consultationProviderMs: 2700,
       consultationTotalMs: 3000,
+      consultationPreProviderMs: null,
+      consultationReplyWriteMs: null,
+      consultationFailedFirstAttemptMs: null,
+      consultationServerTotalMs: null,
+      consultationUnattributedMs: null,
+      consultationNetworkAndTransferMs: null,
       ttsProviderMs: 1300,
       ttsTotalMs: 1500,
       ttsPreProviderMs: null,
@@ -143,6 +149,44 @@ describe("computeVoiceLatencySummary", () => {
     expect(summary.sttTotalMs).toBe(1200);
     expect(summary.sttProviderMs).toBe(900);
     expect(summary.sttNetworkAndServerMs).toBe(300);
+  });
+
+  // Voice latency Round 12: mirrors the TTS Round 7 breakdown tests below
+  // exactly, but for Consult AI -- a real production test showed
+  // consultationTotalMs (~42.445s) nearly TRIPLE consultationProviderMs
+  // (~14.831s), a ~27.6s gap with no way to tell whether it was network,
+  // DB reads, the reply write, or something else. Reproduces that exact
+  // test's real numbers to prove consultationNetworkAndTransferMs surfaces
+  // the gap automatically once the server's own breakdown is available.
+  it("threads through the full Consult AI server timing breakdown when the server reported one, using the actual Round 12 production numbers", () => {
+    const marks: VoiceLatencyMarks = { consultation_request_started: 0, consultation_response_received: 42445 };
+
+    const summary = computeVoiceLatencySummary(marks, {
+      consultationProviderMs: 14831,
+      consultationPreProviderMs: 40,
+      consultationReplyWriteMs: 55,
+      consultationFailedFirstAttemptMs: 0,
+      consultationServerTotalMs: 14950,
+    });
+
+    expect(summary.consultationTotalMs).toBe(42445);
+    expect(summary.consultationProviderMs).toBe(14831);
+    expect(summary.consultationServerTotalMs).toBe(14950);
+    // The real, measured answer this round exists to get: 42445 total -
+    // 14950 the server itself accounts for (pre-provider + provider +
+    // reply write) leaves ~27.5s that is genuinely network/client-side --
+    // not explained by anything the server measured.
+    expect(summary.consultationNetworkAndTransferMs).toBe(27495);
+  });
+
+  it("returns consultationNetworkAndTransferMs as null (never fabricated) when the server never reported consultationServerTotalMs", () => {
+    const marks: VoiceLatencyMarks = { consultation_request_started: 0, consultation_response_received: 42445 };
+
+    const summary = computeVoiceLatencySummary(marks, { consultationProviderMs: 14831 });
+
+    expect(summary.consultationTotalMs).toBe(42445);
+    expect(summary.consultationServerTotalMs).toBeNull();
+    expect(summary.consultationNetworkAndTransferMs).toBeNull();
   });
 
   // Round 7: mirrors the sttNetworkAndServerMs tests above exactly, but for

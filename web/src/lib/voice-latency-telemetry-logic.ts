@@ -66,6 +66,15 @@ const VOICE_LATENCY_SUMMARY_FIELDS = [
   "sttTotalMs",
   "consultationProviderMs",
   "consultationTotalMs",
+  // Round 12: mirrors voice-latency-logic.ts's own new VoiceLatencySummary
+  // fields exactly -- the server-side decomposition of consultationTotalMs
+  // - consultationProviderMs, same pattern as TTS's own Round 7 fields.
+  "consultationPreProviderMs",
+  "consultationReplyWriteMs",
+  "consultationFailedFirstAttemptMs",
+  "consultationServerTotalMs",
+  "consultationUnattributedMs",
+  "consultationNetworkAndTransferMs",
   "ttsProviderMs",
   "ttsTotalMs",
   // Round 7: mirrors voice-latency-logic.ts's own new

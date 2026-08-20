@@ -70,6 +70,25 @@ export type SendConsultationMessageResult =
       // (voice latency telemetry) can report real provider-attempt counts
       // rather than assuming every turn is exactly one call.
       providerAttemptCount: 1 | 2;
+      // Voice latency Round 12: a real production test showed
+      // consultationTotalMs (the CLIENT's own round-trip measurement) at
+      // ~42.4s against providerLatencyMs of ~14.8s -- a ~27.6s gap with no
+      // way to tell whether it was network, DB reads, the reply write, or
+      // something else. These five were ALREADY computed internally for
+      // logConsultationChatSuccess's own CONSULTATION_CHAT log line, just
+      // never returned to the caller -- exposed now, mirroring exactly
+      // the same gap TTS had before Round 7 (see voice-reply/route.ts's
+      // own preProviderMs/usageWriteMs/serverTotalMs). serverTotalMs is
+      // this SAME value logConsultationChatSuccess calls
+      // consultationTotalMs -- renamed here to serverTotalMs specifically
+      // so it's never confused with VoiceLatencySummary's own
+      // consultationTotalMs, which measures the client's full round trip,
+      // not just server processing.
+      preProviderReadsMs: number;
+      replyWriteMs: number;
+      failedFirstAttemptMs: number;
+      serverTotalMs: number;
+      unattributedMs: number;
     }
   | {
       outcome: "failed";
@@ -556,6 +575,11 @@ export async function sendConsultationMessage(
       replyLanguage,
       providerLatencyMs: providerOnlyMs,
       providerAttemptCount: attemptNumber,
+      preProviderReadsMs,
+      replyWriteMs,
+      failedFirstAttemptMs,
+      serverTotalMs: consultationTotalMs,
+      unattributedMs,
     };
   } catch (error) {
     logConsultationChatFailure({

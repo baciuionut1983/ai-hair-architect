@@ -98,6 +98,15 @@ interface VoiceTurnLatencyContext {
   marks: VoiceLatencyMarks;
   sttProviderMs: number | null;
   consultationProviderMs?: number;
+  // Voice latency Round 12: the server's own full Consult AI timing
+  // breakdown, threaded through the same way as consultationProviderMs --
+  // see consultation-chat-service.ts's own SendConsultationMessageResult
+  // doc comment for what closed the ~27.6s gap this exists to measure.
+  consultationPreProviderMs?: number;
+  consultationReplyWriteMs?: number;
+  consultationFailedFirstAttemptMs?: number;
+  consultationServerTotalMs?: number;
+  consultationUnattributedMs?: number;
   // Round 11 (gemini-2.5-flash-lite STT evaluation): the server's own
   // resolved STT model string, carried through so the turn's FINAL
   // VOICE_LATENCY_SUMMARY (concluded from speakMessage, not just an
@@ -554,6 +563,11 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
                 sttModel: voiceTurn.sttModel,
                 vadDiagnostics: voiceTurn.vadDiagnostics,
                 consultationProviderMs: payload.providerLatencyMs,
+                consultationPreProviderMs: payload.preProviderReadsMs,
+                consultationReplyWriteMs: payload.replyWriteMs,
+                consultationFailedFirstAttemptMs: payload.failedFirstAttemptMs,
+                consultationServerTotalMs: payload.serverTotalMs,
+                consultationUnattributedMs: payload.unattributedMs,
               }
             : undefined,
         );
@@ -658,6 +672,11 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       const summary = computeVoiceLatencySummary(finalMarks, {
         sttProviderMs: voiceLatency.sttProviderMs ?? undefined,
         consultationProviderMs: voiceLatency.consultationProviderMs,
+        consultationPreProviderMs: voiceLatency.consultationPreProviderMs,
+        consultationReplyWriteMs: voiceLatency.consultationReplyWriteMs,
+        consultationFailedFirstAttemptMs: voiceLatency.consultationFailedFirstAttemptMs,
+        consultationServerTotalMs: voiceLatency.consultationServerTotalMs,
+        consultationUnattributedMs: voiceLatency.consultationUnattributedMs,
         ttsProviderMs: ttsTiming?.ttsProviderMs ?? undefined,
         ttsPreProviderMs: ttsTiming?.preProviderMs ?? undefined,
         ttsUsageWriteMs: ttsTiming?.usageWriteMs ?? undefined,

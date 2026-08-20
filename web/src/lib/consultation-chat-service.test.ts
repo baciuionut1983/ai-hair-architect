@@ -1087,6 +1087,30 @@ describe("sendConsultationMessage", () => {
       expect(logged.failedFirstAttemptMs).toBe(0);
       logSpy.mockRestore();
     });
+
+    // Voice latency Round 12: these five fields were ALREADY computed
+    // internally (used for the CONSULTATION_CHAT log line above) but never
+    // returned to the caller -- a real production test showed a ~27.6s gap
+    // between the client's own round-trip consultationTotalMs and
+    // providerLatencyMs with nothing to explain it. Proves the fix: the
+    // caller (the chat route, then VOICE_LATENCY_SUMMARY) can now see them.
+    it("returns preProviderReadsMs/replyWriteMs/failedFirstAttemptMs/serverTotalMs/unattributedMs on a successful reply, matching the logged CONSULTATION_CHAT values exactly", async () => {
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+
+      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      expect(result.outcome).toBe("succeeded");
+      const logged = JSON.parse(logSpy.mock.calls[logSpy.mock.calls.length - 1][0] as string);
+      if (result.outcome === "succeeded") {
+        expect(result.preProviderReadsMs).toBe(logged.preProviderReadsMs);
+        expect(result.replyWriteMs).toBe(logged.replyWriteMs);
+        expect(result.failedFirstAttemptMs).toBe(logged.failedFirstAttemptMs);
+        expect(result.serverTotalMs).toBe(logged.consultationTotalMs);
+        expect(result.unattributedMs).toBe(logged.unattributedMs);
+      }
+      logSpy.mockRestore();
+    });
   });
 
   it("professional memory is an explicit empty array (not omitted) when there is none, so the model sees a real empty state", async () => {

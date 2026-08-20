@@ -98,6 +98,23 @@ export interface VoiceLatencySummary {
   sttTotalMs: number | null;
   consultationProviderMs: number | null;
   consultationTotalMs: number | null;
+  // Voice latency Round 12: the server-side decomposition of
+  // consultationTotalMs - consultationProviderMs, mirroring TTS's own
+  // ttsPreProviderMs/ttsServerTotalMs/ttsNetworkAndTransferMs pattern
+  // (Round 7) exactly -- see consultation-chat-service.ts's own
+  // SendConsultationMessageResult doc comment. consultationServerTotalMs
+  // is the server's own authoritative total (preProviderReadsMs +
+  // providerLatencyMs [+ failedFirstAttemptMs if a retry happened] +
+  // replyWriteMs + its own unattributedMs remainder);
+  // consultationNetworkAndTransferMs is computed here exactly like
+  // ttsNetworkAndTransferMs: consultationTotalMs minus
+  // consultationServerTotalMs.
+  consultationPreProviderMs: number | null;
+  consultationReplyWriteMs: number | null;
+  consultationFailedFirstAttemptMs: number | null;
+  consultationServerTotalMs: number | null;
+  consultationUnattributedMs: number | null;
+  consultationNetworkAndTransferMs: number | null;
   ttsProviderMs: number | null;
   ttsTotalMs: number | null;
   // TTS latency root-cause (2026-08-19, Round 7): the server-side
@@ -172,6 +189,15 @@ export interface VoiceLatencyProviderTimings {
   ttsUsageWriteMs?: number;
   ttsAudioProcessingMs?: number;
   ttsServerTotalMs?: number;
+  // Round 12: threaded through from consultation-chat.tsx's own reading of
+  // ConsultationChatResponse -- undefined (never a fabricated 0) whenever
+  // the response genuinely didn't include one (e.g. an older cached
+  // response, or a failed turn with no successful reply to read from).
+  consultationPreProviderMs?: number;
+  consultationReplyWriteMs?: number;
+  consultationFailedFirstAttemptMs?: number;
+  consultationServerTotalMs?: number;
+  consultationUnattributedMs?: number;
 }
 
 export function computeVoiceLatencySummary(
@@ -183,6 +209,22 @@ export function computeVoiceLatencySummary(
   const consultationTotalMs = diff(marks, "consultation_request_started", "consultation_response_received");
   const consultationProviderMs =
     typeof providerTimings.consultationProviderMs === "number" ? Math.round(providerTimings.consultationProviderMs) : null;
+  const consultationPreProviderMs =
+    typeof providerTimings.consultationPreProviderMs === "number" ? Math.round(providerTimings.consultationPreProviderMs) : null;
+  const consultationReplyWriteMs =
+    typeof providerTimings.consultationReplyWriteMs === "number" ? Math.round(providerTimings.consultationReplyWriteMs) : null;
+  const consultationFailedFirstAttemptMs =
+    typeof providerTimings.consultationFailedFirstAttemptMs === "number"
+      ? Math.round(providerTimings.consultationFailedFirstAttemptMs)
+      : null;
+  const consultationServerTotalMs =
+    typeof providerTimings.consultationServerTotalMs === "number" ? Math.round(providerTimings.consultationServerTotalMs) : null;
+  const consultationUnattributedMs =
+    typeof providerTimings.consultationUnattributedMs === "number" ? Math.round(providerTimings.consultationUnattributedMs) : null;
+  const consultationNetworkAndTransferMs =
+    consultationTotalMs !== null && consultationServerTotalMs !== null
+      ? Math.max(0, consultationTotalMs - consultationServerTotalMs)
+      : null;
   const ttsTotalMs = diff(marks, "tts_request_started", "tts_audio_received");
   const ttsProviderMs = typeof providerTimings.ttsProviderMs === "number" ? Math.round(providerTimings.ttsProviderMs) : null;
   const ttsPreProviderMs = typeof providerTimings.ttsPreProviderMs === "number" ? Math.round(providerTimings.ttsPreProviderMs) : null;
@@ -219,6 +261,12 @@ export function computeVoiceLatencySummary(
     sttTotalMs,
     consultationProviderMs,
     consultationTotalMs,
+    consultationPreProviderMs,
+    consultationReplyWriteMs,
+    consultationFailedFirstAttemptMs,
+    consultationServerTotalMs,
+    consultationUnattributedMs,
+    consultationNetworkAndTransferMs,
     ttsProviderMs,
     ttsTotalMs,
     ttsPreProviderMs,

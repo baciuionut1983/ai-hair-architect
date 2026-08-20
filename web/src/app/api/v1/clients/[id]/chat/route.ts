@@ -163,7 +163,12 @@ export async function POST(
     },
     needsClarification: result.needsClarification,
     providerLatencyMs: result.providerLatencyMs,
-    providerAttemptCount: result.providerAttemptCount
+    providerAttemptCount: result.providerAttemptCount,
+    preProviderReadsMs: result.preProviderReadsMs,
+    replyWriteMs: result.replyWriteMs,
+    failedFirstAttemptMs: result.failedFirstAttemptMs,
+    serverTotalMs: result.serverTotalMs,
+    unattributedMs: result.unattributedMs
   };
 
   return NextResponse.json(response, { status: 200 });

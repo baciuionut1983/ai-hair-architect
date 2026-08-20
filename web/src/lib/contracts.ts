@@ -429,6 +429,18 @@ export interface ConsultationChatResponse {
   // every reply, harmless for typed messages" reasoning as
   // providerLatencyMs above.
   providerAttemptCount?: number;
+  // Voice latency Round 12: the server's own full timing breakdown --
+  // see consultation-chat-service.ts's own SendConsultationMessageResult
+  // doc comment for exactly why this exists (a real production ~27.6s gap
+  // between the client's round-trip consultationTotalMs and
+  // providerLatencyMs, with nothing to explain it). Same "present on
+  // every reply, harmless for typed messages" reasoning as
+  // providerLatencyMs above.
+  preProviderReadsMs?: number;
+  replyWriteMs?: number;
+  failedFirstAttemptMs?: number;
+  serverTotalMs?: number;
+  unattributedMs?: number;
 }
 
 export interface ConsultationCreateRequest {

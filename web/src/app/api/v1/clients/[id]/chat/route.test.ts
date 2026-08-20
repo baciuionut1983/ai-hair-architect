@@ -243,6 +243,37 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     expect(body.providerLatencyMs).toBe(842);
   });
 
+  // Voice latency Round 12: a real production test showed a ~27.6s gap
+  // between the client's round-trip consultationTotalMs and
+  // providerLatencyMs with nothing to explain it -- these five fields
+  // (already computed server-side, just never returned before this round)
+  // close that gap.
+  it("surfaces the full server timing breakdown (preProviderReadsMs/replyWriteMs/failedFirstAttemptMs/serverTotalMs/unattributedMs) when the service reports them", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({
+      outcome: "succeeded",
+      reply: { id: "msg-2", role: "assistant", content: "Got it!", createdAt: "2026-08-14T10:00:00.000Z" },
+      needsClarification: false,
+      providerLatencyMs: 14831,
+      providerAttemptCount: 1,
+      preProviderReadsMs: 40,
+      replyWriteMs: 55,
+      failedFirstAttemptMs: 0,
+      serverTotalMs: 14950,
+      unattributedMs: 24,
+    });
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    const body = await response.json();
+    expect(body).toMatchObject({
+      preProviderReadsMs: 40,
+      replyWriteMs: 55,
+      failedFirstAttemptMs: 0,
+      serverTotalMs: 14950,
+      unattributedMs: 24,
+    });
+  });
+
   // Consultation reliability hardening (2026-08-19): surfaces the
   // service's own real attempt count (1, or 2 if a transient failure was
   // recovered by its single automatic retry) to the client.
