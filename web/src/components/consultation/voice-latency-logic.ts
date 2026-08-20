@@ -359,6 +359,19 @@ export interface VoiceLatencyTerminalDiagnostics {
   vadSpeechEndedAtMs?: number;
   vadMaxDurationTriggered?: boolean;
   vadMode?: string;
+  // STT Flash-Lite root-cause diagnosis (2026-08-20): the real Gemini
+  // provider failure detail voice-transcript/route.ts's own !response.ok
+  // and fetch-threw branches now return to the client (see that file's own
+  // doc comments) -- previously captured ONLY in the server's own
+  // VOICE_TRANSCRIPT log line, never in this summary, so a provider HTTP
+  // error, a network/timeout failure, and an empty-transcript response all
+  // collapsed into the same generic errorCode with no way to tell them
+  // apart without manually cross-referencing a separate log line by
+  // attemptId. Never fabricated -- undefined whenever the failure never
+  // reached (or never returned from) the provider at all.
+  sttProviderHttpStatus?: number;
+  sttProviderErrorStatus?: string;
+  sttProviderFetchErrorName?: string;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see

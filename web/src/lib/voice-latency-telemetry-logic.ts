@@ -139,6 +139,12 @@ export interface VoiceLatencyTelemetryInput {
   vadSpeechEndedAtMs?: number;
   vadMaxDurationTriggered?: boolean;
   vadMode?: string;
+  // STT Flash-Lite root-cause diagnosis (2026-08-20): see
+  // voice-latency-logic.ts's own VoiceLatencyTerminalDiagnostics doc
+  // comment on these same 3 fields for exactly what they mean and why.
+  sttProviderHttpStatus?: number;
+  sttProviderErrorStatus?: string;
+  sttProviderFetchErrorName?: string;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -189,6 +195,22 @@ const MAX_PLAUSIBLE_PROVIDER_ATTEMPTS = 5;
 // Every real value voice-activity-logic.ts's VoiceActivityAutoStopReason
 // can produce -- a fixed enum, never a free-form string.
 const VAD_AUTO_STOP_REASONS = new Set(["continue", "stop_silence", "stop_no_speech_timeout", "stop_max_duration", "manual_stop"]);
+
+// A real HTTP status code (100-599) -- rejects an implausible value, never
+// a real one.
+function isPlausibleHttpStatus(value: number): boolean {
+  return Number.isInteger(value) && value >= 100 && value <= 599;
+}
+
+// Google's own canonical, short error-status vocabulary (e.g.
+// "UNAVAILABLE", "NOT_FOUND", "RESOURCE_EXHAUSTED", "PERMISSION_DENIED" --
+// see https://cloud.google.com/apis/design/errors#error_model) -- uppercase
+// letters and underscores only, never the raw provider error message.
+const PROVIDER_ERROR_STATUS_PATTERN = /^[A-Z_]{1,64}$/;
+
+// A JS Error.prototype.name value (e.g. "TimeoutError", "TypeError",
+// "AbortError") -- letters only, never a free-form message.
+const PROVIDER_FETCH_ERROR_NAME_PATTERN = /^[A-Za-z]{1,64}$/;
 
 // Shared bound for every vad*DurationMs/*Ms offset field -- same reasoning
 // as MAX_PLAUSIBLE_DURATION_MS, reused directly since these are the same
@@ -341,6 +363,30 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     vadMode = input.vadMode;
   }
 
+  let sttProviderHttpStatus: number | undefined;
+  if (input.sttProviderHttpStatus !== undefined) {
+    if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
+      return { ok: false, reason: "invalid_stt_provider_http_status" };
+    }
+    sttProviderHttpStatus = input.sttProviderHttpStatus;
+  }
+
+  let sttProviderErrorStatus: string | undefined;
+  if (input.sttProviderErrorStatus !== undefined) {
+    if (typeof input.sttProviderErrorStatus !== "string" || !PROVIDER_ERROR_STATUS_PATTERN.test(input.sttProviderErrorStatus)) {
+      return { ok: false, reason: "invalid_stt_provider_error_status" };
+    }
+    sttProviderErrorStatus = input.sttProviderErrorStatus;
+  }
+
+  let sttProviderFetchErrorName: string | undefined;
+  if (input.sttProviderFetchErrorName !== undefined) {
+    if (typeof input.sttProviderFetchErrorName !== "string" || !PROVIDER_FETCH_ERROR_NAME_PATTERN.test(input.sttProviderFetchErrorName)) {
+      return { ok: false, reason: "invalid_stt_provider_fetch_error_name" };
+    }
+    sttProviderFetchErrorName = input.sttProviderFetchErrorName;
+  }
+
   // Unknown extra keys on `summary` (or on the top-level body) are simply
   // never read, not rejected -- an allow-list extraction is exactly as
   // strict against injection/type-confusion as an exact-shape check, and
@@ -366,6 +412,9 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(vadSpeechEndedAtMs.value !== undefined ? { vadSpeechEndedAtMs: vadSpeechEndedAtMs.value } : {}),
       ...(vadMaxDurationTriggered !== undefined ? { vadMaxDurationTriggered } : {}),
       ...(vadMode !== undefined ? { vadMode } : {}),
+      ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
+      ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
+      ...(sttProviderFetchErrorName !== undefined ? { sttProviderFetchErrorName } : {}),
     },
   };
 }

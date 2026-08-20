@@ -731,6 +731,52 @@ describe("production diagnostics logging", () => {
     expect(String(logged.providerErrorBody)).toContain("INVALID_ARGUMENT");
   });
 
+  // STT Flash-Lite root-cause diagnosis (2026-08-20): providerHttpStatus and
+  // providerErrorBody were already logged server-side (see the test above),
+  // but never returned to the client -- these 4 tests cover the new
+  // client-facing fields that close that gap.
+  it("returns the provider's real HTTP status and Google's canonical error status in the response body when the error envelope matches that shape", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      Response.json({ error: { code: 400, message: "Invalid value at 'contents[0].parts[1].inline_data.mime_type'", status: "INVALID_ARGUMENT" } }, { status: 400 }),
+    ));
+
+    const response = await invoke(audioForm());
+    const body = await response.json();
+
+    expect(body.providerHttpStatus).toBe(400);
+    expect(body.providerErrorStatus).toBe("INVALID_ARGUMENT");
+  });
+
+  it("never fabricates providerErrorStatus when the provider's error body is not valid JSON", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Internal Server Error", { status: 500 })));
+
+    const response = await invoke(audioForm());
+    const body = await response.json();
+
+    expect(body.providerHttpStatus).toBe(500);
+    expect(body.providerErrorStatus).toBeUndefined();
+  });
+
+  it("never fabricates providerErrorStatus when the error body is valid JSON but doesn't match Google's { error: { status } } shape", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: "bad request" }, { status: 400 })));
+
+    const response = await invoke(audioForm());
+    const body = await response.json();
+
+    expect(body.providerHttpStatus).toBe(400);
+    expect(body.providerErrorStatus).toBeUndefined();
+  });
+
+  it("returns the real JS error name in the response body when the fetch call itself throws", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+
+    const response = await invoke(audioForm());
+    const body = await response.json();
+
+    expect(body.providerFetchErrorName).toBe("TypeError");
+    expect(body.providerHttpStatus).toBeUndefined();
+  });
+
   it("truncates an unexpectedly large provider error body instead of logging it in full", async () => {
     const hugeMessage = "x".repeat(10_000);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: { message: hugeMessage } }, { status: 500 })));

@@ -298,17 +298,59 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     } catch {
       // Intentionally swallowed -- see comment above.
     }
-    return NextResponse.json({ error: "VOICE_TRANSCRIPTION_FAILED", message: "Voice transcription timed out or failed. You can still type your note." }, { status: 502 });
+    // STT Flash-Lite root-cause diagnosis (2026-08-20): distinguishes this
+    // branch (no HTTP response ever arrived -- AbortSignal.timeout firing
+    // surfaces here as "TimeoutError", a real network failure as
+    // "TypeError") from the !response.ok branch below (a real HTTP error
+    // response, which has its own providerHttpStatus/providerErrorStatus)
+    // -- both used to collapse into the identical client-visible failure,
+    // making a genuine timeout indistinguishable from a real provider
+    // error without manually finding this route's own server log.
+    return NextResponse.json(
+      {
+        error: "VOICE_TRANSCRIPTION_FAILED",
+        message: "Voice transcription timed out or failed. You can still type your note.",
+        providerFetchErrorName: error instanceof Error ? error.name : "unknown",
+      },
+      { status: 502 },
+    );
   }
 
   if (!response.ok) {
     const providerErrorBody = await response.text().catch(() => "");
+    // STT Flash-Lite root-cause diagnosis (2026-08-20): providerHttpStatus
+    // and providerErrorBody were ALREADY captured here for the server-side
+    // VOICE_TRANSCRIPT log line, but never returned to the caller -- a
+    // real production failure showed VOICE_LATENCY_SUMMARY's own errorCode
+    // collapsed to the same generic "providerUnavailable" for a provider
+    // HTTP error, a fetch-level network failure, AND an empty-transcript
+    // response alike, with no way to tell them apart without manually
+    // cross-referencing the separate VOICE_TRANSCRIPT log line by
+    // attemptId. providerErrorStatus is Google's own short, canonical
+    // error-status vocabulary (e.g. "UNAVAILABLE", "NOT_FOUND",
+    // "RESOURCE_EXHAUSTED", "PERMISSION_DENIED" -- see
+    // https://cloud.google.com/apis/design/errors#error_model) parsed
+    // from the SAME error body already being logged -- never the raw
+    // message text, which could in principle echo back request content.
+    // undefined (never fabricated) when the body isn't the expected
+    // { error: { status } } shape.
+    let providerErrorStatus: string | undefined;
+    try {
+      const parsedError = JSON.parse(providerErrorBody) as { error?: { status?: unknown } };
+      if (typeof parsedError.error?.status === "string") {
+        providerErrorStatus = parsedError.error.status;
+      }
+    } catch {
+      // Not JSON, or an unexpected shape -- providerErrorStatus stays
+      // undefined, never guessed.
+    }
     logVoiceTranscript("FAILED", "provider_call", {
       attemptId,
       attemptNumber,
       resultCode: "VOICE_TRANSCRIPTION_FAILED",
       reason: "provider_response_not_ok",
       providerHttpStatus: response.status,
+      providerErrorStatus: providerErrorStatus ?? null,
       providerErrorBody: providerErrorBody.slice(0, MAX_LOGGED_PROVIDER_ERROR_LENGTH),
       model,
       audioMimeType: audio.type,
@@ -332,7 +374,15 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     } catch {
       // Intentionally swallowed -- see comment above.
     }
-    return NextResponse.json({ error: "VOICE_TRANSCRIPTION_FAILED", message: "Voice transcription failed. You can still type your note." }, { status: 502 });
+    return NextResponse.json(
+      {
+        error: "VOICE_TRANSCRIPTION_FAILED",
+        message: "Voice transcription failed. You can still type your note.",
+        providerHttpStatus: response.status,
+        ...(providerErrorStatus ? { providerErrorStatus } : {}),
+      },
+      { status: 502 },
+    );
   }
 
   let transcript: string | undefined;

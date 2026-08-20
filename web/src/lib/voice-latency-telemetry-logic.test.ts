@@ -584,6 +584,76 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
+  // production STT failure be attributed, directly from this one log line,
+  // to the real Gemini HTTP status/canonical error status, or to a real
+  // fetch-level failure (timeout/network) -- see voice-latency-logic.ts's
+  // own VoiceLatencyTerminalDiagnostics doc comment.
+  describe("STT provider diagnostics (sttProviderHttpStatus / sttProviderErrorStatus / sttProviderFetchErrorName)", () => {
+    it("accepts a fully-populated set of provider diagnostic fields", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        sttProviderHttpStatus: 429,
+        sttProviderErrorStatus: "RESOURCE_EXHAUSTED",
+        sttProviderFetchErrorName: "TimeoutError",
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          sttProviderHttpStatus: 429,
+          sttProviderErrorStatus: "RESOURCE_EXHAUSTED",
+          sttProviderFetchErrorName: "TimeoutError",
+        }),
+      });
+    });
+
+    it("rejects an implausible sttProviderHttpStatus (outside 100-599) -- never a real one", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        sttProviderHttpStatus: 9999,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_stt_provider_http_status" });
+    });
+
+    it("rejects an sttProviderErrorStatus outside Google's canonical UPPER_SNAKE_CASE vocabulary -- never a raw provider message smuggled through", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        sttProviderErrorStatus: "Invalid value at 'contents[0]'",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_stt_provider_error_status" });
+    });
+
+    it("rejects an sttProviderFetchErrorName outside real Error.name characters", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        sttProviderFetchErrorName: "Timeout Error 123",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_stt_provider_fetch_error_name" });
+    });
+
+    it("omits all three fields entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of ["sttProviderHttpStatus", "sttProviderErrorStatus", "sttProviderFetchErrorName"]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   describe("terminalStageForOutcome", () => {
     it("maps every outcome to exactly one of the four real pipeline stages, matching where each outcome actually concludes", () => {
       expect(terminalStageForOutcome("stt_failed")).toBe("stt");

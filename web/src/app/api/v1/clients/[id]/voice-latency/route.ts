@@ -100,6 +100,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       vadSpeechEndedAtMs: parsed.value.vadSpeechEndedAtMs ?? null,
       vadMaxDurationTriggered: parsed.value.vadMaxDurationTriggered ?? null,
       vadMode: parsed.value.vadMode ?? null,
+      // STT Flash-Lite root-cause diagnosis (2026-08-20): see
+      // voice-latency-telemetry-logic.ts's own doc comment on these same 3
+      // fields for exactly what they mean and why.
+      sttProviderHttpStatus: parsed.value.sttProviderHttpStatus ?? null,
+      sttProviderErrorStatus: parsed.value.sttProviderErrorStatus ?? null,
+      sttProviderFetchErrorName: parsed.value.sttProviderFetchErrorName ?? null,
       ...parsed.value.summary,
     })}`,
   );

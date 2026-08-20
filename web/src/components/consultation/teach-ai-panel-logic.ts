@@ -62,7 +62,18 @@ export interface FinishRecordingCallbacks {
   // which never reaches attemptUpload at all; 1 or 2 otherwise) -- lets
   // the caller report a real providerAttemptCount rather than assuming
   // every failure was a single try.
-  onFailure: (message: string, reason: VoiceTranscriptionFailureReason, marks: VoiceLatencyMarks, attemptNumber: number) => void;
+  // STT Flash-Lite root-cause diagnosis (2026-08-20): providerDiagnostics
+  // bundles the server's own real Gemini failure detail (see
+  // voice-transcript/route.ts's own doc comment) -- undefined whenever the
+  // failure never reached the provider at all (e.g. a config/persistence
+  // failure), never fabricated field-by-field.
+  onFailure: (
+    message: string,
+    reason: VoiceTranscriptionFailureReason,
+    marks: VoiceLatencyMarks,
+    attemptNumber: number,
+    providerDiagnostics?: { providerHttpStatus?: number; providerErrorStatus?: string; providerFetchErrorName?: string },
+  ) => void;
   // Voice latency audit (2026-08-18): marks covers every recording_stopped
   // through transcript_ready stage this call reached; sttProviderMs is the
   // server's own real, measured Gemini-call duration (voice-transcript/
@@ -230,7 +241,20 @@ type UploadAttemptResult =
       sttProviderMs: number | null;
       sttModel: string | null;
     }
-  | { outcome: "failure"; message: string; reason: VoiceTranscriptionFailureReason; retryable: boolean; respondedAt: number };
+  | {
+      outcome: "failure";
+      message: string;
+      reason: VoiceTranscriptionFailureReason;
+      retryable: boolean;
+      respondedAt: number;
+      // STT Flash-Lite root-cause diagnosis (2026-08-20): undefined
+      // (never fabricated) whenever the response genuinely didn't
+      // include one -- e.g. a persistence/config failure never reaches
+      // the provider at all.
+      providerHttpStatus?: number;
+      providerErrorStatus?: string;
+      providerFetchErrorName?: string;
+    };
 
 async function attemptUpload(
   clientId: string,
@@ -288,7 +312,23 @@ async function attemptUpload(
     clearTimeout(timer);
   }
 
-  let payload: { transcript?: string; transcriptId?: string; message?: string; error?: string; providerLatencyMs?: number; model?: string };
+  let payload: {
+    transcript?: string;
+    transcriptId?: string;
+    message?: string;
+    error?: string;
+    providerLatencyMs?: number;
+    model?: string;
+    // STT Flash-Lite root-cause diagnosis (2026-08-20): see
+    // voice-transcript/route.ts's own doc comment on why these exist --
+    // distinguishes a real Gemini HTTP error (providerHttpStatus/
+    // providerErrorStatus) from a fetch-level failure with no HTTP
+    // response at all (providerFetchErrorName), both of which used to
+    // collapse into the identical generic "providerUnavailable" reason.
+    providerHttpStatus?: number;
+    providerErrorStatus?: string;
+    providerFetchErrorName?: string;
+  };
   try {
     payload = await response.json();
   } catch (error) {
@@ -318,6 +358,13 @@ async function attemptUpload(
       reason: reasonForServerErrorCode(errorCode),
       retryable,
       respondedAt: performance.now(),
+      // STT Flash-Lite root-cause diagnosis (2026-08-20): never fabricated
+      // -- undefined whenever the server's own response genuinely didn't
+      // include one (e.g. a config/persistence failure never reaches the
+      // provider at all, so neither field applies).
+      providerHttpStatus: payload.providerHttpStatus,
+      providerErrorStatus: payload.providerErrorStatus,
+      providerFetchErrorName: payload.providerFetchErrorName,
     };
   }
 
@@ -449,7 +496,11 @@ export async function finishRecording(
       callbacks.onSuccess(result.transcript, result.transcriptId, marks, result.sttProviderMs, attemptNumber, result.sttModel);
     } else {
       logClient("request_failed", { attemptId, attemptNumber, reason: "upload_failed", failureReason: result.reason });
-      callbacks.onFailure(result.message, result.reason, marks, attemptNumber);
+      callbacks.onFailure(result.message, result.reason, marks, attemptNumber, {
+        providerHttpStatus: result.providerHttpStatus,
+        providerErrorStatus: result.providerErrorStatus,
+        providerFetchErrorName: result.providerFetchErrorName,
+      });
     }
     logClient("cleanup_completed", { attemptId });
   } catch (error) {

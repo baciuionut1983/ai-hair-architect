@@ -319,4 +319,46 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     });
     logSpy.mockRestore();
   });
+
+  // STT Flash-Lite root-cause diagnosis (2026-08-20): the real Gemini
+  // provider failure detail, closing the gap where a provider HTTP error,
+  // a network/timeout failure, and an empty-transcript response all
+  // collapsed into the same generic errorCode with no way to tell them
+  // apart from this log line alone.
+  it("logs the STT provider diagnostics fields when the client reported them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-107",
+      outcome: "stt_failed",
+      summary: validSummary(),
+      sttProviderHttpStatus: 429,
+      sttProviderErrorStatus: "RESOURCE_EXHAUSTED",
+      sttProviderFetchErrorName: "TimeoutError",
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      sttProviderHttpStatus: 429,
+      sttProviderErrorStatus: "RESOURCE_EXHAUSTED",
+      sttProviderFetchErrorName: "TimeoutError",
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs the STT provider diagnostics fields as null (never fabricated) when the client didn't report them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-108", outcome: "stt_failed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      sttProviderHttpStatus: null,
+      sttProviderErrorStatus: null,
+      sttProviderFetchErrorName: null,
+    });
+    logSpy.mockRestore();
+  });
 });

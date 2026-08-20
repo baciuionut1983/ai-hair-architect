@@ -377,7 +377,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                 setRecording(false);
                 setProcessing(true);
               },
-              onFailure: (_message, reason, marks, attemptNumber) => {
+              onFailure: (_message, reason, marks, attemptNumber, providerDiagnostics) => {
                 setProcessing(false);
                 setError(t(translationKeyForReason(reason)));
                 // The turn ends here (no Consult AI/TTS stage will ever
@@ -394,6 +394,12 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                   errorCode: reason,
                   ...(attemptNumber > 0 ? { providerAttemptCount: attemptNumber } : {}),
                   elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(mergedMarks, performance.now()),
+                  // STT Flash-Lite root-cause diagnosis (2026-08-20): the
+                  // real Gemini failure detail, never fabricated when the
+                  // failure never reached the provider at all.
+                  sttProviderHttpStatus: providerDiagnostics?.providerHttpStatus,
+                  sttProviderErrorStatus: providerDiagnostics?.providerErrorStatus,
+                  sttProviderFetchErrorName: providerDiagnostics?.providerFetchErrorName,
                   ...vadDiagnosticsToReportFields(readVoiceActivityDiagnostics()),
                 });
               },
