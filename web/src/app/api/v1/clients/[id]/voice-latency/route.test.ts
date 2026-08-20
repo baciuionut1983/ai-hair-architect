@@ -365,4 +365,43 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     logSpy.mockRestore();
   });
 
+  // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21):
+  // mirrors the STT provider diagnostics fields exactly, for the
+  // consultation stage instead.
+  it("logs the Consult AI provider diagnostics fields when the client reported them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-110",
+      outcome: "consultation_failed",
+      summary: validSummary(),
+      consultationProviderHttpStatus: 503,
+      consultationProviderErrorStatus: "UNAVAILABLE",
+      consultationProviderErrorMessage: "The model is overloaded. Please try again later.",
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      consultationProviderHttpStatus: 503,
+      consultationProviderErrorStatus: "UNAVAILABLE",
+      consultationProviderErrorMessage: "The model is overloaded. Please try again later.",
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs the Consult AI provider diagnostics fields as null (never fabricated) when the client didn't report them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-111", outcome: "consultation_failed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      consultationProviderHttpStatus: null,
+      consultationProviderErrorStatus: null,
+      consultationProviderErrorMessage: null,
+    });
+    logSpy.mockRestore();
+  });
 });

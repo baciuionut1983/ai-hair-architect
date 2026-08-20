@@ -442,16 +442,26 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
     }
 
     const status = extractHttpStatus(error);
+    let classified: ChatProviderError;
     if (status === 401 || status === 403) {
-      return this.createProviderError("NOT_CONFIGURED", "Gemini authentication failed.", false, status);
+      classified = this.createProviderError("NOT_CONFIGURED", "Gemini authentication failed.", false, status);
+    } else if (status === 429) {
+      classified = this.createProviderError("RATE_LIMITED", "Gemini rate limit exceeded.", true, status);
+    } else if (typeof status === "number" && status >= 500) {
+      classified = this.createProviderError("PROVIDER_ERROR", "Gemini service unavailable.", true, status);
+    } else {
+      classified = this.createProviderError("PROVIDER_ERROR", "Gemini request failed.", false, status);
     }
-    if (status === 429) {
-      return this.createProviderError("RATE_LIMITED", "Gemini rate limit exceeded.", true, status);
-    }
-    if (typeof status === "number" && status >= 500) {
-      return this.createProviderError("PROVIDER_ERROR", "Gemini service unavailable.", true, status);
-    }
-    return this.createProviderError("PROVIDER_ERROR", "Gemini request failed.", false, status);
+
+    // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21):
+    // see ChatProviderError's own doc comment for why this exists. Never
+    // fabricated -- undefined whenever the underlying error's own .message
+    // isn't the ApiError-shaped JSON string extractGoogleErrorDetails
+    // expects (e.g. a genuine network error with no HTTP response at all).
+    const details = extractGoogleErrorDetails(error);
+    if (details.canonicalStatus) classified.providerCanonicalStatus = details.canonicalStatus;
+    if (details.message) classified.providerRawMessage = details.message;
+    return classified;
   }
 }
 
@@ -705,4 +715,36 @@ function extractHttpStatus(error: unknown): number | undefined {
   }
   const status = (error as { status?: unknown }).status;
   return typeof status === "number" ? status : undefined;
+}
+
+// Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21): the
+// @google/genai SDK's own ApiError sets .message to
+// JSON.stringify({ error: { code, message, status } }) -- Google's full
+// canonical error envelope, already present on every thrown error, just
+// never parsed out until now (see node_modules/@google/genai's own
+// throwErrorIfNotOK). Mirrors voice-transcript/route.ts's own identical
+// parsing of the same envelope shape from its raw HTTP response body.
+const MAX_PROVIDER_ERROR_MESSAGE_LENGTH = 300;
+
+function sanitizeProviderErrorMessage(message: string): string {
+  return message.replace(/[\x00-\x1F\x7F]+/g, " ").trim().slice(0, MAX_PROVIDER_ERROR_MESSAGE_LENGTH);
+}
+
+function extractGoogleErrorDetails(error: unknown): { canonicalStatus?: string; message?: string } {
+  if (!(error instanceof Error)) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(error.message) as { error?: { status?: unknown; message?: unknown } };
+    const canonicalStatus = typeof parsed.error?.status === "string" ? parsed.error.status : undefined;
+    const message =
+      typeof parsed.error?.message === "string" && parsed.error.message.length > 0
+        ? sanitizeProviderErrorMessage(parsed.error.message)
+        : undefined;
+    return { canonicalStatus, message };
+  } catch {
+    // error.message wasn't the expected JSON envelope -- e.g. a genuine
+    // network error with no HTTP response at all. Never guessed.
+    return {};
+  }
 }

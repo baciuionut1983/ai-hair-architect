@@ -291,6 +291,41 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     expect(body.providerAttemptCount).toBe(2);
   });
 
+  // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21):
+  // mirrors voice-transcript/route.ts's own providerHttpStatus/
+  // providerErrorStatus/providerErrorMessage exactly.
+  it("surfaces providerHttpStatus/providerErrorStatus/providerErrorMessage in a failure response when the service reports them", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({
+      outcome: "failed",
+      code: "PROVIDER_UNAVAILABLE",
+      providerAttemptCount: 2,
+      providerHttpStatus: 503,
+      providerErrorStatus: "UNAVAILABLE",
+      providerErrorMessage: "The model is overloaded. Please try again later.",
+    });
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    const body = await response.json();
+    expect(body).toMatchObject({
+      error: "PROVIDER_UNAVAILABLE",
+      providerHttpStatus: 503,
+      providerErrorStatus: "UNAVAILABLE",
+      providerErrorMessage: "The model is overloaded. Please try again later.",
+    });
+  });
+
+  it("never fabricates providerHttpStatus/providerErrorStatus/providerErrorMessage when the service didn't report them", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({ outcome: "failed", code: "PROCESSING_DISABLED" });
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    const body = await response.json();
+    expect(body.providerHttpStatus).toBeUndefined();
+    expect(body.providerErrorStatus).toBeUndefined();
+    expect(body.providerErrorMessage).toBeUndefined();
+  });
+
   // End-to-end voice turn correlation (2026-08-19): when the client sends
   // voiceTurnId (the SAME id already used for STT), it's forwarded to the
   // service as-is so every stage's structured logs can be correlated by

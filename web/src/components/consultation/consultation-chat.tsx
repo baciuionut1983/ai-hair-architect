@@ -483,7 +483,18 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       finalMarks: VoiceLatencyMarks,
       outcome: VoiceLatencyTurnOutcome,
       consultationProviderMs?: number,
-      diagnostics: { errorCode?: string; providerAttemptCount?: number } = {},
+      diagnostics: {
+        errorCode?: string;
+        providerAttemptCount?: number;
+        // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis
+        // (2026-08-21): mirrors STT's own sttProviderHttpStatus/
+        // sttProviderErrorStatus/sttProviderErrorMessage exactly -- see
+        // voice-latency-logic.ts's own VoiceLatencyTerminalDiagnostics doc
+        // comment.
+        consultationProviderHttpStatus?: number;
+        consultationProviderErrorStatus?: string;
+        consultationProviderErrorMessage?: string;
+      } = {},
     ) => {
       if (!voiceTurn) return;
       const summary = computeVoiceLatencySummary(finalMarks, {
@@ -539,11 +550,20 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
           // reached for this attempt.
           marks = markVoiceLatencyStage(marks, "consultation_response_received", performance.now());
           const errorBody = (await response.json().catch(() => null)) as
-            | { error?: string; providerAttemptCount?: number }
+            | {
+                error?: string;
+                providerAttemptCount?: number;
+                providerHttpStatus?: number;
+                providerErrorStatus?: string;
+                providerErrorMessage?: string;
+              }
             | null;
           concludeVoiceTurn(marks, "consultation_failed", undefined, {
             errorCode: errorBody?.error,
             providerAttemptCount: errorBody?.providerAttemptCount,
+            consultationProviderHttpStatus: errorBody?.providerHttpStatus,
+            consultationProviderErrorStatus: errorBody?.providerErrorStatus,
+            consultationProviderErrorMessage: errorBody?.providerErrorMessage,
           });
         }
         return;

@@ -709,6 +709,75 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21):
+  // same validation rules as the stt* fields above, reusing the same
+  // shared helpers -- see consultation-chat-provider.ts's own
+  // ChatProviderError doc comment for exactly what these mean.
+  describe("Consult AI provider diagnostics (consultationProviderHttpStatus / consultationProviderErrorStatus / consultationProviderErrorMessage)", () => {
+    it("accepts a fully-populated set of provider diagnostic fields", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_failed",
+        summary: validSummary(),
+        consultationProviderHttpStatus: 503,
+        consultationProviderErrorStatus: "UNAVAILABLE",
+        consultationProviderErrorMessage: "The model is overloaded. Please try again later.",
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          consultationProviderHttpStatus: 503,
+          consultationProviderErrorStatus: "UNAVAILABLE",
+          consultationProviderErrorMessage: "The model is overloaded. Please try again later.",
+        }),
+      });
+    });
+
+    it("rejects an implausible consultationProviderHttpStatus", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_failed",
+        summary: validSummary(),
+        consultationProviderHttpStatus: 9999,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_consultation_provider_http_status" });
+    });
+
+    it("rejects a consultationProviderErrorStatus outside Google's canonical UPPER_SNAKE_CASE vocabulary", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_failed",
+        summary: validSummary(),
+        consultationProviderErrorStatus: "the model said no",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_consultation_provider_error_status" });
+    });
+
+    it("rejects a consultationProviderErrorMessage containing control characters", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_failed",
+        summary: validSummary(),
+        consultationProviderErrorMessage: "line one\nline two",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_consultation_provider_error_message" });
+    });
+
+    it("omits all three fields entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_failed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of ["consultationProviderHttpStatus", "consultationProviderErrorStatus", "consultationProviderErrorMessage"]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   describe("terminalStageForOutcome", () => {
     it("maps every outcome to exactly one of the four real pipeline stages, matching where each outcome actually concludes", () => {
       expect(terminalStageForOutcome("stt_failed")).toBe("stt");

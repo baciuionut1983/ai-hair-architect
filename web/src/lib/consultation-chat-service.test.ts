@@ -478,6 +478,66 @@ describe("sendConsultationMessage", () => {
       expect(result).toEqual({ outcome: "failed", code: "PROVIDER_AUTHENTICATION_FAILURE", providerAttemptCount: 1 });
     });
 
+    // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21):
+    // mirrors the STT round's own providerHttpStatus/providerErrorStatus/
+    // providerErrorMessage threading exactly -- see
+    // consultation-chat-provider-gemini.test.ts's own extraction tests for
+    // where these values originate.
+    it("threads the provider's real HTTP status, Google's canonical status, and its diagnostic message through to the failure result", async () => {
+      const provider = stubProvider(async () => {
+        throw Object.assign(new Error(JSON.stringify({ error: { code: 404, message: "This model models/gemini-3.6-flash is no longer available to new users.", status: "NOT_FOUND" } })), {
+          code: "PROVIDER_ERROR",
+          retryable: false,
+          status: 404,
+          providerCanonicalStatus: "NOT_FOUND",
+          providerRawMessage: "This model models/gemini-3.6-flash is no longer available to new users.",
+        });
+      });
+
+      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      expect(result).toEqual({
+        outcome: "failed",
+        code: "PROVIDER_AUTHENTICATION_FAILURE",
+        providerAttemptCount: 1,
+        providerHttpStatus: 404,
+        providerErrorStatus: "NOT_FOUND",
+        providerErrorMessage: "This model models/gemini-3.6-flash is no longer available to new users.",
+      });
+    });
+
+    it("logs providerCanonicalStatus/providerRawMessage in the CONSULTATION_CHAT failure log line", async () => {
+      const logSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const provider = stubProvider(async () => {
+        throw Object.assign(new Error("x"), {
+          code: "PROVIDER_ERROR",
+          retryable: false,
+          status: 404,
+          providerCanonicalStatus: "NOT_FOUND",
+          providerRawMessage: "This model models/gemini-3.6-flash is no longer available to new users.",
+        });
+      });
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      const logged = JSON.parse(logSpy.mock.calls[0][0] as string);
+      expect(logged).toMatchObject({
+        providerCanonicalStatus: "NOT_FOUND",
+        providerRawMessage: "This model models/gemini-3.6-flash is no longer available to new users.",
+      });
+      logSpy.mockRestore();
+    });
+
+    it("never fabricates providerHttpStatus/providerErrorStatus/providerErrorMessage when the provider error didn't carry them", async () => {
+      const provider = stubProvider(async () => {
+        throw Object.assign(new Error("bad auth"), { code: "NOT_CONFIGURED", retryable: false });
+      });
+
+      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      expect(result).toEqual({ outcome: "failed", code: "PROVIDER_AUTHENTICATION_FAILURE", providerAttemptCount: 1 });
+    });
+
     it("also fails closed if BOTH the first attempt and the retry are transient failures -- two real attempts, still no fabricated reply", async () => {
       let calls = 0;
       const provider = stubProvider(async () => {

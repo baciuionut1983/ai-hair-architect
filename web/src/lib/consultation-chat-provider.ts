@@ -191,11 +191,27 @@ export interface ChatProviderError extends Error {
   // The real HTTP status the provider's API returned, when known (e.g. 400,
   // 429, 500) -- distinct from `code`, which is this app's own coarse
   // classification. Carried through purely for diagnostics (structured
-  // failure logs in consultation-chat-service.ts): a status code is safe,
-  // non-sensitive metadata, unlike the provider's raw error text, which this
-  // codebase deliberately never logs (see image-analysis-processing-service.ts's
-  // logProviderFailure).
+  // failure logs in consultation-chat-service.ts).
   status?: number;
+  // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21):
+  // Google's own canonical, short error-status vocabulary (e.g.
+  // "UNAVAILABLE", "NOT_FOUND", "RESOURCE_EXHAUSTED" -- see
+  // https://cloud.google.com/apis/design/errors#error_model), parsed from
+  // the SAME error the provider already threw -- mirrors voice-transcript/
+  // route.ts's own providerErrorStatus exactly, applying that same,
+  // already-authorized pattern here. Supersedes this interface's previous
+  // "raw error text is deliberately never logged" stance -- see
+  // providerRawMessage below for why that's no longer true, in a bounded,
+  // safe way.
+  providerCanonicalStatus?: string;
+  // Google's own human-readable diagnostic message, sanitized (control
+  // characters stripped) and bounded to a safe length (see
+  // consultation-chat-provider-gemini.ts's own sanitizeProviderErrorMessage)
+  // -- genuinely free text, unlike providerCanonicalStatus's fixed
+  // vocabulary. Never the API key, never Authorization, never the prompt/
+  // conversation content, never audio/personal data -- sourced only from
+  // Google's own error response, which never echoes any of those back.
+  providerRawMessage?: string;
 }
 
 /**

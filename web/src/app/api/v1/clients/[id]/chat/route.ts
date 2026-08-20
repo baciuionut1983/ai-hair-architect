@@ -137,12 +137,22 @@ export async function POST(
 
   if (result.outcome === "failed") {
     return NextResponse.json(
-      // Production observability follow-up (2026-08-19): providerAttemptCount
-      // lets a voice-initiated caller report a real terminal diagnostic
-      // (see voice-latency-logic.ts) even on failure -- omitted entirely
-      // (not a fabricated 1) when the failure never reached the provider
-      // call stage at all (e.g. a config/persistence failure).
-      { error: result.code, ...(result.providerAttemptCount ? { providerAttemptCount: result.providerAttemptCount } : {}) },
+      {
+        error: result.code,
+        // Production observability follow-up (2026-08-19): providerAttemptCount
+        // lets a voice-initiated caller report a real terminal diagnostic
+        // (see voice-latency-logic.ts) even on failure -- omitted entirely
+        // (not a fabricated 1) when the failure never reached the provider
+        // call stage at all (e.g. a config/persistence failure).
+        ...(result.providerAttemptCount ? { providerAttemptCount: result.providerAttemptCount } : {}),
+        // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis
+        // (2026-08-21): mirrors voice-transcript/route.ts's own
+        // providerHttpStatus/providerErrorStatus/providerErrorMessage
+        // exactly -- see ChatProviderError's own doc comment.
+        ...(result.providerHttpStatus !== undefined ? { providerHttpStatus: result.providerHttpStatus } : {}),
+        ...(result.providerErrorStatus !== undefined ? { providerErrorStatus: result.providerErrorStatus } : {}),
+        ...(result.providerErrorMessage !== undefined ? { providerErrorMessage: result.providerErrorMessage } : {}),
+      },
       { status: CONSULTATION_CHAT_RESULT_HTTP_STATUS[result.code] }
     );
   }

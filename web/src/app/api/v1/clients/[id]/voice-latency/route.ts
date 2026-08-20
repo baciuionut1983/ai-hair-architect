@@ -107,6 +107,9 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       sttProviderErrorStatus: parsed.value.sttProviderErrorStatus ?? null,
       sttProviderErrorMessage: parsed.value.sttProviderErrorMessage ?? null,
       sttProviderFetchErrorName: parsed.value.sttProviderFetchErrorName ?? null,
+      consultationProviderHttpStatus: parsed.value.consultationProviderHttpStatus ?? null,
+      consultationProviderErrorStatus: parsed.value.consultationProviderErrorStatus ?? null,
+      consultationProviderErrorMessage: parsed.value.consultationProviderErrorMessage ?? null,
       ...parsed.value.summary,
     })}`,
   );

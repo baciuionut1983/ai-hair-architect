@@ -149,6 +149,11 @@ export interface VoiceLatencyTelemetryInput {
   // message), unlike sttProviderErrorStatus's fixed vocabulary.
   sttProviderErrorMessage?: string;
   sttProviderFetchErrorName?: string;
+  // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21):
+  // see voice-latency-logic.ts's own doc comment on these same 3 fields.
+  consultationProviderHttpStatus?: number;
+  consultationProviderErrorStatus?: string;
+  consultationProviderErrorMessage?: string;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -420,6 +425,39 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     sttProviderFetchErrorName = input.sttProviderFetchErrorName;
   }
 
+  // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21):
+  // same validation rules as the stt* fields above, reusing the same shared
+  // helpers/patterns -- the consultation stage's own real Gemini failure
+  // detail is exactly the same shape.
+  let consultationProviderHttpStatus: number | undefined;
+  if (input.consultationProviderHttpStatus !== undefined) {
+    if (typeof input.consultationProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.consultationProviderHttpStatus)) {
+      return { ok: false, reason: "invalid_consultation_provider_http_status" };
+    }
+    consultationProviderHttpStatus = input.consultationProviderHttpStatus;
+  }
+
+  let consultationProviderErrorStatus: string | undefined;
+  if (input.consultationProviderErrorStatus !== undefined) {
+    if (typeof input.consultationProviderErrorStatus !== "string" || !PROVIDER_ERROR_STATUS_PATTERN.test(input.consultationProviderErrorStatus)) {
+      return { ok: false, reason: "invalid_consultation_provider_error_status" };
+    }
+    consultationProviderErrorStatus = input.consultationProviderErrorStatus;
+  }
+
+  let consultationProviderErrorMessage: string | undefined;
+  if (input.consultationProviderErrorMessage !== undefined) {
+    if (
+      typeof input.consultationProviderErrorMessage !== "string" ||
+      input.consultationProviderErrorMessage.length === 0 ||
+      input.consultationProviderErrorMessage.length > MAX_PROVIDER_ERROR_MESSAGE_LENGTH ||
+      !isSafeSingleLineText(input.consultationProviderErrorMessage)
+    ) {
+      return { ok: false, reason: "invalid_consultation_provider_error_message" };
+    }
+    consultationProviderErrorMessage = input.consultationProviderErrorMessage;
+  }
+
   // Unknown extra keys on `summary` (or on the top-level body) are simply
   // never read, not rejected -- an allow-list extraction is exactly as
   // strict against injection/type-confusion as an exact-shape check, and
@@ -449,6 +487,9 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
       ...(sttProviderErrorMessage !== undefined ? { sttProviderErrorMessage } : {}),
       ...(sttProviderFetchErrorName !== undefined ? { sttProviderFetchErrorName } : {}),
+      ...(consultationProviderHttpStatus !== undefined ? { consultationProviderHttpStatus } : {}),
+      ...(consultationProviderErrorStatus !== undefined ? { consultationProviderErrorStatus } : {}),
+      ...(consultationProviderErrorMessage !== undefined ? { consultationProviderErrorMessage } : {}),
     },
   };
 }

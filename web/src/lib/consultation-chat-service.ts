@@ -98,6 +98,14 @@ export type SendConsultationMessageResult =
       // "attempt count" isn't a meaningful concept) -- same reasoning as
       // providerAttemptCount above.
       providerAttemptCount?: 1 | 2;
+      // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis
+      // (2026-08-21): see ChatProviderError's own doc comment for exactly
+      // what these mean -- undefined whenever the failure never reached
+      // the provider call at all, or the provider's own error didn't carry
+      // one (never fabricated).
+      providerHttpStatus?: number;
+      providerErrorStatus?: string;
+      providerErrorMessage?: string;
     };
 
 export interface SendConsultationMessageDependencies {
@@ -430,6 +438,8 @@ export async function sendConsultationMessage(
         providerModelVersion: activeProvider.modelVersion,
         providerErrorCode: firstProviderError?.code,
         providerErrorStatus: firstProviderError?.status,
+        providerCanonicalStatus: firstProviderError?.providerCanonicalStatus,
+        providerRawMessage: firstProviderError?.providerRawMessage,
         voiceTurnId,
         providerAttemptNumber: attemptNumber,
       });
@@ -438,7 +448,7 @@ export async function sendConsultationMessage(
       });
 
       if (firstProviderError?.retryable !== true) {
-        return failure(firstResultCode, attemptNumber);
+        return failure(firstResultCode, attemptNumber, firstProviderError);
       }
 
       attemptNumber = 2;
@@ -460,13 +470,15 @@ export async function sendConsultationMessage(
           providerModelVersion: activeProvider.modelVersion,
           providerErrorCode: secondProviderError?.code,
           providerErrorStatus: secondProviderError?.status,
+          providerCanonicalStatus: secondProviderError?.providerCanonicalStatus,
+          providerRawMessage: secondProviderError?.providerRawMessage,
           voiceTurnId,
           providerAttemptNumber: attemptNumber,
         });
         await recordAttempt(activeProvider, attemptNumber, "FAILED", Date.now() - providerCallStartedAt, {
           errorCategory: secondProviderError?.code ?? secondResultCode,
         });
-        return failure(secondResultCode, attemptNumber);
+        return failure(secondResultCode, attemptNumber, secondProviderError);
       }
     }
 
@@ -682,8 +694,19 @@ function classifyProviderFailure(error: unknown): ConsultationChatResultCode {
   }
 }
 
-function failure(code: ConsultationChatResultCode, providerAttemptCount?: 1 | 2): SendConsultationMessageResult {
-  return { outcome: "failed", code, ...(providerAttemptCount ? { providerAttemptCount } : {}) };
+function failure(
+  code: ConsultationChatResultCode,
+  providerAttemptCount?: 1 | 2,
+  providerError?: Partial<ChatProviderError>,
+): SendConsultationMessageResult {
+  return {
+    outcome: "failed",
+    code,
+    ...(providerAttemptCount ? { providerAttemptCount } : {}),
+    ...(providerError?.status !== undefined ? { providerHttpStatus: providerError.status } : {}),
+    ...(providerError?.providerCanonicalStatus !== undefined ? { providerErrorStatus: providerError.providerCanonicalStatus } : {}),
+    ...(providerError?.providerRawMessage !== undefined ? { providerErrorMessage: providerError.providerRawMessage } : {}),
+  };
 }
 
 // Structured, safe-fields-only diagnostic log -- same JSON-record convention
@@ -715,6 +738,14 @@ function logConsultationChatFailure(input: {
   providerModelVersion?: string;
   providerErrorCode?: string;
   providerErrorStatus?: number;
+  // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21):
+  // see ChatProviderError's own doc comment (consultation-chat-provider.ts)
+  // for exactly what these mean -- providerErrorStatus above is the raw
+  // HTTP status number; these two are Google's own canonical short status
+  // word and sanitized diagnostic message, distinct fields so neither name
+  // collides with the existing one.
+  providerCanonicalStatus?: string;
+  providerRawMessage?: string;
   configIssueCodes?: string;
   errorName?: string;
   voiceTurnId?: string;
@@ -734,6 +765,8 @@ function logConsultationChatFailure(input: {
       providerModelVersion: input.providerModelVersion ?? null,
       providerErrorCode: input.providerErrorCode ?? null,
       providerErrorStatus: input.providerErrorStatus ?? null,
+      providerCanonicalStatus: input.providerCanonicalStatus ?? null,
+      providerRawMessage: input.providerRawMessage ?? null,
       configIssueCodes: input.configIssueCodes ?? null,
       errorName: input.errorName ?? null,
       voiceTurnId: input.voiceTurnId ?? null,

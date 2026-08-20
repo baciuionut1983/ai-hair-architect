@@ -377,6 +377,13 @@ export interface VoiceLatencyTerminalDiagnostics {
   // genuinely free text, unlike sttProviderErrorStatus's fixed vocabulary.
   sttProviderErrorMessage?: string;
   sttProviderFetchErrorName?: string;
+  // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21):
+  // the same real Gemini failure detail as the stt* fields above, for the
+  // consultation stage instead -- see consultation-chat-provider.ts's own
+  // ChatProviderError doc comment for exactly what each means.
+  consultationProviderHttpStatus?: number;
+  consultationProviderErrorStatus?: string;
+  consultationProviderErrorMessage?: string;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see

@@ -53,6 +53,17 @@ function httpError(status: number, message: string): Error {
   return error;
 }
 
+// Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21):
+// the real shape @google/genai's own ApiError uses -- .message is the
+// JSON.stringify'd { error: { code, message, status } } envelope (see
+// node_modules/@google/genai's throwErrorIfNotOK), not plain text like
+// httpError above.
+function googleApiError(httpStatus: number, canonicalStatus: string, message: string): Error {
+  const error = new Error(JSON.stringify({ error: { code: httpStatus, message, status: canonicalStatus } })) as Error & { status: number };
+  error.status = httpStatus;
+  return error;
+}
+
 function isChatProviderError(error: unknown): error is ChatProviderError {
   return error instanceof Error && typeof (error as { code?: unknown }).code === "string";
 }
@@ -702,6 +713,43 @@ describe("GeminiConsultationChatProvider", () => {
 
     const provider400 = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, rejectingClient(httpError(400, "invalid schema")));
     await expect(provider400.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({ status: 400 });
+  });
+
+  // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21):
+  // mirrors the STT round's own providerErrorStatus/providerErrorMessage
+  // parsing exactly (see voice-transcript/route.ts), applied here to the
+  // @google/genai SDK's own ApiError shape instead of a raw fetch Response.
+  it("extracts Google's canonical status and diagnostic message from the SDK's real ApiError shape", async () => {
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      rejectingClient(googleApiError(404, "NOT_FOUND", "This model models/gemini-3.6-flash is no longer available to new users.")),
+    );
+    await expect(provider.respond("msg", context(), new AbortController().signal)).rejects.toMatchObject({
+      status: 404,
+      providerCanonicalStatus: "NOT_FOUND",
+      providerRawMessage: "This model models/gemini-3.6-flash is no longer available to new users.",
+    });
+  });
+
+  it("never fabricates providerCanonicalStatus/providerRawMessage when the underlying error's message isn't the expected JSON envelope", async () => {
+    const provider = new GeminiConsultationChatProvider({ apiKey: "key", model: "gemini-3.6-flash" }, rejectingClient(new TypeError("Failed to fetch")));
+    const rejection = await provider.respond("msg", context(), new AbortController().signal).catch((error: unknown) => error);
+    expect((rejection as { providerCanonicalStatus?: string }).providerCanonicalStatus).toBeUndefined();
+    expect((rejection as { providerRawMessage?: string }).providerRawMessage).toBeUndefined();
+  });
+
+  it("truncates an unexpectedly long provider error message and strips control characters", async () => {
+    const hugeMessage = `line one${"\n"}${"x".repeat(1000)}`;
+    const provider = new GeminiConsultationChatProvider(
+      { apiKey: "key", model: "gemini-3.6-flash" },
+      rejectingClient(googleApiError(500, "INTERNAL", hugeMessage)),
+    );
+    const rejection = (await provider.respond("msg", context(), new AbortController().signal).catch((error: unknown) => error)) as {
+      providerRawMessage?: string;
+    };
+    expect(typeof rejection.providerRawMessage).toBe("string");
+    expect(String(rejection.providerRawMessage).length).toBeLessThanOrEqual(300);
+    expect(String(rejection.providerRawMessage)).not.toContain("\n");
   });
 
   // Regression: the schema previously marked proposedCorrection as
