@@ -78,6 +78,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       errorCode: parsed.value.errorCode ?? null,
       providerAttemptCount: parsed.value.providerAttemptCount ?? null,
       elapsedSinceMicRequestMs: parsed.value.elapsedSinceMicRequestMs ?? null,
+      ttsResponseHeaders: parsed.value.ttsResponseHeaders ?? null,
       ...parsed.value.summary,
     })}`,
   );

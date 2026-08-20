@@ -62,6 +62,18 @@ export interface CloudVoiceReplyServerTiming {
   usageWriteMs: number | null;
   audioProcessingMs: number | null;
   serverTotalMs: number | null;
+  // Telemetry bug investigation (2026-08-19, Round 8): a real production
+  // test showed ttsProviderMs correctly populated from X-Provider-Latency-Ms
+  // while the four newer Round 7 headers (X-Pre-Provider-Ms etc.) all read
+  // as null, despite voice-reply/route.ts's own success log proving it
+  // computed and sent real values -- server code and this file's own
+  // header-reading code (identical numericHeader mechanism for all six)
+  // were both reviewed and are correct as written. This captures exactly
+  // which header names the browser actually saw on the response, so the
+  // next real test tells us definitively whether this is headers being
+  // dropped in transit (this list would be missing the new ones) or
+  // something else -- never guessed.
+  responseHeaderNames: string;
 }
 
 export interface SynthesizeCloudVoiceReplyDeps {
@@ -163,6 +175,7 @@ export async function synthesizeCloudVoiceReply(
       usageWriteMs: numericHeader("X-Usage-Write-Ms"),
       audioProcessingMs: numericHeader("X-Audio-Processing-Ms"),
       serverTotalMs: numericHeader("X-Server-Total-Ms"),
+      responseHeaderNames: Array.from(response.headers.keys()).join(","),
     };
     logVoiceReplyClientEvent("cloud_success", { audioBytes: blob.size });
     callbacks.onSuccess(blob, timing);

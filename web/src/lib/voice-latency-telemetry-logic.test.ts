@@ -26,6 +26,7 @@ function validSummary() {
     timeToFirstAudioMs: 1900,
     voiceTurnTotalMs: 2100,
     timeToPlaybackCompleteMs: 2600,
+    voiceTurnUnattributedMs: 84,
   };
 }
 
@@ -79,6 +80,7 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
         timeToFirstAudioMs: null,
         voiceTurnTotalMs: null,
         timeToPlaybackCompleteMs: null,
+        voiceTurnUnattributedMs: null,
       },
     });
     expect(result).toEqual({
@@ -105,6 +107,7 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
           timeToFirstAudioMs: null,
           voiceTurnTotalMs: null,
           timeToPlaybackCompleteMs: null,
+          voiceTurnUnattributedMs: null,
         },
       },
     });

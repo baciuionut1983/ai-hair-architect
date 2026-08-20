@@ -85,6 +85,10 @@ describe("computeVoiceLatencySummary", () => {
       timeToFirstAudioMs: 5800, // playback_started(10800) - recording_stopped(5000)
       voiceTurnTotalMs: 10800, // playback_started(10800) - mic_requested(0)
       timeToPlaybackCompleteMs: null, // playback_ended never reached in this test
+      // 50 (recordingFinalizeMs) + 150 (conversionMs) + 1000 (sttTotalMs) +
+      // 3000 (consultationTotalMs) + 1500 (ttsTotalMs) + 50 (audioPreparationMs)
+      // = 5750; timeToFirstAudioMs is 5800 -- a genuine, if small, 50ms gap.
+      voiceTurnUnattributedMs: 50,
     });
   });
 
@@ -179,6 +183,68 @@ describe("computeVoiceLatencySummary", () => {
     expect(summary.ttsTotalMs).toBe(40265);
     expect(summary.ttsServerTotalMs).toBeNull();
     expect(summary.ttsNetworkAndTransferMs).toBeNull();
+  });
+
+  // Round 8: a real production test showed timeToFirstAudioMs (~52.9s)
+  // nearly double the sum of sttTotalMs + consultationTotalMs + ttsTotalMs
+  // (~25.5s) -- this reproduces that exact test's real numbers to prove
+  // voiceTurnUnattributedMs surfaces the ~27.4s gap automatically, without
+  // requiring manual arithmetic across a partially-pasted log line.
+  it("surfaces voiceTurnUnattributedMs as the real gap between timeToFirstAudioMs and every named phase, using the actual Round 8 production numbers", () => {
+    const marks: VoiceLatencyMarks = {
+      recording_stopped: 0,
+      blob_created: 20, // recordingFinalizeMs: 20
+      conversion_started: 20,
+      conversion_completed: 27000, // conversionMs: 26980 -- the dominant candidate this round
+      stt_request_started: 27000,
+      transcript_ready: 30319, // sttTotalMs: 3319
+      consultation_request_started: 30319,
+      consultation_response_received: 38913, // consultationTotalMs: 8594
+      tts_request_started: 38913,
+      tts_audio_received: 52475, // ttsTotalMs: 13562
+      audio_ready: 52527, // audioPreparationMs: 52
+      playback_started: 52927, // timeToFirstAudioMs: 52927
+    };
+
+    const summary = computeVoiceLatencySummary(marks, {
+      sttProviderMs: 2654,
+      consultationProviderMs: 6258,
+      ttsProviderMs: 13166,
+    });
+
+    expect(summary.timeToFirstAudioMs).toBe(52927);
+    expect(summary.sttTotalMs).toBe(3319);
+    expect(summary.consultationTotalMs).toBe(8594);
+    expect(summary.ttsTotalMs).toBe(13562);
+    // 52927 - (20 + 26980 + 3319 + 8594 + 13562 + 52) = 400 -- with these
+    // particular marks, conversionMs alone explains almost the entire real
+    // gap. The actual production log line (not fabricated here) is what
+    // tells us whether it really is conversionMs, some other phase, or
+    // split across several -- this test only proves the field computes
+    // correctly, not which phase is the real cause.
+    expect(summary.voiceTurnUnattributedMs).toBe(400);
+  });
+
+  it("returns voiceTurnUnattributedMs as null (never fabricated) when any named phase was never measured", () => {
+    const marks: VoiceLatencyMarks = {
+      recording_stopped: 0,
+      stt_request_started: 0,
+      transcript_ready: 1000,
+      consultation_request_started: 1000,
+      consultation_response_received: 2000,
+      tts_request_started: 2000,
+      tts_audio_received: 3000,
+      playback_started: 3100,
+      // No blob_created/conversion_started/conversion_completed/audio_ready
+      // -- recordingFinalizeMs, conversionMs, and audioPreparationMs are
+      // all null, so the sum they'd contribute to is genuinely unknown.
+    };
+
+    const summary = computeVoiceLatencySummary(marks);
+
+    expect(summary.timeToFirstAudioMs).toBe(3100);
+    expect(summary.recordingFinalizeMs).toBeNull();
+    expect(summary.voiceTurnUnattributedMs).toBeNull();
   });
 
   it("returns an all-null summary for an empty marks object -- no stage ever reached", () => {

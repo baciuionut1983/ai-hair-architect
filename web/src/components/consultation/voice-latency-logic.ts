@@ -122,6 +122,22 @@ export interface VoiceLatencySummary {
   // stops at playback START) -- only measurable for a turn that actually
   // finished playing the reply aloud, null otherwise.
   timeToPlaybackCompleteMs: number | null;
+  // Round 8 (2026-08-19): a real production test showed timeToFirstAudioMs
+  // (~52.9s) nearly DOUBLE the sum of sttTotalMs + consultationTotalMs +
+  // ttsTotalMs (~25.5s) -- a ~27.4s gap with no single field showing where
+  // it goes. Code review of every stage transition between the three
+  // phases (transcript_ready -> consultation_request_started,
+  // consultation_response_received -> tts_request_started) proved those
+  // are synchronous, same-tick React callbacks with no await in between --
+  // structurally near-zero, not a place latency can hide. That leaves
+  // exactly the three phases already computed above but not summed
+  // anywhere: recordingFinalizeMs, conversionMs (the WAV decode/resample --
+  // see audio-wav-encode.ts's Round 7 16kHz change, real CPU work that
+  // scales with recording length), and audioPreparationMs. This mirrors
+  // consultationTotalMs's own unattributedMs pattern exactly: never
+  // fabricated, null unless every named component AND the total were
+  // actually measured.
+  voiceTurnUnattributedMs: number | null;
 }
 
 function diff(marks: VoiceLatencyMarks, from: VoiceLatencyStage, to: VoiceLatencyStage): number | null {
@@ -177,9 +193,27 @@ export function computeVoiceLatencySummary(
   const ttsNetworkAndTransferMs =
     ttsTotalMs !== null && ttsServerTotalMs !== null ? Math.max(0, ttsTotalMs - ttsServerTotalMs) : null;
 
+  const recordingFinalizeMs = diff(marks, "recording_stopped", "blob_created");
+  const conversionMs = diff(marks, "conversion_started", "conversion_completed");
+  const audioPreparationMs = diff(marks, "tts_audio_received", "audio_ready");
+  const timeToFirstAudioMs = diff(marks, "recording_stopped", "playback_started");
+  const voiceTurnUnattributedMs =
+    timeToFirstAudioMs !== null &&
+    recordingFinalizeMs !== null &&
+    conversionMs !== null &&
+    sttTotalMs !== null &&
+    consultationTotalMs !== null &&
+    ttsTotalMs !== null &&
+    audioPreparationMs !== null
+      ? Math.max(
+          0,
+          timeToFirstAudioMs - (recordingFinalizeMs + conversionMs + sttTotalMs + consultationTotalMs + ttsTotalMs + audioPreparationMs),
+        )
+      : null;
+
   return {
-    recordingFinalizeMs: diff(marks, "recording_stopped", "blob_created"),
-    conversionMs: diff(marks, "conversion_started", "conversion_completed"),
+    recordingFinalizeMs,
+    conversionMs,
     sttNetworkAndServerMs: sttTotalMs !== null && sttProviderMs !== null ? Math.max(0, sttTotalMs - sttProviderMs) : null,
     sttProviderMs,
     sttTotalMs,
@@ -192,15 +226,16 @@ export function computeVoiceLatencySummary(
     ttsAudioProcessingMs,
     ttsServerTotalMs,
     ttsNetworkAndTransferMs,
-    audioPreparationMs: diff(marks, "tts_audio_received", "audio_ready"),
+    audioPreparationMs,
     // Requirement: "utilizatorul trebuie să simtă că AI-ul răspunde cât mai
     // natural după ce termină de vorbit" -- measured from the moment
     // speaking stopped (recording_stopped), not from mic_requested, since
     // the stylist doesn't experience the earlier permission-grant/setup
     // time as "waiting for a reply".
-    timeToFirstAudioMs: diff(marks, "recording_stopped", "playback_started"),
+    timeToFirstAudioMs,
     voiceTurnTotalMs: diff(marks, "mic_requested", "playback_started"),
     timeToPlaybackCompleteMs: diff(marks, "recording_stopped", "playback_ended"),
+    voiceTurnUnattributedMs,
   };
 }
 
@@ -249,6 +284,13 @@ export interface VoiceLatencyTerminalDiagnostics {
   errorCode?: string;
   providerAttemptCount?: number;
   elapsedSinceMicRequestMs?: number | null;
+  // Telemetry bug investigation (2026-08-19, Round 8): see
+  // CloudVoiceReplyServerTiming.responseHeaderNames's own doc comment --
+  // a comma-separated list of every header name the browser actually saw
+  // on the TTS response, present only when a real response existed to
+  // inspect (both tts_completed and tts_fallback_local originate from a
+  // successful HTTP response; tts_failed and other outcomes have none).
+  ttsResponseHeaders?: string;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see

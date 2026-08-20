@@ -8,7 +8,13 @@ function okResponse(blob: Blob, headers: Record<string, string> = {}): Response 
   return {
     ok: true,
     blob: async () => blob,
-    headers: { get: (name: string) => headers[name] ?? null },
+    headers: {
+      get: (name: string) => headers[name] ?? null,
+      // Round 8: a real browser Headers instance is iterable/has .keys() --
+      // synthesizeCloudVoiceReply's own responseHeaderNames diagnostic
+      // (see consultation-chat-cloud-tts-logic.ts) reads this.
+      keys: () => Object.keys(headers)[Symbol.iterator](),
+    },
   } as unknown as Response;
 }
 
@@ -81,6 +87,7 @@ describe("synthesizeCloudVoiceReply", () => {
       usageWriteMs: null,
       audioProcessingMs: null,
       serverTotalMs: null,
+      responseHeaderNames: "",
     });
   });
 
@@ -161,7 +168,35 @@ describe("synthesizeCloudVoiceReply", () => {
       usageWriteMs: 18300,
       audioProcessingMs: 12,
       serverTotalMs: 19930,
+      responseHeaderNames: expect.any(String),
     });
+  });
+
+  // Telemetry bug investigation (2026-08-19, Round 8): a real production
+  // test showed 4 of 6 TTS timing headers reading as null client-side
+  // despite the server logging real values for all of them -- code review
+  // found no bug in either side's header-setting/reading code (identical
+  // mechanism for every header, and the other 2 DO work). This diagnostic
+  // exists to settle, on the next real test, whether the browser ever saw
+  // these headers at all.
+  it("reports every header name actually present on the response, not just the ones this file explicitly reads", async () => {
+    const blob = new Blob(["fake-wav-bytes"]);
+    const onSuccess = vi.fn();
+    await synthesizeCloudVoiceReply(
+      "client-1",
+      "text",
+      "en",
+      {
+        fetch: vi.fn().mockResolvedValue(
+          okResponse(blob, { "X-Provider-Latency-Ms": "742", "X-Pre-Provider-Ms": "9", "Content-Type": "audio/wav" }),
+        ),
+      },
+      { onSuccess, onFailure: () => {} },
+    );
+    const timing = onSuccess.mock.calls[0][1] as { responseHeaderNames: string };
+    expect(timing.responseHeaderNames.split(",")).toEqual(
+      expect.arrayContaining(["X-Provider-Latency-Ms", "X-Pre-Provider-Ms", "Content-Type"]),
+    );
   });
 
   it("calls onFailure('unavailable') for a non-2xx response, without throwing", async () => {

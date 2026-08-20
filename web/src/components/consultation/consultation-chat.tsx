@@ -652,6 +652,10 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         errorCode,
         providerAttemptCount,
         elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(finalMarks, performance.now()),
+        // Round 8: only present when a real TTS response existed to
+        // inspect (see CloudVoiceReplyServerTiming.responseHeaderNames) --
+        // undefined for every non-TTS outcome, never fabricated.
+        ttsResponseHeaders: ttsTiming?.responseHeaderNames,
       });
     };
 

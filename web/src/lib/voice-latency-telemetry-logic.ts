@@ -79,6 +79,9 @@ const VOICE_LATENCY_SUMMARY_FIELDS = [
   "timeToFirstAudioMs",
   "voiceTurnTotalMs",
   "timeToPlaybackCompleteMs",
+  // Round 8: mirrors voice-latency-logic.ts's own new
+  // VoiceLatencySummary.voiceTurnUnattributedMs exactly.
+  "voiceTurnUnattributedMs",
 ] as const;
 
 export type VoiceLatencySummaryField = (typeof VOICE_LATENCY_SUMMARY_FIELDS)[number];
@@ -98,6 +101,13 @@ export interface VoiceLatencyTelemetryInput {
   errorCode?: string;
   providerAttemptCount?: number;
   elapsedSinceMicRequestMs?: number | null;
+  // Round 8: a comma-separated list of the HTTP header names the browser
+  // actually saw on a TTS response -- see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics.ttsResponseHeaders doc comment for why
+  // this exists (diagnosing why 4 of 6 Round 7 TTS timing headers read as
+  // null in production despite the server computing real values for all
+  // of them). Bounded to real HTTP header name characters only.
+  ttsResponseHeaders?: string;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -122,6 +132,13 @@ const MAX_PLAUSIBLE_DURATION_MS = 5 * 60 * 1000;
 // smuggle a long, free-form string (e.g. a raw provider error message or
 // conversation fragment) through this field.
 const ERROR_CODE_PATTERN = /^[A-Za-z0-9_]{1,64}$/;
+
+// Real HTTP header names are letters/digits/hyphens only (RFC 7230 token
+// chars, which this app's own header names never exceed); comma-separated
+// since responseHeaderNames joins several. Bound is generous for a normal
+// response's header count while still rejecting an attempt to smuggle
+// anything else through this field.
+const TTS_RESPONSE_HEADERS_PATTERN = /^[A-Za-z0-9,-]{0,500}$/;
 
 // Mirrors STT/Consult AI's own "at most one retry" policy (max 2 real
 // attempts) with a little headroom -- rejects only an implausible value,
@@ -205,6 +222,14 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     }
   }
 
+  let ttsResponseHeaders: string | undefined;
+  if (input.ttsResponseHeaders !== undefined) {
+    if (typeof input.ttsResponseHeaders !== "string" || !TTS_RESPONSE_HEADERS_PATTERN.test(input.ttsResponseHeaders)) {
+      return { ok: false, reason: "invalid_tts_response_headers" };
+    }
+    ttsResponseHeaders = input.ttsResponseHeaders;
+  }
+
   // Unknown extra keys on `summary` (or on the top-level body) are simply
   // never read, not rejected -- an allow-list extraction is exactly as
   // strict against injection/type-confusion as an exact-shape check, and
@@ -219,6 +244,7 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(errorCode !== undefined ? { errorCode } : {}),
       ...(providerAttemptCount !== undefined ? { providerAttemptCount } : {}),
       ...(elapsedSinceMicRequestMs !== undefined ? { elapsedSinceMicRequestMs } : {}),
+      ...(ttsResponseHeaders !== undefined ? { ttsResponseHeaders } : {}),
     },
   };
 }
