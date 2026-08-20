@@ -399,6 +399,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                   // failure never reached the provider at all.
                   sttProviderHttpStatus: providerDiagnostics?.providerHttpStatus,
                   sttProviderErrorStatus: providerDiagnostics?.providerErrorStatus,
+                  sttProviderErrorMessage: providerDiagnostics?.providerErrorMessage,
                   sttProviderFetchErrorName: providerDiagnostics?.providerFetchErrorName,
                   ...vadDiagnosticsToReportFields(readVoiceActivityDiagnostics()),
                 });

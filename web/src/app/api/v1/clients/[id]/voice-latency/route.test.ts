@@ -332,16 +332,18 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
       attemptId: "attempt-107",
       outcome: "stt_failed",
       summary: validSummary(),
-      sttProviderHttpStatus: 429,
-      sttProviderErrorStatus: "RESOURCE_EXHAUSTED",
+      sttProviderHttpStatus: 404,
+      sttProviderErrorStatus: "NOT_FOUND",
+      sttProviderErrorMessage: "models/gemini-2.5-flash-lite is not found for API version v1beta, or is not supported for content generation.",
       sttProviderFetchErrorName: "TimeoutError",
     });
 
     const [line] = logSpy.mock.calls[0] as [string];
     const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
     expect(parsed).toMatchObject({
-      sttProviderHttpStatus: 429,
-      sttProviderErrorStatus: "RESOURCE_EXHAUSTED",
+      sttProviderHttpStatus: 404,
+      sttProviderErrorStatus: "NOT_FOUND",
+      sttProviderErrorMessage: "models/gemini-2.5-flash-lite is not found for API version v1beta, or is not supported for content generation.",
       sttProviderFetchErrorName: "TimeoutError",
     });
     logSpy.mockRestore();
@@ -357,8 +359,10 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     expect(parsed).toMatchObject({
       sttProviderHttpStatus: null,
       sttProviderErrorStatus: null,
+      sttProviderErrorMessage: null,
       sttProviderFetchErrorName: null,
     });
     logSpy.mockRestore();
   });
+
 });

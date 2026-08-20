@@ -105,6 +105,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       // fields for exactly what they mean and why.
       sttProviderHttpStatus: parsed.value.sttProviderHttpStatus ?? null,
       sttProviderErrorStatus: parsed.value.sttProviderErrorStatus ?? null,
+      sttProviderErrorMessage: parsed.value.sttProviderErrorMessage ?? null,
       sttProviderFetchErrorName: parsed.value.sttProviderFetchErrorName ?? null,
       ...parsed.value.summary,
     })}`,

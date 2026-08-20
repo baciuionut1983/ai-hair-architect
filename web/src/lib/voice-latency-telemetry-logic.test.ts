@@ -589,21 +589,23 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
   // to the real Gemini HTTP status/canonical error status, or to a real
   // fetch-level failure (timeout/network) -- see voice-latency-logic.ts's
   // own VoiceLatencyTerminalDiagnostics doc comment.
-  describe("STT provider diagnostics (sttProviderHttpStatus / sttProviderErrorStatus / sttProviderFetchErrorName)", () => {
+  describe("STT provider diagnostics (sttProviderHttpStatus / sttProviderErrorStatus / sttProviderErrorMessage / sttProviderFetchErrorName)", () => {
     it("accepts a fully-populated set of provider diagnostic fields", () => {
       const result = parseVoiceLatencyTelemetryPayload({
         attemptId: "attempt-1",
         outcome: "stt_failed",
         summary: validSummary(),
-        sttProviderHttpStatus: 429,
-        sttProviderErrorStatus: "RESOURCE_EXHAUSTED",
+        sttProviderHttpStatus: 404,
+        sttProviderErrorStatus: "NOT_FOUND",
+        sttProviderErrorMessage: "models/gemini-2.5-flash-lite is not found for API version v1beta, or is not supported for content generation.",
         sttProviderFetchErrorName: "TimeoutError",
       });
       expect(result).toEqual({
         ok: true,
         value: expect.objectContaining({
-          sttProviderHttpStatus: 429,
-          sttProviderErrorStatus: "RESOURCE_EXHAUSTED",
+          sttProviderHttpStatus: 404,
+          sttProviderErrorStatus: "NOT_FOUND",
+          sttProviderErrorMessage: "models/gemini-2.5-flash-lite is not found for API version v1beta, or is not supported for content generation.",
           sttProviderFetchErrorName: "TimeoutError",
         }),
       });
@@ -639,7 +641,7 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
       expect(result).toEqual({ ok: false, reason: "invalid_stt_provider_fetch_error_name" });
     });
 
-    it("omits all three fields entirely when not provided -- never fabricated", () => {
+    it("omits all four fields entirely when not provided -- never fabricated", () => {
       const result = parseVoiceLatencyTelemetryPayload({
         attemptId: "attempt-1",
         outcome: "stt_failed",
@@ -647,10 +649,63 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
       });
       expect(result.ok).toBe(true);
       if (result.ok) {
-        for (const field of ["sttProviderHttpStatus", "sttProviderErrorStatus", "sttProviderFetchErrorName"]) {
+        for (const field of ["sttProviderHttpStatus", "sttProviderErrorStatus", "sttProviderErrorMessage", "sttProviderFetchErrorName"]) {
           expect(field in result.value).toBe(false);
         }
       }
+    });
+
+    it("accepts a real Google diagnostic message, including punctuation/slashes/quotes it legitimately uses", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        sttProviderErrorMessage: "Invalid value at 'contents[0].parts[1].inline_data.mime_type'",
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ sttProviderErrorMessage: "Invalid value at 'contents[0].parts[1].inline_data.mime_type'" }),
+      });
+    });
+
+    it("rejects an sttProviderErrorMessage longer than the safe bound", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        sttProviderErrorMessage: "x".repeat(301),
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_stt_provider_error_message" });
+    });
+
+    it("rejects an empty sttProviderErrorMessage", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        sttProviderErrorMessage: "",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_stt_provider_error_message" });
+    });
+
+    it("rejects an sttProviderErrorMessage containing control characters -- never a crafted multi-line value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        sttProviderErrorMessage: "line one\nline two",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_stt_provider_error_message" });
+    });
+
+    it("rejects a non-string sttProviderErrorMessage", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        sttProviderErrorMessage: 12345,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_stt_provider_error_message" });
     });
   });
 

@@ -371,6 +371,11 @@ export interface VoiceLatencyTerminalDiagnostics {
   // reached (or never returned from) the provider at all.
   sttProviderHttpStatus?: number;
   sttProviderErrorStatus?: string;
+  // STT 404 root-cause diagnosis (2026-08-21): Google's own diagnostic
+  // message for the error, sanitized/bounded server-side (see
+  // voice-transcript/route.ts's own sanitizeProviderErrorMessage) --
+  // genuinely free text, unlike sttProviderErrorStatus's fixed vocabulary.
+  sttProviderErrorMessage?: string;
   sttProviderFetchErrorName?: string;
 }
 

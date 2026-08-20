@@ -917,6 +917,38 @@ describe("finishRecording voice reliability hardening", () => {
     const [, , , , providerDiagnostics] = callbacks.onFailure.mock.calls[0];
     expect(providerDiagnostics).toBeUndefined();
   });
+
+  // STT 404 root-cause diagnosis (2026-08-21): Google's own diagnostic
+  // message (e.g. the real "model not found" text) must reach onFailure's
+  // 5th argument unchanged, same contract as providerHttpStatus/
+  // providerErrorStatus above.
+  it("passes the server's real providerErrorMessage through to onFailure's 5th argument", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () =>
+      jsonResponse(
+        {
+          error: "VOICE_TRANSCRIPTION_FAILED",
+          message: "failed",
+          providerHttpStatus: 404,
+          providerErrorStatus: "NOT_FOUND",
+          providerErrorMessage: "models/gemini-2.5-flash-lite is not found for API version v1beta, or is not supported for content generation.",
+        },
+        false,
+        404,
+      ),
+    );
+
+    await finishRecording(stream, [new Blob(["x"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub });
+
+    const [, , , , providerDiagnostics] = callbacks.onFailure.mock.calls[0];
+    expect(providerDiagnostics).toEqual({
+      providerHttpStatus: 404,
+      providerErrorStatus: "NOT_FOUND",
+      providerErrorMessage: "models/gemini-2.5-flash-lite is not found for API version v1beta, or is not supported for content generation.",
+      providerFetchErrorName: undefined,
+    });
+  });
 });
 
 describe("classifyMicrophoneStartError", () => {

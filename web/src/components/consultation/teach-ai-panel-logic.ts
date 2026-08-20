@@ -72,7 +72,12 @@ export interface FinishRecordingCallbacks {
     reason: VoiceTranscriptionFailureReason,
     marks: VoiceLatencyMarks,
     attemptNumber: number,
-    providerDiagnostics?: { providerHttpStatus?: number; providerErrorStatus?: string; providerFetchErrorName?: string },
+    providerDiagnostics?: {
+      providerHttpStatus?: number;
+      providerErrorStatus?: string;
+      providerErrorMessage?: string;
+      providerFetchErrorName?: string;
+    },
   ) => void;
   // Voice latency audit (2026-08-18): marks covers every recording_stopped
   // through transcript_ready stage this call reached; sttProviderMs is the
@@ -253,6 +258,7 @@ type UploadAttemptResult =
       // the provider at all.
       providerHttpStatus?: number;
       providerErrorStatus?: string;
+      providerErrorMessage?: string;
       providerFetchErrorName?: string;
     };
 
@@ -327,6 +333,7 @@ async function attemptUpload(
     // collapse into the identical generic "providerUnavailable" reason.
     providerHttpStatus?: number;
     providerErrorStatus?: string;
+    providerErrorMessage?: string;
     providerFetchErrorName?: string;
   };
   try {
@@ -364,6 +371,7 @@ async function attemptUpload(
       // provider at all, so neither field applies).
       providerHttpStatus: payload.providerHttpStatus,
       providerErrorStatus: payload.providerErrorStatus,
+      providerErrorMessage: payload.providerErrorMessage,
       providerFetchErrorName: payload.providerFetchErrorName,
     };
   }
@@ -499,6 +507,7 @@ export async function finishRecording(
       callbacks.onFailure(result.message, result.reason, marks, attemptNumber, {
         providerHttpStatus: result.providerHttpStatus,
         providerErrorStatus: result.providerErrorStatus,
+        providerErrorMessage: result.providerErrorMessage,
         providerFetchErrorName: result.providerFetchErrorName,
       });
     }

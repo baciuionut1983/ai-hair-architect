@@ -50,6 +50,19 @@ function baseMimeType(mimeType: string): string {
 // a bad audio MIME type apart from an auth/quota/model problem.
 const MAX_LOGGED_PROVIDER_ERROR_LENGTH = 500;
 
+// STT 404 root-cause diagnosis (2026-08-21): Google's own error.message is
+// genuinely free text (e.g. "models/gemini-2.5-flash-lite is not found for
+// API version v1beta, or is not supported for content generation."), unlike
+// providerErrorStatus's fixed short vocabulary -- bounded to a safe length
+// and stripped of control characters (never multi-line) before it's ever
+// returned to the client or logged, so a telemetry payload built from it
+// can't grow unbounded or smuggle a crafted multi-line value through.
+const MAX_PROVIDER_ERROR_MESSAGE_LENGTH = 300;
+
+function sanitizeProviderErrorMessage(message: string): string {
+  return message.replace(/[\x00-\x1F\x7F]+/g, " ").trim().slice(0, MAX_PROVIDER_ERROR_MESSAGE_LENGTH);
+}
+
 function logVoiceTranscript(status: "SUCCEEDED" | "FAILED" | "INFO", stage: string, details: Record<string, unknown> = {}): void {
   const line = JSON.stringify({ gate: "VOICE_TRANSCRIPT", status, stage, ...details });
   if (status === "FAILED") {
@@ -335,14 +348,23 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     // undefined (never fabricated) when the body isn't the expected
     // { error: { status } } shape.
     let providerErrorStatus: string | undefined;
+    // STT 404 root-cause diagnosis (2026-08-21): Google's own diagnostic
+    // message for this exact error (e.g. distinguishing "model not found"
+    // from "not supported for generateContent" from a transient outage) --
+    // parsed from the SAME already-logged error body, sanitized/bounded via
+    // sanitizeProviderErrorMessage above. undefined (never fabricated) when
+    // the body isn't the expected { error: { message } } shape.
+    let providerErrorMessage: string | undefined;
     try {
-      const parsedError = JSON.parse(providerErrorBody) as { error?: { status?: unknown } };
+      const parsedError = JSON.parse(providerErrorBody) as { error?: { status?: unknown; message?: unknown } };
       if (typeof parsedError.error?.status === "string") {
         providerErrorStatus = parsedError.error.status;
       }
+      if (typeof parsedError.error?.message === "string" && parsedError.error.message.length > 0) {
+        providerErrorMessage = sanitizeProviderErrorMessage(parsedError.error.message);
+      }
     } catch {
-      // Not JSON, or an unexpected shape -- providerErrorStatus stays
-      // undefined, never guessed.
+      // Not JSON, or an unexpected shape -- both stay undefined, never guessed.
     }
     logVoiceTranscript("FAILED", "provider_call", {
       attemptId,
@@ -351,6 +373,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       reason: "provider_response_not_ok",
       providerHttpStatus: response.status,
       providerErrorStatus: providerErrorStatus ?? null,
+      providerErrorMessage: providerErrorMessage ?? null,
       providerErrorBody: providerErrorBody.slice(0, MAX_LOGGED_PROVIDER_ERROR_LENGTH),
       model,
       audioMimeType: audio.type,
@@ -380,6 +403,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         message: "Voice transcription failed. You can still type your note.",
         providerHttpStatus: response.status,
         ...(providerErrorStatus ? { providerErrorStatus } : {}),
+        ...(providerErrorMessage ? { providerErrorMessage } : {}),
       },
       { status: 502 },
     );

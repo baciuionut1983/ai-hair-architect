@@ -777,6 +777,70 @@ describe("production diagnostics logging", () => {
     expect(body.providerHttpStatus).toBeUndefined();
   });
 
+  // STT 404 root-cause diagnosis (2026-08-21): a real production test
+  // surfaced a genuine 404/NOT_FOUND from Gemini for gemini-2.5-flash-lite
+  // -- these tests cover exposing Google's own diagnostic message
+  // (error.message) safely, matching the exact envelope shape Google uses
+  // for a "model not found" response.
+  it("returns Google's own diagnostic error message in the response body when the error envelope includes one", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      Response.json(
+        { error: { code: 404, message: "models/gemini-2.5-flash-lite is not found for API version v1beta, or is not supported for content generation.", status: "NOT_FOUND" } },
+        { status: 404 },
+      ),
+    ));
+
+    const response = await invoke(audioForm());
+    const body = await response.json();
+
+    expect(body.providerHttpStatus).toBe(404);
+    expect(body.providerErrorStatus).toBe("NOT_FOUND");
+    expect(body.providerErrorMessage).toBe("models/gemini-2.5-flash-lite is not found for API version v1beta, or is not supported for content generation.");
+  });
+
+  it("never fabricates providerErrorMessage when the error body is not valid JSON", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("Internal Server Error", { status: 500 })));
+
+    const response = await invoke(audioForm());
+    const body = await response.json();
+
+    expect(body.providerErrorMessage).toBeUndefined();
+  });
+
+  it("never fabricates providerErrorMessage when the error envelope lacks a message field", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: { status: "UNAVAILABLE" } }, { status: 503 })));
+
+    const response = await invoke(audioForm());
+    const body = await response.json();
+
+    expect(body.providerErrorStatus).toBe("UNAVAILABLE");
+    expect(body.providerErrorMessage).toBeUndefined();
+  });
+
+  it("truncates an unexpectedly long provider error message and strips control characters before returning it", async () => {
+    const hugeMessage = `line one${"\n"}${"x".repeat(1000)}`;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: { message: hugeMessage, status: "INTERNAL" } }, { status: 500 })));
+
+    const response = await invoke(audioForm());
+    const body = await response.json();
+
+    expect(typeof body.providerErrorMessage).toBe("string");
+    expect(String(body.providerErrorMessage).length).toBeLessThanOrEqual(300);
+    expect(String(body.providerErrorMessage)).not.toContain("\n");
+  });
+
+  it("never logs or returns the API key when returning providerErrorMessage", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      Response.json({ error: { message: "models/gemini-2.5-flash-lite is not found for API version v1beta.", status: "NOT_FOUND" } }, { status: 404 }),
+    ));
+
+    const response = await invoke(audioForm());
+    const body = await response.json();
+
+    expect(JSON.stringify(body)).not.toContain("key=");
+    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(process.env.AI_ANALYSIS_API_KEY);
+  });
+
   it("truncates an unexpectedly large provider error body instead of logging it in full", async () => {
     const hugeMessage = "x".repeat(10_000);
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ error: { message: hugeMessage } }, { status: 500 })));

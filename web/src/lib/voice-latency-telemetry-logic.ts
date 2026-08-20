@@ -144,6 +144,10 @@ export interface VoiceLatencyTelemetryInput {
   // comment on these same 3 fields for exactly what they mean and why.
   sttProviderHttpStatus?: number;
   sttProviderErrorStatus?: string;
+  // STT 404 root-cause diagnosis (2026-08-21): see voice-latency-logic.ts's
+  // own doc comment -- genuinely free text (Google's own diagnostic
+  // message), unlike sttProviderErrorStatus's fixed vocabulary.
+  sttProviderErrorMessage?: string;
   sttProviderFetchErrorName?: string;
 }
 
@@ -211,6 +215,22 @@ const PROVIDER_ERROR_STATUS_PATTERN = /^[A-Z_]{1,64}$/;
 // A JS Error.prototype.name value (e.g. "TimeoutError", "TypeError",
 // "AbortError") -- letters only, never a free-form message.
 const PROVIDER_FETCH_ERROR_NAME_PATTERN = /^[A-Za-z]{1,64}$/;
+
+// STT 404 root-cause diagnosis (2026-08-21): Google's own error.message is
+// genuinely free text (e.g. "models/gemini-2.5-flash-lite is not found for
+// API version v1beta, or is not supported for content generation."), unlike
+// providerErrorStatus's fixed vocabulary -- already sanitized/bounded
+// server-side (see voice-transcript/route.ts's sanitizeProviderErrorMessage),
+// but re-checked here too since this endpoint is a public POST body a
+// malicious/buggy client could send anything through, independent of the
+// real STT flow. Bounded length, single line (no control characters) --
+// never rejects legitimate punctuation/quotes/slashes Google's own
+// diagnostic messages use.
+const MAX_PROVIDER_ERROR_MESSAGE_LENGTH = 300;
+
+function isSafeSingleLineText(value: string): boolean {
+  return !/[\x00-\x1F\x7F]/.test(value);
+}
 
 // Shared bound for every vad*DurationMs/*Ms offset field -- same reasoning
 // as MAX_PLAUSIBLE_DURATION_MS, reused directly since these are the same
@@ -379,6 +399,19 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     sttProviderErrorStatus = input.sttProviderErrorStatus;
   }
 
+  let sttProviderErrorMessage: string | undefined;
+  if (input.sttProviderErrorMessage !== undefined) {
+    if (
+      typeof input.sttProviderErrorMessage !== "string" ||
+      input.sttProviderErrorMessage.length === 0 ||
+      input.sttProviderErrorMessage.length > MAX_PROVIDER_ERROR_MESSAGE_LENGTH ||
+      !isSafeSingleLineText(input.sttProviderErrorMessage)
+    ) {
+      return { ok: false, reason: "invalid_stt_provider_error_message" };
+    }
+    sttProviderErrorMessage = input.sttProviderErrorMessage;
+  }
+
   let sttProviderFetchErrorName: string | undefined;
   if (input.sttProviderFetchErrorName !== undefined) {
     if (typeof input.sttProviderFetchErrorName !== "string" || !PROVIDER_FETCH_ERROR_NAME_PATTERN.test(input.sttProviderFetchErrorName)) {
@@ -414,6 +447,7 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(vadMode !== undefined ? { vadMode } : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
+      ...(sttProviderErrorMessage !== undefined ? { sttProviderErrorMessage } : {}),
       ...(sttProviderFetchErrorName !== undefined ? { sttProviderFetchErrorName } : {}),
     },
   };
