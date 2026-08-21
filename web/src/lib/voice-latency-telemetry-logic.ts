@@ -170,6 +170,14 @@ export interface VoiceLatencyTelemetryInput {
   // Consult AI voice thinking A/B (2026-08-21): see voice-latency-logic.ts's
   // own doc comment on this same field.
   consultationThinkingMode?: string;
+  // VAD false-negative hardening (2026-08-21): see voice-activity-logic.ts's
+  // own VoiceActivityDiagnostics doc comments on these same 6 fields.
+  vadPeakRms?: number;
+  vadPeakSpeechBandRatio?: number;
+  vadFinalNoiseFloor?: number;
+  vadMaxCandidateSpeechMs?: number;
+  vadCandidateResetCount?: number;
+  vadFullyQualifiedSampleCount?: number;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -295,6 +303,27 @@ function parseOptionalNonNegativeInteger(
   const raw = input[field];
   if (raw === undefined) return { ok: true, value: undefined };
   if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > MAX_PLAUSIBLE_CONSULTATION_COUNT) {
+    return { ok: false };
+  }
+  return { ok: true, value: raw };
+}
+
+// VAD false-negative hardening (2026-08-21): a generous ceiling for the
+// raw RMS/noise-floor levels evaluateVadSample computes -- a normalized
+// time-domain amplitude that in practice never exceeds ~1.5, so this
+// rejects only a clearly-garbage value, never a real one. Ratios
+// (speechBandRatio) are separately bounded to their real 0..1 range at
+// each call site below, not via this shared ceiling.
+const MAX_PLAUSIBLE_AUDIO_LEVEL = 10;
+
+function parseOptionalBoundedFloat(
+  input: Record<string, unknown>,
+  field: string,
+  max: number,
+): { ok: true; value: number | undefined } | { ok: false } {
+  const raw = input[field];
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0 || raw > max) {
     return { ok: false };
   }
   return { ok: true, value: raw };
@@ -436,6 +465,22 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     vadMode = input.vadMode;
   }
 
+  // VAD false-negative hardening (2026-08-21): see
+  // voice-activity-logic.ts's own VoiceActivityDiagnostics doc comments on
+  // these same 6 fields.
+  const vadPeakRms = parseOptionalBoundedFloat(input, "vadPeakRms", MAX_PLAUSIBLE_AUDIO_LEVEL);
+  if (!vadPeakRms.ok) return { ok: false, reason: "invalid_vad_peak_rms" };
+  const vadPeakSpeechBandRatio = parseOptionalBoundedFloat(input, "vadPeakSpeechBandRatio", 1);
+  if (!vadPeakSpeechBandRatio.ok) return { ok: false, reason: "invalid_vad_peak_speech_band_ratio" };
+  const vadFinalNoiseFloor = parseOptionalBoundedFloat(input, "vadFinalNoiseFloor", MAX_PLAUSIBLE_AUDIO_LEVEL);
+  if (!vadFinalNoiseFloor.ok) return { ok: false, reason: "invalid_vad_final_noise_floor" };
+  const vadMaxCandidateSpeechMs = parseOptionalDurationField(input, "vadMaxCandidateSpeechMs");
+  if (!vadMaxCandidateSpeechMs.ok) return { ok: false, reason: "invalid_vad_max_candidate_speech_ms" };
+  const vadCandidateResetCount = parseOptionalNonNegativeInteger(input, "vadCandidateResetCount");
+  if (!vadCandidateResetCount.ok) return { ok: false, reason: "invalid_vad_candidate_reset_count" };
+  const vadFullyQualifiedSampleCount = parseOptionalNonNegativeInteger(input, "vadFullyQualifiedSampleCount");
+  if (!vadFullyQualifiedSampleCount.ok) return { ok: false, reason: "invalid_vad_fully_qualified_sample_count" };
+
   let sttProviderHttpStatus: number | undefined;
   if (input.sttProviderHttpStatus !== undefined) {
     if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
@@ -574,6 +619,14 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(vadSpeechEndedAtMs.value !== undefined ? { vadSpeechEndedAtMs: vadSpeechEndedAtMs.value } : {}),
       ...(vadMaxDurationTriggered !== undefined ? { vadMaxDurationTriggered } : {}),
       ...(vadMode !== undefined ? { vadMode } : {}),
+      ...(vadPeakRms.value !== undefined ? { vadPeakRms: vadPeakRms.value } : {}),
+      ...(vadPeakSpeechBandRatio.value !== undefined ? { vadPeakSpeechBandRatio: vadPeakSpeechBandRatio.value } : {}),
+      ...(vadFinalNoiseFloor.value !== undefined ? { vadFinalNoiseFloor: vadFinalNoiseFloor.value } : {}),
+      ...(vadMaxCandidateSpeechMs.value !== undefined ? { vadMaxCandidateSpeechMs: vadMaxCandidateSpeechMs.value } : {}),
+      ...(vadCandidateResetCount.value !== undefined ? { vadCandidateResetCount: vadCandidateResetCount.value } : {}),
+      ...(vadFullyQualifiedSampleCount.value !== undefined
+        ? { vadFullyQualifiedSampleCount: vadFullyQualifiedSampleCount.value }
+        : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
       ...(sttProviderErrorMessage !== undefined ? { sttProviderErrorMessage } : {}),

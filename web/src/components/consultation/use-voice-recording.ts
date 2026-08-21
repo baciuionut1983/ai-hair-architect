@@ -224,6 +224,14 @@ export function vadDiagnosticsToReportFields(diagnostics: VoiceActivityDiagnosti
     vadSpeechEndedAtMs: diagnostics.speechEndedAtMs ?? undefined,
     vadMaxDurationTriggered: diagnostics.maxDurationTriggered,
     vadMode: diagnostics.vadMode,
+    // VAD false-negative hardening (2026-08-21): see
+    // VoiceActivityDiagnostics's own doc comments for what each answers.
+    vadPeakRms: diagnostics.peakRms,
+    vadPeakSpeechBandRatio: diagnostics.peakSpeechBandRatio,
+    vadFinalNoiseFloor: diagnostics.finalNoiseFloor,
+    vadMaxCandidateSpeechMs: diagnostics.maxCandidateSpeechMs,
+    vadCandidateResetCount: diagnostics.candidateResetCount,
+    vadFullyQualifiedSampleCount: diagnostics.fullyQualifiedSampleCount,
   };
 }
 
@@ -279,6 +287,14 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
   const vadLastSpeechAtRef = useRef<number | null>(null);
   const vadAutoStopReasonRef = useRef<VoiceActivityAutoStopReason | null>(null);
   const vadStopDecidedAtRef = useRef<number | null>(null);
+  // VAD false-negative hardening (2026-08-21): the full latest VadState,
+  // written on every interval tick (see below) -- the source for the new
+  // diagnostic accumulators (peakRms/peakSpeechBandRatio/etc.), which
+  // aren't individually derivable from the other refs above the way
+  // speechDetectedAt/lastSpeechAt are. Reset to null at the start of every
+  // new recording, same as the others -- null stays null if VAD setup
+  // itself failed or the interval never ticked before a manual stop.
+  const vadStateRef = useRef<VadState | null>(null);
 
   const readVoiceActivityDiagnostics = useCallback((): VoiceActivityDiagnostics | null => {
     if (vadRecordingStartedAtRef.current === null || vadStopDecidedAtRef.current === null || vadAutoStopReasonRef.current === null) {
@@ -291,6 +307,15 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
       lastSpeechAt: vadLastSpeechAtRef.current,
       autoStopReason: vadAutoStopReasonRef.current,
       vadMode: VAD_MODE,
+      // Never fabricated in the sense of a guessed value -- 0 here is a
+      // truthful "the interval never ticked before recording stopped"
+      // (e.g. an instant manual stop), not a placeholder.
+      peakRms: vadStateRef.current?.peakRms ?? 0,
+      peakSpeechBandRatio: vadStateRef.current?.peakSpeechBandRatio ?? 0,
+      finalNoiseFloor: vadStateRef.current?.noiseFloorEstimate ?? 0,
+      maxCandidateSpeechMs: vadStateRef.current?.maxCandidateStreakMs ?? 0,
+      candidateResetCount: vadStateRef.current?.candidateResetCount ?? 0,
+      fullyQualifiedSampleCount: vadStateRef.current?.fullyQualifiedSampleCount ?? 0,
     });
   }, []);
 
@@ -339,6 +364,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
     vadLastSpeechAtRef.current = null;
     vadAutoStopReasonRef.current = null;
     vadStopDecidedAtRef.current = null;
+    vadStateRef.current = null;
 
     void (async () => {
       try {
@@ -462,6 +488,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
               const wasSpeechConfirmed = vadState.hasDetectedSpeech;
               const { state, decision } = evaluateVadSample(vadState, { rmsLevel, speechBandRatio }, now);
               vadState = state;
+              vadStateRef.current = state;
               // End-of-speech hardening (2026-08-20): captures exactly
               // when hasDetectedSpeech first flips true (Task E's
               // speechDetectedAt), and the most recent speech-like sample

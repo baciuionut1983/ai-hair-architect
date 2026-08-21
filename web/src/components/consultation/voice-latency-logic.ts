@@ -418,6 +418,16 @@ export interface VoiceLatencyTerminalDiagnostics {
   // doc comment. Lets a real production A/B test tell, from this one log
   // line, which mode actually produced a given reply.
   consultationThinkingMode?: string;
+  // VAD false-negative hardening (2026-08-21): see voice-activity-logic.ts's
+  // own VoiceActivityDiagnostics doc comments for exactly what each of
+  // these answers -- always a real number (0 is truthful, never a
+  // fabricated placeholder) whenever VAD ran at all for this attempt.
+  vadPeakRms?: number;
+  vadPeakSpeechBandRatio?: number;
+  vadFinalNoiseFloor?: number;
+  vadMaxCandidateSpeechMs?: number;
+  vadCandidateResetCount?: number;
+  vadFullyQualifiedSampleCount?: number;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see

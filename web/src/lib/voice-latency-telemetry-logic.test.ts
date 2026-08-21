@@ -584,6 +584,102 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // VAD false-negative hardening (2026-08-21): lets a real production
+  // no-speech-timeout false negative be diagnosed directly from this one
+  // log line -- see voice-activity-logic.ts's own VoiceActivityDiagnostics
+  // doc comments for exactly what each answers.
+  describe("VAD diagnostic accumulators (vadPeakRms / vadPeakSpeechBandRatio / vadFinalNoiseFloor / vadMaxCandidateSpeechMs / vadCandidateResetCount / vadFullyQualifiedSampleCount)", () => {
+    it("accepts a fully-populated set of these fields", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadPeakRms: 0.18,
+        vadPeakSpeechBandRatio: 0.41,
+        vadFinalNoiseFloor: 0.025,
+        vadMaxCandidateSpeechMs: 210,
+        vadCandidateResetCount: 4,
+        vadFullyQualifiedSampleCount: 9,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadPeakRms: 0.18,
+          vadPeakSpeechBandRatio: 0.41,
+          vadFinalNoiseFloor: 0.025,
+          vadMaxCandidateSpeechMs: 210,
+          vadCandidateResetCount: 4,
+          vadFullyQualifiedSampleCount: 9,
+        }),
+      });
+    });
+
+    it("accepts zero for every field -- a truthful 'never observed', not rejected as missing", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadPeakRms: 0,
+        vadCandidateResetCount: 0,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ vadPeakRms: 0, vadCandidateResetCount: 0 }),
+      });
+    });
+
+    it("rejects a negative value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadPeakRms: -0.1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_peak_rms" });
+    });
+
+    it("rejects a vadPeakSpeechBandRatio outside its real 0..1 range", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadPeakSpeechBandRatio: 1.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_peak_speech_band_ratio" });
+    });
+
+    it("rejects a non-integer count", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadCandidateResetCount: 2.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_candidate_reset_count" });
+    });
+
+    it("omits every field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of [
+          "vadPeakRms",
+          "vadPeakSpeechBandRatio",
+          "vadFinalNoiseFloor",
+          "vadMaxCandidateSpeechMs",
+          "vadCandidateResetCount",
+          "vadFullyQualifiedSampleCount",
+        ]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
   // production STT failure be attributed, directly from this one log line,
   // to the real Gemini HTTP status/canonical error status, or to a real

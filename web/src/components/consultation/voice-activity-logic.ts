@@ -56,6 +56,52 @@
 // specific, demonstrated production failure -- not background
 // conversations. See this round's report for why a dedicated speaker
 // separation/diarization solution is out of scope here.
+//
+// VAD false-negative hardening (2026-08-21): real production evidence
+// showed genuinely intelligible speech (Gemini STT transcribed it
+// successfully) repeatedly ending in stop_no_speech_timeout with
+// speechDetectedAtMs: null -- i.e. hasDetectedSpeech NEVER flipped true,
+// even though real speech was spoken. Root cause, demonstrated by reading
+// the ORIGINAL isSpeechCandidate/streak logic below (before this round's
+// fix): a speech candidate had to sustain for minSpeechDurationMs via an
+// UNBROKEN run of samples that ALL individually cleared BOTH the
+// amplitude gate AND the spectral-ratio gate -- a single sample among
+// that run (an unvoiced consonant, a breath, a momentary dip below either
+// gate) reset speechStreakStartedAt to null unconditionally, discarding
+// ALL accumulated progress. Real speech is not acoustically uniform at
+// 100ms granularity; requiring a perfectly unbroken run is a far stricter
+// bar than "is this audio intelligible as speech" -- which is exactly why
+// STT (which reasons over the whole utterance holistically, not
+// frame-by-frame) could succeed on audio this classifier rejected outright.
+//
+// This ALSO explains the companion telemetry finding (speechDetectedAtMs:
+// null while speechEndedAtMs has a real value): lastSpeechAt already
+// updated on ANY speech-candidate sample, confirmed or not (see
+// isSpeechCandidate's own call site below) -- so a streak that produced
+// real candidate samples but never sustained long enough to confirm still
+// left a real "last candidate" timestamp behind. This is legitimate,
+// truthful telemetry (real candidate-like audio existed, it just never
+// accumulated enough evidence to confirm), not a bug to paper over --
+// see this round's own report for why speechDetectedAtMs/speechEndedAtMs
+// keep their existing meaning unchanged, and why vadMaxCandidateSpeechMs
+// (below) is the new field that makes this distinction directly visible
+// instead of ambiguous.
+//
+// The fix: tolerate a SHORT gap (maxCandidateGapMs) since the last
+// candidate-like sample before discarding an in-progress streak, instead
+// of resetting on the very first failing sample. This is a change to the
+// STATE/CLASSIFICATION LOGIC, not to either threshold (minAbsoluteLevel,
+// minSpeechBandRatio, noiseFloorMargin are all unchanged) -- a single
+// missed sample within an otherwise-forming speech streak no longer wipes
+// out all prior progress, while a genuinely longer gap (no candidate-like
+// evidence at all for maxCandidateGapMs) still resets it, exactly as
+// before. Background-music protection is untouched: music must still
+// clear the SAME per-sample amplitude+spectral gate to ever become a
+// candidate at all; this only changes how tolerantly an already-forming
+// candidate streak survives a brief interruption, which sustained,
+// spectrally-flat music essentially never produces (see this round's own
+// regression test "real speech over moderate background music/noise" and
+// "background music alone must not recreate the infinite-listening bug").
 
 export interface VadConfig {
   // Absolute floor beneath which nothing ever counts as speech, regardless
@@ -97,6 +143,15 @@ export interface VadConfig {
   // nothing else has stopped the recording by this point, stop anyway. The
   // last line of defense against a classifier that's somehow still fooled.
   maxRecordingDurationMs: number;
+  // VAD false-negative hardening (2026-08-21): the longest gap, since the
+  // last speech-candidate sample, an in-progress (not-yet-confirmed)
+  // streak can survive before being discarded -- see this module's own
+  // doc comment above for the real production false-negative this fixes.
+  // A little more than one sampling interval (use-voice-recording.ts
+  // samples at 100ms) so a single missed sample never wipes out real
+  // progress, without being generous enough to stitch together genuinely
+  // separate blips spaced further apart.
+  maxCandidateGapMs: number;
 }
 
 export const DEFAULT_VAD_CONFIG: VadConfig = {
@@ -108,6 +163,7 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
   silenceDurationMs: 2000,
   noSpeechTimeoutMs: 10000,
   maxRecordingDurationMs: 60000,
+  maxCandidateGapMs: 150,
 };
 
 // One fresh audio-level sample. Both fields are computed browser-side from
@@ -131,10 +187,19 @@ export interface VadState {
   // level -- see noiseFloorAdaptRate. Starts at 0; minAbsoluteLevel alone
   // protects the first samples before any real estimate has formed.
   noiseFloorEstimate: number;
-  // When the CURRENT unbroken streak of speech-candidate samples began --
-  // null whenever the most recent sample was not a candidate. Used to
-  // measure minSpeechDurationMs.
+  // When the CURRENT streak of speech-candidate samples began -- null only
+  // once the gap since the last candidate sample has exceeded
+  // maxCandidateGapMs (see that config field's own doc comment), not on
+  // every single non-candidate sample. Used to measure minSpeechDurationMs.
   speechStreakStartedAt: number | null;
+  // VAD false-negative hardening (2026-08-21) diagnostic accumulators --
+  // never reset mid-recording, always reflect the whole recording so far.
+  // See VoiceActivityDiagnostics's own doc comments for what each answers.
+  peakRms: number;
+  peakSpeechBandRatio: number;
+  maxCandidateStreakMs: number;
+  candidateResetCount: number;
+  fullyQualifiedSampleCount: number;
 }
 
 export function initVadState(recordingStartedAt: number): VadState {
@@ -144,6 +209,11 @@ export function initVadState(recordingStartedAt: number): VadState {
     recordingStartedAt,
     noiseFloorEstimate: 0,
     speechStreakStartedAt: null,
+    peakRms: 0,
+    peakSpeechBandRatio: 0,
+    maxCandidateStreakMs: 0,
+    candidateResetCount: 0,
+    fullyQualifiedSampleCount: 0,
   };
 }
 
@@ -179,6 +249,12 @@ export function evaluateVadSample(
 
   const candidate = isSpeechCandidate(sample, state.noiseFloorEstimate, config);
 
+  // VAD false-negative hardening (2026-08-21) diagnostic accumulators --
+  // tracked unconditionally, every sample, regardless of candidate status.
+  // See VoiceActivityDiagnostics's own doc comments for what each answers.
+  const peakRms = Math.max(state.peakRms, sample.rmsLevel);
+  const peakSpeechBandRatio = Math.max(state.peakSpeechBandRatio, sample.speechBandRatio);
+
   // The noise floor only ever learns from samples that did NOT look like
   // speech -- otherwise the stylist's own voice would drag the floor
   // upward mid-sentence, making the back half of a sentence harder to
@@ -190,17 +266,31 @@ export function evaluateVadSample(
   if (!candidate) {
     if (state.hasDetectedSpeech) {
       const silenceDuration = now - (state.lastSpeechAt ?? now);
-      const nextState: VadState = { ...state, noiseFloorEstimate, speechStreakStartedAt: null };
+      const nextState: VadState = { ...state, noiseFloorEstimate, peakRms, peakSpeechBandRatio, speechStreakStartedAt: null };
       if (silenceDuration >= config.silenceDurationMs) {
         return { state: nextState, decision: "stop_silence" };
       }
       return { state: nextState, decision: "continue" };
     }
-    // Never confirmed speech yet, and this sample doesn't extend an
-    // in-progress candidate streak either -- a brief loud blip that failed
-    // to sustain resets cleanly, it never partially counts.
+    // VAD false-negative hardening (2026-08-21): a genuinely SHORT gap
+    // since the last candidate-like sample no longer discards an
+    // in-progress streak's accumulated progress outright -- see this
+    // module's own doc comment for the real production false negative
+    // this fixes. Only a gap longer than maxCandidateGapMs (or no prior
+    // candidate at all this recording) actually resets it.
+    const gapSinceLastCandidate = now - (state.lastSpeechAt ?? -Infinity);
+    const streakSurvives = state.speechStreakStartedAt !== null && gapSinceLastCandidate <= config.maxCandidateGapMs;
+    const candidateResetCount =
+      state.speechStreakStartedAt !== null && !streakSurvives ? state.candidateResetCount + 1 : state.candidateResetCount;
     const elapsedSinceStart = now - state.recordingStartedAt;
-    const nextState: VadState = { ...state, noiseFloorEstimate, speechStreakStartedAt: null };
+    const nextState: VadState = {
+      ...state,
+      noiseFloorEstimate,
+      peakRms,
+      peakSpeechBandRatio,
+      candidateResetCount,
+      speechStreakStartedAt: streakSurvives ? state.speechStreakStartedAt : null,
+    };
     if (elapsedSinceStart >= config.noSpeechTimeoutMs) {
       return { state: nextState, decision: "stop_no_speech_timeout" };
     }
@@ -213,7 +303,17 @@ export function evaluateVadSample(
   const hasDetectedSpeech = state.hasDetectedSpeech || streakDuration >= config.minSpeechDurationMs;
 
   return {
-    state: { ...state, noiseFloorEstimate, speechStreakStartedAt, hasDetectedSpeech, lastSpeechAt: now },
+    state: {
+      ...state,
+      noiseFloorEstimate,
+      peakRms,
+      peakSpeechBandRatio,
+      speechStreakStartedAt,
+      hasDetectedSpeech,
+      lastSpeechAt: now,
+      maxCandidateStreakMs: Math.max(state.maxCandidateStreakMs, streakDuration),
+      fullyQualifiedSampleCount: state.fullyQualifiedSampleCount + 1,
+    },
     decision: "continue",
   };
 }
@@ -262,6 +362,45 @@ export interface VoiceActivityDiagnostics {
   // Identifies which VAD algorithm version produced this report -- see
   // use-voice-recording.ts's own VAD_MODE constant.
   vadMode: string;
+  // VAD false-negative hardening (2026-08-21): diagnostic-only, never
+  // used by evaluateVadSample's own decisions -- lets a real production
+  // report distinguish WHY speech went unconfirmed (too quiet vs
+  // spectrally rejected vs noise floor too high vs the streak repeatedly
+  // resetting vs genuinely no speech at all) without ever needing the raw
+  // audio. Always a real number (0 is a truthful "never observed", not a
+  // placeholder) whenever VAD ran at all for this attempt.
+  //
+  // The loudest single sample observed, regardless of whether it ever
+  // passed the spectral gate -- near-zero here means "too quiet ever
+  // reached the mic", ruling that out if it's healthy.
+  peakRms: number;
+  // The highest speech-band energy concentration observed (0..1),
+  // regardless of amplitude -- if this never approaches minSpeechBandRatio
+  // despite a healthy peakRms, spectral rejection (not loudness) was the
+  // bottleneck.
+  peakSpeechBandRatio: number;
+  // The adaptive noise floor's own final value -- an elevated floor here
+  // (relative to peakRms) suggests the amplitude gate itself climbed too
+  // high, e.g. from quiet speech at the very start of a recording being
+  // mistaken for ambient noise before any candidate ever registered.
+  finalNoiseFloor: number;
+  // The longest UNBROKEN (post-tolerance) candidate streak this recording
+  // ever reached, whether or not it actually crossed minSpeechDurationMs
+  // and got confirmed -- directly answers "how close did we get". A value
+  // close to but under minSpeechDurationMs, on a recording that never
+  // confirmed speech, points squarely at the streak-duration/tolerance
+  // mechanism rather than either threshold.
+  maxCandidateSpeechMs: number;
+  // How many times an in-progress (not yet confirmed) candidate streak
+  // was discarded because the gap since the last candidate sample
+  // exceeded maxCandidateGapMs -- a high count on a recording that never
+  // confirmed speech means detection was repeatedly starting and
+  // resetting, not simply never triggering at all.
+  candidateResetCount: number;
+  // Total count of samples, across the whole recording, that passed BOTH
+  // gates (regardless of whether they contributed to a confirmed streak)
+  // -- the aggregate amount of genuine speech-like evidence observed.
+  fullyQualifiedSampleCount: number;
 }
 
 export function computeVoiceActivityDiagnostics(params: {
@@ -271,6 +410,12 @@ export function computeVoiceActivityDiagnostics(params: {
   lastSpeechAt: number | null;
   autoStopReason: VoiceActivityAutoStopReason | null;
   vadMode: string;
+  peakRms: number;
+  peakSpeechBandRatio: number;
+  finalNoiseFloor: number;
+  maxCandidateSpeechMs: number;
+  candidateResetCount: number;
+  fullyQualifiedSampleCount: number;
 }): VoiceActivityDiagnostics {
   const speechDetectedAtMs =
     params.speechDetectedAt !== null ? Math.max(0, Math.round(params.speechDetectedAt - params.recordingStartedAt)) : null;
@@ -289,5 +434,11 @@ export function computeVoiceActivityDiagnostics(params: {
     speechEndedAtMs,
     maxDurationTriggered: params.autoStopReason === "stop_max_duration",
     vadMode: params.vadMode,
+    peakRms: params.peakRms,
+    peakSpeechBandRatio: params.peakSpeechBandRatio,
+    finalNoiseFloor: params.finalNoiseFloor,
+    maxCandidateSpeechMs: params.maxCandidateSpeechMs,
+    candidateResetCount: params.candidateResetCount,
+    fullyQualifiedSampleCount: params.fullyQualifiedSampleCount,
   };
 }

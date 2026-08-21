@@ -320,6 +320,55 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     logSpy.mockRestore();
   });
 
+  // VAD false-negative hardening (2026-08-21): lets a real production
+  // no-speech-timeout false negative be diagnosed directly from this log
+  // line.
+  it("logs the VAD diagnostic accumulators when the client reported them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-118",
+      outcome: "stt_failed",
+      summary: validSummary(),
+      vadPeakRms: 0.18,
+      vadPeakSpeechBandRatio: 0.41,
+      vadFinalNoiseFloor: 0.025,
+      vadMaxCandidateSpeechMs: 210,
+      vadCandidateResetCount: 4,
+      vadFullyQualifiedSampleCount: 9,
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadPeakRms: 0.18,
+      vadPeakSpeechBandRatio: 0.41,
+      vadFinalNoiseFloor: 0.025,
+      vadMaxCandidateSpeechMs: 210,
+      vadCandidateResetCount: 4,
+      vadFullyQualifiedSampleCount: 9,
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs the VAD diagnostic accumulators as null (never fabricated) when the client didn't report them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-119", outcome: "stt_failed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadPeakRms: null,
+      vadPeakSpeechBandRatio: null,
+      vadFinalNoiseFloor: null,
+      vadMaxCandidateSpeechMs: null,
+      vadCandidateResetCount: null,
+      vadFullyQualifiedSampleCount: null,
+    });
+    logSpy.mockRestore();
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): the real Gemini
   // provider failure detail, closing the gap where a provider HTTP error,
   // a network/timeout failure, and an empty-transcript response all
