@@ -404,4 +404,28 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     });
     logSpy.mockRestore();
   });
+
+  // Voice latency optimization audit (2026-08-21): lets a real production
+  // test correlate reply length directly against provider latency.
+  it("logs voiceReplyTextLength when the client reported one", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-112", outcome: "tts_completed", summary: validSummary(), voiceReplyTextLength: 214 });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({ voiceReplyTextLength: 214 });
+    logSpy.mockRestore();
+  });
+
+  it("logs voiceReplyTextLength as null (never fabricated) when the client didn't report one", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-113", outcome: "consultation_failed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({ voiceReplyTextLength: null });
+    logSpy.mockRestore();
+  });
 });

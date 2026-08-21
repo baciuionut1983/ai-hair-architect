@@ -154,6 +154,9 @@ export interface VoiceLatencyTelemetryInput {
   consultationProviderHttpStatus?: number;
   consultationProviderErrorStatus?: string;
   consultationProviderErrorMessage?: string;
+  // Voice latency optimization audit (2026-08-21): see voice-latency-logic.ts's
+  // own doc comment on this same field.
+  voiceReplyTextLength?: number;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -220,6 +223,12 @@ const PROVIDER_ERROR_STATUS_PATTERN = /^[A-Z_]{1,64}$/;
 // A JS Error.prototype.name value (e.g. "TimeoutError", "TypeError",
 // "AbortError") -- letters only, never a free-form message.
 const PROVIDER_FETCH_ERROR_NAME_PATTERN = /^[A-Za-z]{1,64}$/;
+
+// Matches voice-reply/route.ts's own MAX_VOICE_REPLY_TEXT_LENGTH exactly --
+// duplicated (not imported) for the same reason every other constant in
+// this module is, so this server-side validation stays zero-dependency on
+// any specific route.
+const MAX_VOICE_REPLY_TEXT_LENGTH = 4000;
 
 // STT 404 root-cause diagnosis (2026-08-21): Google's own error.message is
 // genuinely free text (e.g. "models/gemini-2.5-flash-lite is not found for
@@ -458,6 +467,22 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     consultationProviderErrorMessage = input.consultationProviderErrorMessage;
   }
 
+  // Voice latency optimization audit (2026-08-21): a real reply's own
+  // character length -- bounded to the same real ceiling voice-reply/route.ts
+  // itself enforces (MAX_VOICE_REPLY_TEXT_LENGTH), never a free-form number.
+  let voiceReplyTextLength: number | undefined;
+  if (input.voiceReplyTextLength !== undefined) {
+    if (
+      typeof input.voiceReplyTextLength !== "number" ||
+      !Number.isInteger(input.voiceReplyTextLength) ||
+      input.voiceReplyTextLength < 0 ||
+      input.voiceReplyTextLength > MAX_VOICE_REPLY_TEXT_LENGTH
+    ) {
+      return { ok: false, reason: "invalid_voice_reply_text_length" };
+    }
+    voiceReplyTextLength = input.voiceReplyTextLength;
+  }
+
   // Unknown extra keys on `summary` (or on the top-level body) are simply
   // never read, not rejected -- an allow-list extraction is exactly as
   // strict against injection/type-confusion as an exact-shape check, and
@@ -490,6 +515,7 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(consultationProviderHttpStatus !== undefined ? { consultationProviderHttpStatus } : {}),
       ...(consultationProviderErrorStatus !== undefined ? { consultationProviderErrorStatus } : {}),
       ...(consultationProviderErrorMessage !== undefined ? { consultationProviderErrorMessage } : {}),
+      ...(voiceReplyTextLength !== undefined ? { voiceReplyTextLength } : {}),
     },
   };
 }

@@ -494,6 +494,15 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         consultationProviderHttpStatus?: number;
         consultationProviderErrorStatus?: string;
         consultationProviderErrorMessage?: string;
+        // Voice latency optimization audit (2026-08-21): a real production
+        // test showed consultationProviderMs (~4.8s) and ttsProviderMs
+        // (~10.6s) both dominated by provider-side generation time, not
+        // this app's own request handling -- the single most actionable,
+        // safe lever for both is the LENGTH of the reply text itself
+        // (longer text -> more to generate, more to speak). Never
+        // fabricated -- undefined whenever no reply text exists yet (e.g.
+        // consultation_failed, where Consult AI itself never produced one).
+        voiceReplyTextLength?: number;
       } = {},
     ) => {
       if (!voiceTurn) return;
@@ -596,6 +605,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         // stage will ever run.
         concludeVoiceTurn(marks, "consultation_succeeded_no_voice_reply", payload.providerLatencyMs, {
           providerAttemptCount: payload.providerAttemptCount,
+          voiceReplyTextLength: payload.reply.content.length,
         });
       }
     } catch {
@@ -708,6 +718,11 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         errorCode,
         providerAttemptCount,
         elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(finalMarks, performance.now()),
+        // Voice latency optimization audit (2026-08-21): see the other
+        // concludeVoiceTurn's identical doc comment above -- `message` is
+        // always the real assistant reply here (speakMessage is only ever
+        // called with one), so this is never fabricated.
+        voiceReplyTextLength: message.content.length,
         // Round 8: only present when a real TTS response existed to
         // inspect (see CloudVoiceReplyServerTiming.responseHeaderNames) --
         // undefined for every non-TTS outcome, never fabricated.

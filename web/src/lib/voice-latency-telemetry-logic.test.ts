@@ -778,6 +778,71 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // Voice latency optimization audit (2026-08-21): lets a real production
+  // test correlate reply length directly against both consultationProviderMs
+  // and ttsProviderMs from this one log line.
+  describe("voiceReplyTextLength", () => {
+    it("accepts a real reply length", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        voiceReplyTextLength: 214,
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ voiceReplyTextLength: 214 }) });
+    });
+
+    it("accepts zero", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        voiceReplyTextLength: 0,
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ voiceReplyTextLength: 0 }) });
+    });
+
+    it("rejects a negative length", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        voiceReplyTextLength: -1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_voice_reply_text_length" });
+    });
+
+    it("rejects a length beyond the real MAX_VOICE_REPLY_TEXT_LENGTH ceiling", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        voiceReplyTextLength: 4001,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_voice_reply_text_length" });
+    });
+
+    it("rejects a non-integer length", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        voiceReplyTextLength: 12.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_voice_reply_text_length" });
+    });
+
+    it("omits the field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_failed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect("voiceReplyTextLength" in result.value).toBe(false);
+    });
+  });
+
   describe("terminalStageForOutcome", () => {
     it("maps every outcome to exactly one of the four real pipeline stages, matching where each outcome actually concludes", () => {
       expect(terminalStageForOutcome("stt_failed")).toBe("stt");

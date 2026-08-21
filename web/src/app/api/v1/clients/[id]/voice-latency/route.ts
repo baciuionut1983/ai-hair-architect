@@ -110,6 +110,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       consultationProviderHttpStatus: parsed.value.consultationProviderHttpStatus ?? null,
       consultationProviderErrorStatus: parsed.value.consultationProviderErrorStatus ?? null,
       consultationProviderErrorMessage: parsed.value.consultationProviderErrorMessage ?? null,
+      voiceReplyTextLength: parsed.value.voiceReplyTextLength ?? null,
       ...parsed.value.summary,
     })}`,
   );

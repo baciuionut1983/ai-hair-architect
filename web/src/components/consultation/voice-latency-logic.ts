@@ -384,6 +384,16 @@ export interface VoiceLatencyTerminalDiagnostics {
   consultationProviderHttpStatus?: number;
   consultationProviderErrorStatus?: string;
   consultationProviderErrorMessage?: string;
+  // Voice latency optimization audit (2026-08-21): a real production test
+  // showed both consultationProviderMs (~4.8s) and ttsProviderMs (~10.6s)
+  // dominated by provider-side generation time, with only ~350ms of this
+  // app's own overhead in either case -- the single most actionable, safe
+  // lever for both is the LENGTH of the reply text itself (Consult AI
+  // generates it, TTS speaks it verbatim). Lets a real production test
+  // correlate reply length directly against both provider latencies from
+  // this one log line, without guessing. Never fabricated -- undefined
+  // whenever no reply text exists yet.
+  voiceReplyTextLength?: number;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see
