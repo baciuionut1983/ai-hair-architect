@@ -157,6 +157,16 @@ export interface VoiceLatencyTelemetryInput {
   // Voice latency optimization audit (2026-08-21): see voice-latency-logic.ts's
   // own doc comment on this same field.
   voiceReplyTextLength?: number;
+  // Consult AI provider latency variance audit (2026-08-21): see
+  // voice-latency-logic.ts's own doc comment on these same 8 fields.
+  consultationPromptTokens?: number;
+  consultationOutputTokens?: number;
+  consultationThinkingTokens?: number;
+  consultationCachedTokens?: number;
+  consultationHistoryMessageCount?: number;
+  consultationHistoryChars?: number;
+  consultationMemoryChars?: number;
+  consultationInputChars?: number;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -259,6 +269,26 @@ function parseOptionalDurationField(
     return { ok: false };
   }
   return { ok: true, value: Math.round(raw) };
+}
+
+// Consult AI provider latency variance audit (2026-08-21): a generous
+// ceiling for character/message counts and token counts alike -- rejects
+// only clearly-garbage values (e.g. a client bug sending something wildly
+// out of range), never a real one. Not coupled to today's exact bounds
+// (10 history messages, 12 memories, etc. in consultation-chat-service.ts)
+// so a future increase there never requires touching this file.
+const MAX_PLAUSIBLE_CONSULTATION_COUNT = 1_000_000;
+
+function parseOptionalNonNegativeInteger(
+  input: Record<string, unknown>,
+  field: string,
+): { ok: true; value: number | undefined } | { ok: false } {
+  const raw = input[field];
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > MAX_PLAUSIBLE_CONSULTATION_COUNT) {
+    return { ok: false };
+  }
+  return { ok: true, value: raw };
 }
 
 export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTelemetryValidationResult {
@@ -483,6 +513,25 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     voiceReplyTextLength = input.voiceReplyTextLength;
   }
 
+  // Consult AI provider latency variance audit (2026-08-21): see
+  // voice-latency-logic.ts's own doc comment on these same 8 fields.
+  const consultationPromptTokens = parseOptionalNonNegativeInteger(input, "consultationPromptTokens");
+  if (!consultationPromptTokens.ok) return { ok: false, reason: "invalid_consultation_prompt_tokens" };
+  const consultationOutputTokens = parseOptionalNonNegativeInteger(input, "consultationOutputTokens");
+  if (!consultationOutputTokens.ok) return { ok: false, reason: "invalid_consultation_output_tokens" };
+  const consultationThinkingTokens = parseOptionalNonNegativeInteger(input, "consultationThinkingTokens");
+  if (!consultationThinkingTokens.ok) return { ok: false, reason: "invalid_consultation_thinking_tokens" };
+  const consultationCachedTokens = parseOptionalNonNegativeInteger(input, "consultationCachedTokens");
+  if (!consultationCachedTokens.ok) return { ok: false, reason: "invalid_consultation_cached_tokens" };
+  const consultationHistoryMessageCount = parseOptionalNonNegativeInteger(input, "consultationHistoryMessageCount");
+  if (!consultationHistoryMessageCount.ok) return { ok: false, reason: "invalid_consultation_history_message_count" };
+  const consultationHistoryChars = parseOptionalNonNegativeInteger(input, "consultationHistoryChars");
+  if (!consultationHistoryChars.ok) return { ok: false, reason: "invalid_consultation_history_chars" };
+  const consultationMemoryChars = parseOptionalNonNegativeInteger(input, "consultationMemoryChars");
+  if (!consultationMemoryChars.ok) return { ok: false, reason: "invalid_consultation_memory_chars" };
+  const consultationInputChars = parseOptionalNonNegativeInteger(input, "consultationInputChars");
+  if (!consultationInputChars.ok) return { ok: false, reason: "invalid_consultation_input_chars" };
+
   // Unknown extra keys on `summary` (or on the top-level body) are simply
   // never read, not rejected -- an allow-list extraction is exactly as
   // strict against injection/type-confusion as an exact-shape check, and
@@ -516,6 +565,16 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(consultationProviderErrorStatus !== undefined ? { consultationProviderErrorStatus } : {}),
       ...(consultationProviderErrorMessage !== undefined ? { consultationProviderErrorMessage } : {}),
       ...(voiceReplyTextLength !== undefined ? { voiceReplyTextLength } : {}),
+      ...(consultationPromptTokens.value !== undefined ? { consultationPromptTokens: consultationPromptTokens.value } : {}),
+      ...(consultationOutputTokens.value !== undefined ? { consultationOutputTokens: consultationOutputTokens.value } : {}),
+      ...(consultationThinkingTokens.value !== undefined ? { consultationThinkingTokens: consultationThinkingTokens.value } : {}),
+      ...(consultationCachedTokens.value !== undefined ? { consultationCachedTokens: consultationCachedTokens.value } : {}),
+      ...(consultationHistoryMessageCount.value !== undefined
+        ? { consultationHistoryMessageCount: consultationHistoryMessageCount.value }
+        : {}),
+      ...(consultationHistoryChars.value !== undefined ? { consultationHistoryChars: consultationHistoryChars.value } : {}),
+      ...(consultationMemoryChars.value !== undefined ? { consultationMemoryChars: consultationMemoryChars.value } : {}),
+      ...(consultationInputChars.value !== undefined ? { consultationInputChars: consultationInputChars.value } : {}),
     },
   };
 }

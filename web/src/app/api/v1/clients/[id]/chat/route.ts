@@ -178,7 +178,18 @@ export async function POST(
     replyWriteMs: result.replyWriteMs,
     failedFirstAttemptMs: result.failedFirstAttemptMs,
     serverTotalMs: result.serverTotalMs,
-    unattributedMs: result.unattributedMs
+    unattributedMs: result.unattributedMs,
+    // Consult AI provider latency variance audit (2026-08-21): never
+    // fabricated -- omitted entirely whenever the provider genuinely didn't
+    // include a given usage field.
+    ...(result.usage?.inputTokens !== undefined ? { consultationPromptTokens: result.usage.inputTokens } : {}),
+    ...(result.usage?.outputTokens !== undefined ? { consultationOutputTokens: result.usage.outputTokens } : {}),
+    ...(result.usage?.reasoningTokens !== undefined ? { consultationThinkingTokens: result.usage.reasoningTokens } : {}),
+    ...(result.usage?.cachedInputTokens !== undefined ? { consultationCachedTokens: result.usage.cachedInputTokens } : {}),
+    consultationHistoryMessageCount: result.consultationHistoryMessageCount,
+    consultationHistoryChars: result.consultationHistoryChars,
+    consultationMemoryChars: result.consultationMemoryChars,
+    consultationInputChars: result.consultationInputChars,
   };
 
   return NextResponse.json(response, { status: 200 });

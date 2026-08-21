@@ -394,6 +394,24 @@ export interface VoiceLatencyTerminalDiagnostics {
   // this one log line, without guessing. Never fabricated -- undefined
   // whenever no reply text exists yet.
   voiceReplyTextLength?: number;
+  // Consult AI provider latency variance audit (2026-08-21): a real
+  // production comparison showed consultationProviderMs swinging from
+  // ~4.8s to ~19.5s for structurally the same call, with this app's own
+  // overhead staying flat at ~350ms both times -- these let a real test
+  // correlate that swing against real Gemini-supplied token usage
+  // (thinking/reasoning tokens especially, since neither request set an
+  // explicit thinkingConfig, so the model's own default/automatic
+  // reasoning budget is a live candidate) and the actual context size sent
+  // (history/memory/input), never fabricated when the provider or the
+  // context genuinely didn't produce one.
+  consultationPromptTokens?: number;
+  consultationOutputTokens?: number;
+  consultationThinkingTokens?: number;
+  consultationCachedTokens?: number;
+  consultationHistoryMessageCount?: number;
+  consultationHistoryChars?: number;
+  consultationMemoryChars?: number;
+  consultationInputChars?: number;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see

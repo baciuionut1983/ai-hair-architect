@@ -441,6 +441,21 @@ export interface ConsultationChatResponse {
   failedFirstAttemptMs?: number;
   serverTotalMs?: number;
   unattributedMs?: number;
+  // Consult AI provider latency variance audit (2026-08-21): real
+  // Gemini-supplied token counts (undefined whenever the provider genuinely
+  // didn't include one -- never estimated) plus safe character-count
+  // context sizing. See consultation-chat-service.ts's own
+  // SendConsultationMessageResult doc comment for why these specifically
+  // matter (correlating provider latency variance against context size and
+  // thinking/reasoning token usage).
+  consultationPromptTokens?: number;
+  consultationOutputTokens?: number;
+  consultationThinkingTokens?: number;
+  consultationCachedTokens?: number;
+  consultationHistoryMessageCount?: number;
+  consultationHistoryChars?: number;
+  consultationMemoryChars?: number;
+  consultationInputChars?: number;
 }
 
 export interface ConsultationCreateRequest {

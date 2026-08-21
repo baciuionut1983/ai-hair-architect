@@ -936,6 +936,50 @@ describe("sendConsultationMessage", () => {
   // Switched to fake timers, same fix, same reasoning: Date.now() advances
   // in lockstep with vi.advanceTimersByTimeAsync, so this is now
   // deterministic every run instead of a real-clock race.
+  // Consult AI provider latency variance audit (2026-08-21): threads the
+  // provider's own real token usage (mapGeminiUsageMetadata's own
+  // reasoningTokens especially, since Gemini's default/dynamic thinking
+  // behavior is a live candidate for the observed 4.8s->19.5s variance)
+  // plus safe character-count context sizing through to the success result.
+  it("threads the provider's real token usage and context-size metadata through to the success result", async () => {
+    messageRepoMock.listRecentConsultationMessages.mockResolvedValue([
+      { id: "m-1", role: "stylist", content: "earlier note", createdAt: "2026-08-14T00:00:00.000Z" },
+      { id: "m-2", role: "assistant", content: "earlier reply", createdAt: "2026-08-14T00:00:01.000Z" },
+    ]);
+    const provider = stubProvider(async () => ({
+      reply: "ok",
+      needsClarification: false,
+      usage: { inputTokens: 2400, outputTokens: 95, cachedInputTokens: 100, reasoningTokens: 1800, totalTokens: 4395 },
+    }));
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "she wants a bob", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+    expect(result).toMatchObject({
+      outcome: "succeeded",
+      usage: { inputTokens: 2400, outputTokens: 95, cachedInputTokens: 100, reasoningTokens: 1800, totalTokens: 4395 },
+      consultationHistoryMessageCount: 2,
+      consultationHistoryChars: "earlier note".length + "earlier reply".length,
+      consultationInputChars: "she wants a bob".length,
+    });
+    if (result.outcome === "succeeded") {
+      expect(result.consultationMemoryChars).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("never fabricates usage or context sizes when the provider genuinely didn't report token usage", async () => {
+    const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false }));
+
+    const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+    expect(result.outcome).toBe("succeeded");
+    if (result.outcome === "succeeded") {
+      expect(result.usage).toBeUndefined();
+      expect(result.consultationHistoryMessageCount).toBe(0);
+      expect(result.consultationHistoryChars).toBe(0);
+      expect(result.consultationInputChars).toBe(2);
+    }
+  });
+
   it("providerLatencyMs reflects the real, measured duration of the provider call, not the whole request", async () => {
     vi.useFakeTimers();
     try {

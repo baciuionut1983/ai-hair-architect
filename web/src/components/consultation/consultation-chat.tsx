@@ -117,6 +117,19 @@ interface VoiceTurnLatencyContext {
   // sttModel, for the same reason -- never fabricated when VAD never ran
   // for this attempt.
   vadDiagnostics?: VoiceActivityDiagnostics | null;
+  // Consult AI provider latency variance audit (2026-08-21): the server's
+  // own real token usage + context-size metadata, threaded through the
+  // same way as the other consultation* fields above -- see
+  // consultation-chat-service.ts's own SendConsultationMessageResult doc
+  // comment for exactly why these exist.
+  consultationPromptTokens?: number;
+  consultationOutputTokens?: number;
+  consultationThinkingTokens?: number;
+  consultationCachedTokens?: number;
+  consultationHistoryMessageCount?: number;
+  consultationHistoryChars?: number;
+  consultationMemoryChars?: number;
+  consultationInputChars?: number;
 }
 
 const MEMORY_ACTION_LABELS: Record<string, string> = {
@@ -503,6 +516,18 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         // fabricated -- undefined whenever no reply text exists yet (e.g.
         // consultation_failed, where Consult AI itself never produced one).
         voiceReplyTextLength?: number;
+        // Consult AI provider latency variance audit (2026-08-21): see
+        // consultation-chat-service.ts's own SendConsultationMessageResult
+        // doc comment. Never fabricated -- undefined whenever Consult AI
+        // itself never produced a reply (e.g. consultation_failed).
+        consultationPromptTokens?: number;
+        consultationOutputTokens?: number;
+        consultationThinkingTokens?: number;
+        consultationCachedTokens?: number;
+        consultationHistoryMessageCount?: number;
+        consultationHistoryChars?: number;
+        consultationMemoryChars?: number;
+        consultationInputChars?: number;
       } = {},
     ) => {
       if (!voiceTurn) return;
@@ -597,6 +622,14 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
                 consultationFailedFirstAttemptMs: payload.failedFirstAttemptMs,
                 consultationServerTotalMs: payload.serverTotalMs,
                 consultationUnattributedMs: payload.unattributedMs,
+                consultationPromptTokens: payload.consultationPromptTokens,
+                consultationOutputTokens: payload.consultationOutputTokens,
+                consultationThinkingTokens: payload.consultationThinkingTokens,
+                consultationCachedTokens: payload.consultationCachedTokens,
+                consultationHistoryMessageCount: payload.consultationHistoryMessageCount,
+                consultationHistoryChars: payload.consultationHistoryChars,
+                consultationMemoryChars: payload.consultationMemoryChars,
+                consultationInputChars: payload.consultationInputChars,
               }
             : undefined,
         );
@@ -606,6 +639,14 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         concludeVoiceTurn(marks, "consultation_succeeded_no_voice_reply", payload.providerLatencyMs, {
           providerAttemptCount: payload.providerAttemptCount,
           voiceReplyTextLength: payload.reply.content.length,
+          consultationPromptTokens: payload.consultationPromptTokens,
+          consultationOutputTokens: payload.consultationOutputTokens,
+          consultationThinkingTokens: payload.consultationThinkingTokens,
+          consultationCachedTokens: payload.consultationCachedTokens,
+          consultationHistoryMessageCount: payload.consultationHistoryMessageCount,
+          consultationHistoryChars: payload.consultationHistoryChars,
+          consultationMemoryChars: payload.consultationMemoryChars,
+          consultationInputChars: payload.consultationInputChars,
         });
       }
     } catch {
@@ -732,6 +773,17 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         // tts_completed/tts_fallback_local/tts_failed, not just an
         // STT-only outcome -- still attributes to the STT model that ran.
         sttModel: voiceLatency.sttModel ?? undefined,
+        // Consult AI provider latency variance audit (2026-08-21): carried
+        // through from voiceLatency the same way sttModel is above -- never
+        // fabricated when Consult AI genuinely didn't report one.
+        consultationPromptTokens: voiceLatency.consultationPromptTokens,
+        consultationOutputTokens: voiceLatency.consultationOutputTokens,
+        consultationThinkingTokens: voiceLatency.consultationThinkingTokens,
+        consultationCachedTokens: voiceLatency.consultationCachedTokens,
+        consultationHistoryMessageCount: voiceLatency.consultationHistoryMessageCount,
+        consultationHistoryChars: voiceLatency.consultationHistoryChars,
+        consultationMemoryChars: voiceLatency.consultationMemoryChars,
+        consultationInputChars: voiceLatency.consultationInputChars,
         ...vadDiagnosticsToReportFields(voiceLatency.vadDiagnostics ?? null),
       });
     };

@@ -274,6 +274,57 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     });
   });
 
+  // Consult AI provider latency variance audit (2026-08-21): surfaces the
+  // provider's real token usage and safe context-size metadata, to
+  // correlate a real production test's providerLatencyMs variance against
+  // real Gemini-supplied numbers rather than guessing.
+  it("surfaces token usage and context-size metadata when the service reports them", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({
+      outcome: "succeeded",
+      reply: { id: "msg-2", role: "assistant", content: "Got it!", createdAt: "2026-08-14T10:00:00.000Z" },
+      needsClarification: false,
+      usage: { inputTokens: 2400, outputTokens: 95, cachedInputTokens: 100, reasoningTokens: 1800, totalTokens: 4395 },
+      consultationHistoryMessageCount: 4,
+      consultationHistoryChars: 512,
+      consultationMemoryChars: 340,
+      consultationInputChars: 27,
+    });
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    const body = await response.json();
+    expect(body).toMatchObject({
+      consultationPromptTokens: 2400,
+      consultationOutputTokens: 95,
+      consultationThinkingTokens: 1800,
+      consultationCachedTokens: 100,
+      consultationHistoryMessageCount: 4,
+      consultationHistoryChars: 512,
+      consultationMemoryChars: 340,
+      consultationInputChars: 27,
+    });
+  });
+
+  it("never fabricates token usage fields when the service didn't report usage", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({
+      outcome: "succeeded",
+      reply: { id: "msg-2", role: "assistant", content: "Got it!", createdAt: "2026-08-14T10:00:00.000Z" },
+      needsClarification: false,
+      consultationHistoryMessageCount: 0,
+      consultationHistoryChars: 0,
+      consultationMemoryChars: 0,
+      consultationInputChars: 2,
+    });
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    const body = await response.json();
+    expect(body.consultationPromptTokens).toBeUndefined();
+    expect(body.consultationOutputTokens).toBeUndefined();
+    expect(body.consultationThinkingTokens).toBeUndefined();
+    expect(body.consultationCachedTokens).toBeUndefined();
+  });
+
   // Consultation reliability hardening (2026-08-19): surfaces the
   // service's own real attempt count (1, or 2 if a transient failure was
   // recovered by its single automatic retry) to the client.

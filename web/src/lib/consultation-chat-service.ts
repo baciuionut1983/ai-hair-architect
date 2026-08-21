@@ -89,6 +89,18 @@ export type SendConsultationMessageResult =
       failedFirstAttemptMs: number;
       serverTotalMs: number;
       unattributedMs: number;
+      // Consult AI provider latency variance audit (2026-08-21): real
+      // Gemini-supplied token counts (never estimated -- undefined
+      // whenever the provider genuinely didn't include one) plus safe
+      // character-count context sizing, to correlate against a real
+      // production test's own providerLatencyMs. See ChatProviderError's
+      // own doc comment for why thinking/reasoning tokens specifically
+      // matter here.
+      usage?: AiUsageQuantities;
+      consultationHistoryMessageCount: number;
+      consultationHistoryChars: number;
+      consultationMemoryChars: number;
+      consultationInputChars: number;
     }
   | {
       outcome: "failed";
@@ -348,6 +360,13 @@ export async function sendConsultationMessage(
     const preProviderReadsMs = (firstReadsCompletedAt - readsStartedAt) + (memoryReadCompletedAt - memoryReadStartedAt);
 
     const context = buildChatContext(client, analysis, priorMessages, memories, clientMemory, languageHint, voiceTurnId !== undefined);
+    // Consult AI provider latency variance audit (2026-08-21): character
+    // counts only, never the content itself -- safe metadata to correlate
+    // a real production test's consultationProviderMs against how much
+    // context this specific turn actually sent, since SYSTEM_INSTRUCTION
+    // and the correctable-fields block are fixed constants that can't
+    // explain turn-to-turn variance, but history/memory/message size can.
+    const contextSizes = measureConsultationContextChars(context, message);
 
     const controller = new AbortController();
     // AI Usage & Cost Metering Phase 1: one correlationId per logical send
@@ -592,6 +611,8 @@ export async function sendConsultationMessage(
       failedFirstAttemptMs,
       serverTotalMs: consultationTotalMs,
       unattributedMs,
+      usage: result.usage,
+      ...contextSizes,
     };
   } catch (error) {
     logConsultationChatFailure({
@@ -606,6 +627,34 @@ export async function sendConsultationMessage(
     });
     return failure("INTERNAL_PROCESSING_FAILURE");
   }
+}
+
+// Consult AI provider latency variance audit (2026-08-21): character
+// counts ONLY -- never the content itself, matching this file's own
+// existing safe-fields-only logging convention. memoryChars uses
+// JSON.stringify's own length as a cheap, approximate proxy for the whole
+// clientProfessionalMemory object's size rather than manually summing every
+// field, since this is diagnostic-only telemetry (correlation, not
+// billing) and doesn't need byte-perfect precision.
+function measureConsultationContextChars(
+  context: ConsultationChatContext,
+  message: string,
+): {
+  consultationHistoryMessageCount: number;
+  consultationHistoryChars: number;
+  consultationMemoryChars: number;
+  consultationInputChars: number;
+} {
+  const consultationHistoryChars = context.recentMessages.reduce((sum, entry) => sum + entry.content.length, 0);
+  const consultationMemoryChars =
+    context.professionalMemory.reduce((sum, entry) => sum + entry.content.length, 0) +
+    JSON.stringify(context.clientProfessionalMemory).length;
+  return {
+    consultationHistoryMessageCount: context.recentMessages.length,
+    consultationHistoryChars,
+    consultationMemoryChars,
+    consultationInputChars: message.length,
+  };
 }
 
 function buildChatContext(

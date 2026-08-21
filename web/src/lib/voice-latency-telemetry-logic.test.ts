@@ -843,6 +843,107 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // Consult AI provider latency variance audit (2026-08-21): lets a real
+  // production test correlate consultationProviderMs's own variance
+  // against real Gemini-supplied token usage and context size.
+  describe("Consult AI token usage / context size (consultationPromptTokens / consultationOutputTokens / consultationThinkingTokens / consultationCachedTokens / consultationHistoryMessageCount / consultationHistoryChars / consultationMemoryChars / consultationInputChars)", () => {
+    it("accepts a fully-populated set of these fields", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_succeeded_no_voice_reply",
+        summary: validSummary(),
+        consultationPromptTokens: 2400,
+        consultationOutputTokens: 95,
+        consultationThinkingTokens: 1800,
+        consultationCachedTokens: 100,
+        consultationHistoryMessageCount: 4,
+        consultationHistoryChars: 512,
+        consultationMemoryChars: 340,
+        consultationInputChars: 27,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          consultationPromptTokens: 2400,
+          consultationOutputTokens: 95,
+          consultationThinkingTokens: 1800,
+          consultationCachedTokens: 100,
+          consultationHistoryMessageCount: 4,
+          consultationHistoryChars: 512,
+          consultationMemoryChars: 340,
+          consultationInputChars: 27,
+        }),
+      });
+    });
+
+    it("accepts zero for every field", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_succeeded_no_voice_reply",
+        summary: validSummary(),
+        consultationThinkingTokens: 0,
+        consultationHistoryMessageCount: 0,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ consultationThinkingTokens: 0, consultationHistoryMessageCount: 0 }),
+      });
+    });
+
+    it("rejects a negative value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_succeeded_no_voice_reply",
+        summary: validSummary(),
+        consultationThinkingTokens: -1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_consultation_thinking_tokens" });
+    });
+
+    it("rejects a non-integer value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_succeeded_no_voice_reply",
+        summary: validSummary(),
+        consultationHistoryChars: 12.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_consultation_history_chars" });
+    });
+
+    it("rejects an implausibly large value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_succeeded_no_voice_reply",
+        summary: validSummary(),
+        consultationMemoryChars: 10_000_000,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_consultation_memory_chars" });
+    });
+
+    it("omits all eight fields entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_failed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of [
+          "consultationPromptTokens",
+          "consultationOutputTokens",
+          "consultationThinkingTokens",
+          "consultationCachedTokens",
+          "consultationHistoryMessageCount",
+          "consultationHistoryChars",
+          "consultationMemoryChars",
+          "consultationInputChars",
+        ]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   describe("terminalStageForOutcome", () => {
     it("maps every outcome to exactly one of the four real pipeline stages, matching where each outcome actually concludes", () => {
       expect(terminalStageForOutcome("stt_failed")).toBe("stt");

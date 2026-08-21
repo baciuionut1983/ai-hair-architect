@@ -428,4 +428,59 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     expect(parsed).toMatchObject({ voiceReplyTextLength: null });
     logSpy.mockRestore();
   });
+
+  // Consult AI provider latency variance audit (2026-08-21): lets a real
+  // production test correlate consultationProviderMs variance against
+  // real Gemini-supplied token usage and context size.
+  it("logs Consult AI token usage / context size fields when the client reported them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-114",
+      outcome: "consultation_succeeded_no_voice_reply",
+      summary: validSummary(),
+      consultationPromptTokens: 2400,
+      consultationOutputTokens: 95,
+      consultationThinkingTokens: 1800,
+      consultationCachedTokens: 100,
+      consultationHistoryMessageCount: 4,
+      consultationHistoryChars: 512,
+      consultationMemoryChars: 340,
+      consultationInputChars: 27,
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      consultationPromptTokens: 2400,
+      consultationOutputTokens: 95,
+      consultationThinkingTokens: 1800,
+      consultationCachedTokens: 100,
+      consultationHistoryMessageCount: 4,
+      consultationHistoryChars: 512,
+      consultationMemoryChars: 340,
+      consultationInputChars: 27,
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs Consult AI token usage / context size fields as null (never fabricated) when the client didn't report them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-115", outcome: "consultation_failed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      consultationPromptTokens: null,
+      consultationOutputTokens: null,
+      consultationThinkingTokens: null,
+      consultationCachedTokens: null,
+      consultationHistoryMessageCount: null,
+      consultationHistoryChars: null,
+      consultationMemoryChars: null,
+      consultationInputChars: null,
+    });
+    logSpy.mockRestore();
+  });
 });
