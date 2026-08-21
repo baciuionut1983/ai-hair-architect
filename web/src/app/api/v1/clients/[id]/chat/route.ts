@@ -190,6 +190,7 @@ export async function POST(
     consultationHistoryChars: result.consultationHistoryChars,
     consultationMemoryChars: result.consultationMemoryChars,
     consultationInputChars: result.consultationInputChars,
+    consultationThinkingMode: result.thinkingMode,
   };
 
   return NextResponse.json(response, { status: 200 });

@@ -944,6 +944,42 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // Consult AI voice thinking A/B (2026-08-21): lets a real production A/B
+  // test tell which thinking mode actually produced a given reply.
+  describe("consultationThinkingMode", () => {
+    it("accepts every real Gemini 3 thinking level plus the 'default' sentinel", () => {
+      for (const mode of ["MINIMAL", "LOW", "MEDIUM", "HIGH", "default"]) {
+        const result = parseVoiceLatencyTelemetryPayload({
+          attemptId: "attempt-1",
+          outcome: "consultation_succeeded_no_voice_reply",
+          summary: validSummary(),
+          consultationThinkingMode: mode,
+        });
+        expect(result).toEqual({ ok: true, value: expect.objectContaining({ consultationThinkingMode: mode }) });
+      }
+    });
+
+    it("rejects a value outside the fixed set -- never a free-form string", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_succeeded_no_voice_reply",
+        summary: validSummary(),
+        consultationThinkingMode: "ultra-fast",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_consultation_thinking_mode" });
+    });
+
+    it("omits the field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "consultation_failed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) expect("consultationThinkingMode" in result.value).toBe(false);
+    });
+  });
+
   describe("terminalStageForOutcome", () => {
     it("maps every outcome to exactly one of the four real pipeline stages, matching where each outcome actually concludes", () => {
       expect(terminalStageForOutcome("stt_failed")).toBe("stt");

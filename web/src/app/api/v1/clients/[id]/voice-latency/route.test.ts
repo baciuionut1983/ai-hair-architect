@@ -483,4 +483,33 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     });
     logSpy.mockRestore();
   });
+
+  // Consult AI voice thinking A/B (2026-08-21): lets a real production A/B
+  // test tell which thinking mode actually produced a given reply.
+  it("logs consultationThinkingMode when the client reported one", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-116",
+      outcome: "consultation_succeeded_no_voice_reply",
+      summary: validSummary(),
+      consultationThinkingMode: "LOW",
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({ consultationThinkingMode: "LOW" });
+    logSpy.mockRestore();
+  });
+
+  it("logs consultationThinkingMode as null (never fabricated) when the client didn't report one", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-117", outcome: "consultation_failed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({ consultationThinkingMode: null });
+    logSpy.mockRestore();
+  });
 });

@@ -456,6 +456,11 @@ export interface ConsultationChatResponse {
   consultationHistoryChars?: number;
   consultationMemoryChars?: number;
   consultationInputChars?: number;
+  // Consult AI voice thinking A/B (2026-08-21): the real Gemini
+  // thinking_level this exact reply used ("MINIMAL"/"LOW"/"MEDIUM"/"HIGH"),
+  // or "default" when no override applied -- see
+  // consultation-chat-provider.ts's own ConsultationChatResult doc comment.
+  consultationThinkingMode?: string;
 }
 
 export interface ConsultationCreateRequest {

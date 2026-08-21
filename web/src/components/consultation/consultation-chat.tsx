@@ -130,6 +130,9 @@ interface VoiceTurnLatencyContext {
   consultationHistoryChars?: number;
   consultationMemoryChars?: number;
   consultationInputChars?: number;
+  // Consult AI voice thinking A/B (2026-08-21): carried through the same
+  // way as the other consultation* fields above.
+  consultationThinkingMode?: string;
 }
 
 const MEMORY_ACTION_LABELS: Record<string, string> = {
@@ -528,6 +531,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         consultationHistoryChars?: number;
         consultationMemoryChars?: number;
         consultationInputChars?: number;
+        consultationThinkingMode?: string;
       } = {},
     ) => {
       if (!voiceTurn) return;
@@ -630,6 +634,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
                 consultationHistoryChars: payload.consultationHistoryChars,
                 consultationMemoryChars: payload.consultationMemoryChars,
                 consultationInputChars: payload.consultationInputChars,
+                consultationThinkingMode: payload.consultationThinkingMode,
               }
             : undefined,
         );
@@ -647,6 +652,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
           consultationHistoryChars: payload.consultationHistoryChars,
           consultationMemoryChars: payload.consultationMemoryChars,
           consultationInputChars: payload.consultationInputChars,
+          consultationThinkingMode: payload.consultationThinkingMode,
         });
       }
     } catch {
@@ -784,6 +790,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         consultationHistoryChars: voiceLatency.consultationHistoryChars,
         consultationMemoryChars: voiceLatency.consultationMemoryChars,
         consultationInputChars: voiceLatency.consultationInputChars,
+        consultationThinkingMode: voiceLatency.consultationThinkingMode,
         ...vadDiagnosticsToReportFields(voiceLatency.vadDiagnostics ?? null),
       });
     };

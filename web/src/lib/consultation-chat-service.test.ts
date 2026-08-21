@@ -659,6 +659,83 @@ describe("sendConsultationMessage", () => {
     });
   });
 
+  // Consult AI voice thinking A/B (2026-08-21): mirrors
+  // CONSULTATION_CHAT_FALLBACK_MODEL's own test pattern exactly -- proves
+  // the env var actually reaches the provider's own config, is applied to
+  // both the first attempt AND a retry's provider, and never leaks into
+  // an unrelated call when unset.
+  describe("CONSULTATION_VOICE_THINKING_LEVEL", () => {
+    it("is read from env and passed to createProvider's config", async () => {
+      const configsUsed: Array<{ voiceThinkingLevel?: string }> = [];
+      const createProvider = (config: { apiKey: string; model: string; voiceThinkingLevel?: string }) => {
+        configsUsed.push({ voiceThinkingLevel: config.voiceThinkingLevel });
+        return {
+          name: "stub",
+          modelVersion: config.model,
+          respond: async () => ({ reply: "ok", needsClarification: false }),
+        } as unknown as ConsultationChatProvider;
+      };
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, {
+        env: { ...GEMINI_ENV, CONSULTATION_VOICE_THINKING_LEVEL: "LOW" },
+        createProvider,
+      });
+
+      expect(configsUsed).toEqual([{ voiceThinkingLevel: "LOW" }]);
+    });
+
+    it("is undefined by default -- never invented when the env var is unset", async () => {
+      const configsUsed: Array<{ voiceThinkingLevel?: string }> = [];
+      const createProvider = (config: { apiKey: string; model: string; voiceThinkingLevel?: string }) => {
+        configsUsed.push({ voiceThinkingLevel: config.voiceThinkingLevel });
+        return {
+          name: "stub",
+          modelVersion: config.model,
+          respond: async () => ({ reply: "ok", needsClarification: false }),
+        } as unknown as ConsultationChatProvider;
+      };
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider });
+
+      expect(configsUsed).toEqual([{ voiceThinkingLevel: undefined }]);
+    });
+
+    it("is passed to the retry's own provider too, when a fallback model is configured", async () => {
+      const configsUsed: Array<{ voiceThinkingLevel?: string }> = [];
+      let calls = 0;
+      const createProvider = (config: { apiKey: string; model: string; voiceThinkingLevel?: string }) => {
+        configsUsed.push({ voiceThinkingLevel: config.voiceThinkingLevel });
+        return {
+          name: "stub",
+          modelVersion: config.model,
+          respond: async () => {
+            calls += 1;
+            if (calls === 1) throw Object.assign(new Error("503"), { code: "PROVIDER_ERROR", retryable: true, status: 503 });
+            return { reply: "ok", needsClarification: false };
+          },
+        } as unknown as ConsultationChatProvider;
+      };
+
+      await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, {
+        env: { ...GEMINI_ENV, CONSULTATION_CHAT_FALLBACK_MODEL: "gemini-3.6-pro", CONSULTATION_VOICE_THINKING_LEVEL: "LOW" },
+        createProvider,
+      });
+
+      expect(configsUsed).toEqual([{ voiceThinkingLevel: "LOW" }, { voiceThinkingLevel: "LOW" }]);
+    });
+
+    it("threads the provider's real thinkingMode through to the success result", async () => {
+      const provider = stubProvider(async () => ({ reply: "ok", needsClarification: false, thinkingMode: "LOW" }));
+
+      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, {
+        env: { ...GEMINI_ENV, CONSULTATION_VOICE_THINKING_LEVEL: "LOW" },
+        createProvider: provider,
+      });
+
+      expect(result).toMatchObject({ outcome: "succeeded", thinkingMode: "LOW" });
+    });
+  });
+
   // End-to-end voice turn correlation (2026-08-19): voiceTurnId is the
   // SAME id already used for STT (use-voice-recording.ts's attemptId),
   // threaded through purely for structured-log correlation -- never part

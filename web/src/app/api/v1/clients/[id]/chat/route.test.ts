@@ -325,6 +325,22 @@ describe("POST /api/v1/clients/[id]/chat", () => {
     expect(body.consultationCachedTokens).toBeUndefined();
   });
 
+  // Consult AI voice thinking A/B (2026-08-21): lets a real production A/B
+  // test tell which thinking mode actually produced a given reply.
+  it("surfaces consultationThinkingMode when the service reports one", async () => {
+    serviceMock.sendConsultationMessage.mockResolvedValue({
+      outcome: "succeeded",
+      reply: { id: "msg-2", role: "assistant", content: "Got it!", createdAt: "2026-08-14T10:00:00.000Z" },
+      needsClarification: false,
+      thinkingMode: "LOW",
+    });
+
+    const response = await invoke("client-1", { message: "hi" });
+
+    const body = await response.json();
+    expect(body.consultationThinkingMode).toBe("LOW");
+  });
+
   // Consultation reliability hardening (2026-08-19): surfaces the
   // service's own real attempt count (1, or 2 if a transient failure was
   // recovered by its single automatic retry) to the client.

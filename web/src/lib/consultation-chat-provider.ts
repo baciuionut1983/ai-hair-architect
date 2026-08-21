@@ -183,6 +183,15 @@ export interface ConsultationChatResult {
   // generateContent returns to existing callers/tests.
   usage?: AiUsageQuantities;
   providerRequestId?: string;
+  // Consult AI voice thinking A/B (2026-08-21): the real Gemini
+  // thinking_level this exact call requested ("MINIMAL"/"LOW"/"MEDIUM"/
+  // "HIGH"), or the literal string "default" when no override applied
+  // (every typed message, and every voice turn when the experiment isn't
+  // enabled) -- see GeminiConsultationChatProvider's own respond() for
+  // exactly how this is decided. Always one or the other, never undefined,
+  // so a real production test can always tell which mode a given reply
+  // actually used.
+  thinkingMode?: string;
 }
 
 export interface ChatProviderError extends Error {

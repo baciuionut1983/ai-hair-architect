@@ -104,7 +104,7 @@ describe("GeminiConsultationChatProvider", () => {
 
     const result = await provider.respond("Hi there", context(), new AbortController().signal);
 
-    expect(result).toEqual({ reply: "Sure, tell me more about her hair!", needsClarification: false });
+    expect(result).toEqual({ reply: "Sure, tell me more about her hair!", needsClarification: false, thinkingMode: "default" });
   });
 
   it("parses a reply with a proposed correction, never applying anything itself", async () => {
@@ -256,6 +256,94 @@ describe("GeminiConsultationChatProvider", () => {
       await provider.respond("msg", context({ preferConciseReply: true }), new AbortController().signal);
 
       expect(sink.input?.prompt).toContain("never omit professionally necessary information");
+    });
+  });
+
+  // Consult AI voice thinking A/B (2026-08-21): the experimental override
+  // must apply ONLY when BOTH conditions hold -- a voice turn
+  // (preferConciseReply, the same existing signal) AND the operator has
+  // explicitly enabled it (voiceThinkingLevel). Neither alone is enough,
+  // matching "default behavior must remain the current behavior unless
+  // the experiment is explicitly enabled" exactly.
+  describe("voice thinking A/B (CONSULTATION_VOICE_THINKING_LEVEL)", () => {
+    it("applies the configured thinking level ONLY for a voice turn (preferConciseReply true)", async () => {
+      const sink: { input?: GeminiChatGenerateInput } = {};
+      const provider = new GeminiConsultationChatProvider(
+        { apiKey: "key", model: "gemini-3.6-flash", voiceThinkingLevel: "LOW" },
+        recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+      );
+
+      const result = await provider.respond("msg", context({ preferConciseReply: true }), new AbortController().signal);
+
+      expect(sink.input?.thinkingLevel).toBe("LOW");
+      expect(result.thinkingMode).toBe("LOW");
+    });
+
+    it("never applies the override for a typed message, even when voiceThinkingLevel is configured", async () => {
+      const sink: { input?: GeminiChatGenerateInput } = {};
+      const provider = new GeminiConsultationChatProvider(
+        { apiKey: "key", model: "gemini-3.6-flash", voiceThinkingLevel: "LOW" },
+        recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+      );
+
+      const result = await provider.respond("msg", context(), new AbortController().signal);
+
+      expect(sink.input?.thinkingLevel).toBeUndefined();
+      expect(result.thinkingMode).toBe("default");
+    });
+
+    it("never applies an override for a voice turn when voiceThinkingLevel is unset -- current/default behavior unless explicitly enabled", async () => {
+      const sink: { input?: GeminiChatGenerateInput } = {};
+      const provider = new GeminiConsultationChatProvider(
+        { apiKey: "key", model: "gemini-3.6-flash" },
+        recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+      );
+
+      const result = await provider.respond("msg", context({ preferConciseReply: true }), new AbortController().signal);
+
+      expect(sink.input?.thinkingLevel).toBeUndefined();
+      expect(result.thinkingMode).toBe("default");
+    });
+
+    it("treats an unrecognized voiceThinkingLevel value identically to unset -- never crashes, never guesses", async () => {
+      const sink: { input?: GeminiChatGenerateInput } = {};
+      const provider = new GeminiConsultationChatProvider(
+        { apiKey: "key", model: "gemini-3.6-flash", voiceThinkingLevel: "ultra-fast" },
+        recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+      );
+
+      const result = await provider.respond("msg", context({ preferConciseReply: true }), new AbortController().signal);
+
+      expect(sink.input?.thinkingLevel).toBeUndefined();
+      expect(result.thinkingMode).toBe("default");
+    });
+
+    it("matches the configured level case-insensitively (a Railway operator may type 'low' or 'LOW')", async () => {
+      const sink: { input?: GeminiChatGenerateInput } = {};
+      const provider = new GeminiConsultationChatProvider(
+        { apiKey: "key", model: "gemini-3.6-flash", voiceThinkingLevel: "low" },
+        recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+      );
+
+      const result = await provider.respond("msg", context({ preferConciseReply: true }), new AbortController().signal);
+
+      expect(sink.input?.thinkingLevel).toBe("LOW");
+      expect(result.thinkingMode).toBe("LOW");
+    });
+
+    it("supports every real Gemini 3 thinking level (MINIMAL/LOW/MEDIUM/HIGH)", async () => {
+      for (const level of ["MINIMAL", "LOW", "MEDIUM", "HIGH"]) {
+        const sink: { input?: GeminiChatGenerateInput } = {};
+        const provider = new GeminiConsultationChatProvider(
+          { apiKey: "key", model: "gemini-3.6-flash", voiceThinkingLevel: level },
+          recordingClient(sink, JSON.stringify({ reply: "ok", needsClarification: false })),
+        );
+
+        const result = await provider.respond("msg", context({ preferConciseReply: true }), new AbortController().signal);
+
+        expect(sink.input?.thinkingLevel).toBe(level);
+        expect(result.thinkingMode).toBe(level);
+      }
     });
   });
 

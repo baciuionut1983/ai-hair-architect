@@ -167,6 +167,9 @@ export interface VoiceLatencyTelemetryInput {
   consultationHistoryChars?: number;
   consultationMemoryChars?: number;
   consultationInputChars?: number;
+  // Consult AI voice thinking A/B (2026-08-21): see voice-latency-logic.ts's
+  // own doc comment on this same field.
+  consultationThinkingMode?: string;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -270,6 +273,12 @@ function parseOptionalDurationField(
   }
   return { ok: true, value: Math.round(raw) };
 }
+
+// Consult AI voice thinking A/B (2026-08-21): the fixed set of real values
+// consultation-chat-provider-gemini.ts's own ConsultationChatResult.thinkingMode
+// can produce -- Gemini's own thinking_level vocabulary plus the literal
+// "default" sentinel, never a free-form string.
+const CONSULTATION_THINKING_MODES = new Set(["MINIMAL", "LOW", "MEDIUM", "HIGH", "default"]);
 
 // Consult AI provider latency variance audit (2026-08-21): a generous
 // ceiling for character/message counts and token counts alike -- rejects
@@ -532,6 +541,14 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
   const consultationInputChars = parseOptionalNonNegativeInteger(input, "consultationInputChars");
   if (!consultationInputChars.ok) return { ok: false, reason: "invalid_consultation_input_chars" };
 
+  let consultationThinkingMode: string | undefined;
+  if (input.consultationThinkingMode !== undefined) {
+    if (typeof input.consultationThinkingMode !== "string" || !CONSULTATION_THINKING_MODES.has(input.consultationThinkingMode)) {
+      return { ok: false, reason: "invalid_consultation_thinking_mode" };
+    }
+    consultationThinkingMode = input.consultationThinkingMode;
+  }
+
   // Unknown extra keys on `summary` (or on the top-level body) are simply
   // never read, not rejected -- an allow-list extraction is exactly as
   // strict against injection/type-confusion as an exact-shape check, and
@@ -575,6 +592,7 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(consultationHistoryChars.value !== undefined ? { consultationHistoryChars: consultationHistoryChars.value } : {}),
       ...(consultationMemoryChars.value !== undefined ? { consultationMemoryChars: consultationMemoryChars.value } : {}),
       ...(consultationInputChars.value !== undefined ? { consultationInputChars: consultationInputChars.value } : {}),
+      ...(consultationThinkingMode !== undefined ? { consultationThinkingMode } : {}),
     },
   };
 }

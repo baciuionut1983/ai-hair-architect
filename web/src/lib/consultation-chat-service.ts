@@ -101,6 +101,9 @@ export type SendConsultationMessageResult =
       consultationHistoryChars: number;
       consultationMemoryChars: number;
       consultationInputChars: number;
+      // Consult AI voice thinking A/B (2026-08-21): see
+      // ConsultationChatResult's own doc comment (consultation-chat-provider.ts).
+      thinkingMode?: string;
     }
   | {
       outcome: "failed";
@@ -122,7 +125,7 @@ export type SendConsultationMessageResult =
 
 export interface SendConsultationMessageDependencies {
   env?: Readonly<Record<string, string | undefined>>;
-  createProvider?: (config: { apiKey: string; model: string }) => ConsultationChatProvider;
+  createProvider?: (config: { apiKey: string; model: string; voiceThinkingLevel?: string }) => ConsultationChatProvider;
   now?: () => Date;
   // AI Usage & Cost Metering Phase 1: injectable like createProvider, so
   // tests never need a real database connection just because this
@@ -313,7 +316,16 @@ export async function sendConsultationMessage(
     }
 
     const createProvider = dependencies.createProvider ?? defaultCreateProvider;
-    const provider = createProvider({ apiKey: config.apiKey, model: config.model });
+    // Consult AI voice thinking A/B (2026-08-21): unset by default, never
+    // invented -- see GeminiConsultationChatProvider's own doc comment for
+    // exactly how this is applied (only ever for a voice turn, via the
+    // SAME existing preferConciseReply signal, never a new client-trusted
+    // input). Reversible with zero code change: unsetting this Railway
+    // variable and redeploying restores byte-for-byte the prior request
+    // shape, since GeminiChatGenerateInput.thinkingLevel then resolves to
+    // undefined for every call again.
+    const voiceThinkingLevel = env.CONSULTATION_VOICE_THINKING_LEVEL;
+    const provider = createProvider({ apiKey: config.apiKey, model: config.model, voiceThinkingLevel });
     // Consultation reliability hardening (2026-08-19): mirrors STT_FALLBACK_MODEL
     // exactly (see voice-transcript/route.ts's own comment) -- unset by
     // default, never invented; only ever used for the single automatic
@@ -325,7 +337,7 @@ export async function sendConsultationMessage(
     const fallbackModel = env.CONSULTATION_CHAT_FALLBACK_MODEL;
     const retryProvider =
       fallbackModel && fallbackModel.trim().length > 0 && fallbackModel !== config.model
-        ? createProvider({ apiKey: config.apiKey, model: fallbackModel })
+        ? createProvider({ apiKey: config.apiKey, model: fallbackModel, voiceThinkingLevel })
         : provider;
     const recordUsage = dependencies.recordAiUsageEvent ?? recordAiUsageEvent;
 
@@ -612,6 +624,7 @@ export async function sendConsultationMessage(
       serverTotalMs: consultationTotalMs,
       unattributedMs,
       usage: result.usage,
+      thinkingMode: result.thinkingMode,
       ...contextSizes,
     };
   } catch (error) {
@@ -721,7 +734,7 @@ function collectPlanField(analysis: AnalysisState, field: "missingData" | "assum
   return [...merged];
 }
 
-function defaultCreateProvider(config: { apiKey: string; model: string }): ConsultationChatProvider {
+function defaultCreateProvider(config: { apiKey: string; model: string; voiceThinkingLevel?: string }): ConsultationChatProvider {
   return new GeminiConsultationChatProvider(config);
 }
 

@@ -119,6 +119,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       consultationHistoryChars: parsed.value.consultationHistoryChars ?? null,
       consultationMemoryChars: parsed.value.consultationMemoryChars ?? null,
       consultationInputChars: parsed.value.consultationInputChars ?? null,
+      consultationThinkingMode: parsed.value.consultationThinkingMode ?? null,
       ...parsed.value.summary,
     })}`,
   );

@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type, type Schema } from "@google/genai";
+import { GoogleGenAI, ThinkingLevel, Type, type Schema } from "@google/genai";
 
 import { CORRECTABLE_ANALYSIS_FIELDS, CORRECTABLE_FIELD_ENUMS, type CorrectableAnalysisField } from "./analysis-repository";
 import { mapGeminiUsageMetadata, type GeminiRawUsageMetadata } from "./gemini-usage-mapper";
@@ -186,6 +186,20 @@ export interface GeminiConsultationChatProviderOptions {
   apiKey: string;
   model: string;
   timeoutMs?: number;
+  // Consult AI voice thinking A/B (2026-08-21): the raw
+  // CONSULTATION_VOICE_THINKING_LEVEL env value, validated against
+  // ThinkingLevel's real enum values in this constructor (case-insensitive,
+  // never crashes on a config typo -- an unrecognized value is treated
+  // identically to "unset", never guessed). Applied ONLY when this exact
+  // call's own context.preferConciseReply is true (see respond() below) --
+  // a typed message NEVER receives this override, regardless of this
+  // value, since preferConciseReply is already the established, existing
+  // voice-only signal (see consultation-chat-service.ts's own
+  // buildChatContext). thinkingBudget is deliberately not exposed here --
+  // Gemini's own current docs only document thinkingLevel for the Gemini 3
+  // family (this app's actual model), and thinking cannot be fully
+  // disabled for that family regardless.
+  voiceThinkingLevel?: string;
 }
 
 export interface GeminiChatGenerateInput {
@@ -202,6 +216,11 @@ export interface GeminiChatGenerateInput {
   // leaves usage honestly unavailable, which is itself a correct, already
   // -covered state, not a gap this needed new tests to paper over.
   onUsage?: (usage: GeminiRawUsageMetadata | undefined, providerRequestId: string | undefined) => void;
+  // Consult AI voice thinking A/B (2026-08-21): undefined means "send no
+  // thinkingConfig at all" -- byte-for-byte the current/default request
+  // shape, never a behavior change unless this experiment is explicitly
+  // enabled AND this specific call is a voice turn.
+  thinkingLevel?: ThinkingLevel;
 }
 
 export interface GeminiChatGenerateClient {
@@ -215,6 +234,7 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
   private readonly client: GeminiChatGenerateClient;
   private readonly model: string;
   private readonly timeoutMs: number;
+  private readonly voiceThinkingLevel: ThinkingLevel | undefined;
 
   constructor(options: GeminiConsultationChatProviderOptions, client?: GeminiChatGenerateClient) {
     super();
@@ -230,6 +250,7 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
     this.modelVersion = options.model;
     this.timeoutMs = options.timeoutMs ?? GEMINI_CHAT_DEFAULT_TIMEOUT_MS;
     this.client = client ?? createDefaultGeminiChatClient(options.apiKey, this.timeoutMs);
+    this.voiceThinkingLevel = parseThinkingLevel(options.voiceThinkingLevel);
   }
 
   async respond(message: string, context: ConsultationChatContext, outerSignal: AbortSignal): Promise<ConsultationChatResult> {
@@ -247,11 +268,20 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
     let capturedUsage: GeminiRawUsageMetadata | undefined;
     let capturedRequestId: string | undefined;
 
+    // Consult AI voice thinking A/B (2026-08-21): a typed message's
+    // context.preferConciseReply is always false/absent, so this is
+    // ALWAYS undefined for a typed message regardless of
+    // voiceThinkingLevel -- the override can only ever apply to a voice
+    // turn, the same existing signal buildChatContext already uses for
+    // reply conciseness (never a new, separately-trusted client input).
+    const thinkingLevel = context.preferConciseReply ? this.voiceThinkingLevel : undefined;
+
     try {
       const rawText = await this.client.generateContent({
         prompt: buildPrompt(message, context),
         model: this.model,
         signal: controller.signal,
+        thinkingLevel,
         onUsage: (usage, requestId) => {
           capturedUsage = usage;
           capturedRequestId = requestId;
@@ -263,6 +293,10 @@ export class GeminiConsultationChatProvider extends ConsultationChatProvider {
         ...result,
         ...(usage ? { usage } : {}),
         ...(capturedRequestId ? { providerRequestId: capturedRequestId } : {}),
+        // Consult AI voice thinking A/B (2026-08-21): the real level this
+        // exact call requested, or the literal string "default" when no
+        // override applied -- never fabricated, always one or the other.
+        thinkingMode: thinkingLevel ?? "default",
       };
     } catch (error) {
       throw this.classifyError(error, controller.signal);
@@ -597,7 +631,7 @@ function createDefaultGeminiChatClient(apiKey: string, timeoutMs: number): Gemin
   const ai = new GoogleGenAI({ apiKey });
 
   return {
-    async generateContent({ prompt, model, signal, onUsage }: GeminiChatGenerateInput) {
+    async generateContent({ prompt, model, signal, thinkingLevel, onUsage }: GeminiChatGenerateInput) {
       const response = await ai.models.generateContent({
         model,
         contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -606,12 +640,40 @@ function createDefaultGeminiChatClient(apiKey: string, timeoutMs: number): Gemin
           httpOptions: { timeout: timeoutMs },
           responseMimeType: "application/json",
           responseSchema: RESPONSE_SCHEMA,
+          // Consult AI voice thinking A/B (2026-08-21): omitted entirely
+          // (never an explicit "default" value) unless the experiment is
+          // enabled for this exact voice call -- byte-for-byte the same
+          // request shape as before this round otherwise.
+          ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {}),
         },
       });
       onUsage?.(response.usageMetadata, response.responseId);
       return response.text;
     },
   };
+}
+
+// Consult AI voice thinking A/B (2026-08-21): Gemini 3's own documented
+// thinking_level vocabulary (minimal, low, medium, high -- see
+// https://ai.google.dev/gemini-api/docs/thinking), matched
+// case-insensitively so a Railway env value like "low" or "LOW" both
+// work. An unrecognized/unset value returns undefined -- never guessed,
+// never crashes the whole feature over a config typo.
+function parseThinkingLevel(raw: string | undefined): ThinkingLevel | undefined {
+  if (!raw) return undefined;
+  const normalized = raw.trim().toUpperCase();
+  switch (normalized) {
+    case "MINIMAL":
+      return ThinkingLevel.MINIMAL;
+    case "LOW":
+      return ThinkingLevel.LOW;
+    case "MEDIUM":
+      return ThinkingLevel.MEDIUM;
+    case "HIGH":
+      return ThinkingLevel.HIGH;
+    default:
+      return undefined;
+  }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

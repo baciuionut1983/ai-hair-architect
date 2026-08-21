@@ -412,6 +412,12 @@ export interface VoiceLatencyTerminalDiagnostics {
   consultationHistoryChars?: number;
   consultationMemoryChars?: number;
   consultationInputChars?: number;
+  // Consult AI voice thinking A/B (2026-08-21): the real Gemini
+  // thinking_level this exact reply used, or "default" when no override
+  // applied -- see consultation-chat-provider.ts's own ConsultationChatResult
+  // doc comment. Lets a real production A/B test tell, from this one log
+  // line, which mode actually produced a given reply.
+  consultationThinkingMode?: string;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see
