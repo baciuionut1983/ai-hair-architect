@@ -199,6 +199,12 @@ export interface VoiceLatencyTelemetryInput {
   vadContinuationAmplitudeOnlySampleCount?: number;
   vadLongestPostConfirmationGapMs?: number;
   vadLastStrongEvidenceAgeAtStopMs?: number;
+  // VAD start-detection hardening, ROUND 7 (2026-08-22): see
+  // voice-activity-logic.ts's own ROUND 7 VoiceActivityDiagnostics doc
+  // comments for exactly what each answers.
+  vadAmbientSpectralRatioEstimate?: number;
+  vadPeakAmbientSpectralRatioEstimate?: number;
+  vadSpectralLiftQualifiedSampleCount?: number;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -538,6 +544,16 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
   const vadLastStrongEvidenceAgeAtStopMs = parseOptionalDurationField(input, "vadLastStrongEvidenceAgeAtStopMs");
   if (!vadLastStrongEvidenceAgeAtStopMs.ok) return { ok: false, reason: "invalid_vad_last_strong_evidence_age_at_stop_ms" };
 
+  // VAD start-detection hardening, ROUND 7 (2026-08-22): see
+  // voice-activity-logic.ts's own ROUND 7 VoiceActivityDiagnostics doc
+  // comments for exactly what each answers.
+  const vadAmbientSpectralRatioEstimate = parseOptionalBoundedFloat(input, "vadAmbientSpectralRatioEstimate", 1);
+  if (!vadAmbientSpectralRatioEstimate.ok) return { ok: false, reason: "invalid_vad_ambient_spectral_ratio_estimate" };
+  const vadPeakAmbientSpectralRatioEstimate = parseOptionalBoundedFloat(input, "vadPeakAmbientSpectralRatioEstimate", 1);
+  if (!vadPeakAmbientSpectralRatioEstimate.ok) return { ok: false, reason: "invalid_vad_peak_ambient_spectral_ratio_estimate" };
+  const vadSpectralLiftQualifiedSampleCount = parseOptionalNonNegativeInteger(input, "vadSpectralLiftQualifiedSampleCount");
+  if (!vadSpectralLiftQualifiedSampleCount.ok) return { ok: false, reason: "invalid_vad_spectral_lift_qualified_sample_count" };
+
   let sttProviderHttpStatus: number | undefined;
   if (input.sttProviderHttpStatus !== undefined) {
     if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
@@ -713,6 +729,15 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
         : {}),
       ...(vadLastStrongEvidenceAgeAtStopMs.value !== undefined
         ? { vadLastStrongEvidenceAgeAtStopMs: vadLastStrongEvidenceAgeAtStopMs.value }
+        : {}),
+      ...(vadAmbientSpectralRatioEstimate.value !== undefined
+        ? { vadAmbientSpectralRatioEstimate: vadAmbientSpectralRatioEstimate.value }
+        : {}),
+      ...(vadPeakAmbientSpectralRatioEstimate.value !== undefined
+        ? { vadPeakAmbientSpectralRatioEstimate: vadPeakAmbientSpectralRatioEstimate.value }
+        : {}),
+      ...(vadSpectralLiftQualifiedSampleCount.value !== undefined
+        ? { vadSpectralLiftQualifiedSampleCount: vadSpectralLiftQualifiedSampleCount.value }
         : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),

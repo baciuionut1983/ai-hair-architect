@@ -7,6 +7,7 @@ import {
   initVadState,
   shouldAutoSubmitTranscript,
   type VadConfig,
+  type VadEvaluation,
   type VadSample,
   type VadState,
 } from "./voice-activity-logic";
@@ -59,6 +60,19 @@ const MODERATE_SPEECH_BELOW_ELEVATED_FLOOR: VadSample = { rmsLevel: 0.05, speech
 // 100ms sample is not a reliable test for either, and why the windowed
 // evidence model links them across nearby samples instead.
 const LOUD_BROADBAND_PHONEME: VadSample = { rmsLevel: 0.3, speechBandRatio: 0.25 };
+// ROUND 7 (2026-08-22): genuine, moderate room background noise -- quiet
+// enough to fail the amplitude gate outright and diffuse enough to fail
+// the spectral gate too, so it correctly builds the room's own
+// ambientSpectralRatioEstimate baseline (see the module's own ROUND 7 doc
+// comment) without itself ever looking like speech.
+const MODERATE_BACKGROUND_NOISE: VadSample = { rmsLevel: 0.015, speechBandRatio: 0.25 };
+// Real speech loud enough to clear amplitude, but with its own in-band
+// concentration diluted by the SAME background noise down to 0.42 --
+// below the fixed 0.45 absolute threshold, but (once the room's ambient
+// baseline has been learned) above it by more than spectralLiftMargin,
+// and above minSpeechBandRatioFloor -- the exact production shape this
+// round's fix targets.
+const SPEECH_OVER_BACKGROUND_NOISE: VadSample = { rmsLevel: 0.15, speechBandRatio: 0.42 };
 
 describe("evaluateVadSample", () => {
   it("does not stop while the stylist is actively speaking", () => {
@@ -1073,6 +1087,214 @@ describe("evaluateVadSample", () => {
       expect(state.longestPostConfirmationGapMs).toBe(1600);
     });
   });
+
+  // VAD start-detection hardening, ROUND 7 (2026-08-22): a real production
+  // test WITH background noise present reproduced a new, distinct failure:
+  // START itself never confirmed. amplitudeQualifiedSampleCount was a
+  // healthy 30/100, but spectralQualifiedSampleCount was only 3/100, and
+  // even the single best moment in the whole 10s recording
+  // (vadPeakSpeechBandRatio ~0.467) barely cleared the fixed 0.45
+  // threshold -- background noise dilutes the spectral ratio's own
+  // denominator (see this module's own ROUND 7 doc comment for the full
+  // DSP root cause). These tests reproduce the shape directly and prove
+  // the START-only adaptive lift path fixes it without weakening
+  // music/dryer rejection or ROUND 6's already-stabilized continuation.
+  describe("ROUND 7: START-only adaptive spectral lift in background noise", () => {
+    function buildAmbientBaseline(state: VadState, t: number, sampleCount: number): { state: VadState; t: number } {
+      let currentState = state;
+      let currentT = t;
+      for (let i = 0; i < sampleCount; i += 1) {
+        currentT += 100;
+        currentState = evaluateVadSample(currentState, MODERATE_BACKGROUND_NOISE, currentT).state;
+      }
+      return { state: currentState, t: currentT };
+    }
+
+    it("reproduces the production shape: speech diluted below the absolute threshold by background noise still confirms START, once the room's ambient baseline is learned", () => {
+      let state = initVadState(0);
+      let t = 0;
+      ({ state, t } = buildAmbientBaseline(state, t, 60));
+      expect(state.ambientSpectralRatioEstimate).toBeGreaterThanOrEqual(DEFAULT_VAD_CONFIG.spectralLiftActivationThreshold);
+      expect(state.hasDetectedSpeech).toBe(false); // background noise alone never confirms
+
+      // Real speech, over the same noise -- SPEECH_OVER_BACKGROUND_NOISE's
+      // own ratio (0.42) is below the absolute 0.45 threshold, but clears
+      // the room's learned ambient baseline by more than spectralLiftMargin.
+      let result: VadEvaluation = { state, decision: "continue" };
+      for (let i = 0; i < 4; i += 1) {
+        t += 100;
+        result = evaluateVadSample(result.state, SPEECH_OVER_BACKGROUND_NOISE, t);
+      }
+      expect(result.state.hasDetectedSpeech).toBe(true);
+      expect(result.state.spectralLiftQualifiedSampleCount).toBeGreaterThan(0);
+      // The strict, absolute-threshold-only fields are untouched by the
+      // lift path -- this recording never had a same-sample-AND hit.
+      expect(result.state.fullyQualifiedSampleCount).toBe(0);
+    });
+
+    it("the lift path never engages below spectralLiftActivationThreshold -- a still-mostly-quiet room behaves exactly as before", () => {
+      let state = initVadState(0);
+      let t = 0;
+      // Only a handful of noise samples -- nowhere near enough to reach
+      // spectralLiftActivationThreshold (0.15).
+      ({ state, t } = buildAmbientBaseline(state, t, 3));
+      expect(state.ambientSpectralRatioEstimate).toBeLessThan(DEFAULT_VAD_CONFIG.spectralLiftActivationThreshold);
+
+      let result: VadEvaluation = { state, decision: "continue" };
+      for (let i = 0; i < 4; i += 1) {
+        t += 100;
+        result = evaluateVadSample(result.state, SPEECH_OVER_BACKGROUND_NOISE, t);
+      }
+      // Same diluted-speech sample as the headline test, but without an
+      // activated baseline -- must NOT confirm.
+      expect(result.state.hasDetectedSpeech).toBe(false);
+      expect(result.state.spectralLiftQualifiedSampleCount).toBe(0);
+    });
+
+    it("the lift path enforces a hard effective minimum (minSpeechBandRatioFloor) -- a ratio just below it never qualifies, even right at the activation boundary", () => {
+      // With the default config, spectralLiftActivationThreshold (0.15) +
+      // spectralLiftMargin (0.15) = 0.30 = minSpeechBandRatioFloor exactly
+      // -- the floor is a defensive backstop that coincides with the
+      // margin's own minimum possible requirement, never independently
+      // looser. A ratio just below 0.30 must never qualify, regardless of
+      // how the baseline/margin arithmetic works out.
+      let state = initVadState(0);
+      let t = 0;
+      ({ state, t } = buildAmbientBaseline(state, t, 60));
+      expect(state.ambientSpectralRatioEstimate).toBeGreaterThanOrEqual(DEFAULT_VAD_CONFIG.spectralLiftActivationThreshold);
+
+      const justBelowFloor: VadSample = { rmsLevel: 0.15, speechBandRatio: 0.29 };
+      let result: VadEvaluation = { state, decision: "continue" };
+      for (let i = 0; i < 4; i += 1) {
+        t += 100;
+        result = evaluateVadSample(result.state, justBelowFloor, t);
+      }
+      expect(result.state.hasDetectedSpeech).toBe(false);
+      expect(result.state.spectralLiftQualifiedSampleCount).toBe(0);
+    });
+
+    it("music-only remains rejected even with an elevated ambient baseline already established from prior room noise", () => {
+      let state = initVadState(0);
+      let t = 0;
+      ({ state, t } = buildAmbientBaseline(state, t, 60));
+      const baselineAfterNoise = state.ambientSpectralRatioEstimate;
+      expect(baselineAfterNoise).toBeGreaterThanOrEqual(DEFAULT_VAD_CONFIG.spectralLiftActivationThreshold);
+
+      let result: VadEvaluation = { state, decision: "continue" };
+      let sawStop = false;
+      for (let i = 0; i < 100; i += 1) {
+        t += 100;
+        result = evaluateVadSample(result.state, LOUD_MUSIC, t);
+        if (result.decision === "stop_no_speech_timeout") {
+          sawStop = true;
+          break;
+        }
+      }
+      expect(result.state.hasDetectedSpeech).toBe(false);
+      expect(result.state.spectralLiftQualifiedSampleCount).toBe(0);
+      expect(sawStop).toBe(true);
+      // The safety property holds regardless of how the ambient baseline
+      // itself evolves under sustained music -- even in the adversarial
+      // case where music eventually self-defeats its OWN amplitude gate
+      // (the pre-existing ROUND 5 "KNOWN LIMITATION" property: a single,
+      // endlessly-repeated loud value chases the noise floor up until it
+      // no longer clears its own bar) and so starts influencing the
+      // ambient baseline too, the baseline can only ever converge TOWARD
+      // music's own ratio (0.15) from above -- never past it -- so
+      // baseline+margin never drops far enough for music's own ratio to
+      // satisfy it. Confirmed here: the baseline visibly MOVED (proving
+      // it isn't simply frozen), yet the lift path still never engaged.
+      expect(result.state.ambientSpectralRatioEstimate).not.toBe(baselineAfterNoise);
+      expect(result.state.ambientSpectralRatioEstimate).toBeGreaterThan(LOUD_MUSIC.speechBandRatio);
+    });
+
+    it("dryer/broadband noise remains rejected even with an elevated ambient baseline already established from prior room noise", () => {
+      let state = initVadState(0);
+      let t = 0;
+      ({ state, t } = buildAmbientBaseline(state, t, 60));
+      expect(state.ambientSpectralRatioEstimate).toBeGreaterThanOrEqual(DEFAULT_VAD_CONFIG.spectralLiftActivationThreshold);
+
+      let result: VadEvaluation = { state, decision: "continue" };
+      let sawStop = false;
+      for (let i = 0; i < 100; i += 1) {
+        t += 100;
+        result = evaluateVadSample(result.state, DRYER_NOISE, t);
+        if (result.decision === "stop_no_speech_timeout") {
+          sawStop = true;
+          break;
+        }
+      }
+      expect(result.state.hasDetectedSpeech).toBe(false);
+      expect(result.state.spectralLiftQualifiedSampleCount).toBe(0);
+      expect(sawStop).toBe(true);
+    });
+
+    it("a quiet room's ambient baseline stays at 0, so the lift path never engages -- clear speech confirms exactly as before ROUND 7", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, CLEAR_SPEECH, 0);
+      state = result.state;
+      result = evaluateVadSample(state, CLEAR_SPEECH, 300);
+      state = result.state;
+      expect(state.hasDetectedSpeech).toBe(true);
+      expect(state.ambientSpectralRatioEstimate).toBe(0);
+      expect(state.spectralLiftQualifiedSampleCount).toBe(0);
+    });
+
+    it("once confirmed, startWindowedCandidate behaves identically to windowedCandidate -- ROUND 6's continuation rule is unaffected by an elevated ambient baseline", () => {
+      let state = initVadState(0);
+      let t = 0;
+      ({ state, t } = buildAmbientBaseline(state, t, 60));
+      // Confirm speech the same way the headline test does.
+      let result: VadEvaluation = { state, decision: "continue" };
+      for (let i = 0; i < 4; i += 1) {
+        t += 100;
+        result = evaluateVadSample(result.state, SPEECH_OVER_BACKGROUND_NOISE, t);
+      }
+      state = result.state;
+      expect(state.hasDetectedSpeech).toBe(true);
+      const lastSpeechAtAfterConfirm = state.lastSpeechAt;
+
+      // A spectral-only continuation sample (ROUND 6) -- must still
+      // refresh lastSpeechAt exactly as it does with no background noise
+      // present at all (see the ROUND 6 describe block's own tests).
+      t += 400; // well past speechEvidenceWindowMs
+      result = evaluateVadSample(state, AMPLITUDE_DIP, t);
+      expect(result.decision).toBe("continue");
+      expect(result.state.lastSpeechAt).toBe(t);
+      expect(result.state.lastSpeechAt).not.toBe(lastSpeechAtAfterConfirm);
+    });
+
+    it("tracks peakAmbientSpectralRatioEstimate as the highest baseline ever reached, even after it later settles lower", () => {
+      // A fixture with a LOWER spectral ratio than MODERATE_BACKGROUND_NOISE
+      // (0.25), so switching to it actually pulls the EMA baseline down --
+      // unlike SILENCE (ratio 0.3), which is higher and would push it up.
+      const quieterAmbient: VadSample = { rmsLevel: 0.001, speechBandRatio: 0.05 };
+
+      let state = initVadState(0);
+      let t = 0;
+      ({ state, t } = buildAmbientBaseline(state, t, 60));
+      // peakAmbientSpectralRatioEstimate is computed from the PRE-update
+      // value (same lagged-by-one-sample pattern as peakNoiseFloor) -- the
+      // FIRST quieterAmbient sample's own snapshot (taken before ITS
+      // update) is exactly the true post-burst peak; a same-type sample
+      // would not work here, since it would ALSO push the baseline
+      // further up first, leaving the snapshot still one step behind.
+      t += 100;
+      state = evaluateVadSample(state, quieterAmbient, t).state;
+      const peakAfterBurst = state.peakAmbientSpectralRatioEstimate;
+      expect(peakAfterBurst).toBeGreaterThan(0);
+
+      // The room stays quieter (lower spectral ratio) -- the baseline
+      // itself keeps decaying toward the new, lower ratio, but the peak
+      // stays remembered.
+      for (let i = 0; i < 40; i += 1) {
+        t += 100;
+        state = evaluateVadSample(state, quieterAmbient, t).state;
+      }
+      expect(state.ambientSpectralRatioEstimate).toBeLessThan(peakAfterBurst);
+      expect(state.peakAmbientSpectralRatioEstimate).toBe(peakAfterBurst);
+    });
+  });
 });
 
 // End-of-speech hardening (2026-08-20), Task E: proves the telemetry
@@ -1106,6 +1328,9 @@ describe("computeVoiceActivityDiagnostics", () => {
     continuationSpectralOnlySampleCount: 6,
     continuationAmplitudeOnlySampleCount: 4,
     longestPostConfirmationGapMs: 400,
+    ambientSpectralRatioEstimate: 0.22,
+    peakAmbientSpectralRatioEstimate: 0.28,
+    spectralLiftQualifiedSampleCount: 5,
   };
 
   it("computes a full breakdown for a normal stop_silence turn", () => {
@@ -1241,6 +1466,9 @@ describe("computeVoiceActivityDiagnostics", () => {
       continuationSpectralOnlySampleCount: 3,
       continuationAmplitudeOnlySampleCount: 2,
       longestPostConfirmationGapMs: 700,
+      ambientSpectralRatioEstimate: 0.2,
+      peakAmbientSpectralRatioEstimate: 0.25,
+      spectralLiftQualifiedSampleCount: 6,
     });
     expect(diagnostics.peakRms).toBe(0.18);
     expect(diagnostics.peakSpeechBandRatio).toBe(0.41);
@@ -1263,6 +1491,13 @@ describe("computeVoiceActivityDiagnostics", () => {
     expect(diagnostics.continuationSpectralOnlySampleCount).toBeNull();
     expect(diagnostics.continuationAmplitudeOnlySampleCount).toBeNull();
     expect(diagnostics.longestPostConfirmationGapMs).toBeNull();
+    // ROUND 7: unlike the continuation counters, these are NOT gated on
+    // hadConfirmedSpeech -- the ambient spectral baseline is meaningful
+    // even on a recording that never confirmed speech at all (e.g. it
+    // shows whether the lift path ever had a chance to engage).
+    expect(diagnostics.ambientSpectralRatioEstimate).toBe(0.2);
+    expect(diagnostics.peakAmbientSpectralRatioEstimate).toBe(0.25);
+    expect(diagnostics.spectralLiftQualifiedSampleCount).toBe(6);
   });
 
   // VAD false-negative hardening (2026-08-21), Task 13: proves
@@ -1309,6 +1544,9 @@ describe("computeVoiceActivityDiagnostics", () => {
       continuationSpectralOnlySampleCount: afterGap.state.continuationSpectralOnlySampleCount,
       continuationAmplitudeOnlySampleCount: afterGap.state.continuationAmplitudeOnlySampleCount,
       longestPostConfirmationGapMs: afterGap.state.longestPostConfirmationGapMs,
+      ambientSpectralRatioEstimate: afterGap.state.ambientSpectralRatioEstimate,
+      peakAmbientSpectralRatioEstimate: afterGap.state.peakAmbientSpectralRatioEstimate,
+      spectralLiftQualifiedSampleCount: afterGap.state.spectralLiftQualifiedSampleCount,
     });
 
     expect(diagnostics.speechDetectedAtMs).toBeNull();
@@ -1373,6 +1611,10 @@ describe("initVadState", () => {
       continuationSpectralOnlySampleCount: 0,
       continuationAmplitudeOnlySampleCount: 0,
       longestPostConfirmationGapMs: 0,
+      ambientSpectralRatioEstimate: 0,
+      peakAmbientSpectralRatioEstimate: 0,
+      lastSpectralQualifiedAtForStart: null,
+      spectralLiftQualifiedSampleCount: 0,
     });
   });
 });

@@ -479,6 +479,96 @@
 // ground them; a fully separate ambient-baseline-vs-instantaneous-
 // estimate model is a materially bigger architectural change than this
 // round's evidence justifies on its own.
+//
+// VAD start-detection hardening, ROUND 7 (2026-08-22): three consecutive
+// real production tests on 6cd85da, in normal/quiet conditions, all
+// worked correctly end to end (speech detected, stop_silence, no
+// premature cutoff, continuation contributing as designed). The next
+// real test, WITH background noise present, reproduced a new, distinct
+// failure: START itself never confirmed. amplitudeQualifiedSampleCount
+// was a healthy 30/100, but spectralQualifiedSampleCount was only 3/100,
+// and even the single BEST moment in the whole 10s recording
+// (vadPeakSpeechBandRatio ~0.467) barely cleared the fixed 0.45
+// threshold. fullyQualifiedSampleCount was 0 and windowedCandidateSampleCount
+// only 2 -- with so few individual spectral hits, cross-modal pairing
+// (round 4) had almost nothing to pair with.
+//
+// PHASE A/B ROOT CAUSE (DSP, not a threshold-tuning problem): speechBandRatio
+// is speechBandEnergy / totalEnergy, where totalEnergy sums EVERY
+// frequency bin the FFT produces (0Hz to Nyquist), not just a band around
+// the speech range -- at ANALYSER_FFT_SIZE=1024, the 300-3400Hz band
+// covers roughly 13% of the bins, so the other ~87% of the spectrum
+// (low-frequency hum/rumble, high-frequency hiss, any broadband noise
+// component) all inflate the DENOMINATOR without inflating the
+// numerator. This is mathematically inevitable for ANY broadband
+// background noise, regardless of how loud the noise is or what the
+// exact threshold value is set to -- genuine speech mixed with such
+// noise gets its own in-band concentration diluted, sample by sample.
+// This directly explains the production shape: peak ratio landing just
+// barely above 0.45 (the single best moment still couldn't escape
+// dilution by much) and only 3/100 samples ever clearing it at all
+// (most speech moments, even genuinely loud ones per the healthy
+// amplitude rate, got diluted below the fixed bar). smoothingTimeConstant
+// (see ROUND 4's own finding: never set, defaults to 0.8) is a plausible
+// secondary amplifier of this same dilution -- continuous background
+// noise blended via temporal smoothing would bias EVERY reading toward
+// the noise-heavy recent average, suppressing peak in-band moments
+// specifically -- but remains unverifiable by unit test, so it is
+// documented again here as a stronger candidate than in ROUND 4 (that
+// round's phonetic-misalignment failure didn't clearly implicate it;
+// this round's noise-dilution failure plausibly does) without being
+// implemented, to keep this round's fix cleanly attributable.
+//
+// This confirms minSpeechBandRatio=0.45 is a SYMPTOM location, not the
+// root cause: lowering it would help THIS recording but is exactly the
+// "tune to pass one case" move this task was told not to make -- a
+// louder or noisier room would still eventually defeat a lower fixed
+// threshold too, and lowering it flatly would ALSO make it measurably
+// easier for sustained music's own occasional spectral flukes to
+// accumulate (the precise regression this whole file exists to prevent).
+//
+// PHASE C: the fix is a bounded, ADAPTIVE "spectral lift" path, directly
+// analogous to the amplitude gate's own already-validated adaptive-floor
+// design (noiseFloorEstimate) rather than a new, unrelated mechanism.
+// `ambientSpectralRatioEstimate` (see VadState) tracks the room's own
+// TYPICAL spectral concentration during genuinely uninteresting moments
+// (samples that clear neither the amplitude nor the spectral gate --
+// deliberately NOT excluding merely-loud samples the way the amplitude
+// floor does, since loud-but-diffuse ambient noise, e.g. a dryer, is
+// exactly what this baseline needs to characterize correctly, not
+// exclude). A sample can now ALSO qualify spectrally by clearing the
+// room's own ambient baseline by a meaningful margin
+// (spectralLiftMargin), rather than only the fixed absolute threshold --
+// but ONLY once the baseline itself is meaningfully elevated
+// (spectralLiftActivationThreshold), and ONLY down to a hard floor
+// (minSpeechBandRatioFloor) well below 0.45. This guarantees the lift
+// path is a NO-OP in the exact quiet/clean conditions the three prior
+// successful tests already relied on (ambient baseline stays near 0,
+// activation never engages) -- it can only ever ADD qualification in
+// demonstrably noisy conditions, never remove it, and never below the
+// hard floor.
+//
+// Scope: START ONLY, exactly as this round's task required. The lift
+// path is explicitly gated on `!state.hasDetectedSpeech` -- once speech
+// is already confirmed, ROUND 6's own continuation rule governs
+// unchanged, and the noise floor's own exclusion condition (ROUND 3/5)
+// is untouched. See startWindowedCandidate below, a strict superset of
+// windowedCandidate that collapses to being IDENTICAL to it the instant
+// hasDetectedSpeech becomes true.
+//
+// Why music/dryer noise remain safe: sustained non-vocal sources have a
+// FIXED, low spectral ratio regardless of how the room's other
+// characteristics evolve. The lift path requires `ratio >= ambient +
+// margin` -- a POSITIVE, ADDITIVE requirement -- so a source whose own
+// ratio never meaningfully exceeds generic ambient concentration (which
+// describes music and broadband noise by the same acoustic reasoning
+// that motivated the spectral gate's own existence) can never satisfy
+// it, regardless of what the ambient baseline itself has adapted to --
+// they simply never produce a ratio close enough to trigger the lift, by
+// construction, the same way they never clear the absolute 0.45
+// threshold today. See this round's own regression tests for direct
+// proof against an artificially elevated ambient baseline, not just the
+// default one.
 
 export interface VadConfig {
   // Absolute floor beneath which nothing ever counts as speech, regardless
@@ -554,6 +644,27 @@ export interface VadConfig {
   // unrelated, temporally-distant events. At 0, this collapses exactly to
   // the original same-sample AND.
   speechEvidenceWindowMs: number;
+  // VAD start-detection hardening, ROUND 7 (2026-08-22): the room's own
+  // adaptive ambient spectral ratio (see VadState.ambientSpectralRatioEstimate)
+  // must reach at least this before the START-only spectral "lift" path
+  // engages at all -- keeps the lift a strict no-op in the quiet/clean
+  // conditions the fixed 0.45 threshold already handles correctly (a
+  // near-silent room's ambient baseline stays near 0, well under this).
+  // See this module's own ROUND 7 doc comment for the full DSP root
+  // cause and design.
+  spectralLiftActivationThreshold: number;
+  // How much MORE concentrated a sample's spectral ratio must be than the
+  // room's own current ambient baseline for the START-only lift path to
+  // qualify it -- a positive, additive margin, not a lowered threshold.
+  // Sustained music/broadband noise's own ratio never meaningfully
+  // exceeds generic ambient concentration, so it can never satisfy this,
+  // regardless of what the ambient baseline itself has adapted to.
+  spectralLiftMargin: number;
+  // Hard absolute floor for the START-only lift path -- well below
+  // minSpeechBandRatio, but never zero, so an extremely diluted or
+  // spurious reading can never qualify purely from a low ambient
+  // baseline plus a technically-satisfied margin.
+  minSpeechBandRatioFloor: number;
 }
 
 export const DEFAULT_VAD_CONFIG: VadConfig = {
@@ -567,6 +678,9 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
   maxRecordingDurationMs: 60000,
   maxCandidateGapMs: 150,
   speechEvidenceWindowMs: 300,
+  spectralLiftActivationThreshold: 0.15,
+  spectralLiftMargin: 0.15,
+  minSpeechBandRatioFloor: 0.3,
 };
 
 // One fresh audio-level sample. Both fields are computed browser-side from
@@ -659,6 +773,32 @@ export interface VadState {
   // post-confirmation analogue of longestCandidateGapMs, which only ever
   // measures gaps between full windowedCandidate hits.
   longestPostConfirmationGapMs: number;
+  // VAD start-detection hardening, ROUND 7 (2026-08-22): exponential
+  // moving average of the room's own TYPICAL spectral concentration
+  // during genuinely uninteresting moments (samples clearing NEITHER the
+  // amplitude nor the spectral gate) -- see this module's own ROUND 7 doc
+  // comment for why this is deliberately NOT excluded on loudness alone
+  // (unlike noiseFloorEstimate), so it correctly learns a loud-but-
+  // diffuse source's (a dryer's) own low ratio rather than staying stale.
+  // Starts at 0; the lift path itself only engages once this reaches
+  // spectralLiftActivationThreshold, so a near-silent room's behavior is
+  // completely unaffected.
+  ambientSpectralRatioEstimate: number;
+  // The highest ambientSpectralRatioEstimate ever reached this recording
+  // -- the spectral-ratio analogue of peakNoiseFloor, revealing a
+  // baseline that spiked and later settled, which the final value alone
+  // would hide.
+  peakAmbientSpectralRatioEstimate: number;
+  // The timestamp of the most recent sample that qualified spectrally for
+  // START purposes specifically (absolute OR lift-qualified) -- kept
+  // SEPARATE from lastSpectralQualifiedAt (which stays strictly absolute-
+  // threshold-only, still driving the noise floor's own exclusion and
+  // ROUND 6's continuation rule, both unaffected by this round).
+  lastSpectralQualifiedAtForStart: number | null;
+  // How many samples qualified spectrally SPECIFICALLY via the new
+  // START-only lift path (not the absolute 0.45 threshold) -- shows
+  // directly how much this round's fix contributed on a given recording.
+  spectralLiftQualifiedSampleCount: number;
 }
 
 export function initVadState(recordingStartedAt: number): VadState {
@@ -687,6 +827,10 @@ export function initVadState(recordingStartedAt: number): VadState {
     continuationSpectralOnlySampleCount: 0,
     continuationAmplitudeOnlySampleCount: 0,
     longestPostConfirmationGapMs: 0,
+    ambientSpectralRatioEstimate: 0,
+    peakAmbientSpectralRatioEstimate: 0,
+    lastSpectralQualifiedAtForStart: null,
+    spectralLiftQualifiedSampleCount: 0,
   };
 }
 
@@ -754,6 +898,38 @@ export function evaluateVadSample(
   const lastSpectralQualifiedAt = spectralQualified ? now : state.lastSpectralQualifiedAt;
   const lastWindowedCandidateAt = windowedCandidate ? now : state.lastWindowedCandidateAt;
 
+  // VAD start-detection hardening, ROUND 7 (2026-08-22): a START-only
+  // spectral "lift" path -- see this module's own ROUND 7 doc comment for
+  // the real production evidence (background noise dilutes the spectral
+  // ratio's own denominator, so genuine speech-over-noise rarely reaches
+  // the fixed 0.45 threshold) and the full safety argument. Deliberately
+  // NOT excluded on loudness alone (unlike noiseFloorEstimate) -- a loud
+  // but spectrally diffuse source (a dryer) needs to correctly update
+  // this baseline too, not be treated as an unknown.
+  const isPureAmbientSample = !amplitudeQualified && !spectralQualified;
+  const ambientSpectralRatioEstimate = isPureAmbientSample
+    ? state.ambientSpectralRatioEstimate * (1 - config.noiseFloorAdaptRate) + sample.speechBandRatio * config.noiseFloorAdaptRate
+    : state.ambientSpectralRatioEstimate;
+  const spectralLiftQualified =
+    !state.hasDetectedSpeech &&
+    state.ambientSpectralRatioEstimate >= config.spectralLiftActivationThreshold &&
+    sample.speechBandRatio >= state.ambientSpectralRatioEstimate + config.spectralLiftMargin &&
+    sample.speechBandRatio >= config.minSpeechBandRatioFloor;
+  const spectralQualifiedForStart = spectralQualified || spectralLiftQualified;
+  const lastSpectralQualifiedAtForStart = spectralQualifiedForStart ? now : state.lastSpectralQualifiedAtForStart;
+  // Identical cross-modal structure to windowedCandidate above, but using
+  // spectralQualifiedForStart (accepts the lift path) in place of the
+  // strict spectralQualified. Always >= windowedCandidate, and IDENTICAL
+  // to it the instant hasDetectedSpeech becomes true (spectralLiftQualified
+  // is itself gated on !state.hasDetectedSpeech) -- a pure widening of
+  // START's own evidence, never CONTINUATION's or the noise floor's.
+  const spectralRecentlyQualifiedForStart =
+    state.lastSpectralQualifiedAtForStart !== null && now - state.lastSpectralQualifiedAtForStart <= config.speechEvidenceWindowMs;
+  const startWindowedCandidate =
+    (amplitudeQualified && spectralQualifiedForStart) ||
+    (amplitudeQualified && spectralRecentlyQualifiedForStart) ||
+    (spectralQualifiedForStart && amplitudeRecentlyQualified);
+
   // VAD end-of-speech hardening, ROUND 6 (2026-08-22): CONTINUATION-only
   // evidence -- see this module's own ROUND 6 doc comment for the real
   // production ground truth (mic stopped while the user kept talking) and
@@ -767,14 +943,14 @@ export function evaluateVadSample(
   // Diagnostic-only (see this field's own VadState doc comment) -- never
   // read by any decision below.
   const isContinuationAmplitudeOnly = state.hasDetectedSpeech && amplitudeQualified && !spectralQualified && !windowedCandidate;
-  // The single signal that now governs whether THIS sample keeps a
-  // CONFIRMED utterance's silence countdown from expiring. START's own
-  // streak-accumulation logic (below) is completely unaffected: while
-  // hasDetectedSpeech is still false, continuationQualified is always
-  // false too (its own condition requires hasDetectedSpeech), so
-  // speechRefresh === windowedCandidate exactly, preserving START's full,
-  // unweakened cross-modal bar.
-  const speechRefresh = windowedCandidate || continuationQualified;
+  // The single signal that now governs whether THIS sample keeps an
+  // utterance (START or CONFIRMED) from timing out. ROUND 7: uses
+  // startWindowedCandidate (a strict superset of windowedCandidate,
+  // identical to it once hasDetectedSpeech is true), not windowedCandidate
+  // directly -- widens what counts as evidence pre-confirmation (the
+  // lift path) without changing anything post-confirmation, where
+  // continuationQualified's own rule (ROUND 6) governs unchanged.
+  const speechRefresh = startWindowedCandidate || continuationQualified;
 
   // VAD false-negative hardening (2026-08-21 / ROUND 2 2026-08-22 / ROUND
   // 4 2026-08-22) diagnostic accumulators -- tracked unconditionally,
@@ -783,12 +959,16 @@ export function evaluateVadSample(
   const peakRms = Math.max(state.peakRms, sample.rmsLevel);
   const peakSpeechBandRatio = Math.max(state.peakSpeechBandRatio, sample.speechBandRatio);
   const peakNoiseFloor = Math.max(state.peakNoiseFloor, state.noiseFloorEstimate);
+  const peakAmbientSpectralRatioEstimate = Math.max(state.peakAmbientSpectralRatioEstimate, state.ambientSpectralRatioEstimate);
   const totalSampleCount = state.totalSampleCount + 1;
   const amplitudeQualifiedSampleCount = amplitudeQualified ? state.amplitudeQualifiedSampleCount + 1 : state.amplitudeQualifiedSampleCount;
   const spectralQualifiedSampleCount = spectralQualified ? state.spectralQualifiedSampleCount + 1 : state.spectralQualifiedSampleCount;
   const windowedCandidateSampleCount = windowedCandidate
     ? state.windowedCandidateSampleCount + 1
     : state.windowedCandidateSampleCount;
+  const spectralLiftQualifiedSampleCount = spectralLiftQualified
+    ? state.spectralLiftQualifiedSampleCount + 1
+    : state.spectralLiftQualifiedSampleCount;
   // The largest gap ever seen BETWEEN two consecutive windowed-candidate
   // samples -- distinct from candidateResetCount (which only counts how
   // many times a streak was discarded): this measures how far apart in
@@ -836,6 +1016,10 @@ export function evaluateVadSample(
     continuationSpectralOnlySampleCount,
     continuationAmplitudeOnlySampleCount,
     longestPostConfirmationGapMs,
+    ambientSpectralRatioEstimate,
+    peakAmbientSpectralRatioEstimate,
+    lastSpectralQualifiedAtForStart,
+    spectralLiftQualifiedSampleCount,
   };
 
   // The noise floor only ever learns from samples that show NO credible
@@ -948,13 +1132,18 @@ export function evaluateVadSample(
     return { state: nextState, decision: "continue" };
   }
 
-  if (windowedCandidate) {
-    // This sample IS a windowed candidate (ROUND 4: cross-modality
-    // evidence within speechEvidenceWindowMs, not necessarily both gates
-    // on this exact sample -- see this module's own ROUND 4 doc comment).
-    // Still the ONLY path that can progress the START streak or flip
-    // hasDetectedSpeech -- ROUND 6's weaker continuation signal never
-    // touches this branch (see the `else` below instead).
+  if (startWindowedCandidate) {
+    // This sample IS a start-eligible windowed candidate (ROUND 4:
+    // cross-modality evidence within speechEvidenceWindowMs, not
+    // necessarily both gates on this exact sample; ROUND 7: OR the
+    // START-only spectral lift path -- see those rounds' own doc
+    // comments). The ONLY path that can progress the START streak or
+    // flip hasDetectedSpeech -- ROUND 6's weaker continuation signal
+    // never touches this branch (see the `else` below instead). Once
+    // hasDetectedSpeech is already true, startWindowedCandidate is
+    // IDENTICAL to windowedCandidate (the lift path is gated off), so
+    // this branch's post-confirmation behavior is completely unchanged
+    // from ROUND 6.
     const speechStreakStartedAt = state.speechStreakStartedAt ?? now;
     const streakDuration = now - speechStreakStartedAt;
     const hasDetectedSpeech = state.hasDetectedSpeech || streakDuration >= config.minSpeechDurationMs;
@@ -970,15 +1159,17 @@ export function evaluateVadSample(
         maxCandidateStreakMs: Math.max(state.maxCandidateStreakMs, streakDuration),
         // Strict SAME-SAMPLE meaning preserved (see this field's own doc
         // comment) -- only increments when BOTH gates passed on this exact
-        // sample (`candidate`), not merely when windowedCandidate is true.
+        // sample using the ABSOLUTE threshold (`candidate`), never the
+        // lift path -- unaffected by ROUND 7.
         fullyQualifiedSampleCount: candidate ? state.fullyQualifiedSampleCount + 1 : state.fullyQualifiedSampleCount,
       },
       decision: "continue",
     };
   }
 
-  // ROUND 6 (2026-08-22): speechRefresh is true but windowedCandidate is
-  // false -- by construction (continuationQualified's own condition) this
+  // ROUND 6 (2026-08-22): speechRefresh is true but startWindowedCandidate
+  // is false -- by construction (continuationQualified's own condition,
+  // and startWindowedCandidate === windowedCandidate once confirmed) this
   // can only happen when state.hasDetectedSpeech is already true and this
   // sample is spectrally qualified alone. Refreshes lastSpeechAt (keeps
   // the silence countdown from expiring) but deliberately does NOT touch
@@ -1163,6 +1354,29 @@ export interface VoiceActivityDiagnostics {
   // Only populated for stop_silence (see silenceAfterSpeechMs's own doc
   // comment for why every other reason has no honest claim to make here).
   lastStrongEvidenceAgeAtStopMs: number | null;
+  // VAD start-detection hardening, ROUND 7 (2026-08-22): see this
+  // module's own ROUND 7 doc comment for the real production evidence
+  // (background noise dilutes the spectral ratio's own denominator) that
+  // motivated a START-only adaptive spectral "lift" path. Always a real
+  // number (0 is truthful -- "never learned any ambient spectral
+  // signature", not a placeholder) whenever VAD ran at all.
+  //
+  // The room's own final learned ambient spectral concentration --
+  // compare against peakSpeechBandRatio to see how much dilution genuine
+  // speech likely suffered (a peak only modestly above this baseline,
+  // despite healthy amplitude evidence, points at exactly this round's
+  // diagnosed mechanism).
+  ambientSpectralRatioEstimate: number;
+  // The highest ambientSpectralRatioEstimate reached at any point in the
+  // recording, not just its ending value -- reveals a baseline that
+  // spiked (e.g. from a burst of louder ambient noise) and later settled.
+  peakAmbientSpectralRatioEstimate: number;
+  // How many samples qualified spectrally SPECIFICALLY via the new
+  // START-only lift path (not the absolute 0.45 threshold) -- shows
+  // directly how much this round's fix contributed. Zero on a recording
+  // where the lift path never engaged (e.g. a quiet room, where the
+  // absolute threshold alone already worked) or never needed to.
+  spectralLiftQualifiedSampleCount: number;
 }
 
 export function computeVoiceActivityDiagnostics(params: {
@@ -1190,6 +1404,9 @@ export function computeVoiceActivityDiagnostics(params: {
   continuationAmplitudeOnlySampleCount: number;
   longestPostConfirmationGapMs: number;
   lastWindowedCandidateAt: number | null;
+  ambientSpectralRatioEstimate: number;
+  peakAmbientSpectralRatioEstimate: number;
+  spectralLiftQualifiedSampleCount: number;
 }): VoiceActivityDiagnostics {
   const speechDetectedAtMs =
     params.speechDetectedAt !== null ? Math.max(0, Math.round(params.speechDetectedAt - params.recordingStartedAt)) : null;
@@ -1233,5 +1450,8 @@ export function computeVoiceActivityDiagnostics(params: {
       params.autoStopReason === "stop_silence" && params.lastWindowedCandidateAt !== null
         ? Math.max(0, Math.round(params.stopDecidedAt - params.lastWindowedCandidateAt))
         : null,
+    ambientSpectralRatioEstimate: params.ambientSpectralRatioEstimate,
+    peakAmbientSpectralRatioEstimate: params.peakAmbientSpectralRatioEstimate,
+    spectralLiftQualifiedSampleCount: params.spectralLiftQualifiedSampleCount,
   };
 }

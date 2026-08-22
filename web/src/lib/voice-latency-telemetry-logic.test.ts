@@ -965,6 +965,101 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // VAD start-detection hardening, ROUND 7 (2026-08-22): a real production
+  // test with background noise present showed START itself never
+  // confirming (spectralQualifiedSampleCount 3/100 despite a healthy
+  // amplitudeQualifiedSampleCount 30/100) -- see voice-activity-logic.ts's
+  // own ROUND 7 VoiceActivityDiagnostics doc comments for what each of
+  // these answers.
+  describe("VAD ROUND 7 diagnostic accumulators (vadAmbientSpectralRatioEstimate / vadPeakAmbientSpectralRatioEstimate / vadSpectralLiftQualifiedSampleCount)", () => {
+    it("accepts a fully-populated set of these fields", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadAmbientSpectralRatioEstimate: 0.24,
+        vadPeakAmbientSpectralRatioEstimate: 0.26,
+        vadSpectralLiftQualifiedSampleCount: 9,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadAmbientSpectralRatioEstimate: 0.24,
+          vadPeakAmbientSpectralRatioEstimate: 0.26,
+          vadSpectralLiftQualifiedSampleCount: 9,
+        }),
+      });
+    });
+
+    it("accepts zero for every field -- a truthful 'never observed', not rejected as missing", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadAmbientSpectralRatioEstimate: 0,
+        vadSpectralLiftQualifiedSampleCount: 0,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ vadAmbientSpectralRatioEstimate: 0, vadSpectralLiftQualifiedSampleCount: 0 }),
+      });
+    });
+
+    it("rejects a negative value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadSpectralLiftQualifiedSampleCount: -1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_spectral_lift_qualified_sample_count" });
+    });
+
+    it("rejects a non-integer count", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadSpectralLiftQualifiedSampleCount: 4.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_spectral_lift_qualified_sample_count" });
+    });
+
+    it("rejects a vadAmbientSpectralRatioEstimate outside its real 0..1 range", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadAmbientSpectralRatioEstimate: 1.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_ambient_spectral_ratio_estimate" });
+    });
+
+    it("rejects a vadPeakAmbientSpectralRatioEstimate outside its real 0..1 range", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadPeakAmbientSpectralRatioEstimate: -0.1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_peak_ambient_spectral_ratio_estimate" });
+    });
+
+    it("omits every field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of ["vadAmbientSpectralRatioEstimate", "vadPeakAmbientSpectralRatioEstimate", "vadSpectralLiftQualifiedSampleCount"]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
   // production STT failure be attributed, directly from this one log line,
   // to the real Gemini HTTP status/canonical error status, or to a real

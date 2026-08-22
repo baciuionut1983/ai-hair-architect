@@ -499,6 +499,47 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     logSpy.mockRestore();
   });
 
+  // VAD start-detection hardening, ROUND 7 (2026-08-22): a real production
+  // test with background noise present showed START itself never
+  // confirming -- see voice-activity-logic.ts's own ROUND 7
+  // VoiceActivityDiagnostics doc comments for what each of these answers.
+  it("logs the VAD ROUND 7 diagnostic accumulators when the client reported them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-126",
+      outcome: "tts_completed",
+      summary: validSummary(),
+      vadAmbientSpectralRatioEstimate: 0.24,
+      vadPeakAmbientSpectralRatioEstimate: 0.26,
+      vadSpectralLiftQualifiedSampleCount: 9,
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadAmbientSpectralRatioEstimate: 0.24,
+      vadPeakAmbientSpectralRatioEstimate: 0.26,
+      vadSpectralLiftQualifiedSampleCount: 9,
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs the VAD ROUND 7 diagnostic accumulators as null (never fabricated) when the client didn't report them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-127", outcome: "tts_completed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadAmbientSpectralRatioEstimate: null,
+      vadPeakAmbientSpectralRatioEstimate: null,
+      vadSpectralLiftQualifiedSampleCount: null,
+    });
+    logSpy.mockRestore();
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): the real Gemini
   // provider failure detail, closing the gap where a provider HTTP error,
   // a network/timeout failure, and an empty-transcript response all
