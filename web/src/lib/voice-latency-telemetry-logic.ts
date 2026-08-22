@@ -186,6 +186,10 @@ export interface VoiceLatencyTelemetryInput {
   vadSpectralQualifiedSampleCount?: number;
   vadLongestCandidateGapMs?: number;
   vadPeakNoiseFloor?: number;
+  // VAD false-negative hardening, ROUND 4 (2026-08-22): see
+  // voice-activity-logic.ts's own ROUND 4 VoiceActivityDiagnostics doc
+  // comment for exactly what this answers.
+  vadWindowedCandidateSampleCount?: number;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -503,6 +507,12 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
   const vadPeakNoiseFloor = parseOptionalBoundedFloat(input, "vadPeakNoiseFloor", MAX_PLAUSIBLE_AUDIO_LEVEL);
   if (!vadPeakNoiseFloor.ok) return { ok: false, reason: "invalid_vad_peak_noise_floor" };
 
+  // VAD false-negative hardening, ROUND 4 (2026-08-22): see
+  // voice-activity-logic.ts's own ROUND 4 VoiceActivityDiagnostics doc
+  // comment for exactly what this answers.
+  const vadWindowedCandidateSampleCount = parseOptionalNonNegativeInteger(input, "vadWindowedCandidateSampleCount");
+  if (!vadWindowedCandidateSampleCount.ok) return { ok: false, reason: "invalid_vad_windowed_candidate_sample_count" };
+
   let sttProviderHttpStatus: number | undefined;
   if (input.sttProviderHttpStatus !== undefined) {
     if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
@@ -658,6 +668,9 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
         : {}),
       ...(vadLongestCandidateGapMs.value !== undefined ? { vadLongestCandidateGapMs: vadLongestCandidateGapMs.value } : {}),
       ...(vadPeakNoiseFloor.value !== undefined ? { vadPeakNoiseFloor: vadPeakNoiseFloor.value } : {}),
+      ...(vadWindowedCandidateSampleCount.value !== undefined
+        ? { vadWindowedCandidateSampleCount: vadWindowedCandidateSampleCount.value }
+        : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
       ...(sttProviderErrorMessage !== undefined ? { sttProviderErrorMessage } : {}),

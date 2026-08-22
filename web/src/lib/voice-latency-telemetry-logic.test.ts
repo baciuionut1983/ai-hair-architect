@@ -786,6 +786,72 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // VAD false-negative hardening, ROUND 4 (2026-08-22): a third real
+  // production recording showed the same shape as rounds 2/3 (healthy
+  // individual-gate rates, near-zero same-sample overlap), motivating the
+  // windowed-evidence confirmation model -- see voice-activity-logic.ts's
+  // own ROUND 4 VoiceActivityDiagnostics doc comment for what this field
+  // answers.
+  describe("VAD ROUND 4 diagnostic accumulator (vadWindowedCandidateSampleCount)", () => {
+    it("accepts a real value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadWindowedCandidateSampleCount: 42,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ vadWindowedCandidateSampleCount: 42 }),
+      });
+    });
+
+    it("accepts zero -- a truthful 'never observed', not rejected as missing", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadWindowedCandidateSampleCount: 0,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ vadWindowedCandidateSampleCount: 0 }),
+      });
+    });
+
+    it("rejects a negative value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadWindowedCandidateSampleCount: -1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_windowed_candidate_sample_count" });
+    });
+
+    it("rejects a non-integer count", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadWindowedCandidateSampleCount: 12.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_windowed_candidate_sample_count" });
+    });
+
+    it("omits the field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect("vadWindowedCandidateSampleCount" in result.value).toBe(false);
+      }
+    });
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
   // production STT failure be attributed, directly from this one log line,
   // to the real Gemini HTTP status/canonical error status, or to a real

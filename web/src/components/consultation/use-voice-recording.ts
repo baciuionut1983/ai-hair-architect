@@ -240,6 +240,10 @@ export function vadDiagnosticsToReportFields(diagnostics: VoiceActivityDiagnosti
     vadSpectralQualifiedSampleCount: diagnostics.spectralQualifiedSampleCount,
     vadLongestCandidateGapMs: diagnostics.longestCandidateGapMs,
     vadPeakNoiseFloor: diagnostics.peakNoiseFloor,
+    // VAD false-negative hardening, ROUND 4 (2026-08-22): see
+    // VoiceActivityDiagnostics's own ROUND 4 doc comment for what this
+    // answers.
+    vadWindowedCandidateSampleCount: diagnostics.windowedCandidateSampleCount,
   };
 }
 
@@ -331,6 +335,9 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
       spectralQualifiedSampleCount: vadStateRef.current?.spectralQualifiedSampleCount ?? 0,
       longestCandidateGapMs: vadStateRef.current?.longestCandidateGapMs ?? 0,
       peakNoiseFloor: vadStateRef.current?.peakNoiseFloor ?? 0,
+      // VAD false-negative hardening, ROUND 4 (2026-08-22): same "0 is
+      // truthful, never fabricated" contract as the earlier fields above.
+      windowedCandidateSampleCount: vadStateRef.current?.windowedCandidateSampleCount ?? 0,
     });
   }, []);
 

@@ -190,6 +190,127 @@
 // signals are specifically the ones that FAIL the spectral gate (see this
 // module's own background-music regression tests), so they still update
 // the floor exactly as before.
+//
+// VAD false-negative hardening, ROUND 4 (2026-08-22): a real production
+// retest on 803c538, with the speaker deliberately talking naturally for
+// 5-7 seconds, gave the most decisive evidence yet:
+//   amplitudeQualifiedSampleCount: 26/100
+//   spectralQualifiedSampleCount:  20/100
+//   fullyQualifiedSampleCount (BOTH, same 100ms sample): 1/100
+// Both individual gates found substantial evidence; the SAME-FRAME
+// overlap was almost nonexistent (1, vs. ~5 expected if the two gates
+// were statistically independent -- the true overlap is even lower than
+// chance would predict). Three separate real recordings now (round 2: 2%
+// overlap, round 3: 5%, round 4: 1%) all show this same shape: healthy
+// individual-gate rates, near-zero same-sample coincidence. This is no
+// longer a one-off fluke to explain away -- it is the dominant, repeated
+// failure mode.
+//
+// PHASE A ROOT CAUSE (DSP + acoustic-phonetics, not a threshold problem):
+// rmsLevel and speechBandRatio are read from the SAME AnalyserNode,
+// milliseconds apart in the same JS tick (see use-voice-recording.ts's
+// computeRmsLevel/computeSpeechBandRatio) -- they are not looking at
+// meaningfully different points in time due to any bug in this file. Two
+// real factors explain the misalignment instead:
+//   1. getByteTimeDomainData (RMS) is a raw, instantaneous read of the
+//      last ~21ms (fftSize=1024 samples) of waveform. getByteFrequencyData
+//      (speechBandRatio) is NOT instantaneous by default: the Web Audio
+//      API applies time-smoothing via AnalyserNode.smoothingTimeConstant,
+//      which this codebase never explicitly sets, so it silently inherits
+//      the spec's default of 0.8 -- a real, previously-undocumented fact
+//      found by this audit. This blends each read with recent history,
+//      an asymmetry the RMS side does not have.
+//   2. More fundamentally, loudness and speech-band spectral concentration
+//      are genuinely, moment-to-moment DIFFERENT properties of continuous
+//      speech, not two views of the same thing: plosive bursts and
+//      sibilants ("s", "sh", "t", "k") are often LOUD but spread energy
+//      well above 3400Hz (poor speech-band concentration), while quieter
+//      vowel/nasal steady-states concentrate energy tightly in-band at
+//      lower amplitude. A single phoneme rarely maximizes both at once,
+//      and at ~10 polls/second (AUDIO_LEVEL_SAMPLE_INTERVAL_MS=100) against
+//      phonemes that change every 50-200ms, each poll essentially samples
+//      a random phase of this alternation. Requiring the SAME 100ms poll
+//      to catch both a loud instant AND a narrow-band instant is asking
+//      for a coincidence real running speech does not reliably produce --
+//      this is why a genuinely intelligible, STT-transcribed utterance can
+//      score 26% and 20% individually yet overlap only 1% of the time.
+//
+// Both explanations point the same direction: the SAME-FRAME AND
+// (`candidate = amplitudeQualified && spectralQualified`, used for the
+// hasDetectedSpeech/streak decision) is confirmed as a structural problem
+// for continuous natural speech, not merely a badly-tuned threshold --
+// exactly what this round's audit was asked to determine before touching
+// any code.
+//
+// THE FIX (Phase C/D): a bounded temporal evidence-fusion model,
+// `windowedCandidate`, computed in evaluateVadSample below. A sample
+// counts as a windowed candidate if it clears ONE gate itself and the
+// OTHER gate was cleared by some recent sample, within
+// speechEvidenceWindowMs -- not necessarily the identical sample. This
+// generalizes (and, at speechEvidenceWindowMs=0, is identical to) the old
+// same-frame `candidate`, so it is a strict widening, not a replacement
+// mechanism. It reuses 100% of the EXISTING streak/gap-tolerance/
+// minSpeechDurationMs/silenceDurationMs machinery unchanged -- only the
+// definition of "does this instant count as qualifying evidence" changes,
+// which automatically applies to both speech START (streak accumulation,
+// still gated by the unchanged minSpeechDurationMs -- conservative, per
+// Phase D) and CONTINUATION (lastSpeechAt refresh, already structurally
+// more lenient than START since it only needs one qualifying instant per
+// silenceDurationMs, not a sustained streak -- Phase D's asymmetry falls
+// out of the existing two-tier design, not a new parallel mechanism).
+//
+// Why this cannot reintroduce the original "music never stops listening"
+// bug: music (and broadband/dryer noise) structurally, continuously fails
+// the SPECTRAL gate (see this module's own background-music regression
+// tests) -- not merely rarely, but essentially never. Since every branch
+// of windowedCandidate requires spectralQualified to be true EITHER on
+// this sample OR within the recent window, and music never makes
+// spectralQualified true at all, `spectralRecentlyQualified` never
+// becomes true for sustained music either -- windowedCandidate stays
+// false for music regardless of window size, exactly as strict AND did.
+// The one bounded exception: if real speech ends and music continues
+// immediately after, a residual "recently qualified" spectral timestamp
+// from the tail of real speech can let up to ~speechEvidenceWindowMs of
+// music-only audio still count as windowedCandidate (since spectral
+// evidence is real, just aging out) -- this only delays stop_silence by
+// at most that bound, never indefinitely (see this round's own regression
+// test proving the bound).
+//
+// Phase B (re-examining 803c538): peakNoiseFloor reached 0.1025 this
+// round (noiseFloorMargin 1.6 implies an effective peak amplitude
+// threshold near 0.164). 803c538's exclusion (`spectralQualified` alone)
+// is CONFIRMED CORRECT and is NOT reverted or broadened this round.
+// amplitudeQualifiedSampleCount (26) minus fullyQualifiedSampleCount (1)
+// leaves up to 25 samples that were LOUD but NOT spectrally qualified --
+// exactly the class 803c538 does not protect, since by construction they
+// look identical, on the only two signals this classifier has, to genuine
+// loud ambient noise (sibilants/plosives/breath ARE loud and spectrally
+// diffuse, same as a hair dryer). A broader exclusion
+// (`amplitudeQualified || spectralQualified`) was seriously considered and
+// REJECTED: amplitude alone does not discriminate voice from ambient
+// noise at all (that is the entire reason the spectral gate exists), and
+// broadening on it would freeze floor-adaptation for genuinely loud
+// AMBIENT sources too -- verified against the existing "noise floor rises
+// to track sustained ambient noise" test/mechanism, where AMBIENT_NOISE
+// itself clears the (low, still-adapting) amplitude gate early on, so
+// this broadening would have stopped the floor from ever learning
+// genuine room noise. This residual gap is a structural limit of a
+// 2-signal (RMS + spectral-ratio) classifier, not a bug with a safe,
+// minimal fix -- left as an honest, documented limitation rather than
+// patched speculatively.
+//
+// FFT smoothing (Phase A's `smoothingTimeConstant` finding) is
+// deliberately NOT changed this round either: it is real (never set,
+// defaults to 0.8) and a plausible secondary contributor, but (a) it is
+// browser-only and cannot be unit-tested in this codebase the way the
+// state-machine logic can, (b) the windowed-evidence model above already
+// tolerates timing offsets up to speechEvidenceWindowMs regardless of
+// WHY amplitude and spectral evidence are offset, making this fix
+// non-load-bearing for the reported failure, and (c) changing an
+// unverifiable timing parameter in the same round as a state-machine
+// redesign would make a future test's result impossible to attribute to
+// either change individually. Documented here for a future round if the
+// windowed model alone proves insufficient.
 
 export interface VadConfig {
   // Absolute floor beneath which nothing ever counts as speech, regardless
@@ -240,6 +361,20 @@ export interface VadConfig {
   // progress, without being generous enough to stitch together genuinely
   // separate blips spaced further apart.
   maxCandidateGapMs: number;
+  // VAD false-negative hardening, ROUND 4 (2026-08-22): how far apart (in
+  // either order) an amplitude-qualified sample and a spectral-qualified
+  // sample can be and still count as ONE combined piece of speech evidence
+  // (a "windowed candidate") -- see this module's own ROUND 4 doc comment
+  // for the real production evidence (three separate recordings, each
+  // with healthy individual-gate rates but near-zero SAME-SAMPLE overlap)
+  // and the DSP/acoustic-phonetics reasoning for why requiring both gates
+  // on the identical 100ms sample does not reliably work for continuous
+  // natural speech. Roughly one syllable's duration and 3x the 100ms
+  // sampling interval -- long enough to link one syllable's alternating
+  // loud/narrow-band moments, short enough that it cannot bridge genuinely
+  // unrelated, temporally-distant events. At 0, this collapses exactly to
+  // the original same-sample AND.
+  speechEvidenceWindowMs: number;
 }
 
 export const DEFAULT_VAD_CONFIG: VadConfig = {
@@ -252,6 +387,7 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
   noSpeechTimeoutMs: 10000,
   maxRecordingDurationMs: 60000,
   maxCandidateGapMs: 150,
+  speechEvidenceWindowMs: 300,
 };
 
 // One fresh audio-level sample. Both fields are computed browser-side from
@@ -297,6 +433,20 @@ export interface VadState {
   totalSampleCount: number;
   longestCandidateGapMs: number;
   peakNoiseFloor: number;
+  // VAD false-negative hardening, ROUND 4 (2026-08-22): the timestamp of
+  // the most recent sample that individually cleared each gate --
+  // independent of one another, and independent of whether the OTHER gate
+  // was also cleared -- used to compute windowedCandidate (see
+  // evaluateVadSample below and this module's own ROUND 4 doc comment).
+  // Never reset except by a fresh recording (initVadState).
+  lastAmplitudeQualifiedAt: number | null;
+  lastSpectralQualifiedAt: number | null;
+  // How many samples counted as a windowedCandidate (cross-modality,
+  // within speechEvidenceWindowMs -- see VoiceActivityDiagnostics's own
+  // doc comment) -- distinct from fullyQualifiedSampleCount, which keeps
+  // its existing strict SAME-SAMPLE meaning so the raw same-frame overlap
+  // rate stays independently observable in future telemetry.
+  windowedCandidateSampleCount: number;
 }
 
 export function initVadState(recordingStartedAt: number): VadState {
@@ -316,6 +466,9 @@ export function initVadState(recordingStartedAt: number): VadState {
     totalSampleCount: 0,
     longestCandidateGapMs: 0,
     peakNoiseFloor: 0,
+    lastAmplitudeQualifiedAt: null,
+    lastSpectralQualifiedAt: null,
+    windowedCandidateSampleCount: 0,
   };
 }
 
@@ -364,24 +517,47 @@ export function evaluateVadSample(
 
   const { amplitudeQualified, spectralQualified, candidate } = classifySpeechGates(sample, state.noiseFloorEstimate, config);
 
-  // VAD false-negative hardening (2026-08-21 / ROUND 2 2026-08-22)
-  // diagnostic accumulators -- tracked unconditionally, every sample,
-  // regardless of candidate status. See VoiceActivityDiagnostics's own doc
-  // comments for what each answers.
+  // VAD false-negative hardening, ROUND 4 (2026-08-22): cross-modality
+  // windowed evidence -- see this module's own ROUND 4 doc comment for the
+  // full production evidence and DSP/acoustic reasoning. A sample counts
+  // as a windowed candidate if it clears ONE gate itself and the OTHER
+  // gate was cleared by some recent sample, within speechEvidenceWindowMs
+  // -- not necessarily this identical sample. Reduces exactly to the old
+  // same-sample `candidate` when speechEvidenceWindowMs is 0.
+  const spectralRecentlyQualified =
+    state.lastSpectralQualifiedAt !== null && now - state.lastSpectralQualifiedAt <= config.speechEvidenceWindowMs;
+  const amplitudeRecentlyQualified =
+    state.lastAmplitudeQualifiedAt !== null && now - state.lastAmplitudeQualifiedAt <= config.speechEvidenceWindowMs;
+  const windowedCandidate =
+    (amplitudeQualified && spectralQualified) ||
+    (amplitudeQualified && spectralRecentlyQualified) ||
+    (spectralQualified && amplitudeRecentlyQualified);
+  const lastAmplitudeQualifiedAt = amplitudeQualified ? now : state.lastAmplitudeQualifiedAt;
+  const lastSpectralQualifiedAt = spectralQualified ? now : state.lastSpectralQualifiedAt;
+
+  // VAD false-negative hardening (2026-08-21 / ROUND 2 2026-08-22 / ROUND
+  // 4 2026-08-22) diagnostic accumulators -- tracked unconditionally,
+  // every sample, regardless of candidate status. See
+  // VoiceActivityDiagnostics's own doc comments for what each answers.
   const peakRms = Math.max(state.peakRms, sample.rmsLevel);
   const peakSpeechBandRatio = Math.max(state.peakSpeechBandRatio, sample.speechBandRatio);
   const peakNoiseFloor = Math.max(state.peakNoiseFloor, state.noiseFloorEstimate);
   const totalSampleCount = state.totalSampleCount + 1;
   const amplitudeQualifiedSampleCount = amplitudeQualified ? state.amplitudeQualifiedSampleCount + 1 : state.amplitudeQualifiedSampleCount;
   const spectralQualifiedSampleCount = spectralQualified ? state.spectralQualifiedSampleCount + 1 : state.spectralQualifiedSampleCount;
-  // The largest gap ever seen BETWEEN two consecutive candidate (both-
-  // gates-qualified) samples -- distinct from candidateResetCount (which
-  // only counts how many times a streak was discarded): this measures
-  // how far apart in real time qualifying evidence actually was,
-  // regardless of whether a streak was in progress. Only updated when
-  // THIS sample is itself a candidate and a prior candidate exists.
+  const windowedCandidateSampleCount = windowedCandidate
+    ? state.windowedCandidateSampleCount + 1
+    : state.windowedCandidateSampleCount;
+  // The largest gap ever seen BETWEEN two consecutive windowed-candidate
+  // samples -- distinct from candidateResetCount (which only counts how
+  // many times a streak was discarded): this measures how far apart in
+  // real time qualifying evidence actually was, regardless of whether a
+  // streak was in progress. Only updated when THIS sample is itself a
+  // windowed candidate and a prior one exists.
   const longestCandidateGapMs =
-    candidate && state.lastSpeechAt !== null ? Math.max(state.longestCandidateGapMs, now - state.lastSpeechAt) : state.longestCandidateGapMs;
+    windowedCandidate && state.lastSpeechAt !== null
+      ? Math.max(state.longestCandidateGapMs, now - state.lastSpeechAt)
+      : state.longestCandidateGapMs;
   const diagnosticAccumulators = {
     peakRms,
     peakSpeechBandRatio,
@@ -389,7 +565,10 @@ export function evaluateVadSample(
     totalSampleCount,
     amplitudeQualifiedSampleCount,
     spectralQualifiedSampleCount,
+    windowedCandidateSampleCount,
     longestCandidateGapMs,
+    lastAmplitudeQualifiedAt,
+    lastSpectralQualifiedAt,
   };
 
   // The noise floor only ever learns from samples that show NO credible
@@ -430,7 +609,7 @@ export function evaluateVadSample(
     ? state.noiseFloorEstimate
     : state.noiseFloorEstimate * (1 - config.noiseFloorAdaptRate) + sample.rmsLevel * config.noiseFloorAdaptRate;
 
-  if (!candidate) {
+  if (!windowedCandidate) {
     if (state.hasDetectedSpeech) {
       const silenceDuration = now - (state.lastSpeechAt ?? now);
       const nextState: VadState = { ...state, ...diagnosticAccumulators, noiseFloorEstimate, speechStreakStartedAt: null };
@@ -463,7 +642,9 @@ export function evaluateVadSample(
     return { state: nextState, decision: "continue" };
   }
 
-  // This sample IS a speech candidate on both axes.
+  // This sample IS a windowed candidate (ROUND 4: cross-modality evidence
+  // within speechEvidenceWindowMs, not necessarily both gates on this
+  // exact sample -- see this module's own ROUND 4 doc comment).
   const speechStreakStartedAt = state.speechStreakStartedAt ?? now;
   const streakDuration = now - speechStreakStartedAt;
   const hasDetectedSpeech = state.hasDetectedSpeech || streakDuration >= config.minSpeechDurationMs;
@@ -477,7 +658,10 @@ export function evaluateVadSample(
       hasDetectedSpeech,
       lastSpeechAt: now,
       maxCandidateStreakMs: Math.max(state.maxCandidateStreakMs, streakDuration),
-      fullyQualifiedSampleCount: state.fullyQualifiedSampleCount + 1,
+      // Strict SAME-SAMPLE meaning preserved (see this field's own doc
+      // comment) -- only increments when BOTH gates passed on this exact
+      // sample (`candidate`), not merely when windowedCandidate is true.
+      fullyQualifiedSampleCount: candidate ? state.fullyQualifiedSampleCount + 1 : state.fullyQualifiedSampleCount,
     },
     decision: "continue",
   };
@@ -600,6 +784,16 @@ export interface VoiceActivityDiagnostics {
   // noise) and then settled back down, which finalNoiseFloor alone would
   // hide.
   peakNoiseFloor: number;
+  // VAD false-negative hardening, ROUND 4 (2026-08-22): see this module's
+  // own ROUND 4 doc comment for the real production evidence (three
+  // separate recordings, each with healthy individual-gate rates but
+  // near-zero same-sample overlap) that motivated the windowed-evidence
+  // confirmation model. Count of samples that qualified as a
+  // windowedCandidate (cross-modality, within speechEvidenceWindowMs) --
+  // compare against fullyQualifiedSampleCount (which keeps its strict
+  // same-sample meaning) to see directly how much the windowed model
+  // helped versus the raw same-frame overlap rate on a given recording.
+  windowedCandidateSampleCount: number;
 }
 
 export function computeVoiceActivityDiagnostics(params: {
@@ -620,6 +814,7 @@ export function computeVoiceActivityDiagnostics(params: {
   spectralQualifiedSampleCount: number;
   longestCandidateGapMs: number;
   peakNoiseFloor: number;
+  windowedCandidateSampleCount: number;
 }): VoiceActivityDiagnostics {
   const speechDetectedAtMs =
     params.speechDetectedAt !== null ? Math.max(0, Math.round(params.speechDetectedAt - params.recordingStartedAt)) : null;
@@ -649,5 +844,6 @@ export function computeVoiceActivityDiagnostics(params: {
     spectralQualifiedSampleCount: params.spectralQualifiedSampleCount,
     longestCandidateGapMs: params.longestCandidateGapMs,
     peakNoiseFloor: params.peakNoiseFloor,
+    windowedCandidateSampleCount: params.windowedCandidateSampleCount,
   };
 }

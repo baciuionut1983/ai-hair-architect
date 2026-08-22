@@ -417,6 +417,38 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     logSpy.mockRestore();
   });
 
+  // VAD false-negative hardening, ROUND 4 (2026-08-22): a third real
+  // production recording showed the same healthy-individual-gates/near-
+  // zero-overlap shape as rounds 2/3, motivating the windowed-evidence
+  // confirmation model -- see voice-activity-logic.ts's own ROUND 4
+  // VoiceActivityDiagnostics doc comment for what this field answers.
+  it("logs the VAD ROUND 4 diagnostic accumulator when the client reported it", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-122",
+      outcome: "stt_failed",
+      summary: validSummary(),
+      vadWindowedCandidateSampleCount: 42,
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({ vadWindowedCandidateSampleCount: 42 });
+    logSpy.mockRestore();
+  });
+
+  it("logs the VAD ROUND 4 diagnostic accumulator as null (never fabricated) when the client didn't report it", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-123", outcome: "stt_failed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({ vadWindowedCandidateSampleCount: null });
+    logSpy.mockRestore();
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): the real Gemini
   // provider failure detail, closing the gap where a provider HTTP error,
   // a network/timeout failure, and an empty-transcript response all

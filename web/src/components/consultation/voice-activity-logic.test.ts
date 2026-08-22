@@ -50,6 +50,15 @@ const DRYER_NOISE: VadSample = { rmsLevel: 0.4, speechBandRatio: 0.1 };
 // negative (spectralQualifiedSampleCount 69/100 vs amplitudeQualifiedSampleCount
 // only 19/100).
 const MODERATE_SPEECH_BELOW_ELEVATED_FLOOR: VadSample = { rmsLevel: 0.05, speechBandRatio: 0.55 };
+// ROUND 4 (2026-08-22): a loud, amplitude-qualified sample whose energy is
+// NOT concentrated in the speech band (e.g. a sibilant/plosive burst, or a
+// vowel harmonic spread) -- the complementary real-speech shape to
+// AMPLITUDE_DIP. Real continuous speech naturally alternates between
+// samples shaped like this one and samples shaped like AMPLITUDE_DIP; see
+// the module's own ROUND 4 doc comment for why requiring both on the SAME
+// 100ms sample is not a reliable test for either, and why the windowed
+// evidence model links them across nearby samples instead.
+const LOUD_BROADBAND_PHONEME: VadSample = { rmsLevel: 0.3, speechBandRatio: 0.25 };
 
 describe("evaluateVadSample", () => {
   it("does not stop while the stylist is actively speaking", () => {
@@ -537,7 +546,15 @@ describe("evaluateVadSample", () => {
       expect(state.amplitudeQualifiedSampleCount).toBe(10); // amplitude was NEVER the problem
       expect(state.spectralQualifiedSampleCount).toBe(2); // spectral ratio rarely cleared the gate
       expect(state.fullyQualifiedSampleCount).toBe(2);
-      expect(state.hasDetectedSpeech).toBe(false); // never sustained long enough to confirm
+      // ROUND 4 (2026-08-22): this is EXACTLY the shape ROUND 4's windowed-
+      // evidence fusion was designed to fix -- amplitude is qualified on
+      // every sample, so once spectral evidence appears at t=300, it stays
+      // "recently qualified" through speechEvidenceWindowMs, letting the
+      // t=400/500 samples also count as windowedCandidate; the second real
+      // spectral hit at t=600 completes a 300ms streak and confirms.
+      // Updated from the original ROUND 2 assertion (hasDetectedSpeech:
+      // false, "never sustained long enough to confirm") now that it does.
+      expect(state.hasDetectedSpeech).toBe(true);
     });
 
     it("a signal where BOTH gates individually pass often but rarely on the SAME sample shows healthy individual counts but a low fullyQualifiedSampleCount -- the alignment-problem shape", () => {
@@ -602,16 +619,242 @@ describe("evaluateVadSample", () => {
       expect(state.peakNoiseFloor).toBe(peakAfterBurst);
     });
   });
+
+  // VAD false-negative hardening, ROUND 4 (2026-08-22): a real production
+  // retest on 803c538 (speaker deliberately talking naturally for 5-7s)
+  // showed amplitudeQualifiedSampleCount 26/100, spectralQualifiedSampleCount
+  // 20/100, but fullyQualifiedSampleCount (BOTH, same sample) only 1/100 --
+  // the third real recording in a row to show this shape. See this
+  // module's own ROUND 4 doc comment for the full DSP/acoustic root cause
+  // and the windowedCandidate design. These tests reproduce the exact
+  // production shape and prove the fix confirms real speech from it while
+  // still rejecting music/noise/transients.
+  describe("ROUND 4: cross-modality windowed evidence fusion (windowedCandidate)", () => {
+    it("confirms speech from alternating loud-broadband and quiet-narrowband samples, even though NO single sample ever passes both gates -- the exact 26%/20%/1%-overlap production shape", () => {
+      let state = initVadState(0);
+      let t = 0;
+      let result = evaluateVadSample(state, LOUD_BROADBAND_PHONEME, t); // t=0
+      state = result.state;
+      t += 100;
+      result = evaluateVadSample(state, AMPLITUDE_DIP, t); // t=100
+      state = result.state;
+      t += 100;
+      result = evaluateVadSample(state, LOUD_BROADBAND_PHONEME, t); // t=200
+      state = result.state;
+      t += 100;
+      result = evaluateVadSample(state, AMPLITUDE_DIP, t); // t=300
+      state = result.state;
+      t += 100;
+      result = evaluateVadSample(state, LOUD_BROADBAND_PHONEME, t); // t=400 -- 300ms streak, confirmed
+      expect(result.state.hasDetectedSpeech).toBe(true);
+      // The confirmation came entirely from cross-modality evidence -- not
+      // one single sample in this stream ever cleared BOTH gates at once.
+      expect(result.state.fullyQualifiedSampleCount).toBe(0);
+      expect(result.state.windowedCandidateSampleCount).toBeGreaterThan(0);
+    });
+
+    it("at speechEvidenceWindowMs=0, windowedCandidate collapses exactly to the original same-sample AND -- confirms this is a strict generalization, not a different mechanism", () => {
+      const strictConfig: VadConfig = { ...DEFAULT_VAD_CONFIG, speechEvidenceWindowMs: 0 };
+      let state = initVadState(0);
+      let t = 0;
+      for (let i = 0; i < 20; i += 1) {
+        const sample = i % 2 === 0 ? LOUD_BROADBAND_PHONEME : AMPLITUDE_DIP;
+        state = evaluateVadSample(state, sample, t, strictConfig).state;
+        t += 100;
+      }
+      expect(state.hasDetectedSpeech).toBe(false);
+      expect(state.windowedCandidateSampleCount).toBe(0);
+    });
+
+    it("a short pause between words does not interrupt an in-progress cross-modality streak, and confirmed speech continues normally afterward", () => {
+      let state = initVadState(0);
+      let t = 0;
+      for (let i = 0; i < 5; i += 1) {
+        const sample = i % 2 === 0 ? LOUD_BROADBAND_PHONEME : AMPLITUDE_DIP;
+        state = evaluateVadSample(state, sample, t).state; // confirmed by t=400, see headline test
+        t += 100;
+      }
+      expect(state.hasDetectedSpeech).toBe(true);
+
+      t += 100;
+      let result = evaluateVadSample(state, SILENCE, t); // a brief true pause
+      expect(result.decision).toBe("continue");
+      state = result.state;
+
+      t += 100;
+      result = evaluateVadSample(state, LOUD_BROADBAND_PHONEME, t); // speech resumes
+      expect(result.decision).toBe("continue");
+      expect(result.state.hasDetectedSpeech).toBe(true);
+    });
+
+    // A more representative "utterance" than pure 2-value alternation --
+    // occasionally both-qualified (QUIET_SPEECH), like real speech's own
+    // natural variety, and short enough (3.2s) to stay well clear of the
+    // pre-existing, ROUND-4-independent floor-convergence property proven
+    // separately below (a single, endlessly-repeated non-spectral loudness
+    // value eventually self-defeats its own amplitude gate -- see that
+    // test's own doc comment).
+    const PHONEME_CYCLE: VadSample[] = [LOUD_BROADBAND_PHONEME, AMPLITUDE_DIP, QUIET_SPEECH, AMPLITUDE_DIP];
+
+    it("a long natural utterance (varied phoneme-level evidence for several seconds) never triggers a premature stop_silence mid-sentence", () => {
+      let state = initVadState(0);
+      let t = 0;
+      let decision: ReturnType<typeof evaluateVadSample>["decision"] = "continue";
+      for (let i = 0; i < 32; i += 1) {
+        const sample = PHONEME_CYCLE[i % PHONEME_CYCLE.length];
+        const result = evaluateVadSample(state, sample, t);
+        state = result.state;
+        decision = result.decision;
+        expect(decision).toBe("continue");
+        t += 100;
+      }
+      expect(state.hasDetectedSpeech).toBe(true);
+    });
+
+    it("genuine end-of-speech still triggers stop_silence once BOTH modalities go silent for long enough", () => {
+      let state = initVadState(0);
+      let t = 0;
+      for (let i = 0; i < 6; i += 1) {
+        const sample = PHONEME_CYCLE[i % PHONEME_CYCLE.length];
+        state = evaluateVadSample(state, sample, t).state;
+        t += 100;
+      }
+      expect(state.hasDetectedSpeech).toBe(true);
+
+      let result: ReturnType<typeof evaluateVadSample> = { state, decision: "continue" };
+      const deadline = t + DEFAULT_VAD_CONFIG.silenceDurationMs + 1000;
+      while (result.decision === "continue" && t < deadline) {
+        result = evaluateVadSample(state, SILENCE, t);
+        state = result.state;
+        t += 100;
+      }
+      expect(result.decision).toBe("stop_silence");
+    });
+
+    it("sustained music-only audio never becomes a windowed candidate, regardless of duration -- spectral rejection is unaffected by window size", () => {
+      let state = initVadState(0);
+      let t = 0;
+      let result: ReturnType<typeof evaluateVadSample> = { state, decision: "continue" };
+      for (let i = 0; i < 100; i += 1) {
+        t += 100;
+        result = evaluateVadSample(state, LOUD_MUSIC, t);
+        state = result.state;
+      }
+      expect(state.hasDetectedSpeech).toBe(false);
+      expect(state.windowedCandidateSampleCount).toBe(0);
+      expect(result.decision).toBe("stop_no_speech_timeout");
+    });
+
+    it("sustained hair-dryer/broadband noise never becomes a windowed candidate either", () => {
+      let state = initVadState(0);
+      let t = 0;
+      let result: ReturnType<typeof evaluateVadSample> = { state, decision: "continue" };
+      for (let i = 0; i < 100; i += 1) {
+        t += 100;
+        result = evaluateVadSample(state, DRYER_NOISE, t);
+        state = result.state;
+      }
+      expect(state.hasDetectedSpeech).toBe(false);
+      expect(state.windowedCandidateSampleCount).toBe(0);
+      expect(result.decision).toBe("stop_no_speech_timeout");
+    });
+
+    it("a short transient pair (one loud-broadband + one quiet-narrowband sample close together) does not confirm speech -- not sustained long enough", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, SILENCE, 0);
+      state = result.state;
+      result = evaluateVadSample(state, LOUD_BROADBAND_PHONEME, 2000); // isolated blip
+      state = result.state;
+      result = evaluateVadSample(state, AMPLITUDE_DIP, 2100); // its cross-modality partner
+      state = result.state;
+      expect(result.state.hasDetectedSpeech).toBe(false); // only ~100ms of streak -- well under minSpeechDurationMs
+      result = evaluateVadSample(state, SILENCE, 2200);
+      state = result.state;
+      result = evaluateVadSample(state, SILENCE, 5000); // gap far exceeds maxCandidateGapMs -- streak discarded
+      expect(result.state.hasDetectedSpeech).toBe(false);
+    });
+
+    it("music immediately after real speech extends the silence countdown only briefly (bounded by roughly speechEvidenceWindowMs), never indefinitely -- the original 'infinite listening' bug stays fixed", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, CLEAR_SPEECH, 0);
+      state = result.state;
+      result = evaluateVadSample(state, CLEAR_SPEECH, 300); // 300ms streak -- confirmed
+      state = result.state;
+      expect(state.hasDetectedSpeech).toBe(true);
+
+      // Music starts immediately after -- within speechEvidenceWindowMs of
+      // the last real spectral evidence, so it can briefly still register
+      // as windowedCandidate. This is bounded leakage, not a regression:
+      // music itself never re-qualifies spectrally (LOUD_MUSIC always
+      // fails the spectral gate), so this can only borrow from the REAL
+      // speech that already happened, and only for a short, aging window.
+      result = evaluateVadSample(state, LOUD_MUSIC, 400);
+      expect(result.decision).toBe("continue");
+      state = result.state;
+      result = evaluateVadSample(state, LOUD_MUSIC, 550);
+      expect(result.decision).toBe("continue");
+      state = result.state;
+
+      // Feed a long, sustained run of music-only samples well past any
+      // plausible leakage window -- stop_silence must fire, and it must
+      // not require ever seeing a "continue" again once it does.
+      let sawStopSilence = false;
+      let t = 650;
+      for (let i = 0; i < 30; i += 1) {
+        result = evaluateVadSample(state, LOUD_MUSIC, t);
+        state = result.state;
+        if (result.decision === "stop_silence") {
+          sawStopSilence = true;
+          break;
+        }
+        t += 100;
+      }
+      expect(sawStopSilence).toBe(true);
+      // The leakage was bounded to roughly speechEvidenceWindowMs -- total
+      // time from the LAST real speech sample (t=300) to stop_silence must
+      // stay close to silenceDurationMs (2000), not balloon indefinitely.
+      expect(t - 300).toBeLessThan(DEFAULT_VAD_CONFIG.silenceDurationMs + DEFAULT_VAD_CONFIG.speechEvidenceWindowMs + 200);
+    });
+
+    // Honest, PRE-EXISTING limitation (not introduced by ROUND 4, and not
+    // fixed by it either -- a property of the noise-floor mechanism from
+    // 803c538, left unchanged this round per that round's own Phase B
+    // reasoning): a SINGLE, endlessly-repeated non-spectral loudness value
+    // will always eventually self-defeat its own amplitude qualification,
+    // once the floor's EMA (rate 0.05, margin 1.6) converges close enough
+    // to that same value -- true regardless of the value's magnitude,
+    // since the crossover point is a function of noiseFloorMargin/
+    // noiseFloorAdaptRate alone, not the specific level. Real speech's own
+    // natural variety (rarely repeating the exact same acoustic shape 20+
+    // times uninterrupted) makes this a low-probability edge case in
+    // practice, not eliminated in theory. Documented here, not silently
+    // avoided, so a future round has this written down rather than
+    // rediscovering it from a production report.
+    it("KNOWN LIMITATION (pre-existing, not fixed this round): an endlessly-repeated single non-spectral loudness value eventually self-defeats its own amplitude gate", () => {
+      let state = initVadState(0);
+      let t = 0;
+      for (let i = 0; i < 45; i += 1) {
+        const sample = i % 2 === 0 ? LOUD_BROADBAND_PHONEME : AMPLITUDE_DIP;
+        state = evaluateVadSample(state, sample, t).state;
+        t += 100;
+      }
+      // The floor has chased LOUD_BROADBAND_PHONEME's own fixed loudness
+      // upward far enough that IT no longer clears its own amplitude gate.
+      const amplitudeFloorNow = Math.max(DEFAULT_VAD_CONFIG.minAbsoluteLevel, state.noiseFloorEstimate * DEFAULT_VAD_CONFIG.noiseFloorMargin);
+      expect(amplitudeFloorNow).toBeGreaterThan(LOUD_BROADBAND_PHONEME.rmsLevel);
+    });
+  });
 });
 
 // End-of-speech hardening (2026-08-20), Task E: proves the telemetry
 // computation itself, independent of the browser-only sampling loop that
 // feeds it (use-voice-recording.ts).
 describe("computeVoiceActivityDiagnostics", () => {
-  // VAD false-negative hardening (2026-08-21 / ROUND 2 2026-08-22): the 11
-  // diagnostic accumulators, always present regardless of the scenario --
-  // a minimal, arbitrary-but-fixed set reused across every test below so
-  // each test only needs to override what it's actually asserting on.
+  // VAD false-negative hardening (2026-08-21 / ROUND 2 2026-08-22 / ROUND
+  // 4 2026-08-22): the 12 diagnostic accumulators, always present
+  // regardless of the scenario -- a minimal, arbitrary-but-fixed set
+  // reused across every test below so each test only needs to override
+  // what it's actually asserting on.
   const DIAGNOSTIC_ACCUMULATORS = {
     peakRms: 0.4,
     peakSpeechBandRatio: 0.6,
@@ -624,6 +867,7 @@ describe("computeVoiceActivityDiagnostics", () => {
     spectralQualifiedSampleCount: 20,
     longestCandidateGapMs: 500,
     peakNoiseFloor: 0.035,
+    windowedCandidateSampleCount: 18,
   };
 
   it("computes a full breakdown for a normal stop_silence turn", () => {
@@ -707,11 +951,11 @@ describe("computeVoiceActivityDiagnostics", () => {
     expect(diagnostics.maxDurationTriggered).toBe(false);
   });
 
-  // VAD false-negative hardening (2026-08-21 / ROUND 2 2026-08-22): passes
-  // all 11 diagnostic accumulators straight through, unmodified --
-  // computeVoiceActivityDiagnostics never derives or fabricates them
-  // itself, only evaluateVadSample does.
-  it("passes all 11 diagnostic accumulators through unmodified", () => {
+  // VAD false-negative hardening (2026-08-21 / ROUND 2 2026-08-22 / ROUND
+  // 4 2026-08-22): passes all 12 diagnostic accumulators straight through,
+  // unmodified -- computeVoiceActivityDiagnostics never derives or
+  // fabricates them itself, only evaluateVadSample does.
+  it("passes all 12 diagnostic accumulators through unmodified", () => {
     const diagnostics = computeVoiceActivityDiagnostics({
       recordingStartedAt: 0,
       stopDecidedAt: 10000,
@@ -730,6 +974,7 @@ describe("computeVoiceActivityDiagnostics", () => {
       spectralQualifiedSampleCount: 15,
       longestCandidateGapMs: 3000,
       peakNoiseFloor: 0.03,
+      windowedCandidateSampleCount: 45,
     });
     expect(diagnostics.peakRms).toBe(0.18);
     expect(diagnostics.peakSpeechBandRatio).toBe(0.41);
@@ -742,6 +987,7 @@ describe("computeVoiceActivityDiagnostics", () => {
     expect(diagnostics.spectralQualifiedSampleCount).toBe(15);
     expect(diagnostics.longestCandidateGapMs).toBe(3000);
     expect(diagnostics.peakNoiseFloor).toBe(0.03);
+    expect(diagnostics.windowedCandidateSampleCount).toBe(45);
   });
 
   // VAD false-negative hardening (2026-08-21), Task 13: proves
@@ -781,6 +1027,7 @@ describe("computeVoiceActivityDiagnostics", () => {
       spectralQualifiedSampleCount: afterGap.state.spectralQualifiedSampleCount,
       longestCandidateGapMs: afterGap.state.longestCandidateGapMs,
       peakNoiseFloor: afterGap.state.peakNoiseFloor,
+      windowedCandidateSampleCount: afterGap.state.windowedCandidateSampleCount,
     });
 
     expect(diagnostics.speechDetectedAtMs).toBeNull();
@@ -836,6 +1083,9 @@ describe("initVadState", () => {
       totalSampleCount: 0,
       longestCandidateGapMs: 0,
       peakNoiseFloor: 0,
+      lastAmplitudeQualifiedAt: null,
+      lastSpectralQualifiedAt: null,
+      windowedCandidateSampleCount: 0,
     });
   });
 });
