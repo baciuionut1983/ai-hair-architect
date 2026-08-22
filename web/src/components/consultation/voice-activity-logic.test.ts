@@ -442,16 +442,106 @@ describe("evaluateVadSample", () => {
       expect(state.maxCandidateStreakMs).toBe(200);
     });
   });
+
+  // VAD false-negative hardening, ROUND 2 (2026-08-22): a real production
+  // retest on the round-1 fix still ended stop_no_speech_timeout on
+  // genuinely intelligible speech, with peakRms ~0.160 and
+  // peakSpeechBandRatio ~0.799 (both healthy) but only 2
+  // fully-qualified samples the whole recording. These tests reproduce
+  // the two distinct failure shapes the new counters must be able to
+  // tell apart, and prove they do.
+  describe("ROUND 2 diagnostic accumulators (amplitudeQualifiedSampleCount / spectralQualifiedSampleCount / totalSampleCount / longestCandidateGapMs / peakNoiseFloor)", () => {
+    it("a spectrally-volatile signal (amplitude consistently fine, spectral ratio rarely clears the gate) shows a healthy amplitudeQualifiedSampleCount but a low spectralQualifiedSampleCount -- reproducing the real production shape", () => {
+      let state = initVadState(0);
+      let t = 0;
+      // Amplitude is always healthy (well above the floor); speech-band
+      // ratio oscillates, clearing 0.45 only 2 times out of 10 -- the
+      // exact real production pattern (peak ratio was high, but only 2
+      // samples were ever fully qualified).
+      const ratios = [0.2, 0.3, 0.799, 0.25, 0.3, 0.799, 0.2, 0.3, 0.25, 0.2];
+      for (const speechBandRatio of ratios) {
+        t += 100;
+        state = evaluateVadSample(state, { rmsLevel: 0.16, speechBandRatio }, t).state;
+      }
+      expect(state.totalSampleCount).toBe(10);
+      expect(state.amplitudeQualifiedSampleCount).toBe(10); // amplitude was NEVER the problem
+      expect(state.spectralQualifiedSampleCount).toBe(2); // spectral ratio rarely cleared the gate
+      expect(state.fullyQualifiedSampleCount).toBe(2);
+      expect(state.hasDetectedSpeech).toBe(false); // never sustained long enough to confirm
+    });
+
+    it("a signal where BOTH gates individually pass often but rarely on the SAME sample shows healthy individual counts but a low fullyQualifiedSampleCount -- the alignment-problem shape", () => {
+      let state = initVadState(0);
+      let t = 0;
+      // Alternates which gate passes each sample -- amplitude and
+      // spectral ratio are each healthy roughly half the time, but never
+      // simultaneously.
+      const samples: VadSample[] = [
+        { rmsLevel: 0.16, speechBandRatio: 0.2 }, // amplitude only
+        { rmsLevel: 0.01, speechBandRatio: 0.7 }, // spectral only
+        { rmsLevel: 0.16, speechBandRatio: 0.2 }, // amplitude only
+        { rmsLevel: 0.01, speechBandRatio: 0.7 }, // spectral only
+      ];
+      for (const sample of samples) {
+        t += 100;
+        state = evaluateVadSample(state, sample, t).state;
+      }
+      expect(state.amplitudeQualifiedSampleCount).toBe(2);
+      expect(state.spectralQualifiedSampleCount).toBe(2);
+      expect(state.fullyQualifiedSampleCount).toBe(0); // the two gates never aligned on one sample
+    });
+
+    it("tracks longestCandidateGapMs as the largest gap between two consecutive fully-qualified samples, even across a reset", () => {
+      let state = initVadState(0);
+      state = evaluateVadSample(state, CLEAR_SPEECH, 0).state; // candidate #1
+      state = evaluateVadSample(state, SILENCE, 3500).state; // long gap, no candidates in between
+      state = evaluateVadSample(state, CLEAR_SPEECH, 3600).state; // candidate #2, 3600ms after #1
+      expect(state.longestCandidateGapMs).toBe(3600);
+    });
+
+    it("longestCandidateGapMs stays 0 when at most one candidate sample has ever occurred", () => {
+      let state = initVadState(0);
+      state = evaluateVadSample(state, CLEAR_SPEECH, 500).state;
+      expect(state.longestCandidateGapMs).toBe(0);
+    });
+
+    it("tracks peakNoiseFloor as the highest adaptive floor ever reached, even if it later settles lower", () => {
+      let state = initVadState(0);
+      let t = 0;
+      // A burst of sustained ambient noise raises the floor...
+      for (let i = 0; i < 20; i += 1) {
+        t += 100;
+        state = evaluateVadSample(state, AMBIENT_NOISE, t).state;
+      }
+      // peakNoiseFloor is derived from the floor as it stood ENTERING each
+      // sample (see evaluateVadSample), so it lags the just-applied update
+      // by exactly one sample. One more (now-quiet) sample lets the reading
+      // catch up to the ambient burst's true peak before decay begins.
+      t += 100;
+      state = evaluateVadSample(state, SILENCE, t).state;
+      const peakAfterBurst = state.peakNoiseFloor;
+      expect(peakAfterBurst).toBeGreaterThan(0);
+      // ...then the room stays quiet, and the floor keeps decaying down.
+      for (let i = 0; i < 19; i += 1) {
+        t += 100;
+        state = evaluateVadSample(state, SILENCE, t).state;
+      }
+      expect(state.noiseFloorEstimate).toBeLessThan(peakAfterBurst);
+      // peakNoiseFloor still remembers the highest point reached, unlike
+      // the (now-decayed) current noiseFloorEstimate / finalNoiseFloor.
+      expect(state.peakNoiseFloor).toBe(peakAfterBurst);
+    });
+  });
 });
 
 // End-of-speech hardening (2026-08-20), Task E: proves the telemetry
 // computation itself, independent of the browser-only sampling loop that
 // feeds it (use-voice-recording.ts).
 describe("computeVoiceActivityDiagnostics", () => {
-  // VAD false-negative hardening (2026-08-21): the 6 new diagnostic
-  // accumulators, always present regardless of the scenario -- a minimal,
-  // arbitrary-but-fixed set reused across every test below so each test
-  // only needs to override what it's actually asserting on.
+  // VAD false-negative hardening (2026-08-21 / ROUND 2 2026-08-22): the 11
+  // diagnostic accumulators, always present regardless of the scenario --
+  // a minimal, arbitrary-but-fixed set reused across every test below so
+  // each test only needs to override what it's actually asserting on.
   const DIAGNOSTIC_ACCUMULATORS = {
     peakRms: 0.4,
     peakSpeechBandRatio: 0.6,
@@ -459,6 +549,11 @@ describe("computeVoiceActivityDiagnostics", () => {
     maxCandidateSpeechMs: 300,
     candidateResetCount: 1,
     fullyQualifiedSampleCount: 12,
+    totalSampleCount: 80,
+    amplitudeQualifiedSampleCount: 40,
+    spectralQualifiedSampleCount: 20,
+    longestCandidateGapMs: 500,
+    peakNoiseFloor: 0.035,
   };
 
   it("computes a full breakdown for a normal stop_silence turn", () => {
@@ -542,10 +637,11 @@ describe("computeVoiceActivityDiagnostics", () => {
     expect(diagnostics.maxDurationTriggered).toBe(false);
   });
 
-  // VAD false-negative hardening (2026-08-21): passes the 6 new
-  // accumulators straight through, unmodified -- computeVoiceActivityDiagnostics
-  // never derives or fabricates them itself, only evaluateVadSample does.
-  it("passes the 6 new diagnostic accumulators through unmodified", () => {
+  // VAD false-negative hardening (2026-08-21 / ROUND 2 2026-08-22): passes
+  // all 11 diagnostic accumulators straight through, unmodified --
+  // computeVoiceActivityDiagnostics never derives or fabricates them
+  // itself, only evaluateVadSample does.
+  it("passes all 11 diagnostic accumulators through unmodified", () => {
     const diagnostics = computeVoiceActivityDiagnostics({
       recordingStartedAt: 0,
       stopDecidedAt: 10000,
@@ -559,6 +655,11 @@ describe("computeVoiceActivityDiagnostics", () => {
       maxCandidateSpeechMs: 210,
       candidateResetCount: 4,
       fullyQualifiedSampleCount: 9,
+      totalSampleCount: 100,
+      amplitudeQualifiedSampleCount: 60,
+      spectralQualifiedSampleCount: 15,
+      longestCandidateGapMs: 3000,
+      peakNoiseFloor: 0.03,
     });
     expect(diagnostics.peakRms).toBe(0.18);
     expect(diagnostics.peakSpeechBandRatio).toBe(0.41);
@@ -566,6 +667,11 @@ describe("computeVoiceActivityDiagnostics", () => {
     expect(diagnostics.maxCandidateSpeechMs).toBe(210);
     expect(diagnostics.candidateResetCount).toBe(4);
     expect(diagnostics.fullyQualifiedSampleCount).toBe(9);
+    expect(diagnostics.totalSampleCount).toBe(100);
+    expect(diagnostics.amplitudeQualifiedSampleCount).toBe(60);
+    expect(diagnostics.spectralQualifiedSampleCount).toBe(15);
+    expect(diagnostics.longestCandidateGapMs).toBe(3000);
+    expect(diagnostics.peakNoiseFloor).toBe(0.03);
   });
 
   // VAD false-negative hardening (2026-08-21), Task 13: proves
@@ -600,6 +706,11 @@ describe("computeVoiceActivityDiagnostics", () => {
       maxCandidateSpeechMs: afterGap.state.maxCandidateStreakMs,
       candidateResetCount: afterGap.state.candidateResetCount,
       fullyQualifiedSampleCount: afterGap.state.fullyQualifiedSampleCount,
+      totalSampleCount: afterGap.state.totalSampleCount,
+      amplitudeQualifiedSampleCount: afterGap.state.amplitudeQualifiedSampleCount,
+      spectralQualifiedSampleCount: afterGap.state.spectralQualifiedSampleCount,
+      longestCandidateGapMs: afterGap.state.longestCandidateGapMs,
+      peakNoiseFloor: afterGap.state.peakNoiseFloor,
     });
 
     expect(diagnostics.speechDetectedAtMs).toBeNull();
@@ -650,6 +761,11 @@ describe("initVadState", () => {
       maxCandidateStreakMs: 0,
       candidateResetCount: 0,
       fullyQualifiedSampleCount: 0,
+      amplitudeQualifiedSampleCount: 0,
+      spectralQualifiedSampleCount: 0,
+      totalSampleCount: 0,
+      longestCandidateGapMs: 0,
+      peakNoiseFloor: 0,
     });
   });
 });

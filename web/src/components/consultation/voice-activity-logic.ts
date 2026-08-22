@@ -102,6 +102,59 @@
 // spectrally-flat music essentially never produces (see this round's own
 // regression test "real speech over moderate background music/noise" and
 // "background music alone must not recreate the infinite-listening bug").
+//
+// VAD false-negative hardening, ROUND 2 (2026-08-22): the round-1 gap-
+// tolerance fix was NOT sufficient -- a real production retest on this
+// build still ended stop_no_speech_timeout on genuinely intelligible
+// speech. That test's own new telemetry is the key evidence: peakRms
+// ~0.160 (a healthy 8x above the ~0.0068 final noise floor -- amplitude
+// was almost certainly never the bottleneck for most of the utterance)
+// and peakSpeechBandRatio ~0.799 (real, strongly speech-shaped evidence
+// DID occur), yet fullyQualifiedSampleCount was only 2 for the entire
+// 10-second recording, and maxCandidateSpeechMs only 104ms -- meaning the
+// two samples that passed BOTH gates simultaneously were themselves
+// essentially back-to-back (one round-1 gap-tolerance window's worth),
+// with no other qualifying sample anywhere else in the recording.
+//
+// This rules out round 1's own diagnosis (an otherwise-CONSISTENTLY-
+// qualifying stream interrupted by occasional single-sample dips) as the
+// dominant failure mode here: with only 2 total qualifying samples across
+// what a 30-character message likely took 1.5-2.5s to speak, the problem
+// is that FEW samples ever cleared both gates AT THE SAME TIME, not that
+// a mostly-qualifying stream had brief interruptions. No amount of
+// temporal gap-tolerance can manufacture qualifying evidence that never
+// existed; only widening the tolerance far enough to accept 1-in-10 (or
+// sparser) qualifying rates would fix this specific case, and doing that
+// blindly is exactly the "increase maxCandidateGapMs speculatively" or
+// "lower minSpeechBandRatio" move this round was told not to make -- it
+// would also measurably weaken the background-music rejection this same
+// module exists to protect, since occasional spectral flukes in sustained
+// music become far more likely to accumulate as `maxCandidateGapMs` or an
+// evidence-window's tolerance grows.
+//
+// Two real, unresolved candidate explanations remain, and this round's
+// own new telemetry (vadAmplitudeQualifiedSampleCount/
+// vadSpectralQualifiedSampleCount/vadTotalSampleCount/
+// vadLongestCandidateGapMs/vadPeakNoiseFloor, see VoiceActivityDiagnostics
+// below) is designed to distinguish them on the NEXT real production
+// test, not guessed at here:
+//   (a) the spectral-ratio gate itself may be volatile frame-to-frame for
+//       genuine continuous speech (sibilants/plosives/formant transitions
+//       naturally shift energy outside the 300-3400Hz band moment to
+//       moment, even mid-utterance) -- vadSpectralQualifiedSampleCount
+//       will be low relative to vadTotalSampleCount even while
+//       vadAmplitudeQualifiedSampleCount stays high, if so;
+//   (b) the two gates may rarely align in the SAME 100ms frame even when
+//       each individually looks fine across the recording --
+//       vadAmplitudeQualifiedSampleCount and vadSpectralQualifiedSampleCount
+//       would BOTH be reasonably high while vadFullyQualifiedSampleCount
+//       stays low, pointing at a measurement-alignment/smoothing problem
+//       rather than either threshold.
+// This round deliberately ships DIAGNOSTIC TELEMETRY ONLY, not a new
+// confirmation algorithm -- see this round's own report for why choosing
+// between a spectral-ratio smoothing fix, a genuine rolling-evidence-
+// window redesign, or something else without this data would be exactly
+// the speculative tuning this task was told not to do.
 
 export interface VadConfig {
   // Absolute floor beneath which nothing ever counts as speech, regardless
@@ -200,6 +253,15 @@ export interface VadState {
   maxCandidateStreakMs: number;
   candidateResetCount: number;
   fullyQualifiedSampleCount: number;
+  // VAD false-negative hardening, ROUND 2 (2026-08-22) diagnostic
+  // accumulators -- see this module's own ROUND 2 doc comment for why
+  // these exist, and VoiceActivityDiagnostics's own doc comments for what
+  // each answers.
+  amplitudeQualifiedSampleCount: number;
+  spectralQualifiedSampleCount: number;
+  totalSampleCount: number;
+  longestCandidateGapMs: number;
+  peakNoiseFloor: number;
 }
 
 export function initVadState(recordingStartedAt: number): VadState {
@@ -214,6 +276,11 @@ export function initVadState(recordingStartedAt: number): VadState {
     maxCandidateStreakMs: 0,
     candidateResetCount: 0,
     fullyQualifiedSampleCount: 0,
+    amplitudeQualifiedSampleCount: 0,
+    spectralQualifiedSampleCount: 0,
+    totalSampleCount: 0,
+    longestCandidateGapMs: 0,
+    peakNoiseFloor: 0,
   };
 }
 
@@ -224,9 +291,22 @@ export interface VadEvaluation {
   decision: VadDecision;
 }
 
-function isSpeechCandidate(sample: VadSample, noiseFloorEstimate: number, config: VadConfig): boolean {
+// VAD false-negative hardening, ROUND 2 (2026-08-22): split into its two
+// independent gates (rather than returning one combined boolean) so
+// evaluateVadSample can tell WHICH gate a given sample cleared -- the
+// diagnostic data this round's real production evidence proved is needed
+// to distinguish "amplitude is the bottleneck" from "spectral ratio is
+// the bottleneck" from "both individually pass but rarely align", instead
+// of inferring it indirectly from peak values alone.
+function classifySpeechGates(
+  sample: VadSample,
+  noiseFloorEstimate: number,
+  config: VadConfig,
+): { amplitudeQualified: boolean; spectralQualified: boolean; candidate: boolean } {
   const amplitudeFloor = Math.max(config.minAbsoluteLevel, noiseFloorEstimate * config.noiseFloorMargin);
-  return sample.rmsLevel >= amplitudeFloor && sample.speechBandRatio >= config.minSpeechBandRatio;
+  const amplitudeQualified = sample.rmsLevel >= amplitudeFloor;
+  const spectralQualified = sample.speechBandRatio >= config.minSpeechBandRatio;
+  return { amplitudeQualified, spectralQualified, candidate: amplitudeQualified && spectralQualified };
 }
 
 // Feed one fresh audio-level sample in. Returns the updated state (thread
@@ -247,13 +327,35 @@ export function evaluateVadSample(
     return { state, decision: "stop_max_duration" };
   }
 
-  const candidate = isSpeechCandidate(sample, state.noiseFloorEstimate, config);
+  const { amplitudeQualified, spectralQualified, candidate } = classifySpeechGates(sample, state.noiseFloorEstimate, config);
 
-  // VAD false-negative hardening (2026-08-21) diagnostic accumulators --
-  // tracked unconditionally, every sample, regardless of candidate status.
-  // See VoiceActivityDiagnostics's own doc comments for what each answers.
+  // VAD false-negative hardening (2026-08-21 / ROUND 2 2026-08-22)
+  // diagnostic accumulators -- tracked unconditionally, every sample,
+  // regardless of candidate status. See VoiceActivityDiagnostics's own doc
+  // comments for what each answers.
   const peakRms = Math.max(state.peakRms, sample.rmsLevel);
   const peakSpeechBandRatio = Math.max(state.peakSpeechBandRatio, sample.speechBandRatio);
+  const peakNoiseFloor = Math.max(state.peakNoiseFloor, state.noiseFloorEstimate);
+  const totalSampleCount = state.totalSampleCount + 1;
+  const amplitudeQualifiedSampleCount = amplitudeQualified ? state.amplitudeQualifiedSampleCount + 1 : state.amplitudeQualifiedSampleCount;
+  const spectralQualifiedSampleCount = spectralQualified ? state.spectralQualifiedSampleCount + 1 : state.spectralQualifiedSampleCount;
+  // The largest gap ever seen BETWEEN two consecutive candidate (both-
+  // gates-qualified) samples -- distinct from candidateResetCount (which
+  // only counts how many times a streak was discarded): this measures
+  // how far apart in real time qualifying evidence actually was,
+  // regardless of whether a streak was in progress. Only updated when
+  // THIS sample is itself a candidate and a prior candidate exists.
+  const longestCandidateGapMs =
+    candidate && state.lastSpeechAt !== null ? Math.max(state.longestCandidateGapMs, now - state.lastSpeechAt) : state.longestCandidateGapMs;
+  const diagnosticAccumulators = {
+    peakRms,
+    peakSpeechBandRatio,
+    peakNoiseFloor,
+    totalSampleCount,
+    amplitudeQualifiedSampleCount,
+    spectralQualifiedSampleCount,
+    longestCandidateGapMs,
+  };
 
   // The noise floor only ever learns from samples that did NOT look like
   // speech -- otherwise the stylist's own voice would drag the floor
@@ -266,7 +368,7 @@ export function evaluateVadSample(
   if (!candidate) {
     if (state.hasDetectedSpeech) {
       const silenceDuration = now - (state.lastSpeechAt ?? now);
-      const nextState: VadState = { ...state, noiseFloorEstimate, peakRms, peakSpeechBandRatio, speechStreakStartedAt: null };
+      const nextState: VadState = { ...state, ...diagnosticAccumulators, noiseFloorEstimate, speechStreakStartedAt: null };
       if (silenceDuration >= config.silenceDurationMs) {
         return { state: nextState, decision: "stop_silence" };
       }
@@ -285,9 +387,8 @@ export function evaluateVadSample(
     const elapsedSinceStart = now - state.recordingStartedAt;
     const nextState: VadState = {
       ...state,
+      ...diagnosticAccumulators,
       noiseFloorEstimate,
-      peakRms,
-      peakSpeechBandRatio,
       candidateResetCount,
       speechStreakStartedAt: streakSurvives ? state.speechStreakStartedAt : null,
     };
@@ -305,9 +406,8 @@ export function evaluateVadSample(
   return {
     state: {
       ...state,
+      ...diagnosticAccumulators,
       noiseFloorEstimate,
-      peakRms,
-      peakSpeechBandRatio,
       speechStreakStartedAt,
       hasDetectedSpeech,
       lastSpeechAt: now,
@@ -401,6 +501,40 @@ export interface VoiceActivityDiagnostics {
   // gates (regardless of whether they contributed to a confirmed streak)
   // -- the aggregate amount of genuine speech-like evidence observed.
   fullyQualifiedSampleCount: number;
+  // VAD false-negative hardening, ROUND 2 (2026-08-22): see this module's
+  // own ROUND 2 doc comment for the real production evidence that showed
+  // round 1's own gap-tolerance fix (still) insufficient, and exactly
+  // what these answer that the round-1 fields alone couldn't.
+  //
+  // Total samples evaluated across the whole recording -- the denominator
+  // for interpreting amplitudeQualifiedSampleCount/
+  // spectralQualifiedSampleCount/fullyQualifiedSampleCount as rates.
+  totalSampleCount: number;
+  // How many samples cleared the amplitude gate alone, regardless of
+  // spectral ratio -- a LOW value relative to totalSampleCount, on a
+  // recording with a healthy peakRms, points at the adaptive floor
+  // itself being too high somewhere mid-recording (see peakNoiseFloor).
+  amplitudeQualifiedSampleCount: number;
+  // How many samples cleared the spectral-ratio gate alone, regardless of
+  // amplitude -- a LOW value relative to totalSampleCount, despite a
+  // healthy peakSpeechBandRatio, means genuine speech's instantaneous
+  // spectral concentration is volatile frame-to-frame (sibilants,
+  // plosives, formant transitions), not that the threshold value itself
+  // is unreachable.
+  spectralQualifiedSampleCount: number;
+  // The largest gap ever observed BETWEEN two consecutive fully-qualified
+  // (both-gates) samples -- distinct from candidateResetCount (which
+  // counts how many times a streak was discarded): this shows whether
+  // qualifying evidence was clustered tightly together (small value) or
+  // scattered thinly across the whole recording (large value, up to
+  // recordingDurationMs itself).
+  longestCandidateGapMs: number;
+  // The adaptive noise floor's own highest value reached at any point in
+  // the recording, not just its ending value (finalNoiseFloor) -- reveals
+  // a floor that spiked mid-recording (e.g. from a burst of ambient
+  // noise) and then settled back down, which finalNoiseFloor alone would
+  // hide.
+  peakNoiseFloor: number;
 }
 
 export function computeVoiceActivityDiagnostics(params: {
@@ -416,6 +550,11 @@ export function computeVoiceActivityDiagnostics(params: {
   maxCandidateSpeechMs: number;
   candidateResetCount: number;
   fullyQualifiedSampleCount: number;
+  totalSampleCount: number;
+  amplitudeQualifiedSampleCount: number;
+  spectralQualifiedSampleCount: number;
+  longestCandidateGapMs: number;
+  peakNoiseFloor: number;
 }): VoiceActivityDiagnostics {
   const speechDetectedAtMs =
     params.speechDetectedAt !== null ? Math.max(0, Math.round(params.speechDetectedAt - params.recordingStartedAt)) : null;
@@ -440,5 +579,10 @@ export function computeVoiceActivityDiagnostics(params: {
     maxCandidateSpeechMs: params.maxCandidateSpeechMs,
     candidateResetCount: params.candidateResetCount,
     fullyQualifiedSampleCount: params.fullyQualifiedSampleCount,
+    totalSampleCount: params.totalSampleCount,
+    amplitudeQualifiedSampleCount: params.amplitudeQualifiedSampleCount,
+    spectralQualifiedSampleCount: params.spectralQualifiedSampleCount,
+    longestCandidateGapMs: params.longestCandidateGapMs,
+    peakNoiseFloor: params.peakNoiseFloor,
   };
 }

@@ -178,6 +178,14 @@ export interface VoiceLatencyTelemetryInput {
   vadMaxCandidateSpeechMs?: number;
   vadCandidateResetCount?: number;
   vadFullyQualifiedSampleCount?: number;
+  // VAD false-negative hardening, ROUND 2 (2026-08-22): see
+  // voice-activity-logic.ts's own ROUND 2 VoiceActivityDiagnostics doc
+  // comments on these same 5 fields.
+  vadTotalSampleCount?: number;
+  vadAmplitudeQualifiedSampleCount?: number;
+  vadSpectralQualifiedSampleCount?: number;
+  vadLongestCandidateGapMs?: number;
+  vadPeakNoiseFloor?: number;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -481,6 +489,20 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
   const vadFullyQualifiedSampleCount = parseOptionalNonNegativeInteger(input, "vadFullyQualifiedSampleCount");
   if (!vadFullyQualifiedSampleCount.ok) return { ok: false, reason: "invalid_vad_fully_qualified_sample_count" };
 
+  // VAD false-negative hardening, ROUND 2 (2026-08-22): see
+  // voice-activity-logic.ts's own ROUND 2 VoiceActivityDiagnostics doc
+  // comments on these same 5 fields.
+  const vadTotalSampleCount = parseOptionalNonNegativeInteger(input, "vadTotalSampleCount");
+  if (!vadTotalSampleCount.ok) return { ok: false, reason: "invalid_vad_total_sample_count" };
+  const vadAmplitudeQualifiedSampleCount = parseOptionalNonNegativeInteger(input, "vadAmplitudeQualifiedSampleCount");
+  if (!vadAmplitudeQualifiedSampleCount.ok) return { ok: false, reason: "invalid_vad_amplitude_qualified_sample_count" };
+  const vadSpectralQualifiedSampleCount = parseOptionalNonNegativeInteger(input, "vadSpectralQualifiedSampleCount");
+  if (!vadSpectralQualifiedSampleCount.ok) return { ok: false, reason: "invalid_vad_spectral_qualified_sample_count" };
+  const vadLongestCandidateGapMs = parseOptionalDurationField(input, "vadLongestCandidateGapMs");
+  if (!vadLongestCandidateGapMs.ok) return { ok: false, reason: "invalid_vad_longest_candidate_gap_ms" };
+  const vadPeakNoiseFloor = parseOptionalBoundedFloat(input, "vadPeakNoiseFloor", MAX_PLAUSIBLE_AUDIO_LEVEL);
+  if (!vadPeakNoiseFloor.ok) return { ok: false, reason: "invalid_vad_peak_noise_floor" };
+
   let sttProviderHttpStatus: number | undefined;
   if (input.sttProviderHttpStatus !== undefined) {
     if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
@@ -627,6 +649,15 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(vadFullyQualifiedSampleCount.value !== undefined
         ? { vadFullyQualifiedSampleCount: vadFullyQualifiedSampleCount.value }
         : {}),
+      ...(vadTotalSampleCount.value !== undefined ? { vadTotalSampleCount: vadTotalSampleCount.value } : {}),
+      ...(vadAmplitudeQualifiedSampleCount.value !== undefined
+        ? { vadAmplitudeQualifiedSampleCount: vadAmplitudeQualifiedSampleCount.value }
+        : {}),
+      ...(vadSpectralQualifiedSampleCount.value !== undefined
+        ? { vadSpectralQualifiedSampleCount: vadSpectralQualifiedSampleCount.value }
+        : {}),
+      ...(vadLongestCandidateGapMs.value !== undefined ? { vadLongestCandidateGapMs: vadLongestCandidateGapMs.value } : {}),
+      ...(vadPeakNoiseFloor.value !== undefined ? { vadPeakNoiseFloor: vadPeakNoiseFloor.value } : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
       ...(sttProviderErrorMessage !== undefined ? { sttProviderErrorMessage } : {}),

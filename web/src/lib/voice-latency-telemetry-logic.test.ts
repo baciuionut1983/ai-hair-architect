@@ -680,6 +680,112 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // VAD false-negative hardening, ROUND 2 (2026-08-22): the real
+  // production retest of cb0d66c showed the round-1 telemetry alone
+  // couldn't distinguish WHICH gate rejected the remaining real-speech
+  // samples -- these 5 fields reconstruct the full amplitude/spectral/
+  // alignment breakdown. See voice-activity-logic.ts's own ROUND 2
+  // VoiceActivityDiagnostics doc comments for exactly what each answers.
+  describe("VAD ROUND 2 diagnostic accumulators (vadTotalSampleCount / vadAmplitudeQualifiedSampleCount / vadSpectralQualifiedSampleCount / vadLongestCandidateGapMs / vadPeakNoiseFloor)", () => {
+    it("accepts a fully-populated set of these fields", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadTotalSampleCount: 100,
+        vadAmplitudeQualifiedSampleCount: 60,
+        vadSpectralQualifiedSampleCount: 15,
+        vadLongestCandidateGapMs: 3000,
+        vadPeakNoiseFloor: 0.03,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadTotalSampleCount: 100,
+          vadAmplitudeQualifiedSampleCount: 60,
+          vadSpectralQualifiedSampleCount: 15,
+          vadLongestCandidateGapMs: 3000,
+          vadPeakNoiseFloor: 0.03,
+        }),
+      });
+    });
+
+    it("accepts zero for every field -- a truthful 'never observed', not rejected as missing", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadTotalSampleCount: 0,
+        vadLongestCandidateGapMs: 0,
+        vadPeakNoiseFloor: 0,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ vadTotalSampleCount: 0, vadLongestCandidateGapMs: 0, vadPeakNoiseFloor: 0 }),
+      });
+    });
+
+    it("rejects a negative value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadSpectralQualifiedSampleCount: -1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_spectral_qualified_sample_count" });
+    });
+
+    it("rejects a non-integer count", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadAmplitudeQualifiedSampleCount: 12.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_amplitude_qualified_sample_count" });
+    });
+
+    it("rejects an implausible vadPeakNoiseFloor -- never a real one", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadPeakNoiseFloor: 50,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_peak_noise_floor" });
+    });
+
+    it("rejects an implausible vadLongestCandidateGapMs -- never a real one", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+        vadLongestCandidateGapMs: 10 * 60 * 1000,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_longest_candidate_gap_ms" });
+    });
+
+    it("omits every field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_failed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of [
+          "vadTotalSampleCount",
+          "vadAmplitudeQualifiedSampleCount",
+          "vadSpectralQualifiedSampleCount",
+          "vadLongestCandidateGapMs",
+          "vadPeakNoiseFloor",
+        ]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
   // production STT failure be attributed, directly from this one log line,
   // to the real Gemini HTTP status/canonical error status, or to a real

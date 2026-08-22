@@ -428,6 +428,14 @@ export interface VoiceLatencyTerminalDiagnostics {
   vadMaxCandidateSpeechMs?: number;
   vadCandidateResetCount?: number;
   vadFullyQualifiedSampleCount?: number;
+  // VAD false-negative hardening, ROUND 2 (2026-08-22): see
+  // voice-activity-logic.ts's own ROUND 2 VoiceActivityDiagnostics doc
+  // comments for exactly what each of these answers.
+  vadTotalSampleCount?: number;
+  vadAmplitudeQualifiedSampleCount?: number;
+  vadSpectralQualifiedSampleCount?: number;
+  vadLongestCandidateGapMs?: number;
+  vadPeakNoiseFloor?: number;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see

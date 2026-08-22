@@ -232,6 +232,14 @@ export function vadDiagnosticsToReportFields(diagnostics: VoiceActivityDiagnosti
     vadMaxCandidateSpeechMs: diagnostics.maxCandidateSpeechMs,
     vadCandidateResetCount: diagnostics.candidateResetCount,
     vadFullyQualifiedSampleCount: diagnostics.fullyQualifiedSampleCount,
+    // VAD false-negative hardening, ROUND 2 (2026-08-22): see
+    // VoiceActivityDiagnostics's own ROUND 2 doc comments for what each
+    // answers.
+    vadTotalSampleCount: diagnostics.totalSampleCount,
+    vadAmplitudeQualifiedSampleCount: diagnostics.amplitudeQualifiedSampleCount,
+    vadSpectralQualifiedSampleCount: diagnostics.spectralQualifiedSampleCount,
+    vadLongestCandidateGapMs: diagnostics.longestCandidateGapMs,
+    vadPeakNoiseFloor: diagnostics.peakNoiseFloor,
   };
 }
 
@@ -316,6 +324,13 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
       maxCandidateSpeechMs: vadStateRef.current?.maxCandidateStreakMs ?? 0,
       candidateResetCount: vadStateRef.current?.candidateResetCount ?? 0,
       fullyQualifiedSampleCount: vadStateRef.current?.fullyQualifiedSampleCount ?? 0,
+      // VAD false-negative hardening, ROUND 2 (2026-08-22): same "0 is
+      // truthful, never fabricated" contract as the round-1 fields above.
+      totalSampleCount: vadStateRef.current?.totalSampleCount ?? 0,
+      amplitudeQualifiedSampleCount: vadStateRef.current?.amplitudeQualifiedSampleCount ?? 0,
+      spectralQualifiedSampleCount: vadStateRef.current?.spectralQualifiedSampleCount ?? 0,
+      longestCandidateGapMs: vadStateRef.current?.longestCandidateGapMs ?? 0,
+      peakNoiseFloor: vadStateRef.current?.peakNoiseFloor ?? 0,
     });
   }, []);
 

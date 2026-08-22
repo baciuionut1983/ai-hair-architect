@@ -369,6 +369,54 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     logSpy.mockRestore();
   });
 
+  // VAD false-negative hardening, ROUND 2 (2026-08-22): the real
+  // production retest of cb0d66c showed the round-1 accumulators alone
+  // couldn't distinguish which gate rejected the remaining real-speech
+  // samples -- these 5 fields let an operator read the full amplitude/
+  // spectral/alignment breakdown directly from this log line.
+  it("logs the VAD ROUND 2 diagnostic accumulators when the client reported them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-120",
+      outcome: "stt_failed",
+      summary: validSummary(),
+      vadTotalSampleCount: 100,
+      vadAmplitudeQualifiedSampleCount: 60,
+      vadSpectralQualifiedSampleCount: 15,
+      vadLongestCandidateGapMs: 3000,
+      vadPeakNoiseFloor: 0.03,
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadTotalSampleCount: 100,
+      vadAmplitudeQualifiedSampleCount: 60,
+      vadSpectralQualifiedSampleCount: 15,
+      vadLongestCandidateGapMs: 3000,
+      vadPeakNoiseFloor: 0.03,
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs the VAD ROUND 2 diagnostic accumulators as null (never fabricated) when the client didn't report them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-121", outcome: "stt_failed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadTotalSampleCount: null,
+      vadAmplitudeQualifiedSampleCount: null,
+      vadSpectralQualifiedSampleCount: null,
+      vadLongestCandidateGapMs: null,
+      vadPeakNoiseFloor: null,
+    });
+    logSpy.mockRestore();
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): the real Gemini
   // provider failure detail, closing the gap where a provider HTTP error,
   // a network/timeout failure, and an empty-transcript response all
