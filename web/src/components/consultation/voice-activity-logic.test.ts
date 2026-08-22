@@ -911,6 +911,168 @@ describe("evaluateVadSample", () => {
       expect(result.state.candidateResetCount).toBe(1);
     });
   });
+
+  // VAD end-of-speech hardening, ROUND 6 (2026-08-22): a real production
+  // test on 471570b, with the USER'S OWN GROUND TRUTH ("the microphone
+  // stopped while I was still speaking"), proved a false POSITIVE
+  // end-of-speech: speech confirmed correctly at 401ms, but lastSpeechAt
+  // stopped updating at 802ms and stop_silence fired 2108ms later,
+  // truncating the recording while the user kept talking (STT still
+  // transcribed real content from the audio actually captured). Root
+  // cause: lastSpeechAt was updated in exactly one place -- the
+  // windowedCandidate branch -- so CONTINUATION reused the identical,
+  // strict cross-modal bar START uses. See this module's own ROUND 6 doc
+  // comment for the full analysis and why spectral-alone (never amplitude-
+  // alone) is the safe, weaker continuation signal.
+  describe("ROUND 6: continuation evidence (spectral-alone keeps a confirmed utterance alive)", () => {
+    it("reproduces the production false-positive shape: a stretch with only spectral (no amplitude) evidence after confirmation no longer triggers a premature stop_silence", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, CLEAR_SPEECH, 0);
+      state = result.state;
+      result = evaluateVadSample(state, CLEAR_SPEECH, 300); // confirmed at 300ms
+      state = result.state;
+      expect(state.hasDetectedSpeech).toBe(true);
+
+      // A stretch (well beyond speechEvidenceWindowMs) with only
+      // spectral-alone evidence -- real, quieter speech that never
+      // re-clears the amplitude gate. Pre-ROUND-6, this would NOT have
+      // refreshed lastSpeechAt at all (windowedCandidate requires
+      // amplitude now-or-recently), and stop_silence would have fired at
+      // t=2300 (2000ms after the last full windowedCandidate hit at
+      // t=300) -- cutting the user off mid-sentence exactly as the real
+      // production report described.
+      result = evaluateVadSample(state, AMPLITUDE_DIP, 1900);
+      expect(result.decision).toBe("continue");
+      expect(result.state.lastSpeechAt).toBe(1900); // refreshed via the new continuation-only rule
+      state = result.state;
+
+      // Without ROUND 6, the recording would already have stopped by now.
+      result = evaluateVadSample(state, SILENCE, 2300);
+      expect(result.decision).toBe("continue"); // still well within 2000ms of t=1900
+    });
+
+    it("genuine silence on BOTH modalities after a continuation-only refresh still eventually triggers stop_silence -- the new leniency is bounded, not unlimited", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, CLEAR_SPEECH, 0);
+      state = result.state;
+      result = evaluateVadSample(state, CLEAR_SPEECH, 300);
+      state = result.state;
+      result = evaluateVadSample(state, AMPLITUDE_DIP, 1900); // continuation-only refresh
+      state = result.state;
+      result = evaluateVadSample(state, SILENCE, 3899); // 1999ms since t=1900 -- not yet
+      expect(result.decision).toBe("continue");
+      state = result.state;
+      result = evaluateVadSample(state, SILENCE, 3900); // exactly 2000ms since t=1900
+      expect(result.decision).toBe("stop_silence");
+    });
+
+    it("music immediately after real speech still cannot ride the new continuation-only rule -- spectralQualified is never true for music, so continuationQualified never fires for it", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, CLEAR_SPEECH, 0);
+      state = result.state;
+      result = evaluateVadSample(state, CLEAR_SPEECH, 300);
+      state = result.state;
+      expect(state.hasDetectedSpeech).toBe(true);
+
+      let t = 400;
+      let sawStop = false;
+      for (let i = 0; i < 30; i += 1) {
+        result = evaluateVadSample(state, LOUD_MUSIC, t);
+        state = result.state;
+        if (result.decision === "stop_silence") {
+          sawStop = true;
+          break;
+        }
+        t += 100;
+      }
+      expect(sawStop).toBe(true);
+      // Bounded exactly as ROUND 4 proved (the existing windowedCandidate
+      // leakage window), unaffected by ROUND 6 -- not extended further,
+      // since music never produces genuine spectral evidence.
+      expect(t - 300).toBeLessThan(DEFAULT_VAD_CONFIG.silenceDurationMs + DEFAULT_VAD_CONFIG.speechEvidenceWindowMs + 200);
+    });
+
+    it("speech continuing over background music (intermittent spectral evidence, amplitude often elevated by the music) does not trigger a premature cutoff", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, CLEAR_SPEECH, 0);
+      state = result.state;
+      result = evaluateVadSample(state, CLEAR_SPEECH, 300);
+      state = result.state;
+      expect(state.hasDetectedSpeech).toBe(true);
+
+      let t = 500;
+      for (let i = 0; i < 15; i += 1) {
+        const sample = i % 2 === 0 ? SPEECH_OVER_MODERATE_MUSIC : AMPLITUDE_DIP;
+        result = evaluateVadSample(state, sample, t);
+        state = result.state;
+        expect(result.decision).toBe("continue");
+        t += 100;
+      }
+      expect(state.hasDetectedSpeech).toBe(true);
+    });
+
+    it("amplitude-only post-confirmation samples are tracked diagnostically but never refresh the silence countdown", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, CLEAR_SPEECH, 0);
+      state = result.state;
+      result = evaluateVadSample(state, CLEAR_SPEECH, 300);
+      state = result.state;
+      expect(state.hasDetectedSpeech).toBe(true);
+
+      // Well past speechEvidenceWindowMs since the last evidence, so this
+      // is unambiguously NOT a windowedCandidate.
+      result = evaluateVadSample(state, LOUD_BROADBAND_PHONEME, 700);
+      expect(result.state.lastSpeechAt).toBe(300); // NOT refreshed -- amplitude alone is never a continuation signal
+      expect(result.state.continuationAmplitudeOnlySampleCount).toBe(1);
+    });
+
+    it("tracks postConfirmationSampleCount/continuationQualifiedSampleCount/continuationSpectralOnlySampleCount correctly", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, CLEAR_SPEECH, 0);
+      state = result.state;
+      result = evaluateVadSample(state, CLEAR_SPEECH, 300); // confirmed here -- not itself counted as post-confirmation
+      state = result.state;
+      expect(state.postConfirmationSampleCount).toBe(0);
+
+      result = evaluateVadSample(state, AMPLITUDE_DIP, 700); // spectral-only continuation hit
+      state = result.state;
+      expect(state.postConfirmationSampleCount).toBe(1);
+      expect(state.continuationQualifiedSampleCount).toBe(1);
+      expect(state.continuationSpectralOnlySampleCount).toBe(1);
+
+      result = evaluateVadSample(state, SILENCE, 800); // no evidence at all
+      state = result.state;
+      expect(state.postConfirmationSampleCount).toBe(2);
+      expect(state.continuationQualifiedSampleCount).toBe(1); // unchanged
+      expect(state.continuationSpectralOnlySampleCount).toBe(1); // unchanged
+    });
+
+    it("longestCandidateGapMs (STRONG evidence only) is unaffected by continuation-only refreshes -- it keeps measuring gaps between full windowedCandidate hits specifically", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, CLEAR_SPEECH, 0);
+      state = result.state;
+      result = evaluateVadSample(state, CLEAR_SPEECH, 300); // lastWindowedCandidateAt=300
+      state = result.state;
+      result = evaluateVadSample(state, AMPLITUDE_DIP, 1900); // continuation-only, does NOT update lastWindowedCandidateAt
+      state = result.state;
+      result = evaluateVadSample(state, CLEAR_SPEECH, 2000); // a full windowedCandidate hit again
+      state = result.state;
+      // Gap measured against lastWindowedCandidateAt (300), not the
+      // continuation-refreshed lastSpeechAt (1900): 2000-300=1700.
+      expect(state.longestCandidateGapMs).toBe(1700);
+    });
+
+    it("tracks longestPostConfirmationGapMs as the largest gap between two consecutive continuation-refreshing samples", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, CLEAR_SPEECH, 0);
+      state = result.state;
+      result = evaluateVadSample(state, CLEAR_SPEECH, 300); // confirmed, lastSpeechAt=300
+      state = result.state;
+      result = evaluateVadSample(state, AMPLITUDE_DIP, 1900); // continuation-only refresh, gap=1600 since t=300
+      state = result.state;
+      expect(state.longestPostConfirmationGapMs).toBe(1600);
+    });
+  });
 });
 
 // End-of-speech hardening (2026-08-20), Task E: proves the telemetry
@@ -918,10 +1080,14 @@ describe("evaluateVadSample", () => {
 // feeds it (use-voice-recording.ts).
 describe("computeVoiceActivityDiagnostics", () => {
   // VAD false-negative hardening (2026-08-21 / ROUND 2 2026-08-22 / ROUND
-  // 4 2026-08-22): the 12 diagnostic accumulators, always present
-  // regardless of the scenario -- a minimal, arbitrary-but-fixed set
-  // reused across every test below so each test only needs to override
-  // what it's actually asserting on.
+  // 4 2026-08-22 / ROUND 6 2026-08-22): the 17 diagnostic accumulators,
+  // always present regardless of the scenario -- a minimal, arbitrary-but-
+  // fixed set reused across every test below so each test only needs to
+  // override what it's actually asserting on. Every test below that
+  // spreads this fixture uses a non-null speechDetectedAt (a confirmed
+  // recording), so the ROUND 6 continuation counters pass through
+  // unmodified rather than being nulled -- see computeVoiceActivityDiagnostics's
+  // own hadConfirmedSpeech branching.
   const DIAGNOSTIC_ACCUMULATORS = {
     peakRms: 0.4,
     peakSpeechBandRatio: 0.6,
@@ -935,6 +1101,11 @@ describe("computeVoiceActivityDiagnostics", () => {
     longestCandidateGapMs: 500,
     peakNoiseFloor: 0.035,
     windowedCandidateSampleCount: 18,
+    postConfirmationSampleCount: 30,
+    continuationQualifiedSampleCount: 22,
+    continuationSpectralOnlySampleCount: 6,
+    continuationAmplitudeOnlySampleCount: 4,
+    longestPostConfirmationGapMs: 400,
   };
 
   it("computes a full breakdown for a normal stop_silence turn", () => {
@@ -945,6 +1116,7 @@ describe("computeVoiceActivityDiagnostics", () => {
       lastSpeechAt: 3500, // last speech-like sample at 2500ms in
       autoStopReason: "stop_silence",
       vadMode: "heuristic-rms-spectral-v1",
+      lastWindowedCandidateAt: 4000, // last STRONG (cross-modal) hit at 3000ms in
       ...DIAGNOSTIC_ACCUMULATORS,
     });
     expect(diagnostics).toEqual({
@@ -956,6 +1128,8 @@ describe("computeVoiceActivityDiagnostics", () => {
       speechEndedAtMs: 2500,
       maxDurationTriggered: false,
       vadMode: "heuristic-rms-spectral-v1",
+      // 5500 - 4000
+      lastStrongEvidenceAgeAtStopMs: 1500,
       ...DIAGNOSTIC_ACCUMULATORS,
     });
   });
@@ -968,6 +1142,7 @@ describe("computeVoiceActivityDiagnostics", () => {
       lastSpeechAt: null,
       autoStopReason: "stop_no_speech_timeout",
       vadMode: "heuristic-rms-spectral-v1",
+      lastWindowedCandidateAt: null,
       ...DIAGNOSTIC_ACCUMULATORS,
     });
     expect(diagnostics.speechDurationMs).toBeNull();
@@ -975,6 +1150,12 @@ describe("computeVoiceActivityDiagnostics", () => {
     expect(diagnostics.speechEndedAtMs).toBeNull();
     expect(diagnostics.silenceAfterSpeechMs).toBeNull();
     expect(diagnostics.recordingDurationMs).toBe(10000);
+    // ROUND 6: no post-confirmation period ever existed on this recording.
+    expect(diagnostics.postConfirmationSampleCount).toBeNull();
+    expect(diagnostics.continuationQualifiedSampleCount).toBeNull();
+    expect(diagnostics.continuationSpectralOnlySampleCount).toBeNull();
+    expect(diagnostics.continuationAmplitudeOnlySampleCount).toBeNull();
+    expect(diagnostics.longestPostConfirmationGapMs).toBeNull();
   });
 
   it("only ever populates silenceAfterSpeechMs for stop_silence -- never a number that doesn't mean what its name promises for another reason", () => {
@@ -985,10 +1166,14 @@ describe("computeVoiceActivityDiagnostics", () => {
       lastSpeechAt: 55000,
       autoStopReason: "stop_max_duration",
       vadMode: "heuristic-rms-spectral-v1",
+      lastWindowedCandidateAt: 55000,
       ...DIAGNOSTIC_ACCUMULATORS,
     });
     expect(diagnostics.silenceAfterSpeechMs).toBeNull();
     expect(diagnostics.maxDurationTriggered).toBe(true);
+    // ROUND 6: only ever populated for stop_silence, same convention as
+    // silenceAfterSpeechMs -- stop_max_duration has no honest claim to make.
+    expect(diagnostics.lastStrongEvidenceAgeAtStopMs).toBeNull();
   });
 
   it("sets maxDurationTriggered true only for stop_max_duration", () => {
@@ -999,6 +1184,7 @@ describe("computeVoiceActivityDiagnostics", () => {
       lastSpeechAt: 1000,
       autoStopReason: "stop_silence",
       vadMode: "heuristic-rms-spectral-v1",
+      lastWindowedCandidateAt: 1000,
       ...DIAGNOSTIC_ACCUMULATORS,
     });
     expect(other.maxDurationTriggered).toBe(false);
@@ -1012,6 +1198,7 @@ describe("computeVoiceActivityDiagnostics", () => {
       lastSpeechAt: 1200,
       autoStopReason: "manual_stop",
       vadMode: "heuristic-rms-spectral-v1",
+      lastWindowedCandidateAt: 1200,
       ...DIAGNOSTIC_ACCUMULATORS,
     });
     expect(diagnostics.autoStopReason).toBe("manual_stop");
@@ -1019,10 +1206,16 @@ describe("computeVoiceActivityDiagnostics", () => {
   });
 
   // VAD false-negative hardening (2026-08-21 / ROUND 2 2026-08-22 / ROUND
-  // 4 2026-08-22): passes all 12 diagnostic accumulators straight through,
-  // unmodified -- computeVoiceActivityDiagnostics never derives or
-  // fabricates them itself, only evaluateVadSample does.
-  it("passes all 12 diagnostic accumulators through unmodified", () => {
+  // 4 2026-08-22 / ROUND 6 2026-08-22): passes all 12 pre-ROUND-6
+  // diagnostic accumulators straight through, unmodified --
+  // computeVoiceActivityDiagnostics never derives or fabricates them
+  // itself, only evaluateVadSample does. Uses speechDetectedAt: null
+  // deliberately (a stop_no_speech_timeout turn), so the ROUND 6
+  // continuation counters are asserted NULL below instead -- see the
+  // dedicated "nulls every ROUND 6 continuation field" test for the
+  // confirmed-speech, pass-through case (already covered by the first
+  // test in this describe block).
+  it("passes all 12 pre-ROUND-6 diagnostic accumulators through unmodified", () => {
     const diagnostics = computeVoiceActivityDiagnostics({
       recordingStartedAt: 0,
       stopDecidedAt: 10000,
@@ -1042,6 +1235,12 @@ describe("computeVoiceActivityDiagnostics", () => {
       longestCandidateGapMs: 3000,
       peakNoiseFloor: 0.03,
       windowedCandidateSampleCount: 45,
+      lastWindowedCandidateAt: 3200,
+      postConfirmationSampleCount: 12,
+      continuationQualifiedSampleCount: 8,
+      continuationSpectralOnlySampleCount: 3,
+      continuationAmplitudeOnlySampleCount: 2,
+      longestPostConfirmationGapMs: 700,
     });
     expect(diagnostics.peakRms).toBe(0.18);
     expect(diagnostics.peakSpeechBandRatio).toBe(0.41);
@@ -1055,6 +1254,15 @@ describe("computeVoiceActivityDiagnostics", () => {
     expect(diagnostics.longestCandidateGapMs).toBe(3000);
     expect(diagnostics.peakNoiseFloor).toBe(0.03);
     expect(diagnostics.windowedCandidateSampleCount).toBe(45);
+    // ROUND 6: speechDetectedAt is null (never confirmed) -- every
+    // continuation field must be null here, regardless of the (non-null)
+    // raw counters passed in above, since there was no post-confirmation
+    // period to describe at all.
+    expect(diagnostics.postConfirmationSampleCount).toBeNull();
+    expect(diagnostics.continuationQualifiedSampleCount).toBeNull();
+    expect(diagnostics.continuationSpectralOnlySampleCount).toBeNull();
+    expect(diagnostics.continuationAmplitudeOnlySampleCount).toBeNull();
+    expect(diagnostics.longestPostConfirmationGapMs).toBeNull();
   });
 
   // VAD false-negative hardening (2026-08-21), Task 13: proves
@@ -1095,6 +1303,12 @@ describe("computeVoiceActivityDiagnostics", () => {
       longestCandidateGapMs: afterGap.state.longestCandidateGapMs,
       peakNoiseFloor: afterGap.state.peakNoiseFloor,
       windowedCandidateSampleCount: afterGap.state.windowedCandidateSampleCount,
+      lastWindowedCandidateAt: afterGap.state.lastWindowedCandidateAt,
+      postConfirmationSampleCount: afterGap.state.postConfirmationSampleCount,
+      continuationQualifiedSampleCount: afterGap.state.continuationQualifiedSampleCount,
+      continuationSpectralOnlySampleCount: afterGap.state.continuationSpectralOnlySampleCount,
+      continuationAmplitudeOnlySampleCount: afterGap.state.continuationAmplitudeOnlySampleCount,
+      longestPostConfirmationGapMs: afterGap.state.longestPostConfirmationGapMs,
     });
 
     expect(diagnostics.speechDetectedAtMs).toBeNull();
@@ -1153,6 +1367,12 @@ describe("initVadState", () => {
       lastAmplitudeQualifiedAt: null,
       lastSpectralQualifiedAt: null,
       windowedCandidateSampleCount: 0,
+      lastWindowedCandidateAt: null,
+      postConfirmationSampleCount: 0,
+      continuationQualifiedSampleCount: 0,
+      continuationSpectralOnlySampleCount: 0,
+      continuationAmplitudeOnlySampleCount: 0,
+      longestPostConfirmationGapMs: 0,
     });
   });
 });

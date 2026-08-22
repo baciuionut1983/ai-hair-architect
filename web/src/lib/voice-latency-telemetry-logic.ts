@@ -190,6 +190,15 @@ export interface VoiceLatencyTelemetryInput {
   // voice-activity-logic.ts's own ROUND 4 VoiceActivityDiagnostics doc
   // comment for exactly what this answers.
   vadWindowedCandidateSampleCount?: number;
+  // VAD end-of-speech hardening, ROUND 6 (2026-08-22): see
+  // voice-activity-logic.ts's own ROUND 6 VoiceActivityDiagnostics doc
+  // comments for exactly what each answers.
+  vadPostConfirmationSampleCount?: number;
+  vadContinuationQualifiedSampleCount?: number;
+  vadContinuationSpectralOnlySampleCount?: number;
+  vadContinuationAmplitudeOnlySampleCount?: number;
+  vadLongestPostConfirmationGapMs?: number;
+  vadLastStrongEvidenceAgeAtStopMs?: number;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -513,6 +522,22 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
   const vadWindowedCandidateSampleCount = parseOptionalNonNegativeInteger(input, "vadWindowedCandidateSampleCount");
   if (!vadWindowedCandidateSampleCount.ok) return { ok: false, reason: "invalid_vad_windowed_candidate_sample_count" };
 
+  // VAD end-of-speech hardening, ROUND 6 (2026-08-22): see
+  // voice-activity-logic.ts's own ROUND 6 VoiceActivityDiagnostics doc
+  // comments for exactly what each answers.
+  const vadPostConfirmationSampleCount = parseOptionalNonNegativeInteger(input, "vadPostConfirmationSampleCount");
+  if (!vadPostConfirmationSampleCount.ok) return { ok: false, reason: "invalid_vad_post_confirmation_sample_count" };
+  const vadContinuationQualifiedSampleCount = parseOptionalNonNegativeInteger(input, "vadContinuationQualifiedSampleCount");
+  if (!vadContinuationQualifiedSampleCount.ok) return { ok: false, reason: "invalid_vad_continuation_qualified_sample_count" };
+  const vadContinuationSpectralOnlySampleCount = parseOptionalNonNegativeInteger(input, "vadContinuationSpectralOnlySampleCount");
+  if (!vadContinuationSpectralOnlySampleCount.ok) return { ok: false, reason: "invalid_vad_continuation_spectral_only_sample_count" };
+  const vadContinuationAmplitudeOnlySampleCount = parseOptionalNonNegativeInteger(input, "vadContinuationAmplitudeOnlySampleCount");
+  if (!vadContinuationAmplitudeOnlySampleCount.ok) return { ok: false, reason: "invalid_vad_continuation_amplitude_only_sample_count" };
+  const vadLongestPostConfirmationGapMs = parseOptionalDurationField(input, "vadLongestPostConfirmationGapMs");
+  if (!vadLongestPostConfirmationGapMs.ok) return { ok: false, reason: "invalid_vad_longest_post_confirmation_gap_ms" };
+  const vadLastStrongEvidenceAgeAtStopMs = parseOptionalDurationField(input, "vadLastStrongEvidenceAgeAtStopMs");
+  if (!vadLastStrongEvidenceAgeAtStopMs.ok) return { ok: false, reason: "invalid_vad_last_strong_evidence_age_at_stop_ms" };
+
   let sttProviderHttpStatus: number | undefined;
   if (input.sttProviderHttpStatus !== undefined) {
     if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
@@ -670,6 +695,24 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(vadPeakNoiseFloor.value !== undefined ? { vadPeakNoiseFloor: vadPeakNoiseFloor.value } : {}),
       ...(vadWindowedCandidateSampleCount.value !== undefined
         ? { vadWindowedCandidateSampleCount: vadWindowedCandidateSampleCount.value }
+        : {}),
+      ...(vadPostConfirmationSampleCount.value !== undefined
+        ? { vadPostConfirmationSampleCount: vadPostConfirmationSampleCount.value }
+        : {}),
+      ...(vadContinuationQualifiedSampleCount.value !== undefined
+        ? { vadContinuationQualifiedSampleCount: vadContinuationQualifiedSampleCount.value }
+        : {}),
+      ...(vadContinuationSpectralOnlySampleCount.value !== undefined
+        ? { vadContinuationSpectralOnlySampleCount: vadContinuationSpectralOnlySampleCount.value }
+        : {}),
+      ...(vadContinuationAmplitudeOnlySampleCount.value !== undefined
+        ? { vadContinuationAmplitudeOnlySampleCount: vadContinuationAmplitudeOnlySampleCount.value }
+        : {}),
+      ...(vadLongestPostConfirmationGapMs.value !== undefined
+        ? { vadLongestPostConfirmationGapMs: vadLongestPostConfirmationGapMs.value }
+        : {}),
+      ...(vadLastStrongEvidenceAgeAtStopMs.value !== undefined
+        ? { vadLastStrongEvidenceAgeAtStopMs: vadLastStrongEvidenceAgeAtStopMs.value }
         : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),

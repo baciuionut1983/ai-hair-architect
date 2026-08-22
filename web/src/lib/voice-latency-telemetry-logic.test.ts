@@ -852,6 +852,119 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // VAD end-of-speech hardening, ROUND 6 (2026-08-22): a real production
+  // report (user's own ground truth: "the microphone stopped while I was
+  // still speaking") proved a false POSITIVE end-of-speech -- CONTINUATION
+  // (once speech is already confirmed) needed a weaker evidence rule than
+  // START. See voice-activity-logic.ts's own ROUND 6 VoiceActivityDiagnostics
+  // doc comments for exactly what each of these answers.
+  describe("VAD ROUND 6 diagnostic accumulators (vadPostConfirmationSampleCount / vadContinuationQualifiedSampleCount / vadContinuationSpectralOnlySampleCount / vadContinuationAmplitudeOnlySampleCount / vadLongestPostConfirmationGapMs / vadLastStrongEvidenceAgeAtStopMs)", () => {
+    it("accepts a fully-populated set of these fields", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadPostConfirmationSampleCount: 30,
+        vadContinuationQualifiedSampleCount: 22,
+        vadContinuationSpectralOnlySampleCount: 6,
+        vadContinuationAmplitudeOnlySampleCount: 4,
+        vadLongestPostConfirmationGapMs: 400,
+        vadLastStrongEvidenceAgeAtStopMs: 1500,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadPostConfirmationSampleCount: 30,
+          vadContinuationQualifiedSampleCount: 22,
+          vadContinuationSpectralOnlySampleCount: 6,
+          vadContinuationAmplitudeOnlySampleCount: 4,
+          vadLongestPostConfirmationGapMs: 400,
+          vadLastStrongEvidenceAgeAtStopMs: 1500,
+        }),
+      });
+    });
+
+    it("accepts zero for every field -- a truthful 'never observed', not rejected as missing", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadPostConfirmationSampleCount: 0,
+        vadLongestPostConfirmationGapMs: 0,
+        vadLastStrongEvidenceAgeAtStopMs: 0,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadPostConfirmationSampleCount: 0,
+          vadLongestPostConfirmationGapMs: 0,
+          vadLastStrongEvidenceAgeAtStopMs: 0,
+        }),
+      });
+    });
+
+    it("rejects a negative value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadContinuationSpectralOnlySampleCount: -1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_continuation_spectral_only_sample_count" });
+    });
+
+    it("rejects a non-integer count", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadContinuationAmplitudeOnlySampleCount: 3.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_continuation_amplitude_only_sample_count" });
+    });
+
+    it("rejects an implausible vadLongestPostConfirmationGapMs -- never a real one", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadLongestPostConfirmationGapMs: 10 * 60 * 1000,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_longest_post_confirmation_gap_ms" });
+    });
+
+    it("rejects an implausible vadLastStrongEvidenceAgeAtStopMs -- never a real one", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadLastStrongEvidenceAgeAtStopMs: 10 * 60 * 1000,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_last_strong_evidence_age_at_stop_ms" });
+    });
+
+    it("omits every field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of [
+          "vadPostConfirmationSampleCount",
+          "vadContinuationQualifiedSampleCount",
+          "vadContinuationSpectralOnlySampleCount",
+          "vadContinuationAmplitudeOnlySampleCount",
+          "vadLongestPostConfirmationGapMs",
+          "vadLastStrongEvidenceAgeAtStopMs",
+        ]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
   // production STT failure be attributed, directly from this one log line,
   // to the real Gemini HTTP status/canonical error status, or to a real

@@ -402,6 +402,67 @@
 // with what windowedCandidate already promises elsewhere in the same
 // function.
 //
+// VAD end-of-speech hardening, ROUND 6 (2026-08-22): a real production
+// test on 471570b, with the USER'S OWN GROUND TRUTH ("the microphone
+// stopped while I was still speaking"), proved a NEW, distinct failure
+// mode -- a false POSITIVE end-of-speech, not a false negative. Speech was
+// confirmed correctly at 401ms, but lastSpeechAt stopped updating at
+// 802ms and stop_silence fired 2108ms later (2910ms total), truncating
+// the recording while the user kept talking. STT still transcribed real
+// content (43 chars) from the audio actually captured, confirming speech
+// continued into the window VAD had already given up on.
+//
+// Root cause, found by reading the code (Q1/Q2 from this round's own
+// audit): lastSpeechAt is updated in EXACTLY ONE place in this function --
+// the `windowedCandidate` branch. There is no separate mechanism for
+// CONTINUATION once hasDetectedSpeech is already true; every "is the
+// stylist still talking" check reuses the identical, strict cross-modal
+// bar START uses (amplitude AND spectral, same sample or within
+// speechEvidenceWindowMs of each other). In this recording,
+// amplitudeQualifiedSampleCount was a healthy 16/29 (55%) but
+// spectralQualifiedSampleCount was only 5/29 (17%) -- if the handful of
+// spectral hits clustered in the initial confirmation burst (consistent
+// with longestCandidateGapMs staying only 103ms THERE) and none recurred
+// within speechEvidenceWindowMs of an amplitude hit for the rest of the
+// recording, windowedCandidate can go silent for 2+ seconds even while
+// amplitude alone shows the room is clearly not quiet -- exactly the
+// "genuine absence of amplitude-OR-spectral evidence" this round's task
+// distinguishes from "genuine absence of BOTH aligned within a window".
+//
+// Q5 answer: yes, START and CONTINUATION need separate hysteresis. START
+// keeps the full, unweakened cross-modal windowedCandidate bar
+// unconditionally -- weakening it would reopen the very music-never-stops
+// bug this whole file exists to prevent BEFORE any real speech has ever
+// been confirmed. CONTINUATION (only reachable once hasDetectedSpeech is
+// already true) now ALSO accepts a weaker, single-modality signal:
+// `spectralQualified` alone, regardless of amplitude, refreshes
+// lastSpeechAt once real speech is already underway. This is deliberately
+// NOT "amplitude alone" -- amplitude alone is structurally satisfiable by
+// sustained music/noise indefinitely (that is the entire reason the
+// spectral gate exists at all), so it is NEVER used as a sole continuation
+// signal, at START or CONTINUATION, this round or any other. Spectral
+// concentration alone, by contrast, is this module's own most voice-
+// specific signal and is NEVER satisfied by sustained non-vocal sources
+// (see this module's own background-music regression tests) -- so this
+// extension cannot be exploited by music that starts AFTER real speech
+// has already ended, unlike an amplitude-based extension would be. No new
+// timing parameter was introduced: the existing silenceDurationMs (2000ms)
+// remains the sole bound on how long any single gap in evidence -- of
+// either kind -- can persist before actually stopping.
+//
+// New telemetry (postConfirmationSampleCount/continuationQualifiedSampleCount/
+// continuationSpectralOnlySampleCount/continuationAmplitudeOnlySampleCount/
+// longestPostConfirmationGapMs, see VoiceActivityDiagnostics below) was
+// added THIS round, unlike round 5: unlike that round's fixes (provable
+// from existing aggregates + code alone), this round cannot fully verify
+// from current telemetry alone how much CONTINUATION-specific evidence
+// (as opposed to pre-confirmation evidence) contributed, since all
+// existing counters mix pre- and post-confirmation samples together.
+// continuationAmplitudeOnlySampleCount is diagnostic-only (never affects
+// any decision) -- it exists so a future round can see whether
+// amplitude-only evidence during continuation is common enough to justify
+// a bounded, amplitude-based extension too, without guessing.
+//
 // Phase C (noise model): of the five alternative floor-adaptation designs
 // this round's task asked to weigh, "freeze/strongly slow upward
 // adaptation when credible cross-modal speech evidence exists" is the one
@@ -565,6 +626,39 @@ export interface VadState {
   // its existing strict SAME-SAMPLE meaning so the raw same-frame overlap
   // rate stays independently observable in future telemetry.
   windowedCandidateSampleCount: number;
+  // VAD end-of-speech hardening, ROUND 6 (2026-08-22): the timestamp of
+  // the most recent sample that was a full windowedCandidate specifically
+  // -- kept SEPARATE from lastSpeechAt (which, from this round on, can
+  // also be refreshed by the weaker continuation-only spectral-alone
+  // signal) so longestCandidateGapMs keeps its own established meaning
+  // (gap between full cross-modal hits) unchanged. See this module's own
+  // ROUND 6 doc comment.
+  lastWindowedCandidateAt: number | null;
+  // Total samples evaluated AFTER hasDetectedSpeech first became true --
+  // the denominator for the continuation-specific counters below.
+  postConfirmationSampleCount: number;
+  // How many post-confirmation samples refreshed lastSpeechAt, via EITHER
+  // a full windowedCandidate or the new continuation-only spectral-alone
+  // rule -- compare against postConfirmationSampleCount to see how
+  // reliably continuation evidence was found on a given recording.
+  continuationQualifiedSampleCount: number;
+  // Of the above, how many qualified SPECIFICALLY via the new
+  // continuation-only rule (spectralQualified alone, windowedCandidate
+  // false) -- shows directly how much this round's fix itself
+  // contributed, distinct from evidence windowedCandidate already covered.
+  continuationSpectralOnlySampleCount: number;
+  // Diagnostic-only, NEVER used by any decision in this file: how many
+  // post-confirmation samples were amplitude-qualified but NOT spectrally
+  // qualified and not already a windowedCandidate -- real evidence this
+  // round's fix still discards, kept visible so a future round can see
+  // whether a bounded amplitude-based extension is also justified,
+  // without guessing.
+  continuationAmplitudeOnlySampleCount: number;
+  // The largest gap ever seen, AFTER confirmation, between two consecutive
+  // samples that refreshed lastSpeechAt (by either mechanism) -- the
+  // post-confirmation analogue of longestCandidateGapMs, which only ever
+  // measures gaps between full windowedCandidate hits.
+  longestPostConfirmationGapMs: number;
 }
 
 export function initVadState(recordingStartedAt: number): VadState {
@@ -587,6 +681,12 @@ export function initVadState(recordingStartedAt: number): VadState {
     lastAmplitudeQualifiedAt: null,
     lastSpectralQualifiedAt: null,
     windowedCandidateSampleCount: 0,
+    lastWindowedCandidateAt: null,
+    postConfirmationSampleCount: 0,
+    continuationQualifiedSampleCount: 0,
+    continuationSpectralOnlySampleCount: 0,
+    continuationAmplitudeOnlySampleCount: 0,
+    longestPostConfirmationGapMs: 0,
   };
 }
 
@@ -652,6 +752,29 @@ export function evaluateVadSample(
     (spectralQualified && amplitudeRecentlyQualified);
   const lastAmplitudeQualifiedAt = amplitudeQualified ? now : state.lastAmplitudeQualifiedAt;
   const lastSpectralQualifiedAt = spectralQualified ? now : state.lastSpectralQualifiedAt;
+  const lastWindowedCandidateAt = windowedCandidate ? now : state.lastWindowedCandidateAt;
+
+  // VAD end-of-speech hardening, ROUND 6 (2026-08-22): CONTINUATION-only
+  // evidence -- see this module's own ROUND 6 doc comment for the real
+  // production ground truth (mic stopped while the user kept talking) and
+  // why START and CONTINUATION need separate hysteresis. Only meaningful
+  // once hasDetectedSpeech is already true: `spectralQualified` alone,
+  // regardless of amplitude, is credible enough evidence that a real,
+  // already-confirmed utterance is still ongoing. Deliberately NOT
+  // amplitude alone -- amplitude alone is satisfiable by sustained music
+  // indefinitely, so it is never used as a sole continuation signal.
+  const continuationQualified = state.hasDetectedSpeech && spectralQualified;
+  // Diagnostic-only (see this field's own VadState doc comment) -- never
+  // read by any decision below.
+  const isContinuationAmplitudeOnly = state.hasDetectedSpeech && amplitudeQualified && !spectralQualified && !windowedCandidate;
+  // The single signal that now governs whether THIS sample keeps a
+  // CONFIRMED utterance's silence countdown from expiring. START's own
+  // streak-accumulation logic (below) is completely unaffected: while
+  // hasDetectedSpeech is still false, continuationQualified is always
+  // false too (its own condition requires hasDetectedSpeech), so
+  // speechRefresh === windowedCandidate exactly, preserving START's full,
+  // unweakened cross-modal bar.
+  const speechRefresh = windowedCandidate || continuationQualified;
 
   // VAD false-negative hardening (2026-08-21 / ROUND 2 2026-08-22 / ROUND
   // 4 2026-08-22) diagnostic accumulators -- tracked unconditionally,
@@ -671,11 +794,31 @@ export function evaluateVadSample(
   // many times a streak was discarded): this measures how far apart in
   // real time qualifying evidence actually was, regardless of whether a
   // streak was in progress. Only updated when THIS sample is itself a
-  // windowed candidate and a prior one exists.
+  // windowed candidate and a prior one exists. ROUND 6: now measured
+  // against lastWindowedCandidateAt, not lastSpeechAt (which can also be
+  // refreshed by the weaker continuation-only rule from this round on) --
+  // keeps this field's own established meaning unchanged.
   const longestCandidateGapMs =
-    windowedCandidate && state.lastSpeechAt !== null
-      ? Math.max(state.longestCandidateGapMs, now - state.lastSpeechAt)
+    windowedCandidate && state.lastWindowedCandidateAt !== null
+      ? Math.max(state.longestCandidateGapMs, now - state.lastWindowedCandidateAt)
       : state.longestCandidateGapMs;
+  // ROUND 6 continuation-specific accumulators -- see this module's own
+  // ROUND 6 doc comment and VoiceActivityDiagnostics's own doc comments
+  // for what each answers. All gated on state.hasDetectedSpeech (i.e.
+  // pre-confirmation samples never contribute), matching the STT-visible
+  // "already an ongoing utterance" scope these fields describe.
+  const postConfirmationSampleCount = state.hasDetectedSpeech ? state.postConfirmationSampleCount + 1 : state.postConfirmationSampleCount;
+  const continuationQualifiedSampleCount =
+    state.hasDetectedSpeech && speechRefresh ? state.continuationQualifiedSampleCount + 1 : state.continuationQualifiedSampleCount;
+  const continuationSpectralOnlySampleCount =
+    continuationQualified && !windowedCandidate ? state.continuationSpectralOnlySampleCount + 1 : state.continuationSpectralOnlySampleCount;
+  const continuationAmplitudeOnlySampleCount = isContinuationAmplitudeOnly
+    ? state.continuationAmplitudeOnlySampleCount + 1
+    : state.continuationAmplitudeOnlySampleCount;
+  const longestPostConfirmationGapMs =
+    state.hasDetectedSpeech && speechRefresh && state.lastSpeechAt !== null
+      ? Math.max(state.longestPostConfirmationGapMs, now - state.lastSpeechAt)
+      : state.longestPostConfirmationGapMs;
   const diagnosticAccumulators = {
     peakRms,
     peakSpeechBandRatio,
@@ -687,6 +830,12 @@ export function evaluateVadSample(
     longestCandidateGapMs,
     lastAmplitudeQualifiedAt,
     lastSpectralQualifiedAt,
+    lastWindowedCandidateAt,
+    postConfirmationSampleCount,
+    continuationQualifiedSampleCount,
+    continuationSpectralOnlySampleCount,
+    continuationAmplitudeOnlySampleCount,
+    longestPostConfirmationGapMs,
   };
 
   // The noise floor only ever learns from samples that show NO credible
@@ -740,7 +889,13 @@ export function evaluateVadSample(
       ? state.noiseFloorEstimate
       : state.noiseFloorEstimate * (1 - config.noiseFloorAdaptRate) + sample.rmsLevel * config.noiseFloorAdaptRate;
 
-  if (!windowedCandidate) {
+  // ROUND 6: the silence countdown (below) and the START streak-survival
+  // check (further below) now key on speechRefresh, not windowedCandidate
+  // alone -- see this module's own ROUND 6 doc comment. Since
+  // continuationQualified can only ever be true once hasDetectedSpeech is
+  // already true, this is a no-op for START: speechRefresh ===
+  // windowedCandidate whenever hasDetectedSpeech is still false.
+  if (!speechRefresh) {
     if (state.hasDetectedSpeech) {
       const silenceDuration = now - (state.lastSpeechAt ?? now);
       const nextState: VadState = { ...state, ...diagnosticAccumulators, noiseFloorEstimate, speechStreakStartedAt: null };
@@ -793,26 +948,50 @@ export function evaluateVadSample(
     return { state: nextState, decision: "continue" };
   }
 
-  // This sample IS a windowed candidate (ROUND 4: cross-modality evidence
-  // within speechEvidenceWindowMs, not necessarily both gates on this
-  // exact sample -- see this module's own ROUND 4 doc comment).
-  const speechStreakStartedAt = state.speechStreakStartedAt ?? now;
-  const streakDuration = now - speechStreakStartedAt;
-  const hasDetectedSpeech = state.hasDetectedSpeech || streakDuration >= config.minSpeechDurationMs;
+  if (windowedCandidate) {
+    // This sample IS a windowed candidate (ROUND 4: cross-modality
+    // evidence within speechEvidenceWindowMs, not necessarily both gates
+    // on this exact sample -- see this module's own ROUND 4 doc comment).
+    // Still the ONLY path that can progress the START streak or flip
+    // hasDetectedSpeech -- ROUND 6's weaker continuation signal never
+    // touches this branch (see the `else` below instead).
+    const speechStreakStartedAt = state.speechStreakStartedAt ?? now;
+    const streakDuration = now - speechStreakStartedAt;
+    const hasDetectedSpeech = state.hasDetectedSpeech || streakDuration >= config.minSpeechDurationMs;
 
+    return {
+      state: {
+        ...state,
+        ...diagnosticAccumulators,
+        noiseFloorEstimate,
+        speechStreakStartedAt,
+        hasDetectedSpeech,
+        lastSpeechAt: now,
+        maxCandidateStreakMs: Math.max(state.maxCandidateStreakMs, streakDuration),
+        // Strict SAME-SAMPLE meaning preserved (see this field's own doc
+        // comment) -- only increments when BOTH gates passed on this exact
+        // sample (`candidate`), not merely when windowedCandidate is true.
+        fullyQualifiedSampleCount: candidate ? state.fullyQualifiedSampleCount + 1 : state.fullyQualifiedSampleCount,
+      },
+      decision: "continue",
+    };
+  }
+
+  // ROUND 6 (2026-08-22): speechRefresh is true but windowedCandidate is
+  // false -- by construction (continuationQualified's own condition) this
+  // can only happen when state.hasDetectedSpeech is already true and this
+  // sample is spectrally qualified alone. Refreshes lastSpeechAt (keeps
+  // the silence countdown from expiring) but deliberately does NOT touch
+  // the START streak machinery (speechStreakStartedAt/maxCandidateStreakMs/
+  // fullyQualifiedSampleCount) -- those describe the PRE-confirmation
+  // streak-building process only, and are irrelevant once hasDetectedSpeech
+  // is already true (see this module's own ROUND 6 doc comment).
   return {
     state: {
       ...state,
       ...diagnosticAccumulators,
       noiseFloorEstimate,
-      speechStreakStartedAt,
-      hasDetectedSpeech,
       lastSpeechAt: now,
-      maxCandidateStreakMs: Math.max(state.maxCandidateStreakMs, streakDuration),
-      // Strict SAME-SAMPLE meaning preserved (see this field's own doc
-      // comment) -- only increments when BOTH gates passed on this exact
-      // sample (`candidate`), not merely when windowedCandidate is true.
-      fullyQualifiedSampleCount: candidate ? state.fullyQualifiedSampleCount + 1 : state.fullyQualifiedSampleCount,
     },
     decision: "continue",
   };
@@ -945,6 +1124,45 @@ export interface VoiceActivityDiagnostics {
   // same-sample meaning) to see directly how much the windowed model
   // helped versus the raw same-frame overlap rate on a given recording.
   windowedCandidateSampleCount: number;
+  // VAD end-of-speech hardening, ROUND 6 (2026-08-22): see this module's
+  // own ROUND 6 doc comment for the real production ground truth (mic
+  // stopped mid-utterance) that motivated CONTINUATION getting its own,
+  // weaker evidence rule separate from START. All null whenever
+  // hasDetectedSpeech never became true this recording (there is no
+  // "post-confirmation" period to describe) -- never a fabricated zero.
+  //
+  // Total samples evaluated after speech was first confirmed -- the
+  // denominator for the two rates below.
+  postConfirmationSampleCount: number | null;
+  // How many post-confirmation samples refreshed the silence countdown,
+  // via EITHER a full windowedCandidate or the new continuation-only
+  // spectral-alone rule -- a LOW value relative to postConfirmationSampleCount
+  // on a recording that still confirmed speech (hasDetectedSpeech: true)
+  // but stopped early means continuation evidence was genuinely sparse.
+  continuationQualifiedSampleCount: number | null;
+  // Of the above, how many qualified SPECIFICALLY via the new
+  // continuation-only rule (spectral alone, not a full windowedCandidate)
+  // -- shows directly how much this round's fix contributed on this
+  // recording, distinct from evidence windowedCandidate already covered.
+  continuationSpectralOnlySampleCount: number | null;
+  // Diagnostic-only, never used by any VAD decision: how many post-
+  // confirmation samples were amplitude-qualified but not spectrally
+  // qualified and not already a windowedCandidate -- real evidence this
+  // round's fix still discards, kept visible for a future round.
+  continuationAmplitudeOnlySampleCount: number | null;
+  // The largest gap ever seen, after confirmation, between two consecutive
+  // samples that refreshed the silence countdown (by either mechanism) --
+  // the post-confirmation analogue of longestCandidateGapMs.
+  longestPostConfirmationGapMs: number | null;
+  // How long before the stop decision the LAST full windowedCandidate
+  // (cross-modal, the "strong" signal) was observed -- distinct from
+  // silenceAfterSpeechMs (which reflects the last refresh via EITHER
+  // mechanism). A recording that stopped shortly after its last strong
+  // hit, despite several weaker continuation-only hits after it, points
+  // at cross-modal evidence specifically drying up, not all evidence.
+  // Only populated for stop_silence (see silenceAfterSpeechMs's own doc
+  // comment for why every other reason has no honest claim to make here).
+  lastStrongEvidenceAgeAtStopMs: number | null;
 }
 
 export function computeVoiceActivityDiagnostics(params: {
@@ -966,11 +1184,21 @@ export function computeVoiceActivityDiagnostics(params: {
   longestCandidateGapMs: number;
   peakNoiseFloor: number;
   windowedCandidateSampleCount: number;
+  postConfirmationSampleCount: number;
+  continuationQualifiedSampleCount: number;
+  continuationSpectralOnlySampleCount: number;
+  continuationAmplitudeOnlySampleCount: number;
+  longestPostConfirmationGapMs: number;
+  lastWindowedCandidateAt: number | null;
 }): VoiceActivityDiagnostics {
   const speechDetectedAtMs =
     params.speechDetectedAt !== null ? Math.max(0, Math.round(params.speechDetectedAt - params.recordingStartedAt)) : null;
   const speechEndedAtMs =
     params.lastSpeechAt !== null ? Math.max(0, Math.round(params.lastSpeechAt - params.recordingStartedAt)) : null;
+  // ROUND 6: null (never fabricated) whenever speech was never confirmed
+  // at all -- there is no "post-confirmation" period to describe, the
+  // same convention speechDurationMs already follows.
+  const hadConfirmedSpeech = params.speechDetectedAt !== null;
   return {
     autoStopReason: params.autoStopReason,
     recordingDurationMs: Math.max(0, Math.round(params.stopDecidedAt - params.recordingStartedAt)),
@@ -996,5 +1224,14 @@ export function computeVoiceActivityDiagnostics(params: {
     longestCandidateGapMs: params.longestCandidateGapMs,
     peakNoiseFloor: params.peakNoiseFloor,
     windowedCandidateSampleCount: params.windowedCandidateSampleCount,
+    postConfirmationSampleCount: hadConfirmedSpeech ? params.postConfirmationSampleCount : null,
+    continuationQualifiedSampleCount: hadConfirmedSpeech ? params.continuationQualifiedSampleCount : null,
+    continuationSpectralOnlySampleCount: hadConfirmedSpeech ? params.continuationSpectralOnlySampleCount : null,
+    continuationAmplitudeOnlySampleCount: hadConfirmedSpeech ? params.continuationAmplitudeOnlySampleCount : null,
+    longestPostConfirmationGapMs: hadConfirmedSpeech ? params.longestPostConfirmationGapMs : null,
+    lastStrongEvidenceAgeAtStopMs:
+      params.autoStopReason === "stop_silence" && params.lastWindowedCandidateAt !== null
+        ? Math.max(0, Math.round(params.stopDecidedAt - params.lastWindowedCandidateAt))
+        : null,
   };
 }

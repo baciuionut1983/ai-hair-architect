@@ -244,6 +244,16 @@ export function vadDiagnosticsToReportFields(diagnostics: VoiceActivityDiagnosti
     // VoiceActivityDiagnostics's own ROUND 4 doc comment for what this
     // answers.
     vadWindowedCandidateSampleCount: diagnostics.windowedCandidateSampleCount,
+    // VAD end-of-speech hardening, ROUND 6 (2026-08-22): see
+    // VoiceActivityDiagnostics's own ROUND 6 doc comments for what each
+    // answers -- undefined (never fabricated) whenever speech was never
+    // confirmed at all this recording.
+    vadPostConfirmationSampleCount: diagnostics.postConfirmationSampleCount ?? undefined,
+    vadContinuationQualifiedSampleCount: diagnostics.continuationQualifiedSampleCount ?? undefined,
+    vadContinuationSpectralOnlySampleCount: diagnostics.continuationSpectralOnlySampleCount ?? undefined,
+    vadContinuationAmplitudeOnlySampleCount: diagnostics.continuationAmplitudeOnlySampleCount ?? undefined,
+    vadLongestPostConfirmationGapMs: diagnostics.longestPostConfirmationGapMs ?? undefined,
+    vadLastStrongEvidenceAgeAtStopMs: diagnostics.lastStrongEvidenceAgeAtStopMs ?? undefined,
   };
 }
 
@@ -338,6 +348,15 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
       // VAD false-negative hardening, ROUND 4 (2026-08-22): same "0 is
       // truthful, never fabricated" contract as the earlier fields above.
       windowedCandidateSampleCount: vadStateRef.current?.windowedCandidateSampleCount ?? 0,
+      // VAD end-of-speech hardening, ROUND 6 (2026-08-22): same "0 is
+      // truthful, never fabricated" contract -- computeVoiceActivityDiagnostics
+      // itself nulls these out when speech was never confirmed at all.
+      postConfirmationSampleCount: vadStateRef.current?.postConfirmationSampleCount ?? 0,
+      continuationQualifiedSampleCount: vadStateRef.current?.continuationQualifiedSampleCount ?? 0,
+      continuationSpectralOnlySampleCount: vadStateRef.current?.continuationSpectralOnlySampleCount ?? 0,
+      continuationAmplitudeOnlySampleCount: vadStateRef.current?.continuationAmplitudeOnlySampleCount ?? 0,
+      longestPostConfirmationGapMs: vadStateRef.current?.longestPostConfirmationGapMs ?? 0,
+      lastWindowedCandidateAt: vadStateRef.current?.lastWindowedCandidateAt ?? null,
     });
   }, []);
 

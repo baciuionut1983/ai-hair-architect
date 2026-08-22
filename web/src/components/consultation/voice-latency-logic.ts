@@ -440,6 +440,15 @@ export interface VoiceLatencyTerminalDiagnostics {
   // voice-activity-logic.ts's own ROUND 4 VoiceActivityDiagnostics doc
   // comment for exactly what this answers.
   vadWindowedCandidateSampleCount?: number;
+  // VAD end-of-speech hardening, ROUND 6 (2026-08-22): see
+  // voice-activity-logic.ts's own ROUND 6 VoiceActivityDiagnostics doc
+  // comments for exactly what each answers.
+  vadPostConfirmationSampleCount?: number;
+  vadContinuationQualifiedSampleCount?: number;
+  vadContinuationSpectralOnlySampleCount?: number;
+  vadContinuationAmplitudeOnlySampleCount?: number;
+  vadLongestPostConfirmationGapMs?: number;
+  vadLastStrongEvidenceAgeAtStopMs?: number;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see
