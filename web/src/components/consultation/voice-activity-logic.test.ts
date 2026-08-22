@@ -42,6 +42,14 @@ const SPEECH_OVER_MODERATE_MUSIC: VadSample = { rmsLevel: 0.35, speechBandRatio:
 // Sustained broadband, non-vocal noise (a hair dryer) -- loud, but energy
 // is spread broadly rather than concentrated in the speech band.
 const DRYER_NOISE: VadSample = { rmsLevel: 0.4, speechBandRatio: 0.1 };
+// ROUND 3 (2026-08-22): a moderate-volume, spectrally speech-shaped sample
+// that still fails the ADAPTIVE amplitude gate once the floor has already
+// climbed somewhat (see the ROUND 3 module doc comment) -- real voice, just
+// not loud enough to clear an already-elevated threshold. This is the exact
+// class of sample real production telemetry showed dominating a false
+// negative (spectralQualifiedSampleCount 69/100 vs amplitudeQualifiedSampleCount
+// only 19/100).
+const MODERATE_SPEECH_BELOW_ELEVATED_FLOOR: VadSample = { rmsLevel: 0.05, speechBandRatio: 0.55 };
 
 describe("evaluateVadSample", () => {
   it("does not stop while the stylist is actively speaking", () => {
@@ -271,6 +279,66 @@ describe("evaluateVadSample", () => {
       // speech candidates, so they are never fed into the ambient EMA.
       expect(result.state.noiseFloorEstimate).toBe(floorAfterSpeech);
     });
+
+    // VAD false-negative hardening, ROUND 3 (2026-08-22): a real production
+    // retest on the ROUND 2 (telemetry-only) build proved the floor was
+    // learning from the stylist's OWN voice, not the room -- see this
+    // module's own ROUND 3 doc comment for the full root-cause chain. These
+    // tests reproduce the mechanism directly and prove the fix (excluding
+    // on spectralQualified alone, not the full candidate) closes it.
+    describe("ROUND 3: the floor must not learn from spectrally speech-shaped samples, even when they fail the amplitude gate", () => {
+      it("a spectrally speech-shaped but quiet sample never drags the noise floor upward, even though it fails the amplitude gate", () => {
+        let state = initVadState(0);
+        let t = 0;
+        for (let i = 0; i < 30; i += 1) {
+          t += 100;
+          state = evaluateVadSample(state, AMPLITUDE_DIP, t).state;
+        }
+        // AMPLITUDE_DIP fails the amplitude gate but clears the spectral
+        // gate (0.6 >= 0.45) -- pre-ROUND-3, every one of these would have
+        // been folded into the ambient EMA as if it were silence/noise.
+        expect(state.noiseFloorEstimate).toBe(0);
+      });
+
+      it("sustained ambient noise that is NOT spectrally speech-shaped still raises the floor normally -- the ROUND 3 fix does not weaken ambient tracking", () => {
+        let state = initVadState(0);
+        let t = 0;
+        for (let i = 0; i < 30; i += 1) {
+          t += 100;
+          state = evaluateVadSample(state, AMBIENT_NOISE, t).state;
+        }
+        expect(state.noiseFloorEstimate).toBeGreaterThan(0.02);
+      });
+
+      it("reproduces the real production feedback loop: a moderate-volume speech sample that fails an already-elevated amplitude gate no longer pulls the floor up further", () => {
+        let state = initVadState(0);
+        let t = 0;
+        // Raise the floor with genuine (non-speech-shaped) ambient noise
+        // first -- mirrors real room background before the stylist starts
+        // speaking.
+        for (let i = 0; i < 40; i += 1) {
+          t += 100;
+          state = evaluateVadSample(state, AMBIENT_NOISE, t).state;
+        }
+        const floorBeforeSpeech = state.noiseFloorEstimate;
+        expect(floorBeforeSpeech).toBeGreaterThan(0.02);
+
+        // The stylist now speaks: genuine, spectrally speech-shaped audio,
+        // but at a level below the now-elevated amplitude threshold (floor
+        // * noiseFloorMargin) -- real voice that fails amplitude only
+        // because the floor itself had already climbed.
+        for (let i = 0; i < 20; i += 1) {
+          t += 100;
+          state = evaluateVadSample(state, MODERATE_SPEECH_BELOW_ELEVATED_FLOOR, t).state;
+        }
+        // Pre-ROUND-3, these 20 samples would all have been folded into
+        // the ambient EMA (they fail the combined `candidate` check) and
+        // pulled the floor further toward their own level, raising the bar
+        // even higher for the rest of the sentence -- the exact
+        // floor-chasing-speech feedback loop this round's fix closes.
+        expect(state.noiseFloorEstimate).toBe(floorBeforeSpeech);
+      });
+    });
   });
 
   // Required: an unconditional maximum recording duration, independent of
@@ -380,20 +448,22 @@ describe("evaluateVadSample", () => {
       expect(result.state.hasDetectedSpeech).toBe(true);
     });
 
-    // Honest limitation, NOT fixed this round -- see this round's own
-    // report for why: distinguishing "a genuinely too-quiet utterance"
-    // from "ambient noise" at the very first sample of a recording (before
-    // any real candidate has ever registered) would require changing the
-    // noise-floor/amplitude-gate logic itself, which was not touched this
-    // round (no evidence tied it specifically to the demonstrated false
-    // negatives, unlike the streak-reset brittleness this round's fix
-    // targets).
-    it("KNOWN LIMITATION (not fixed this round): a very quiet utterance right at recording start can still be absorbed into the noise floor before any candidate is ever recognized", () => {
+    // Originally documented (2026-08-21) as a KNOWN LIMITATION, not fixed
+    // that round: a too-quiet-but-spectrally-speech-shaped sample at
+    // recording start got absorbed into the noise floor, since it failed
+    // the combined `candidate` check (amplitude alone) and so was fed into
+    // the ambient EMA. ROUND 3 (2026-08-22) incidentally fixes this as a
+    // side effect of excluding floor adaptation on spectralQualified alone
+    // (see the module's own ROUND 3 doc comment) -- this sample clears the
+    // spectral gate (0.5 >= 0.45), so it is now excluded from the floor
+    // regardless of failing amplitude. Updated to assert the fixed
+    // behavior, not the old limitation.
+    it("a very quiet but spectrally speech-shaped utterance at recording start no longer gets absorbed into the noise floor (ROUND 3 fix)", () => {
       const state = initVadState(0);
       const veryQuietSpeech: VadSample = { rmsLevel: 0.015, speechBandRatio: 0.5 }; // below minAbsoluteLevel (0.02) despite being speech-shaped
       const result = evaluateVadSample(state, veryQuietSpeech, 0);
       expect(result.state.hasDetectedSpeech).toBe(false);
-      expect(result.state.noiseFloorEstimate).toBeGreaterThan(0);
+      expect(result.state.noiseFloorEstimate).toBe(0);
     });
 
     it("music before AND after real speech never blocks stop_silence once speech has genuinely ended", () => {

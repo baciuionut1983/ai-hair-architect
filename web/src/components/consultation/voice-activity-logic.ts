@@ -155,6 +155,41 @@
 // between a spectral-ratio smoothing fix, a genuine rolling-evidence-
 // window redesign, or something else without this data would be exactly
 // the speculative tuning this task was told not to do.
+//
+// VAD false-negative hardening, ROUND 3 (2026-08-22): the round-2
+// telemetry (real production retest, this build) answered its own
+// question -- explanation (b), gate-misalignment, is what happened, and
+// it has an identified, mechanical cause. amplitudeQualifiedSampleCount
+// was 19/100 despite a healthy peakRms (0.359); spectralQualifiedSampleCount
+// was 69/100; fullyQualifiedSampleCount (both, same sample) only 5/100.
+// peakNoiseFloor reached 0.0565 -- ~8x the ~0.0068 TRUE ambient floor a
+// prior quiet-room test actually measured -- meaning the floor learned
+// from the stylist's OWN voice, not the room.
+//
+// Root cause, found by reading the noise-floor update condition (below):
+// it excluded a sample from the ambient EMA only when the sample passed
+// BOTH gates (`candidate`). A sample that is genuinely speech (clears the
+// spectral gate -- this module's own most voice-specific signal) but
+// happens to be a little quiet or mid-transition (fails the adaptive
+// amplitude gate) was still folded into the floor as if it were ambient
+// noise. Since the amplitude gate is ITSELF derived from this floor
+// (amplitudeFloor = floor * noiseFloorMargin), this is a feedback loop:
+// real-but-quiet speech raises the floor, which raises the amplitude bar,
+// which makes MORE real speech fail amplitude and get folded in too --
+// the floor chases the speaker's own voice upward over one recording.
+//
+// The fix: exclude a sample from floor adaptation whenever it clears the
+// SPECTRAL gate alone, not the full `candidate`. Spectral concentration
+// is independent of the adaptive floor (unlike amplitude, it cannot be
+// circularly self-reinforcing), so it is the correct signal for "is this
+// credible speech evidence, regardless of loudness". The candidate/streak/
+// decision logic that determines hasDetectedSpeech is completely
+// unchanged -- still requires BOTH gates on the same sample -- so this is
+// a change to the floor's own inputs only, not to what counts as
+// confirmed speech. Music/dryer-noise rejection is untouched: those
+// signals are specifically the ones that FAIL the spectral gate (see this
+// module's own background-music regression tests), so they still update
+// the floor exactly as before.
 
 export interface VadConfig {
   // Absolute floor beneath which nothing ever counts as speech, regardless
@@ -357,11 +392,41 @@ export function evaluateVadSample(
     longestCandidateGapMs,
   };
 
-  // The noise floor only ever learns from samples that did NOT look like
-  // speech -- otherwise the stylist's own voice would drag the floor
-  // upward mid-sentence, making the back half of a sentence harder to
-  // detect than the front half.
-  const noiseFloorEstimate = candidate
+  // The noise floor only ever learns from samples that show NO credible
+  // speech evidence -- otherwise the stylist's own voice would drag the
+  // floor upward mid-sentence, making the back half of a sentence harder
+  // to detect than the front half.
+  //
+  // VAD false-negative hardening, ROUND 3 (2026-08-22): excluding only
+  // full `candidate` samples (BOTH gates) was too narrow. Real production
+  // evidence on this build (peakRms 0.359, peakNoiseFloor 0.0565 -- ~8x
+  // the ~0.0068 TRUE ambient floor a prior test on a quiet room actually
+  // measured) proved the floor was learning from the stylist's OWN voice,
+  // not the room: amplitudeQualifiedSampleCount was only 19/100 despite a
+  // healthy peakRms, while spectralQualifiedSampleCount was 69/100 --
+  // meaning most samples that were genuinely speech-shaped (cleared the
+  // spectral gate) still failed the amplitude gate, and under the OLD
+  // `candidate`-only exclusion, every one of those (real voice, just a
+  // touch quiet or mid-transition) got fed into this EMA as if it were
+  // ambient noise. Since the amplitude gate is itself DERIVED FROM this
+  // floor (amplitudeFloor = floor * noiseFloorMargin), this created a
+  // feedback loop: real-but-imperfect speech samples raised the floor,
+  // which raised the amplitude bar, which made MORE real speech fail
+  // amplitude and get folded in as "ambient" too -- a floor that chases
+  // the speaker's own voice upward over the course of a single recording.
+  //
+  // The fix excludes on `spectralQualified` alone, not the full
+  // `candidate`: spectral concentration in the speech band is this
+  // module's own most voice-specific signal (see the module doc comment
+  // on why it was added at all) and is INDEPENDENT of the adaptive floor
+  // -- unlike amplitude, it cannot be circularly self-reinforcing. A
+  // sample whose spectral shape says "this looks like voice" must never
+  // be treated as ambient evidence, regardless of how loud it was.
+  // Background-music/dryer-noise rejection is untouched by this change:
+  // sustained music and broadband noise are specifically the signals that
+  // FAIL the spectral gate (see this module's own background-music
+  // regression tests), so they still update the floor exactly as before.
+  const noiseFloorEstimate = spectralQualified
     ? state.noiseFloorEstimate
     : state.noiseFloorEstimate * (1 - config.noiseFloorAdaptRate) + sample.rmsLevel * config.noiseFloorAdaptRate;
 
