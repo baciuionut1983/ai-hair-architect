@@ -815,22 +815,28 @@ describe("evaluateVadSample", () => {
       // stay close to silenceDurationMs (2000), not balloon indefinitely.
       expect(t - 300).toBeLessThan(DEFAULT_VAD_CONFIG.silenceDurationMs + DEFAULT_VAD_CONFIG.speechEvidenceWindowMs + 200);
     });
+  });
 
-    // Honest, PRE-EXISTING limitation (not introduced by ROUND 4, and not
-    // fixed by it either -- a property of the noise-floor mechanism from
-    // 803c538, left unchanged this round per that round's own Phase B
-    // reasoning): a SINGLE, endlessly-repeated non-spectral loudness value
-    // will always eventually self-defeat its own amplitude qualification,
-    // once the floor's EMA (rate 0.05, margin 1.6) converges close enough
-    // to that same value -- true regardless of the value's magnitude,
-    // since the crossover point is a function of noiseFloorMargin/
-    // noiseFloorAdaptRate alone, not the specific level. Real speech's own
-    // natural variety (rarely repeating the exact same acoustic shape 20+
-    // times uninterrupted) makes this a low-probability edge case in
-    // practice, not eliminated in theory. Documented here, not silently
-    // avoided, so a future round has this written down rather than
-    // rediscovering it from a production report.
-    it("KNOWN LIMITATION (pre-existing, not fixed this round): an endlessly-repeated single non-spectral loudness value eventually self-defeats its own amplitude gate", () => {
+  // VAD false-negative hardening, ROUND 5 (2026-08-22): a fourth real
+  // production recording, on the ROUND 4 build, still ended
+  // stop_no_speech_timeout -- but with real, measurable progress
+  // (windowedCandidateSampleCount 7 vs fullyQualifiedSampleCount 1) and a
+  // precisely diagnosable next bottleneck: amplitude evidence dropped to
+  // 11/100 despite spectral reaching 47/100, and peakNoiseFloor still
+  // ~12.7x a true quiet-room baseline. See this module's own ROUND 5 doc
+  // comment for the full root-cause chain and why the fix reuses
+  // spectralRecentlyQualified rather than inventing a new signal.
+  describe("ROUND 5: the floor must not learn from samples with recent (not just simultaneous) spectral evidence nearby", () => {
+    // Spectral qualification recurs every 200ms here (well inside
+    // speechEvidenceWindowMs, 300ms), so spectralRecentlyQualified stays
+    // continuously true for every intervening LOUD_BROADBAND_PHONEME
+    // sample too -- the floor gets fed only once (the very first sample,
+    // before any spectral evidence exists yet) and then stays pinned near
+    // that initial value for the rest of the recording, regardless of
+    // length. This is the exact case ROUND 4 flagged as a KNOWN
+    // LIMITATION -- ROUND 5 resolves it as a direct consequence of the
+    // floor-exclusion fix, not a separate change.
+    it("an endlessly-repeated non-spectral loudness value no longer self-defeats its own amplitude gate, as long as spectral evidence keeps recurring within speechEvidenceWindowMs", () => {
       let state = initVadState(0);
       let t = 0;
       for (let i = 0; i < 45; i += 1) {
@@ -838,10 +844,71 @@ describe("evaluateVadSample", () => {
         state = evaluateVadSample(state, sample, t).state;
         t += 100;
       }
-      // The floor has chased LOUD_BROADBAND_PHONEME's own fixed loudness
-      // upward far enough that IT no longer clears its own amplitude gate.
+      const amplitudeFloorNow = Math.max(DEFAULT_VAD_CONFIG.minAbsoluteLevel, state.noiseFloorEstimate * DEFAULT_VAD_CONFIG.noiseFloorMargin);
+      expect(amplitudeFloorNow).toBeLessThan(LOUD_BROADBAND_PHONEME.rmsLevel);
+    });
+
+    // Honest, PRE-EXISTING limitation, narrowed but NOT eliminated by
+    // ROUND 5: when spectral evidence recurs SPARSER than
+    // speechEvidenceWindowMs apart (here, once every 500ms -- outside the
+    // 300ms window), most of the intervening non-spectral samples are no
+    // longer protected either, so the floor still climbs and can still
+    // eventually self-defeat a fixed, endlessly-repeated non-spectral
+    // loudness value -- just far more slowly than before ROUND 5 (roughly
+    // 5x more samples needed here, since only ~1-in-5 non-spectral
+    // samples per cycle now feeds the floor instead of ~4-in-5). Real
+    // speech's own natural variety (rarely repeating the exact same
+    // acoustic shape for seconds at a time, uninterrupted by ANY nearby
+    // spectral evidence) makes this a low-probability edge case in
+    // practice, not eliminated in theory. Documented here, not silently
+    // avoided.
+    it("KNOWN LIMITATION (narrowed by ROUND 5, not eliminated): still self-defeats when spectral evidence recurs SPARSER than speechEvidenceWindowMs apart", () => {
+      let state = initVadState(0);
+      let t = 0;
+      const cycle = [LOUD_BROADBAND_PHONEME, LOUD_BROADBAND_PHONEME, LOUD_BROADBAND_PHONEME, LOUD_BROADBAND_PHONEME, AMPLITUDE_DIP];
+      for (let i = 0; i < 150; i += 1) {
+        state = evaluateVadSample(state, cycle[i % cycle.length], t).state;
+        t += 100;
+      }
       const amplitudeFloorNow = Math.max(DEFAULT_VAD_CONFIG.minAbsoluteLevel, state.noiseFloorEstimate * DEFAULT_VAD_CONFIG.noiseFloorMargin);
       expect(amplitudeFloorNow).toBeGreaterThan(LOUD_BROADBAND_PHONEME.rmsLevel);
+    });
+  });
+
+  // VAD false-negative hardening, ROUND 5 (2026-08-22), Phase D: real
+  // production evidence (candidateResetCount: 3, maxCandidateSpeechMs
+  // stalling at 191ms despite windowedCandidateSampleCount: 7) traced to a
+  // genuine, code-provable inconsistency between speechEvidenceWindowMs
+  // (300ms, governs whether a sample counts as windowedCandidate at all)
+  // and the tighter maxCandidateGapMs (150ms, governs whether an
+  // in-progress STREAK survives a gap) -- see this module's own ROUND 5
+  // doc comment. These tests prove the fix (Math.max of the two) directly.
+  describe("ROUND 5: streak-survival gap tolerance is consistent with speechEvidenceWindowMs", () => {
+    it("a streak survives a gap between 150ms and 300ms -- exceeding the narrower maxCandidateGapMs but within speechEvidenceWindowMs -- and goes on to confirm", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, CLEAR_SPEECH, 0); // streak starts, lastSpeechAt=0
+      state = result.state;
+      // A non-candidate sample 200ms later triggers the streak-survival
+      // check with a 200ms gap -- exceeds maxCandidateGapMs (150) alone,
+      // but is within Math.max(150, speechEvidenceWindowMs=300).
+      result = evaluateVadSample(state, SILENCE, 200);
+      expect(result.state.speechStreakStartedAt).toBe(0); // streak survived, not reset
+      expect(result.state.candidateResetCount).toBe(0);
+      state = result.state;
+
+      // Speech resumes -- total streak duration since t=0 is now 250ms,
+      // reaching minSpeechDurationMs.
+      result = evaluateVadSample(state, CLEAR_SPEECH, 250);
+      expect(result.state.hasDetectedSpeech).toBe(true);
+    });
+
+    it("a gap beyond BOTH tolerances (300ms) still resets the streak -- the aligned tolerance is bounded, not unlimited", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, CLEAR_SPEECH, 0);
+      state = result.state;
+      result = evaluateVadSample(state, SILENCE, 400); // 400ms gap -- exceeds both tolerances
+      expect(result.state.speechStreakStartedAt).toBeNull();
+      expect(result.state.candidateResetCount).toBe(1);
     });
   });
 });

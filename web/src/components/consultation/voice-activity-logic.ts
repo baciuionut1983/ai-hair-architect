@@ -311,6 +311,113 @@
 // redesign would make a future test's result impossible to attribute to
 // either change individually. Documented here for a future round if the
 // windowed model alone proves insufficient.
+//
+// VAD false-negative hardening, ROUND 5 (2026-08-22): a fourth real
+// production retest on b06d114 (windowed-evidence model active) STILL
+// ended stop_no_speech_timeout, but the new telemetry shows real,
+// measurable progress and pinpoints the next bottleneck precisely:
+//   amplitudeQualifiedSampleCount: 11/100 (down from round 4's 26/100)
+//   spectralQualifiedSampleCount:  47/100 (up from round 4's 20/100)
+//   fullyQualifiedSampleCount (same-sample):    1/100
+//   windowedCandidateSampleCount (ROUND 4 fix): 7/100 -- 7x fullyQualified,
+//     proof the windowed model IS helping, just not yet enough
+//   maxCandidateSpeechMs: 191ms -- within 59ms of minSpeechDurationMs
+//     (250ms), the closest any recording has come to confirming
+//   peakNoiseFloor: 0.0863 -- ~12.7x the ~0.0068 TRUE quiet-room baseline
+//
+// This is now the SAME underlying mechanism Phase B already diagnosed on
+// 803c538, just still active: amplitude evidence is scarce (11/100)
+// because the floor is still elevated, and 803c538's exclusion
+// (`spectralQualified`, this exact sample only) does not protect a
+// sample that is genuinely PART of an ongoing utterance -- a plosive
+// burst or sibilant mid-word, loud but momentarily not speech-band-
+// concentrated -- occurring a few samples away from a spectrally-
+// qualified neighbor. Every such sample still gets folded into the
+// ambient EMA, keeping the floor (and therefore the amplitude bar)
+// elevated, which is exactly why amplitude evidence dropped even lower
+// this round than in round 4's own test (11/100 vs 26/100) despite a
+// HIGHER spectral rate (47/100 vs 20/100) -- more of the utterance was
+// genuinely spectrally concentrated, but the floor had even less
+// tolerance left for amplitude to also succeed.
+//
+// The fix reuses -- does not invent -- the exact same recency signal
+// ROUND 4 already computes and validates: a sample is now ALSO excluded
+// from floor adaptation when `spectralRecentlyQualified` (spectral
+// evidence within speechEvidenceWindowMs of THIS sample), not only when
+// it is spectrally qualified itself. This is the direct floor-side
+// counterpart of ROUND 4's own confirmation-side insight -- evidence
+// from one modality shortly before/after evidence from the other
+// belongs to the same utterance -- applied consistently to the ONE
+// place it wasn't yet applied. No new tunable parameter: it reuses
+// speechEvidenceWindowMs and the already-computed
+// lastSpectralQualifiedAt, not a new threshold invented for this round.
+//
+// Why this preserves music/dryer-noise rejection: `spectralRecentlyQualified`
+// can only be true within speechEvidenceWindowMs (300ms) of a GENUINE
+// prior spectral qualification -- sustained music/broadband noise never
+// produces one at all (see this module's own background-music regression
+// tests), so this exclusion never activates for them, exactly the same
+// bounded-leakage guarantee already proven for windowedCandidate itself
+// (see the "music immediately after real speech" regression test, which
+// this round extends to also cover the floor).
+//
+// Why amplitude-based broadening remains rejected (Phase B, unchanged
+// from 803c538's own reasoning): amplitude alone still cannot
+// discriminate voice from genuine ambient noise, so it is still never
+// used as a floor-exclusion signal on its own, this round or any other.
+//
+// Phase A (this round): the aggregate counters ALREADY present
+// (candidateResetCount: 3, maxCandidateSpeechMs: 191ms,
+// windowedCandidateSampleCount: 7) were sufficient, combined with reading
+// the streak-survival code below, to prove a SECOND, independent root
+// cause -- no new telemetry was needed to find or fix it (more granular
+// per-gap-bucket/per-cause telemetry was considered per this round's own
+// task and deliberately not added, since it would not have changed this
+// round's diagnosis or fix; left for a future round if the fix below
+// proves insufficient on its own).
+//
+// Phase D finding: two temporal tolerances were operating INCONSISTENTLY.
+// windowedCandidate (ROUND 4) already treats cross-modal evidence as
+// "fresh" for up to speechEvidenceWindowMs (300ms). But the STREAK-
+// SURVIVAL check below -- whether an in-progress (not yet confirmed)
+// streak discards its progress across a gap -- was still gated on the
+// OLDER, tighter maxCandidateGapMs (150ms, calibrated in round 1 for the
+// very different same-sample-AND world, where "a candidate sample" meant
+// something much rarer). Two windowedCandidate=true samples 150-300ms
+// apart -- BOTH individually still valid per windowedCandidate's own
+// recency logic -- could still have the STREAK discarded between them by
+// this stricter, inconsistent bound, exactly matching the observed
+// symptom (candidateResetCount: 3, maxCandidateSpeechMs stalling at
+// 191ms despite 7 real windowedCandidate hits across the recording).
+//
+// The fix: derive the streak-survival tolerance as
+// Math.max(maxCandidateGapMs, speechEvidenceWindowMs) instead of
+// maxCandidateGapMs alone. Neither named config value is deleted or
+// blindly increased -- maxCandidateGapMs still means exactly what it did
+// in round 1, and still governs streak survival on its own whenever it
+// is the LARGER of the two (e.g. if a future round lowers
+// speechEvidenceWindowMs below it). This only removes the accidental,
+// undocumented inconsistency between two mechanisms introduced in
+// different rounds, making the streak's own survival rule consistent
+// with what windowedCandidate already promises elsewhere in the same
+// function.
+//
+// Phase C (noise model): of the five alternative floor-adaptation designs
+// this round's task asked to weigh, "freeze/strongly slow upward
+// adaptation when credible cross-modal speech evidence exists" is the one
+// implemented (see the noiseFloorEstimate change above) -- it is bounded
+// (at most speechEvidenceWindowMs, never a permanent freeze, so genuine
+// salon background changes are still learned normally once no recent
+// speech evidence exists) and reuses an already-validated signal. The
+// other four were considered and NOT chosen this round: a pre-speech-only
+// calibration period has a chicken-and-egg problem (VAD cannot know
+// speech hasn't started yet without deciding the very thing it's trying
+// to protect); asymmetric (slow-up/fast-down) adaptation and a capped-
+// upward-movement-relative-to-a-trusted-baseline both require inventing
+// new, unvalidated rate/baseline constants with no production evidence to
+// ground them; a fully separate ambient-baseline-vs-instantaneous-
+// estimate model is a materially bigger architectural change than this
+// round's evidence justifies on its own.
 
 export interface VadConfig {
   // Absolute floor beneath which nothing ever counts as speech, regardless
@@ -360,6 +467,17 @@ export interface VadConfig {
   // samples at 100ms) so a single missed sample never wipes out real
   // progress, without being generous enough to stitch together genuinely
   // separate blips spaced further apart.
+  //
+  // VAD false-negative hardening, ROUND 5 (2026-08-22): the ACTUAL
+  // streak-survival tolerance used by evaluateVadSample is
+  // Math.max(maxCandidateGapMs, speechEvidenceWindowMs), not this value
+  // alone -- see this module's own ROUND 5 doc comment for the real
+  // production evidence that the two had drifted inconsistent (this
+  // field calibrated in round 1, speechEvidenceWindowMs added in round 4)
+  // and were discarding streak progress windowedCandidate's own recency
+  // logic would still consider valid. This field's own value and meaning
+  // are unchanged; it still governs survival directly whenever it is the
+  // larger of the two.
   maxCandidateGapMs: number;
   // VAD false-negative hardening, ROUND 4 (2026-08-22): how far apart (in
   // either order) an amplitude-qualified sample and a spectral-qualified
@@ -605,9 +723,22 @@ export function evaluateVadSample(
   // sustained music and broadband noise are specifically the signals that
   // FAIL the spectral gate (see this module's own background-music
   // regression tests), so they still update the floor exactly as before.
-  const noiseFloorEstimate = spectralQualified
-    ? state.noiseFloorEstimate
-    : state.noiseFloorEstimate * (1 - config.noiseFloorAdaptRate) + sample.rmsLevel * config.noiseFloorAdaptRate;
+  //
+  // VAD false-negative hardening, ROUND 5 (2026-08-22): also exclude a
+  // sample when `spectralRecentlyQualified` (computed above for
+  // windowedCandidate), not only when it is spectrally qualified itself
+  // -- see this module's own ROUND 5 doc comment for the real production
+  // evidence (amplitude evidence dropped to 11/100 despite spectral
+  // reaching 47/100, and peakNoiseFloor still ~12.7x a true quiet-room
+  // baseline). A loud, momentarily-non-spectral sample a few samples away
+  // from a spectrally-qualified neighbor (a plosive/sibilant mid-word) is
+  // still real speech, not ambient noise -- reuses the exact same bounded
+  // recency window already validated for windowedCandidate, not a new
+  // threshold.
+  const noiseFloorEstimate =
+    spectralQualified || spectralRecentlyQualified
+      ? state.noiseFloorEstimate
+      : state.noiseFloorEstimate * (1 - config.noiseFloorAdaptRate) + sample.rmsLevel * config.noiseFloorAdaptRate;
 
   if (!windowedCandidate) {
     if (state.hasDetectedSpeech) {
@@ -624,8 +755,28 @@ export function evaluateVadSample(
     // module's own doc comment for the real production false negative
     // this fixes. Only a gap longer than maxCandidateGapMs (or no prior
     // candidate at all this recording) actually resets it.
+    //
+    // VAD false-negative hardening, ROUND 5 (2026-08-22): the tolerance
+    // is now Math.max(maxCandidateGapMs, speechEvidenceWindowMs), not
+    // maxCandidateGapMs alone. Real production evidence (candidateResetCount:
+    // 3, maxCandidateSpeechMs capped at 191ms despite windowedCandidateSampleCount:
+    // 7) traced to a genuine, code-provable inconsistency: windowedCandidate
+    // itself already treats cross-modal evidence as "fresh" for up to
+    // speechEvidenceWindowMs (300ms, see ROUND 4), but this streak-survival
+    // check was still gated on the OLDER, tighter maxCandidateGapMs
+    // (150ms, calibrated in round 1 for the very different same-sample-AND
+    // world) -- so two windowedCandidate=true samples 150-300ms apart,
+    // BOTH individually still valid per windowedCandidate's own recency
+    // logic, could still have their streak discarded between them by this
+    // stricter, now-inconsistent bound. Deriving the tolerance from
+    // whichever of the two named config values is larger keeps both
+    // fields meaningful (neither is deleted or blindly bumped) while
+    // making the streak's own survival rule consistent with what
+    // windowedCandidate already promises.
     const gapSinceLastCandidate = now - (state.lastSpeechAt ?? -Infinity);
-    const streakSurvives = state.speechStreakStartedAt !== null && gapSinceLastCandidate <= config.maxCandidateGapMs;
+    const streakSurvives =
+      state.speechStreakStartedAt !== null &&
+      gapSinceLastCandidate <= Math.max(config.maxCandidateGapMs, config.speechEvidenceWindowMs);
     const candidateResetCount =
       state.speechStreakStartedAt !== null && !streakSurvives ? state.candidateResetCount + 1 : state.candidateResetCount;
     const elapsedSinceStart = now - state.recordingStartedAt;
