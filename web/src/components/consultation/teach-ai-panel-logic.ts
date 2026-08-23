@@ -100,6 +100,21 @@ export interface FinishRecordingCallbacks {
     attemptNumber: number,
     sttModel: string | null,
   ) => void;
+  // VAD Round 12 (2026-08-23): called INSTEAD of ever attempting a
+  // transcription upload, whenever the caller passes hasConfirmedSpeech:
+  // false to finishRecording below -- see this file's own doc comment on
+  // that parameter for the real production bug this closes. Optional (not
+  // every caller of finishRecording has a VAD concept at all -- see
+  // teach-ai-panel.tsx's own call site, which never passes
+  // hasConfirmedSpeech and therefore can never reach this branch) so
+  // existing callers keep compiling unchanged. Deliberately NOT the same
+  // shape as onFailure: no VoiceTranscriptionFailureReason, no provider
+  // diagnostics, no attemptNumber -- STT was never even attempted, so
+  // there is nothing provider-shaped to report. See
+  // hasConfirmedSpeechForSubmission's own doc comment (voice-activity-logic.ts)
+  // for why "no speech" is never reported as a provider/transcription
+  // failure.
+  onNoSpeechDetected?: (marks: VoiceLatencyMarks) => void;
 }
 
 export interface FinishRecordingDeps {
@@ -412,6 +427,22 @@ export async function finishRecording(
   // one traceable id, not two. Defaults to a fresh one so every pre-
   // existing call site (which never passes this) keeps working unchanged.
   attemptId: string = generateAttemptId(),
+  // VAD Round 12 (2026-08-23): a real production report proved this
+  // function had no concept of "did VAD ever confirm speech" -- a pure
+  // radio/music recording, where START was correctly never confirmed
+  // (Phase B's Silero gate, or the legacy heuristic alone), still had its
+  // audio uploaded and transcribed, carrying the background noise all the
+  // way through Consult AI and TTS. Defaults to `true` (unconditionally
+  // eligible) so every EXISTING call site that has no VAD concept at all
+  // -- specifically teach-ai-panel.tsx's own "Speak to AI" flow, which
+  // never passes this argument -- keeps its exact prior behavior,
+  // unchanged. use-voice-recording.ts's own call site is the only one
+  // that ever passes `false`, computed via voice-activity-logic.ts's own
+  // hasConfirmedSpeechForSubmission(vadStateRef.current) at the exact
+  // moment the recording stops -- the SAME field Phase B's Silero START
+  // gate and the legacy heuristic both write into, so this one check
+  // covers both modes with no branch on which one was active.
+  hasConfirmedSpeech = true,
 ): Promise<void> {
   // Voice latency audit (2026-08-18): performance.now() -- a monotonic,
   // sub-millisecond clock, deliberately not Date.now() (wall-clock, can
@@ -434,6 +465,27 @@ export async function finishRecording(
   callbacks.onStopped();
   marks = markVoiceLatencyStage(marks, "recording_stopped", performance.now());
   logClient("recording_stopped", { attemptId });
+
+  // VAD Round 12 (2026-08-23): the single, earliest possible gate --
+  // checked BEFORE any blob is even constructed, so a no-speech recording
+  // never spends any work (let alone a network round-trip) on a
+  // transcription it should never have attempted. See this parameter's
+  // own doc comment above for the real production bug this closes.
+  if (!hasConfirmedSpeech) {
+    logClient("request_skipped", { attemptId, reason: "no_confirmed_speech" });
+    if (callbacks.onNoSpeechDetected) {
+      callbacks.onNoSpeechDetected(marks);
+    } else {
+      // Unreachable in practice (every caller that can pass
+      // hasConfirmedSpeech: false also always provides this callback --
+      // see use-voice-recording.ts) -- a defensive fallback only, so a
+      // future caller that forgets to wire it up degrades to an honest,
+      // generic failure message rather than silently doing nothing.
+      callbacks.onFailure(GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, "unknown", marks, 0);
+    }
+    logClient("cleanup_completed", { attemptId });
+    return;
+  }
 
   try {
     let blob = new Blob(chunks, { type: mimeType || "audio/webm" });

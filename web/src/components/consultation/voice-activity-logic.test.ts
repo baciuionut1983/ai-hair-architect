@@ -4,6 +4,7 @@ import {
   computeVoiceActivityDiagnostics,
   DEFAULT_VAD_CONFIG,
   evaluateVadSample,
+  hasConfirmedSpeechForSubmission,
   initVadState,
   shouldAutoSubmitTranscript,
   type VadConfig,
@@ -1802,6 +1803,44 @@ describe("computeVoiceActivityDiagnostics", () => {
     expect(diagnostics.fullyQualifiedSampleCount).toBe(1);
     expect(diagnostics.maxCandidateSpeechMs).toBe(0);
     expect(diagnostics.candidateResetCount).toBe(1);
+  });
+});
+
+// VAD Round 12 (2026-08-23): reproduces the real production bug directly
+// (a real radio/music recording where START was correctly never
+// confirmed, yet the audio still reached STT) as a pure state check, plus
+// the exact matrix this round's own task requires -- legacy/heuristic
+// confirmation and Phase B/Silero confirmation both write into the SAME
+// hasDetectedSpeech field, so this function needs no mode-specific branch
+// and no test doubles for either mode specifically.
+describe("hasConfirmedSpeechForSubmission", () => {
+  it("is false when VAD ran and explicitly never confirmed speech -- the exact real production bug (radio/music, stop_no_speech_timeout)", () => {
+    const state = initVadState(0);
+    expect(state.hasDetectedSpeech).toBe(false); // sanity: a fresh, never-confirmed state
+    expect(hasConfirmedSpeechForSubmission(state)).toBe(false);
+  });
+
+  it("is true once hasDetectedSpeech is true -- works identically regardless of WHICH authority set it (heuristic alone, or Silero via Phase B's own resolveSileroStartAuthority overwriting the same field)", () => {
+    let state = initVadState(0);
+    let result = evaluateVadSample(state, { rmsLevel: 0.5, speechBandRatio: 0.7 }, 0);
+    state = result.state;
+    result = evaluateVadSample(state, { rmsLevel: 0.5, speechBandRatio: 0.7 }, 300);
+    expect(result.state.hasDetectedSpeech).toBe(true);
+    expect(hasConfirmedSpeechForSubmission(result.state)).toBe(true);
+  });
+
+  it("defaults to true (preserves the pre-VAD fallback) when VAD never ran at all for this recording -- setup failure is NOT the same as 'ran and rejected'", () => {
+    expect(hasConfirmedSpeechForSubmission(null)).toBe(true);
+  });
+
+  it("a manual stop before any speech was ever confirmed is also ineligible -- the guard is not tied to any specific auto-stop reason string", () => {
+    // A streak that never crosses minSpeechDurationMs -- exactly what a
+    // manual stop moments after pressing the mic, with no real speech
+    // yet, would leave behind.
+    const state = initVadState(0);
+    const result = evaluateVadSample(state, { rmsLevel: 0.5, speechBandRatio: 0.7 }, 0);
+    expect(result.state.hasDetectedSpeech).toBe(false);
+    expect(hasConfirmedSpeechForSubmission(result.state)).toBe(false);
   });
 });
 

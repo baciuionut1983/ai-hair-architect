@@ -1505,6 +1505,80 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // VAD Round 12 (2026-08-23): see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers --
+  // a real production report proved a no-speech recording (radio/music,
+  // START correctly never confirmed) still reached STT; these fields let
+  // the skip be reported honestly, distinct from "stt_failed".
+  describe("VAD ROUND 12 STT-skip fields (sttSkipped/sttSkipReason)", () => {
+    it("accepts the real 'skipped, no confirmed speech' shape", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_skipped_no_speech",
+        summary: validSummary(),
+        sttSkipped: true,
+        sttSkipReason: "no_confirmed_speech",
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ sttSkipped: true, sttSkipReason: "no_confirmed_speech" }),
+      });
+    });
+
+    it("accepts sttSkipped: false explicitly (a truthful 'this turn was NOT skipped')", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        sttSkipped: false,
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ sttSkipped: false }) });
+    });
+
+    it("rejects a non-boolean sttSkipped", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_skipped_no_speech",
+        summary: validSummary(),
+        sttSkipped: "yes",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_stt_skipped" });
+    });
+
+    it("rejects an unknown sttSkipReason value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_skipped_no_speech",
+        summary: validSummary(),
+        sttSkipReason: "user_cancelled",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_stt_skip_reason" });
+    });
+
+    it("omits both fields entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect("sttSkipped" in result.value).toBe(false);
+        expect("sttSkipReason" in result.value).toBe(false);
+      }
+    });
+
+    it("accepts the new stt_skipped_no_speech outcome and maps it to the 'stt' terminal stage", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "stt_skipped_no_speech",
+        summary: validSummary(),
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ outcome: "stt_skipped_no_speech" }) });
+      expect(terminalStageForOutcome("stt_skipped_no_speech")).toBe("stt");
+    });
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
   // production STT failure be attributed, directly from this one log line,
   // to the real Gemini HTTP status/canonical error status, or to a real

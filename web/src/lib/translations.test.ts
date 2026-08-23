@@ -24,6 +24,10 @@ const ALL_KEYS: Array<Parameters<typeof translate>[1]> = [
   "consultAi.aiResponding",
   "consultAi.speaking",
   "consultAi.generatingVoice",
+  // VAD Round 12 (2026-08-23): a real production report proved a
+  // no-speech recording still reached STT -- this message is shown
+  // instead, honestly, for every one of the 18 UI-supported languages.
+  "consultAi.voiceError.noSpeechDetected",
   "common.on",
   "common.off",
 ];

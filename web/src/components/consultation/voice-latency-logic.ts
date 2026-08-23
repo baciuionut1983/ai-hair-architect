@@ -497,6 +497,18 @@ export interface VoiceLatencyTerminalDiagnostics {
   vadStartGateModelConfirmedAtMs?: number;
   vadStartGateFallbackUsed?: boolean;
   vadStartGateFallbackReason?: "model_loading" | "model_unavailable" | "model_error";
+  // VAD Round 12 (2026-08-23): a real production report proved a
+  // no-speech recording (radio/music, START correctly never confirmed)
+  // still reached STT/Consult AI/TTS -- see voice-activity-logic.ts's own
+  // hasConfirmedSpeechForSubmission doc comment for the full root cause
+  // and fix. sttSkipped is true exactly when that new gate stopped a
+  // recording from ever being uploaded for transcription; sttSkipReason
+  // is always "no_confirmed_speech" for now (the only skip reason this
+  // gate currently produces), kept as its own field rather than folded
+  // into errorCode since this is explicitly NOT a failure (no speech !=
+  // provider failure).
+  sttSkipped?: boolean;
+  sttSkipReason?: "no_confirmed_speech";
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see

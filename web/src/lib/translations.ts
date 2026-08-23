@@ -48,6 +48,12 @@ export type TranslationKey =
   | "consultAi.voiceError.unsupportedFormat"
   | "consultAi.voiceError.invalidAudio"
   | "consultAi.voiceError.emptyRecording"
+  // VAD Round 12 (2026-08-23): distinct from emptyRecording -- this is a
+  // real, non-empty recording that VAD explicitly determined never
+  // contained confirmed speech (e.g. background music/radio alone), so
+  // it was never even sent for transcription. See
+  // hasConfirmedSpeechForSubmission's own doc comment (voice-activity-logic.ts).
+  | "consultAi.voiceError.noSpeechDetected"
   | "consultAi.voiceError.permissionDenied"
   | "consultAi.voiceError.microphoneUnavailable"
   | "consultAi.voiceError.unknown"
@@ -90,6 +96,7 @@ const EN: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "This recording format isn't supported for transcription. Please try again, or type your note.",
   "consultAi.voiceError.invalidAudio": "The recording couldn't be read. Please try again.",
   "consultAi.voiceError.emptyRecording": "The recording was empty. Please try again and speak for a moment before stopping.",
+  "consultAi.voiceError.noSpeechDetected": "We did not detect any speech. Please try again and speak clearly.",
   "consultAi.voiceError.permissionDenied": "Microphone access was denied. Allow microphone access in your browser's site settings to use voice input.",
   "consultAi.voiceError.microphoneUnavailable": "Microphone access was not available. You can still type your message.",
   "consultAi.voiceError.unknown": "Voice transcription failed. You can still type your note.",
@@ -132,6 +139,7 @@ const RO: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "Acest format de înregistrare nu este acceptat pentru transcriere. Încearcă din nou sau scrie nota.",
   "consultAi.voiceError.invalidAudio": "Înregistrarea nu a putut fi citită. Te rugăm să încerci din nou.",
   "consultAi.voiceError.emptyRecording": "Înregistrarea a fost goală. Încearcă din nou și vorbește puțin înainte de a opri.",
+  "consultAi.voiceError.noSpeechDetected": "Nu am detectat nicio vorbire. Te rugăm să încerci din nou și să vorbești clar.",
   "consultAi.voiceError.permissionDenied": "Accesul la microfon a fost refuzat. Permite accesul la microfon din setările browserului pentru a folosi input vocal.",
   "consultAi.voiceError.microphoneUnavailable": "Accesul la microfon nu a fost disponibil. Poți încă să scrii mesajul.",
   "consultAi.voiceError.unknown": "Transcrierea vocală a eșuat. Poți încă să scrii nota.",
@@ -174,6 +182,7 @@ const AR: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "تنسيق هذا التسجيل غير مدعوم للتحويل إلى نص. يرجى المحاولة مرة أخرى، أو اكتب ملاحظتك.",
   "consultAi.voiceError.invalidAudio": "تعذّرت قراءة التسجيل. يرجى المحاولة مرة أخرى.",
   "consultAi.voiceError.emptyRecording": "كان التسجيل فارغًا. يرجى المحاولة مرة أخرى والتحدث لبرهة قبل الإيقاف.",
+  "consultAi.voiceError.noSpeechDetected": "لم نكتشف أي كلام. يرجى المحاولة مرة أخرى والتحدث بوضوح.",
   "consultAi.voiceError.permissionDenied": "تم رفض الوصول إلى الميكروفون. اسمح بالوصول إلى الميكروفون من إعدادات الموقع في متصفحك لاستخدام الإدخال الصوتي.",
   "consultAi.voiceError.microphoneUnavailable": "لم يكن الوصول إلى الميكروفون متاحًا. لا يزال بإمكانك كتابة رسالتك.",
   "consultAi.voiceError.unknown": "فشل تحويل الصوت إلى نص. لا يزال بإمكانك كتابة ملاحظتك.",
@@ -216,6 +225,7 @@ const IT: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "Questo formato di registrazione non è supportato per la trascrizione. Riprova, oppure scrivi la tua nota.",
   "consultAi.voiceError.invalidAudio": "Non è stato possibile leggere la registrazione. Riprova.",
   "consultAi.voiceError.emptyRecording": "La registrazione era vuota. Riprova e parla per un momento prima di fermarti.",
+  "consultAi.voiceError.noSpeechDetected": "Non abbiamo rilevato alcun parlato. Riprova e parla chiaramente.",
   "consultAi.voiceError.permissionDenied": "L'accesso al microfono è stato negato. Consenti l'accesso al microfono nelle impostazioni del sito del browser per usare l'input vocale.",
   "consultAi.voiceError.microphoneUnavailable": "L'accesso al microfono non era disponibile. Puoi comunque scrivere il messaggio.",
   "consultAi.voiceError.unknown": "Trascrizione vocale non riuscita. Puoi comunque scrivere la tua nota.",
@@ -258,6 +268,7 @@ const FR: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "Ce format d'enregistrement n'est pas pris en charge pour la transcription. Réessayez, ou saisissez votre note.",
   "consultAi.voiceError.invalidAudio": "L'enregistrement n'a pas pu être lu. Veuillez réessayer.",
   "consultAi.voiceError.emptyRecording": "L'enregistrement était vide. Réessayez et parlez un instant avant d'arrêter.",
+  "consultAi.voiceError.noSpeechDetected": "Nous n'avons détecté aucune parole. Réessayez et parlez clairement.",
   "consultAi.voiceError.permissionDenied": "L'accès au microphone a été refusé. Autorisez l'accès au microphone dans les paramètres du site de votre navigateur pour utiliser la saisie vocale.",
   "consultAi.voiceError.microphoneUnavailable": "L'accès au microphone n'était pas disponible. Vous pouvez toujours saisir votre message.",
   "consultAi.voiceError.unknown": "La transcription vocale a échoué. Vous pouvez toujours saisir votre note.",
@@ -300,6 +311,7 @@ const DE: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "Dieses Aufnahmeformat wird für die Transkription nicht unterstützt. Bitte versuchen Sie es erneut oder schreiben Sie Ihre Notiz.",
   "consultAi.voiceError.invalidAudio": "Die Aufnahme konnte nicht gelesen werden. Bitte versuchen Sie es erneut.",
   "consultAi.voiceError.emptyRecording": "Die Aufnahme war leer. Bitte versuchen Sie es erneut und sprechen Sie kurz, bevor Sie stoppen.",
+  "consultAi.voiceError.noSpeechDetected": "Wir haben keine Sprache erkannt. Bitte versuchen Sie es erneut und sprechen Sie deutlich.",
   "consultAi.voiceError.permissionDenied": "Der Mikrofonzugriff wurde verweigert. Erlauben Sie den Mikrofonzugriff in den Website-Einstellungen Ihres Browsers, um die Spracheingabe zu nutzen.",
   "consultAi.voiceError.microphoneUnavailable": "Der Mikrofonzugriff war nicht verfügbar. Sie können Ihre Nachricht weiterhin eingeben.",
   "consultAi.voiceError.unknown": "Die Sprachtranskription ist fehlgeschlagen. Sie können Ihre Notiz weiterhin eingeben.",
@@ -342,6 +354,7 @@ const ES: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "Este formato de grabación no es compatible con la transcripción. Inténtalo de nuevo o escribe tu nota.",
   "consultAi.voiceError.invalidAudio": "No se pudo leer la grabación. Inténtalo de nuevo.",
   "consultAi.voiceError.emptyRecording": "La grabación estaba vacía. Inténtalo de nuevo y habla un momento antes de detenerte.",
+  "consultAi.voiceError.noSpeechDetected": "No detectamos ningún habla. Inténtalo de nuevo y habla con claridad.",
   "consultAi.voiceError.permissionDenied": "Se denegó el acceso al micrófono. Permite el acceso al micrófono en la configuración del sitio de tu navegador para usar la entrada de voz.",
   "consultAi.voiceError.microphoneUnavailable": "El acceso al micrófono no estaba disponible. Aún puedes escribir tu mensaje.",
   "consultAi.voiceError.unknown": "La transcripción de voz falló. Aún puedes escribir tu nota.",
@@ -384,6 +397,7 @@ const PT: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "Este formato de gravação não é suportado para transcrição. Tente novamente, ou escreva a sua nota.",
   "consultAi.voiceError.invalidAudio": "Não foi possível ler a gravação. Tente novamente.",
   "consultAi.voiceError.emptyRecording": "A gravação estava vazia. Tente novamente e fale por um momento antes de parar.",
+  "consultAi.voiceError.noSpeechDetected": "Não detectamos nenhuma fala. Tente novamente e fale com clareza.",
   "consultAi.voiceError.permissionDenied": "O acesso ao microfone foi negado. Permita o acesso ao microfone nas definições do site do seu navegador para usar a entrada de voz.",
   "consultAi.voiceError.microphoneUnavailable": "O acesso ao microfone não estava disponível. Ainda pode escrever a sua mensagem.",
   "consultAi.voiceError.unknown": "A transcrição de voz falhou. Ainda pode escrever a sua nota.",
@@ -426,6 +440,7 @@ const NL: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "Dit opnameformaat wordt niet ondersteund voor transcriptie. Probeer het opnieuw, of typ je notitie.",
   "consultAi.voiceError.invalidAudio": "De opname kon niet worden gelezen. Probeer het opnieuw.",
   "consultAi.voiceError.emptyRecording": "De opname was leeg. Probeer het opnieuw en spreek even voordat je stopt.",
+  "consultAi.voiceError.noSpeechDetected": "We hebben geen spraak gedetecteerd. Probeer het opnieuw en spreek duidelijk.",
   "consultAi.voiceError.permissionDenied": "Microfoontoegang is geweigerd. Sta microfoontoegang toe in de sitegegevens van je browser om spraakinvoer te gebruiken.",
   "consultAi.voiceError.microphoneUnavailable": "Microfoontoegang was niet beschikbaar. Je kunt je bericht nog steeds typen.",
   "consultAi.voiceError.unknown": "Spraaktranscriptie is mislukt. Je kunt je notitie nog steeds typen.",
@@ -468,6 +483,7 @@ const PL: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "Ten format nagrania nie jest obsługiwany do transkrypcji. Spróbuj ponownie lub wpisz swoją notatkę.",
   "consultAi.voiceError.invalidAudio": "Nie udało się odczytać nagrania. Spróbuj ponownie.",
   "consultAi.voiceError.emptyRecording": "Nagranie było puste. Spróbuj ponownie i mów przez chwilę przed zatrzymaniem.",
+  "consultAi.voiceError.noSpeechDetected": "Nie wykryliśmy mowy. Spróbuj ponownie i mów wyraźnie.",
   "consultAi.voiceError.permissionDenied": "Odmówiono dostępu do mikrofonu. Zezwól na dostęp do mikrofonu w ustawieniach witryny w przeglądarce, aby korzystać z wprowadzania głosowego.",
   "consultAi.voiceError.microphoneUnavailable": "Dostęp do mikrofonu był niedostępny. Nadal możesz wpisać swoją wiadomość.",
   "consultAi.voiceError.unknown": "Transkrypcja głosowa nie powiodła się. Nadal możesz wpisać swoją notatkę.",
@@ -510,6 +526,7 @@ const TR: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "Bu kayıt formatı transkripsiyon için desteklenmiyor. Lütfen tekrar deneyin veya notunuzu yazın.",
   "consultAi.voiceError.invalidAudio": "Kayıt okunamadı. Lütfen tekrar deneyin.",
   "consultAi.voiceError.emptyRecording": "Kayıt boştu. Lütfen tekrar deneyin ve durdurmadan önce bir süre konuşun.",
+  "consultAi.voiceError.noSpeechDetected": "Herhangi bir konuşma algılamadık. Lütfen tekrar deneyin ve net konuşun.",
   "consultAi.voiceError.permissionDenied": "Mikrofon erişimi reddedildi. Sesli girişi kullanmak için tarayıcınızın site ayarlarından mikrofon erişimine izin verin.",
   "consultAi.voiceError.microphoneUnavailable": "Mikrofon erişimi kullanılamadı. Mesajınızı yine de yazabilirsiniz.",
   "consultAi.voiceError.unknown": "Sesli transkripsiyon başarısız oldu. Notunuzu yine de yazabilirsiniz.",
@@ -552,6 +569,7 @@ const EL: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "Αυτή η μορφή ηχογράφησης δεν υποστηρίζεται για μεταγραφή. Δοκιμάστε ξανά ή πληκτρολογήστε τη σημείωσή σας.",
   "consultAi.voiceError.invalidAudio": "Δεν ήταν δυνατή η ανάγνωση της ηχογράφησης. Δοκιμάστε ξανά.",
   "consultAi.voiceError.emptyRecording": "Η ηχογράφηση ήταν κενή. Δοκιμάστε ξανά και μιλήστε για λίγο πριν σταματήσετε.",
+  "consultAi.voiceError.noSpeechDetected": "Δεν εντοπίσαμε ομιλία. Δοκιμάστε ξανά και μιλήστε καθαρά.",
   "consultAi.voiceError.permissionDenied": "Η πρόσβαση στο μικρόφωνο απορρίφθηκε. Επιτρέψτε την πρόσβαση στο μικρόφωνο από τις ρυθμίσεις ιστοτόπου του προγράμματος περιήγησής σας για να χρησιμοποιήσετε τη φωνητική εισαγωγή.",
   "consultAi.voiceError.microphoneUnavailable": "Η πρόσβαση στο μικρόφωνο δεν ήταν διαθέσιμη. Μπορείτε ακόμα να πληκτρολογήσετε το μήνυμά σας.",
   "consultAi.voiceError.unknown": "Η φωνητική μεταγραφή απέτυχε. Μπορείτε ακόμα να πληκτρολογήσετε τη σημείωσή σας.",
@@ -594,6 +612,7 @@ const HE: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "פורמט ההקלטה הזה אינו נתמך לתמלול. נסה/י שוב, או הקלד/י את ההערה שלך.",
   "consultAi.voiceError.invalidAudio": "לא ניתן היה לקרוא את ההקלטה. נסה/י שוב.",
   "consultAi.voiceError.emptyRecording": "ההקלטה הייתה ריקה. נסה/י שוב ודבר/י לרגע לפני העצירה.",
+  "consultAi.voiceError.noSpeechDetected": "לא זיהינו דיבור. נסה/י שוב ודבר/י בבירור.",
   "consultAi.voiceError.permissionDenied": "הגישה למיקרופון נדחתה. אפשר/י גישה למיקרופון בהגדרות האתר של הדפדפן כדי להשתמש בקלט קולי.",
   "consultAi.voiceError.microphoneUnavailable": "הגישה למיקרופון לא הייתה זמינה. עדיין אפשר להקליד את ההודעה שלך.",
   "consultAi.voiceError.unknown": "תמלול קולי נכשל. עדיין אפשר להקליד את ההערה שלך.",
@@ -636,6 +655,7 @@ const JA: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "この録音形式は文字起こしに対応していません。もう一度お試しいただくか、メモを入力してください。",
   "consultAi.voiceError.invalidAudio": "録音を読み取れませんでした。もう一度お試しください。",
   "consultAi.voiceError.emptyRecording": "録音が空でした。停止する前に少し話してから、もう一度お試しください。",
+  "consultAi.voiceError.noSpeechDetected": "音声が検出されませんでした。もう一度お試しになり、はっきりとお話しください。",
   "consultAi.voiceError.permissionDenied": "マイクへのアクセスが拒否されました。音声入力を使用するには、ブラウザのサイト設定でマイクへのアクセスを許可してください。",
   "consultAi.voiceError.microphoneUnavailable": "マイクにアクセスできませんでした。メッセージは引き続き入力できます。",
   "consultAi.voiceError.unknown": "音声の文字起こしに失敗しました。メモは引き続き入力できます。",
@@ -678,6 +698,7 @@ const KO: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "이 녹음 형식은 음성 변환에서 지원되지 않습니다. 다시 시도하거나 메모를 입력해 주세요.",
   "consultAi.voiceError.invalidAudio": "녹음을 읽을 수 없습니다. 다시 시도해 주세요.",
   "consultAi.voiceError.emptyRecording": "녹음이 비어 있습니다. 중지하기 전에 잠시 말씀해 주시고 다시 시도해 주세요.",
+  "consultAi.voiceError.noSpeechDetected": "음성이 감지되지 않았습니다. 다시 시도해 주시고 또렷하게 말씀해 주세요.",
   "consultAi.voiceError.permissionDenied": "마이크 접근이 거부되었습니다. 음성 입력을 사용하려면 브라우저의 사이트 설정에서 마이크 접근을 허용해 주세요.",
   "consultAi.voiceError.microphoneUnavailable": "마이크에 접근할 수 없습니다. 메시지는 계속 입력하실 수 있습니다.",
   "consultAi.voiceError.unknown": "음성 변환에 실패했습니다. 메모는 계속 입력하실 수 있습니다.",
@@ -720,6 +741,7 @@ const ZH_HANS: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "不支持此录音格式进行转录。请重试，或输入您的备注。",
   "consultAi.voiceError.invalidAudio": "无法读取录音。请重试。",
   "consultAi.voiceError.emptyRecording": "录音为空。请重试，并在停止前说话片刻。",
+  "consultAi.voiceError.noSpeechDetected": "未检测到语音。请重试，并清晰地说话。",
   "consultAi.voiceError.permissionDenied": "麦克风访问被拒绝。请在浏览器的网站设置中允许麦克风访问以使用语音输入。",
   "consultAi.voiceError.microphoneUnavailable": "麦克风访问不可用。您仍然可以输入消息。",
   "consultAi.voiceError.unknown": "语音转录失败。您仍然可以输入备注。",
@@ -762,6 +784,7 @@ const ZH_HANT: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "不支援此錄音格式進行轉錄。請重試，或輸入您的備註。",
   "consultAi.voiceError.invalidAudio": "無法讀取錄音。請重試。",
   "consultAi.voiceError.emptyRecording": "錄音為空。請重試，並在停止前說話片刻。",
+  "consultAi.voiceError.noSpeechDetected": "未偵測到語音。請重試，並清晰地說話。",
   "consultAi.voiceError.permissionDenied": "麥克風存取被拒絕。請在瀏覽器的網站設定中允許麥克風存取以使用語音輸入。",
   "consultAi.voiceError.microphoneUnavailable": "麥克風存取無法使用。您仍然可以輸入訊息。",
   "consultAi.voiceError.unknown": "語音轉錄失敗。您仍然可以輸入備註。",
@@ -804,6 +827,7 @@ const HI: Dictionary = {
   "consultAi.voiceError.unsupportedFormat": "यह रिकॉर्डिंग फ़ॉर्मेट ट्रांसक्रिप्शन के लिए समर्थित नहीं है। कृपया फिर से प्रयास करें, या अपना नोट लिखें।",
   "consultAi.voiceError.invalidAudio": "रिकॉर्डिंग पढ़ी नहीं जा सकी। कृपया फिर से प्रयास करें।",
   "consultAi.voiceError.emptyRecording": "रिकॉर्डिंग खाली थी। कृपया फिर से प्रयास करें और रोकने से पहले थोड़ी देर बोलें।",
+  "consultAi.voiceError.noSpeechDetected": "कोई आवाज़ नहीं मिली। कृपया फिर से प्रयास करें और स्पष्ट रूप से बोलें।",
   "consultAi.voiceError.permissionDenied": "माइक्रोफ़ोन एक्सेस अस्वीकार कर दिया गया। वॉइस इनपुट का उपयोग करने के लिए अपने ब्राउज़र की साइट सेटिंग्स में माइक्रोफ़ोन एक्सेस की अनुमति दें।",
   "consultAi.voiceError.microphoneUnavailable": "माइक्रोफ़ोन एक्सेस उपलब्ध नहीं था। आप अभी भी अपना संदेश लिख सकते हैं।",
   "consultAi.voiceError.unknown": "वॉइस ट्रांसक्रिप्शन विफल रहा। आप अभी भी अपना नोट लिख सकते हैं।",

@@ -23,6 +23,12 @@ function callbackSpies() {
     onStopped: vi.fn(),
     onFailure: vi.fn(),
     onSuccess: vi.fn(),
+    // VAD Round 12 (2026-08-23): added alongside the pre-existing spies
+    // above -- an extra, unused property on the object every existing
+    // test in this file already passes as `callbacks` is harmless (none
+    // of them assert on the object's own shape), so this is purely
+    // additive for the new describe block at the end of this file.
+    onNoSpeechDetected: vi.fn(),
   };
 }
 
@@ -1020,5 +1026,101 @@ describe("bindFetch", () => {
     const response = await bound("/api/v1/clients/client-1/voice-transcript");
 
     expect(response).toBeInstanceOf(Response);
+  });
+});
+
+// VAD Round 12 (2026-08-23): a real production report proved a no-speech
+// recording (radio/music, VAD correctly never confirmed speech) still
+// reached STT, which then transcribed the background audio and carried it
+// through Consult AI and TTS -- see voice-activity-logic.ts's own
+// hasConfirmedSpeechForSubmission doc comment and finishRecording's own
+// ROUND 12 doc comment for the full root cause. These tests cover ONLY
+// this round's own new gate (the trailing `hasConfirmedSpeech` parameter)
+// -- the pre-existing upload/retry logic above is exercised only enough
+// to prove the gate does not interfere with it, not re-tested here.
+describe("finishRecording -- hasConfirmedSpeech gate (VAD Round 12)", () => {
+  it("hasConfirmedSpeech: false calls onNoSpeechDetected and NEVER touches fetch, onFailure, or onSuccess", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchSpy = vi.fn();
+
+    await finishRecording(stream, [new Blob(["not empty"])], "audio/webm", "client-1", callbacks, { fetch: fetchSpy }, undefined, "attempt-1", false);
+
+    expect(callbacks.onStopped).toHaveBeenCalledTimes(1);
+    expect(callbacks.onNoSpeechDetected).toHaveBeenCalledTimes(1);
+    expect(callbacks.onFailure).not.toHaveBeenCalled();
+    expect(callbacks.onSuccess).not.toHaveBeenCalled();
+    // The decisive proof: no network request was ever made -- audio was
+    // never sent for transcription at all.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("hasConfirmedSpeech: false skips even blob/WAV-conversion work, not just the network call", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchSpy = vi.fn();
+    const encodeAsWavSpy = vi.fn();
+
+    await finishRecording(
+      stream,
+      [new Blob(["not empty"])],
+      "audio/webm",
+      "client-1",
+      callbacks,
+      { fetch: fetchSpy, encodeAsWav: encodeAsWavSpy },
+      undefined,
+      "attempt-1",
+      false,
+    );
+
+    expect(encodeAsWavSpy).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("hasConfirmedSpeech: false falls back to onFailure (never silently doing nothing) when onNoSpeechDetected is not provided -- the defensive, in-practice-unreachable path", async () => {
+    const { stream } = fakeStream();
+    const fetchSpy = vi.fn();
+    const onFailure = vi.fn();
+
+    await finishRecording(
+      stream,
+      [new Blob(["not empty"])],
+      "audio/webm",
+      "client-1",
+      { onStopped: vi.fn(), onFailure, onSuccess: vi.fn() }, // no onNoSpeechDetected
+      { fetch: fetchSpy },
+      undefined,
+      "attempt-1",
+      false,
+    );
+
+    expect(onFailure).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("hasConfirmedSpeech: true (explicit) still runs the normal upload flow -- the gate does not interfere with a real, eligible recording", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "Vreau o tunsoare scurtă.", transcriptId: "t-1" }));
+
+    await finishRecording(stream, [new Blob(["not empty"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub }, undefined, "attempt-1", true);
+
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(callbacks.onNoSpeechDetected).not.toHaveBeenCalled();
+    expect(callbacks.onSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("hasConfirmedSpeech omitted entirely defaults to true -- every pre-existing call site (e.g. teach-ai-panel.tsx's own, which has no VAD concept) keeps its exact prior behavior", async () => {
+    const { stream } = fakeStream();
+    const callbacks = callbackSpies();
+    const fetchStub = vi.fn(async () => jsonResponse({ transcript: "Draft note.", transcriptId: "t-2" }));
+
+    // Positional call with NOTHING after attemptId -- exactly how
+    // teach-ai-panel.tsx's own call site invokes this function today.
+    await finishRecording(stream, [new Blob(["not empty"])], "audio/webm", "client-1", callbacks, { fetch: fetchStub }, undefined, "attempt-1");
+
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(callbacks.onNoSpeechDetected).not.toHaveBeenCalled();
+    expect(callbacks.onSuccess).toHaveBeenCalledTimes(1);
   });
 });

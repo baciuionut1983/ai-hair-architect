@@ -768,6 +768,41 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     logSpy.mockRestore();
   });
 
+  // VAD Round 12 (2026-08-23): see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  it("logs the VAD ROUND 12 STT-skip fields when a no-speech recording was skipped", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-138",
+      outcome: "stt_skipped_no_speech",
+      summary: validSummary(),
+      sttSkipped: true,
+      sttSkipReason: "no_confirmed_speech",
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      outcome: "stt_skipped_no_speech",
+      terminalStage: "stt",
+      sttSkipped: true,
+      sttSkipReason: "no_confirmed_speech",
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs sttSkipped/sttSkipReason as null (never fabricated) when not reported", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-139", outcome: "tts_completed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({ sttSkipped: null, sttSkipReason: null });
+    logSpy.mockRestore();
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): the real Gemini
   // provider failure detail, closing the gap where a provider HTTP error,
   // a network/timeout failure, and an empty-transcript response all

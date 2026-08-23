@@ -20,6 +20,13 @@
 export const VOICE_LATENCY_TURN_OUTCOMES = [
   "stt_failed",
   "stt_success_not_submitted",
+  // VAD Round 12 (2026-08-23): a real production report proved a
+  // no-speech recording (radio/music, START correctly never confirmed)
+  // still reached STT -- see voice-activity-logic.ts's own
+  // hasConfirmedSpeechForSubmission doc comment. Distinct from
+  // "stt_failed" on purpose: no speech was ever a provider/transcription
+  // failure -- STT was never even attempted for this turn.
+  "stt_skipped_no_speech",
   "consultation_failed",
   "consultation_succeeded_no_voice_reply",
   "tts_unsupported_language",
@@ -43,6 +50,7 @@ export type VoiceLatencyTerminalStage = "stt" | "consultation" | "tts" | "playba
 const OUTCOME_TERMINAL_STAGE: Record<VoiceLatencyTurnOutcome, VoiceLatencyTerminalStage> = {
   stt_failed: "stt",
   stt_success_not_submitted: "stt",
+  stt_skipped_no_speech: "stt",
   consultation_failed: "consultation",
   consultation_succeeded_no_voice_reply: "consultation",
   tts_unsupported_language: "tts",
@@ -239,6 +247,10 @@ export interface VoiceLatencyTelemetryInput {
   vadStartGateModelConfirmedAtMs?: number;
   vadStartGateFallbackUsed?: boolean;
   vadStartGateFallbackReason?: "model_loading" | "model_unavailable" | "model_error";
+  // VAD Round 12 (2026-08-23): see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  sttSkipped?: boolean;
+  sttSkipReason?: "no_confirmed_speech";
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -694,6 +706,23 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     vadStartGateFallbackReason = input.vadStartGateFallbackReason as "model_loading" | "model_unavailable" | "model_error";
   }
 
+  // VAD Round 12 (2026-08-23): see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  let sttSkipped: boolean | undefined;
+  if (input.sttSkipped !== undefined) {
+    if (typeof input.sttSkipped !== "boolean") {
+      return { ok: false, reason: "invalid_stt_skipped" };
+    }
+    sttSkipped = input.sttSkipped;
+  }
+  let sttSkipReason: "no_confirmed_speech" | undefined;
+  if (input.sttSkipReason !== undefined) {
+    if (input.sttSkipReason !== "no_confirmed_speech") {
+      return { ok: false, reason: "invalid_stt_skip_reason" };
+    }
+    sttSkipReason = input.sttSkipReason;
+  }
+
   let sttProviderHttpStatus: number | undefined;
   if (input.sttProviderHttpStatus !== undefined) {
     if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
@@ -922,6 +951,8 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
         : {}),
       ...(vadStartGateFallbackUsed !== undefined ? { vadStartGateFallbackUsed } : {}),
       ...(vadStartGateFallbackReason !== undefined ? { vadStartGateFallbackReason } : {}),
+      ...(sttSkipped !== undefined ? { sttSkipped } : {}),
+      ...(sttSkipReason !== undefined ? { sttSkipReason } : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
       ...(sttProviderErrorMessage !== undefined ? { sttProviderErrorMessage } : {}),

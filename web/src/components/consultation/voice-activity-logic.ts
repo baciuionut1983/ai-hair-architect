@@ -1489,6 +1489,44 @@ export function evaluateVadSample(
   };
 }
 
+// VAD Round 12 (2026-08-23): a real production report on Phase B (Silero
+// START gate active) proved a distinct, earlier gap than
+// shouldAutoSubmitTranscript below guards against -- START was correctly
+// NEVER confirmed on a pure radio/music recording (vadSpeechDetectedAtMs:
+// null, vadAutoStopReason: "stop_no_speech_timeout"), yet the recorded
+// audio was still uploaded to STT, which then transcribed the background
+// radio and carried it all the way through Consult AI and TTS. Root
+// cause: finishRecording (teach-ai-panel-logic.ts) has never had any
+// concept of "did VAD confirm speech" -- it uploads whatever non-empty
+// blob it received, unconditionally.
+//
+// This is the SINGLE source of truth for "is this recording's audio even
+// eligible to be sent for transcription at all" -- checked ONCE, by the
+// caller (use-voice-recording.ts), immediately when the recording stops,
+// BEFORE finishRecording is ever invoked. Deliberately NOT keyed on the
+// specific auto-stop reason string (stop_no_speech_timeout) -- per this
+// round's own task, the guard must be semantic and must also cover a
+// manual Stop click that happens before speech was ever confirmed, not
+// just the one specific auto-stop path that happened to expose the bug.
+//
+// Works identically whether hasDetectedSpeech was confirmed by the
+// heuristic alone (legacy/fallback mode) or by Silero (Phase B, START
+// gate ON) -- both write into the exact same VadState.hasDetectedSpeech
+// field (see use-voice-recording.ts's own resolveSileroStartAuthority
+// integration), so there is nothing mode-specific to branch on here.
+//
+// `vadState === null` means VAD never ran at all for this recording
+// (setup failed, e.g. no AudioContext support) -- there is no VAD opinion
+// to trust or distrust in that case, so this preserves the pre-VAD
+// fallback this app always had: every recording remains eligible, exactly
+// as before VAD existed. This is NOT the same as "VAD ran but never
+// confirmed speech" (hasDetectedSpeech: false), which IS the case this
+// round closes.
+export function hasConfirmedSpeechForSubmission(vadState: VadState | null): boolean {
+  if (vadState === null) return true;
+  return vadState.hasDetectedSpeech;
+}
+
 // The auto-submit gate: after a recording ends (whether by VAD auto-stop
 // or a manual Stop click) and finishes transcribing, this is the ONLY
 // thing that decides whether to fire off the chat send -- a transcription
@@ -1497,7 +1535,9 @@ export function evaluateVadSample(
 // teach-ai-panel-logic.ts), and an empty/whitespace-only transcript
 // (should the backend ever somehow return one) is explicitly rejected
 // here too, so "STT eșuează -> zero submit" and "transcript gol -> zero
-// submit" both hold by construction, not by convention.
+// submit" both hold by construction, not by convention. See
+// hasConfirmedSpeechForSubmission above for the EARLIER gate (this round)
+// that stops a no-speech recording from ever reaching STT at all.
 export function shouldAutoSubmitTranscript(transcript: string | null | undefined): boolean {
   return typeof transcript === "string" && transcript.trim().length > 0;
 }

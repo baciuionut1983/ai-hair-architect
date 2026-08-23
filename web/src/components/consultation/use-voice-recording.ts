@@ -46,6 +46,7 @@ import {
 import {
   computeVoiceActivityDiagnostics,
   evaluateVadSample,
+  hasConfirmedSpeechForSubmission,
   initVadState,
   shouldAutoSubmitTranscript,
   type VadState,
@@ -656,6 +657,17 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
           // fully fresh MediaRecorder rather than retaining any
           // reference to this now-inactive one.
           recorder.current = null;
+          // VAD Round 12 (2026-08-23): the single source of truth for
+          // whether this recording's audio is even eligible for
+          // transcription -- read from vadStateRef.current at the EXACT
+          // moment the recording stops, reflecting whichever authority
+          // (Phase B's Silero START gate, or the legacy heuristic alone)
+          // actually confirmed speech, if either did. See
+          // hasConfirmedSpeechForSubmission's own doc comment
+          // (voice-activity-logic.ts) for the real production bug this
+          // closes and why VAD never having run at all defaults to
+          // eligible (the pre-VAD fallback).
+          const hasConfirmedSpeech = hasConfirmedSpeechForSubmission(vadStateRef.current);
           void finishRecording(
             stream,
             chunks.current,
@@ -665,6 +677,29 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
               onStopped: () => {
                 setRecording(false);
                 setProcessing(true);
+              },
+              onNoSpeechDetected: (marks) => {
+                setProcessing(false);
+                setError(t("consultAi.voiceError.noSpeechDetected"));
+                // Honest, local termination: STT was never attempted, so
+                // this is reported as a SKIP, never "stt_failed" -- no
+                // speech != provider failure (this round's own explicit
+                // requirement). No transcript is ever produced, so
+                // onTranscript (and therefore Consult AI/TTS/conversation
+                // history) is structurally never reached on this path --
+                // not by convention, since this callback simply never
+                // calls it.
+                const mergedMarks = mergeVoiceLatencyMarks(micMarksRef.current, marks);
+                const summary = computeVoiceLatencySummary(mergedMarks);
+                logVoiceLatencySummary(attemptId, summary);
+                reportVoiceLatencySummary(clientId, attemptId, "stt_skipped_no_speech", summary, { fetch: bindFetch(fetch) }, {
+                  sttSkipped: true,
+                  sttSkipReason: "no_confirmed_speech",
+                  elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(mergedMarks, performance.now()),
+                  ...vadDiagnosticsToReportFields(readVoiceActivityDiagnostics()),
+                  ...sileroShadowDiagnosticsToReportFields(readSileroShadowReportData()),
+                  ...sileroStartGateToReportFields(readSileroStartGateReportContext()),
+                });
               },
               onFailure: (_message, reason, marks, attemptNumber, providerDiagnostics) => {
                 setProcessing(false);
@@ -736,6 +771,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
             { fetch: bindFetch(fetch), encodeAsWav: decodeBlobAsWav },
             language,
             attemptId,
+            hasConfirmedSpeech,
           );
         };
         media.start();
