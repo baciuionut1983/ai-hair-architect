@@ -1378,6 +1378,133 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // VAD Round 11 (2026-08-23), Phase B: see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  describe("VAD ROUND 11 Silero START gate fields", () => {
+    it("accepts a fully-populated, real-shaped 'silero confirmed' payload", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadStartGateMode: "silero",
+        vadStartGateModelThreshold: 0.5,
+        vadStartGateModelQualifiedFrames: 9,
+        vadStartGateModelConfirmedAtMs: 288,
+        vadStartGateFallbackUsed: false,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadStartGateMode: "silero",
+          vadStartGateModelThreshold: 0.5,
+          vadStartGateModelQualifiedFrames: 9,
+          vadStartGateModelConfirmedAtMs: 288,
+          vadStartGateFallbackUsed: false,
+        }),
+      });
+    });
+
+    it("accepts a fully-populated 'fallback used' payload", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadStartGateMode: "silero",
+        vadStartGateFallbackUsed: true,
+        vadStartGateFallbackReason: "model_loading",
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadStartGateMode: "silero",
+          vadStartGateFallbackUsed: true,
+          vadStartGateFallbackReason: "model_loading",
+        }),
+      });
+    });
+
+    it("accepts vadStartGateMode: 'legacy' (the flag-off default)", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadStartGateMode: "legacy",
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ vadStartGateMode: "legacy" }) });
+    });
+
+    it("rejects an unknown vadStartGateMode value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadStartGateMode: "hybrid",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_start_gate_mode" });
+    });
+
+    it("rejects an unknown vadStartGateFallbackReason value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadStartGateFallbackReason: "network_error",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_start_gate_fallback_reason" });
+    });
+
+    it("rejects a threshold above 1", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadStartGateModelThreshold: 1.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_start_gate_model_threshold" });
+    });
+
+    it("rejects a negative qualified-frame count", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadStartGateModelQualifiedFrames: -1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_start_gate_model_qualified_frames" });
+    });
+
+    it("rejects a non-boolean vadStartGateFallbackUsed", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadStartGateFallbackUsed: "yes",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_start_gate_fallback_used" });
+    });
+
+    it("omits every field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of [
+          "vadStartGateMode",
+          "vadStartGateModelThreshold",
+          "vadStartGateModelQualifiedFrames",
+          "vadStartGateModelConfirmedAtMs",
+          "vadStartGateFallbackUsed",
+          "vadStartGateFallbackReason",
+        ]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
   // production STT failure be attributed, directly from this one log line,
   // to the real Gemini HTTP status/canonical error status, or to a real

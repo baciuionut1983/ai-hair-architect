@@ -485,6 +485,18 @@ export interface VoiceLatencyTerminalDiagnostics {
   vadModelInferenceMeanMs?: number;
   vadModelSpeechProbabilityStdDev?: number;
   vadModelError?: string;
+  // VAD Round 11 (2026-08-23), Phase B: see use-voice-recording.ts's own
+  // sileroStartGateToReportFields doc comment for what each answers.
+  // vadStartGateMode is always present whenever ANY VAD telemetry is
+  // reported at all (it describes this build's own configuration, not a
+  // per-recording measurement) -- every other field is undefined unless
+  // the flag was actually on for this recording.
+  vadStartGateMode?: "legacy" | "silero";
+  vadStartGateModelThreshold?: number;
+  vadStartGateModelQualifiedFrames?: number;
+  vadStartGateModelConfirmedAtMs?: number;
+  vadStartGateFallbackUsed?: boolean;
+  vadStartGateFallbackReason?: "model_loading" | "model_unavailable" | "model_error";
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see

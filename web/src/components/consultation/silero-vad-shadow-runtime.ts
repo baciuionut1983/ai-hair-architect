@@ -75,6 +75,7 @@ import {
   type SileroRecurrentState,
   type SileroShadowDiagnosticsState,
 } from "./silero-vad-shadow-logic";
+import { evaluateSileroStartGateFrame, initSileroStartGateState, type SileroStartGateState } from "./silero-start-gate-logic";
 
 const MODEL_NAME = "silero-vad";
 const MODEL_VERSION = "v5";
@@ -104,6 +105,14 @@ export interface SileroShadowHandle {
   // accumulation.
   getDiagnostics(): SileroShadowDiagnosticsState;
   getModelInfo(): SileroShadowModelInfo;
+  // VAD Round 11 (2026-08-23), Phase B: the START-gate's own live state
+  // (see silero-start-gate-logic.ts) -- computed unconditionally on every
+  // successful frame, regardless of whether Phase B's own feature flag is
+  // even enabled (same "always compute, caller decides whether to act on
+  // it" principle as getDiagnostics() itself). use-voice-recording.ts's
+  // own glue layer is the ONLY place that ever reads this to affect a
+  // real decision.
+  getStartGateState(): SileroStartGateState;
   // Idempotent -- safe to call more than once (mirrors vadCleanupRef's
   // own contract in use-voice-recording.ts). Never touches the shared
   // MediaStream passed into startSileroVadShadow (see this module's own
@@ -130,9 +139,11 @@ function resolveAudioContextConstructor(): (new (options?: { sampleRate?: number
 // actually succeed" before calling getDiagnostics()/getModelInfo()/stop().
 function unavailableHandle(modelInfo: SileroShadowModelInfo): SileroShadowHandle {
   const diagnostics = initSileroShadowDiagnostics();
+  const startGateState = initSileroStartGateState();
   return {
     getDiagnostics: () => diagnostics,
     getModelInfo: () => modelInfo,
+    getStartGateState: () => startGateState,
     stop: () => {},
   };
 }
@@ -253,6 +264,11 @@ export async function startSileroVadShadow(stream: MediaStream): Promise<SileroS
 
     let recurrent = createSileroRecurrentState();
     let diagnostics = initSileroShadowDiagnostics();
+    // VAD Round 11 (2026-08-23), Phase B: computed unconditionally on
+    // every successful frame -- see this module's own doc comment on
+    // SileroShadowHandle.getStartGateState for why this runs regardless
+    // of whether Phase B's own feature flag is enabled.
+    let startGateState = initSileroStartGateState();
     let stopped = false;
 
     workletNode.port.onmessage = (event: MessageEvent<Float32Array>) => {
@@ -264,6 +280,7 @@ export async function startSileroVadShadow(stream: MediaStream): Promise<SileroS
           if (stopped) return;
           recurrent = result.recurrent;
           diagnostics = recordSileroFrameResult(diagnostics, result.probability, result.inferenceMs);
+          startGateState = evaluateSileroStartGateFrame(startGateState, result.probability, performance.now());
         })
         .catch((error: unknown) => {
           if (stopped) return;
@@ -277,6 +294,7 @@ export async function startSileroVadShadow(stream: MediaStream): Promise<SileroS
     return {
       getDiagnostics: () => diagnostics,
       getModelInfo: () => modelInfo,
+      getStartGateState: () => startGateState,
       stop: () => {
         if (stopped) return;
         stopped = true;

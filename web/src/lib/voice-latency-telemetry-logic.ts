@@ -231,6 +231,14 @@ export interface VoiceLatencyTelemetryInput {
   vadModelInferenceMeanMs?: number;
   vadModelSpeechProbabilityStdDev?: number;
   vadModelError?: string;
+  // VAD Round 11 (2026-08-23), Phase B: see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  vadStartGateMode?: "legacy" | "silero";
+  vadStartGateModelThreshold?: number;
+  vadStartGateModelQualifiedFrames?: number;
+  vadStartGateModelConfirmedAtMs?: number;
+  vadStartGateFallbackUsed?: boolean;
+  vadStartGateFallbackReason?: "model_loading" | "model_unavailable" | "model_error";
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -340,6 +348,11 @@ function parseOptionalDurationField(
 // can produce -- Gemini's own thinking_level vocabulary plus the literal
 // "default" sentinel, never a free-form string.
 const CONSULTATION_THINKING_MODES = new Set(["MINIMAL", "LOW", "MEDIUM", "HIGH", "default"]);
+
+// VAD Round 11 (2026-08-23), Phase B: the fixed set of real values
+// use-voice-recording.ts's own sileroStartGateToReportFields can produce
+// -- see that function's own doc comment for what each means.
+const VAD_START_GATE_FALLBACK_REASONS = new Set(["model_loading", "model_unavailable", "model_error"]);
 
 // Consult AI provider latency variance audit (2026-08-21): a generous
 // ceiling for character/message counts and token counts alike -- rejects
@@ -651,6 +664,36 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     vadModelError = input.vadModelError;
   }
 
+  // VAD Round 11 (2026-08-23), Phase B: see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  let vadStartGateMode: "legacy" | "silero" | undefined;
+  if (input.vadStartGateMode !== undefined) {
+    if (input.vadStartGateMode !== "legacy" && input.vadStartGateMode !== "silero") {
+      return { ok: false, reason: "invalid_vad_start_gate_mode" };
+    }
+    vadStartGateMode = input.vadStartGateMode;
+  }
+  const vadStartGateModelThreshold = parseOptionalBoundedFloat(input, "vadStartGateModelThreshold", 1);
+  if (!vadStartGateModelThreshold.ok) return { ok: false, reason: "invalid_vad_start_gate_model_threshold" };
+  const vadStartGateModelQualifiedFrames = parseOptionalNonNegativeInteger(input, "vadStartGateModelQualifiedFrames");
+  if (!vadStartGateModelQualifiedFrames.ok) return { ok: false, reason: "invalid_vad_start_gate_model_qualified_frames" };
+  const vadStartGateModelConfirmedAtMs = parseOptionalDurationField(input, "vadStartGateModelConfirmedAtMs");
+  if (!vadStartGateModelConfirmedAtMs.ok) return { ok: false, reason: "invalid_vad_start_gate_model_confirmed_at_ms" };
+  let vadStartGateFallbackUsed: boolean | undefined;
+  if (input.vadStartGateFallbackUsed !== undefined) {
+    if (typeof input.vadStartGateFallbackUsed !== "boolean") {
+      return { ok: false, reason: "invalid_vad_start_gate_fallback_used" };
+    }
+    vadStartGateFallbackUsed = input.vadStartGateFallbackUsed;
+  }
+  let vadStartGateFallbackReason: "model_loading" | "model_unavailable" | "model_error" | undefined;
+  if (input.vadStartGateFallbackReason !== undefined) {
+    if (!VAD_START_GATE_FALLBACK_REASONS.has(input.vadStartGateFallbackReason as string)) {
+      return { ok: false, reason: "invalid_vad_start_gate_fallback_reason" };
+    }
+    vadStartGateFallbackReason = input.vadStartGateFallbackReason as "model_loading" | "model_unavailable" | "model_error";
+  }
+
   let sttProviderHttpStatus: number | undefined;
   if (input.sttProviderHttpStatus !== undefined) {
     if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
@@ -869,6 +912,16 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
         ? { vadModelSpeechProbabilityStdDev: vadModelSpeechProbabilityStdDev.value }
         : {}),
       ...(vadModelError !== undefined ? { vadModelError } : {}),
+      ...(vadStartGateMode !== undefined ? { vadStartGateMode } : {}),
+      ...(vadStartGateModelThreshold.value !== undefined ? { vadStartGateModelThreshold: vadStartGateModelThreshold.value } : {}),
+      ...(vadStartGateModelQualifiedFrames.value !== undefined
+        ? { vadStartGateModelQualifiedFrames: vadStartGateModelQualifiedFrames.value }
+        : {}),
+      ...(vadStartGateModelConfirmedAtMs.value !== undefined
+        ? { vadStartGateModelConfirmedAtMs: vadStartGateModelConfirmedAtMs.value }
+        : {}),
+      ...(vadStartGateFallbackUsed !== undefined ? { vadStartGateFallbackUsed } : {}),
+      ...(vadStartGateFallbackReason !== undefined ? { vadStartGateFallbackReason } : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
       ...(sttProviderErrorMessage !== undefined ? { sttProviderErrorMessage } : {}),

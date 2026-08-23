@@ -700,6 +700,74 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     logSpy.mockRestore();
   });
 
+  // VAD Round 11 (2026-08-23), Phase B: see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  it("logs the VAD ROUND 11 START gate fields when Silero confirmed START", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-135",
+      outcome: "tts_completed",
+      summary: validSummary(),
+      vadStartGateMode: "silero",
+      vadStartGateModelThreshold: 0.5,
+      vadStartGateModelQualifiedFrames: 9,
+      vadStartGateModelConfirmedAtMs: 288,
+      vadStartGateFallbackUsed: false,
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadStartGateMode: "silero",
+      vadStartGateModelThreshold: 0.5,
+      vadStartGateModelQualifiedFrames: 9,
+      vadStartGateModelConfirmedAtMs: 288,
+      vadStartGateFallbackUsed: false,
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs the VAD ROUND 11 fallback shape when Silero was unavailable", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-136",
+      outcome: "tts_completed",
+      summary: validSummary(),
+      vadStartGateMode: "silero",
+      vadStartGateFallbackUsed: true,
+      vadStartGateFallbackReason: "model_unavailable",
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadStartGateMode: "silero",
+      vadStartGateFallbackUsed: true,
+      vadStartGateFallbackReason: "model_unavailable",
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs vadStartGateMode 'legacy' and every other Round 11 field as null when the flag was off / not reported", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-137", outcome: "tts_completed", summary: validSummary(), vadStartGateMode: "legacy" });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadStartGateMode: "legacy",
+      vadStartGateModelThreshold: null,
+      vadStartGateModelQualifiedFrames: null,
+      vadStartGateModelConfirmedAtMs: null,
+      vadStartGateFallbackUsed: null,
+      vadStartGateFallbackReason: null,
+    });
+    logSpy.mockRestore();
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): the real Gemini
   // provider failure detail, closing the gap where a provider HTTP error,
   // a network/timeout failure, and an empty-transcript response all
