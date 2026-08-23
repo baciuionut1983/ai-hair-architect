@@ -129,6 +129,21 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       // voice-activity-logic.ts's own ROUND 9 VoiceActivityDiagnostics doc
       // comment for what this answers.
       vadPeakStreakSpectralHitCount: parsed.value.vadPeakStreakSpectralHitCount ?? null,
+      // VAD Round 10 (2026-08-23), Silero shadow mode, Phase A: see
+      // voice-latency-logic.ts's own VoiceLatencyTerminalDiagnostics doc
+      // comment for what each answers. STRICT SHADOW MODE, diagnostic-only.
+      vadModelAvailable: parsed.value.vadModelAvailable ?? null,
+      vadModelName: parsed.value.vadModelName ?? null,
+      vadModelVersion: parsed.value.vadModelVersion ?? null,
+      vadModelLoadMs: parsed.value.vadModelLoadMs ?? null,
+      vadModelPeakSpeechProbability: parsed.value.vadModelPeakSpeechProbability ?? null,
+      vadModelMeanSpeechProbability: parsed.value.vadModelMeanSpeechProbability ?? null,
+      vadModelSpeechQualifiedSampleCount: parsed.value.vadModelSpeechQualifiedSampleCount ?? null,
+      vadModelTotalSampleCount: parsed.value.vadModelTotalSampleCount ?? null,
+      vadModelInferencePeakMs: parsed.value.vadModelInferencePeakMs ?? null,
+      vadModelInferenceMeanMs: parsed.value.vadModelInferenceMeanMs ?? null,
+      vadModelSpeechProbabilityStdDev: parsed.value.vadModelSpeechProbabilityStdDev ?? null,
+      vadModelError: parsed.value.vadModelError ?? null,
       // STT Flash-Lite root-cause diagnosis (2026-08-20): see
       // voice-latency-telemetry-logic.ts's own doc comment on these same 3
       // fields for exactly what they mean and why.

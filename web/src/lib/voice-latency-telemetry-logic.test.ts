@@ -1222,6 +1222,162 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // VAD Round 10 (2026-08-23), Silero shadow mode, Phase A: see
+  // voice-latency-logic.ts's own VoiceLatencyTerminalDiagnostics doc
+  // comment for what each field answers. STRICT SHADOW MODE --
+  // diagnostic-only telemetry, never a decision.
+  describe("VAD ROUND 10 Silero shadow mode diagnostics", () => {
+    it("accepts a fully-populated, real-shaped payload", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelAvailable: true,
+        vadModelName: "silero-vad",
+        vadModelVersion: "v5",
+        vadModelLoadMs: 420,
+        vadModelPeakSpeechProbability: 0.97,
+        vadModelMeanSpeechProbability: 0.61,
+        vadModelSpeechQualifiedSampleCount: 40,
+        vadModelTotalSampleCount: 75,
+        vadModelInferencePeakMs: 6,
+        vadModelInferenceMeanMs: 2,
+        vadModelSpeechProbabilityStdDev: 0.22,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadModelAvailable: true,
+          vadModelName: "silero-vad",
+          vadModelVersion: "v5",
+          vadModelLoadMs: 420,
+          vadModelPeakSpeechProbability: 0.97,
+          vadModelMeanSpeechProbability: 0.61,
+          vadModelSpeechQualifiedSampleCount: 40,
+          vadModelTotalSampleCount: 75,
+          vadModelInferencePeakMs: 6,
+          vadModelInferenceMeanMs: 2,
+          vadModelSpeechProbabilityStdDev: 0.22,
+        }),
+      });
+    });
+
+    it("accepts vadModelAvailable: false with a vadModelError -- the honest 'shadow mode failed to load' shape", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelAvailable: false,
+        vadModelError: "AudioContext is not available in this browser.",
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadModelAvailable: false,
+          vadModelError: "AudioContext is not available in this browser.",
+        }),
+      });
+    });
+
+    it("accepts zero for every numeric field -- a truthful 'never observed', not rejected as missing", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelLoadMs: 0,
+        vadModelPeakSpeechProbability: 0,
+        vadModelSpeechQualifiedSampleCount: 0,
+        vadModelTotalSampleCount: 0,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadModelLoadMs: 0,
+          vadModelPeakSpeechProbability: 0,
+          vadModelSpeechQualifiedSampleCount: 0,
+          vadModelTotalSampleCount: 0,
+        }),
+      });
+    });
+
+    it("rejects a non-boolean vadModelAvailable", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelAvailable: "yes",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_model_available" });
+    });
+
+    it("rejects a probability above 1", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelPeakSpeechProbability: 1.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_model_peak_speech_probability" });
+    });
+
+    it("rejects a negative sample count", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelTotalSampleCount: -1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_model_total_sample_count" });
+    });
+
+    it("rejects an unsafe vadModelError string (e.g. embedded newlines/control characters)", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelError: "line one\nline two",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_model_error" });
+    });
+
+    it("rejects an implausible vadModelLoadMs -- never a real one", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelLoadMs: 60 * 60 * 1000,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_model_load_ms" });
+    });
+
+    it("omits every field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of [
+          "vadModelAvailable",
+          "vadModelName",
+          "vadModelVersion",
+          "vadModelLoadMs",
+          "vadModelPeakSpeechProbability",
+          "vadModelMeanSpeechProbability",
+          "vadModelSpeechQualifiedSampleCount",
+          "vadModelTotalSampleCount",
+          "vadModelInferencePeakMs",
+          "vadModelInferenceMeanMs",
+          "vadModelSpeechProbabilityStdDev",
+          "vadModelError",
+        ]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
   // production STT failure be attributed, directly from this one log line,
   // to the real Gemini HTTP status/canonical error status, or to a real

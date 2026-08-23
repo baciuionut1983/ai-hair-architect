@@ -216,6 +216,21 @@ export interface VoiceLatencyTelemetryInput {
   // voice-activity-logic.ts's own ROUND 9 VoiceActivityDiagnostics doc
   // comment for what this answers.
   vadPeakStreakSpectralHitCount?: number;
+  // VAD Round 10 (2026-08-23), Silero shadow mode, Phase A: see
+  // voice-latency-logic.ts's own VoiceLatencyTerminalDiagnostics doc
+  // comment for what each answers -- STRICT SHADOW MODE, diagnostic-only.
+  vadModelAvailable?: boolean;
+  vadModelName?: string;
+  vadModelVersion?: string;
+  vadModelLoadMs?: number;
+  vadModelPeakSpeechProbability?: number;
+  vadModelMeanSpeechProbability?: number;
+  vadModelSpeechQualifiedSampleCount?: number;
+  vadModelTotalSampleCount?: number;
+  vadModelInferencePeakMs?: number;
+  vadModelInferenceMeanMs?: number;
+  vadModelSpeechProbabilityStdDev?: number;
+  vadModelError?: string;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -583,6 +598,59 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
   const vadPeakStreakSpectralHitCount = parseOptionalNonNegativeInteger(input, "vadPeakStreakSpectralHitCount");
   if (!vadPeakStreakSpectralHitCount.ok) return { ok: false, reason: "invalid_vad_peak_streak_spectral_hit_count" };
 
+  // VAD Round 10 (2026-08-23), Silero shadow mode, Phase A: see
+  // voice-latency-logic.ts's own VoiceLatencyTerminalDiagnostics doc
+  // comment for what each answers. STRICT SHADOW MODE, diagnostic-only.
+  let vadModelAvailable: boolean | undefined;
+  if (input.vadModelAvailable !== undefined) {
+    if (typeof input.vadModelAvailable !== "boolean") {
+      return { ok: false, reason: "invalid_vad_model_available" };
+    }
+    vadModelAvailable = input.vadModelAvailable;
+  }
+  let vadModelName: string | undefined;
+  if (input.vadModelName !== undefined) {
+    if (typeof input.vadModelName !== "string" || !STT_MODEL_PATTERN.test(input.vadModelName)) {
+      return { ok: false, reason: "invalid_vad_model_name" };
+    }
+    vadModelName = input.vadModelName;
+  }
+  let vadModelVersion: string | undefined;
+  if (input.vadModelVersion !== undefined) {
+    if (typeof input.vadModelVersion !== "string" || !STT_MODEL_PATTERN.test(input.vadModelVersion)) {
+      return { ok: false, reason: "invalid_vad_model_version" };
+    }
+    vadModelVersion = input.vadModelVersion;
+  }
+  const vadModelLoadMs = parseOptionalDurationField(input, "vadModelLoadMs");
+  if (!vadModelLoadMs.ok) return { ok: false, reason: "invalid_vad_model_load_ms" };
+  const vadModelPeakSpeechProbability = parseOptionalBoundedFloat(input, "vadModelPeakSpeechProbability", 1);
+  if (!vadModelPeakSpeechProbability.ok) return { ok: false, reason: "invalid_vad_model_peak_speech_probability" };
+  const vadModelMeanSpeechProbability = parseOptionalBoundedFloat(input, "vadModelMeanSpeechProbability", 1);
+  if (!vadModelMeanSpeechProbability.ok) return { ok: false, reason: "invalid_vad_model_mean_speech_probability" };
+  const vadModelSpeechQualifiedSampleCount = parseOptionalNonNegativeInteger(input, "vadModelSpeechQualifiedSampleCount");
+  if (!vadModelSpeechQualifiedSampleCount.ok) return { ok: false, reason: "invalid_vad_model_speech_qualified_sample_count" };
+  const vadModelTotalSampleCount = parseOptionalNonNegativeInteger(input, "vadModelTotalSampleCount");
+  if (!vadModelTotalSampleCount.ok) return { ok: false, reason: "invalid_vad_model_total_sample_count" };
+  const vadModelInferencePeakMs = parseOptionalDurationField(input, "vadModelInferencePeakMs");
+  if (!vadModelInferencePeakMs.ok) return { ok: false, reason: "invalid_vad_model_inference_peak_ms" };
+  const vadModelInferenceMeanMs = parseOptionalDurationField(input, "vadModelInferenceMeanMs");
+  if (!vadModelInferenceMeanMs.ok) return { ok: false, reason: "invalid_vad_model_inference_mean_ms" };
+  const vadModelSpeechProbabilityStdDev = parseOptionalBoundedFloat(input, "vadModelSpeechProbabilityStdDev", 1);
+  if (!vadModelSpeechProbabilityStdDev.ok) return { ok: false, reason: "invalid_vad_model_speech_probability_std_dev" };
+  let vadModelError: string | undefined;
+  if (input.vadModelError !== undefined) {
+    if (
+      typeof input.vadModelError !== "string" ||
+      input.vadModelError.length === 0 ||
+      input.vadModelError.length > MAX_PROVIDER_ERROR_MESSAGE_LENGTH ||
+      !isSafeSingleLineText(input.vadModelError)
+    ) {
+      return { ok: false, reason: "invalid_vad_model_error" };
+    }
+    vadModelError = input.vadModelError;
+  }
+
   let sttProviderHttpStatus: number | undefined;
   if (input.sttProviderHttpStatus !== undefined) {
     if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
@@ -781,6 +849,26 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(vadPeakStreakSpectralHitCount.value !== undefined
         ? { vadPeakStreakSpectralHitCount: vadPeakStreakSpectralHitCount.value }
         : {}),
+      ...(vadModelAvailable !== undefined ? { vadModelAvailable } : {}),
+      ...(vadModelName !== undefined ? { vadModelName } : {}),
+      ...(vadModelVersion !== undefined ? { vadModelVersion } : {}),
+      ...(vadModelLoadMs.value !== undefined ? { vadModelLoadMs: vadModelLoadMs.value } : {}),
+      ...(vadModelPeakSpeechProbability.value !== undefined
+        ? { vadModelPeakSpeechProbability: vadModelPeakSpeechProbability.value }
+        : {}),
+      ...(vadModelMeanSpeechProbability.value !== undefined
+        ? { vadModelMeanSpeechProbability: vadModelMeanSpeechProbability.value }
+        : {}),
+      ...(vadModelSpeechQualifiedSampleCount.value !== undefined
+        ? { vadModelSpeechQualifiedSampleCount: vadModelSpeechQualifiedSampleCount.value }
+        : {}),
+      ...(vadModelTotalSampleCount.value !== undefined ? { vadModelTotalSampleCount: vadModelTotalSampleCount.value } : {}),
+      ...(vadModelInferencePeakMs.value !== undefined ? { vadModelInferencePeakMs: vadModelInferencePeakMs.value } : {}),
+      ...(vadModelInferenceMeanMs.value !== undefined ? { vadModelInferenceMeanMs: vadModelInferenceMeanMs.value } : {}),
+      ...(vadModelSpeechProbabilityStdDev.value !== undefined
+        ? { vadModelSpeechProbabilityStdDev: vadModelSpeechProbabilityStdDev.value }
+        : {}),
+      ...(vadModelError !== undefined ? { vadModelError } : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
       ...(sttProviderErrorMessage !== undefined ? { sttProviderErrorMessage } : {}),

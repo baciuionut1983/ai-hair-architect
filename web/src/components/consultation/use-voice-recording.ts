@@ -32,6 +32,8 @@ import type { LanguageCode } from "@/lib/language-registry";
 import type { TranslationKey } from "@/lib/translations";
 
 import { decodeBlobAsWav } from "./audio-wav-encode";
+import { summarizeSileroShadowDiagnostics, type SileroShadowDiagnosticsState } from "./silero-vad-shadow-logic";
+import { startSileroVadShadow, type SileroShadowModelInfo } from "./silero-vad-shadow-runtime";
 import {
   bindFetch,
   classifyMicrophoneStartError,
@@ -146,6 +148,13 @@ export interface VoiceTurnLatencyInfo {
   // ran for this attempt (setup failed -- see the try/catch in
   // toggleRecording), never fabricated.
   vadDiagnostics: VoiceActivityDiagnostics | null;
+  // VAD Round 10 (2026-08-23), Silero shadow mode, Phase A: carried
+  // through to consultation-chat.tsx the same way vadDiagnostics already
+  // is, so the SAME final VOICE_LATENCY report (after Consult AI/TTS)
+  // includes the shadow detector's own diagnostics for a successful turn,
+  // not just the early-failure branches inside this file. Null whenever
+  // shadow mode was never attempted for this recording -- never fabricated.
+  sileroShadow: SileroShadowReportData | null;
 }
 
 export interface UseVoiceRecordingResult {
@@ -274,6 +283,49 @@ export function vadDiagnosticsToReportFields(diagnostics: VoiceActivityDiagnosti
   };
 }
 
+// VAD Round 10 (2026-08-23), Silero shadow mode, Phase A: a snapshot of
+// the shadow detector's own model-level and per-frame diagnostics for ONE
+// recording -- carried through onTranscript (see VoiceTurnLatencyInfo
+// below) exactly the way vadDiagnostics already is, so consultation-chat.tsx
+// can fold it into the SAME final VOICE_LATENCY report for a successful
+// turn, not just the early-failure branches inside this file.
+export interface SileroShadowReportData {
+  modelInfo: SileroShadowModelInfo;
+  diagnostics: SileroShadowDiagnosticsState;
+}
+
+// Maps SileroShadowReportData onto reportVoiceLatencySummary's own flat,
+// vad-prefixed diagnostic fields -- {} (nothing added) when shadow mode
+// was never even attempted for this recording, mirroring
+// vadDiagnosticsToReportFields's own "never fabricated" contract exactly.
+// STRICT SHADOW MODE: every field here is diagnostic-only telemetry --
+// nothing in this function, or anywhere it is called from, feeds back
+// into evaluateVadSample/the existing heuristic decision path.
+export function sileroShadowDiagnosticsToReportFields(data: SileroShadowReportData | null): Partial<VoiceLatencyTerminalDiagnostics> {
+  if (!data) return {};
+  const summary = summarizeSileroShadowDiagnostics(data.diagnostics);
+  // vadModelError prefers a genuine SETUP failure (model/WASM/worklet
+  // never loaded at all) over a per-frame inference error, since a setup
+  // failure is the more informative, root-cause-level fact -- both are
+  // still real, sanitized, bounded messages (see silero-vad-shadow-runtime.ts's
+  // own sanitizeErrorMessage), never a raw error object.
+  const error = data.modelInfo.error ?? (summary.errorCount > 0 ? (summary.lastError ?? undefined) : undefined);
+  return {
+    vadModelAvailable: data.modelInfo.available,
+    vadModelName: data.modelInfo.name,
+    vadModelVersion: data.modelInfo.version,
+    vadModelLoadMs: data.modelInfo.loadMs ?? undefined,
+    vadModelPeakSpeechProbability: summary.peakSpeechProbability,
+    vadModelMeanSpeechProbability: summary.meanSpeechProbability ?? undefined,
+    vadModelSpeechQualifiedSampleCount: summary.speechQualifiedSampleCount,
+    vadModelTotalSampleCount: summary.totalSampleCount,
+    vadModelInferencePeakMs: summary.peakInferenceMs,
+    vadModelInferenceMeanMs: summary.meanInferenceMs ?? undefined,
+    vadModelSpeechProbabilityStdDev: summary.speechProbabilityStdDev ?? undefined,
+    ...(error !== undefined ? { vadModelError: error } : {}),
+  };
+}
+
 export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVoiceRecordingOptions): UseVoiceRecordingResult {
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -334,6 +386,30 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
   // new recording, same as the others -- null stays null if VAD setup
   // itself failed or the interval never ticked before a manual stop.
   const vadStateRef = useRef<VadState | null>(null);
+  // VAD Round 10 (2026-08-23), Silero shadow mode, Phase A: the shadow
+  // detector's own handle for the CURRENT recording only -- reset to null
+  // at the start of every new recording (same convention as the vad*Ref
+  // fields above), NOT nulled in media.onstop, so
+  // readSileroShadowReportData below can still read its final
+  // diagnostics/model info after the recording has already stopped and
+  // its own resources released (see silero-vad-shadow-runtime.ts's own
+  // doc comment: getDiagnostics()/getModelInfo() remain valid after
+  // stop()). Stays null for the whole recording if setup itself never
+  // even started (e.g. this app's own STRICT lazy-loading -- see below --
+  // never triggers it) or if startSileroVadShadow's own internal setup
+  // failed entirely before returning a handle at all is impossible by
+  // that function's own contract (it always resolves to SOME handle,
+  // never rejects) -- null here specifically means "shadow mode was never
+  // even attempted for this recording", distinct from "attempted and
+  // unavailable" (which readSileroShadowReportData's own modelInfo.available
+  // already reports honestly).
+  const sileroShadowHandleRef = useRef<Awaited<ReturnType<typeof startSileroVadShadow>> | null>(null);
+
+  const readSileroShadowReportData = useCallback((): SileroShadowReportData | null => {
+    const handle = sileroShadowHandleRef.current;
+    if (!handle) return null;
+    return { modelInfo: handle.getModelInfo(), diagnostics: handle.getDiagnostics() };
+  }, []);
 
   const readVoiceActivityDiagnostics = useCallback((): VoiceActivityDiagnostics | null => {
     if (vadRecordingStartedAtRef.current === null || vadStopDecidedAtRef.current === null || vadAutoStopReasonRef.current === null) {
@@ -437,6 +513,10 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
     vadAutoStopReasonRef.current = null;
     vadStopDecidedAtRef.current = null;
     vadStateRef.current = null;
+    // VAD Round 10 (2026-08-23): reset per-recording, same convention as
+    // the vad*Ref fields above -- see this ref's own doc comment for why
+    // this is NOT also nulled in media.onstop.
+    sileroShadowHandleRef.current = null;
 
     void (async () => {
       try {
@@ -457,6 +537,14 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
           hasStoppedRef.current = true;
           vadCleanupRef.current?.();
           vadCleanupRef.current = null;
+          // VAD Round 10 (2026-08-23): releases ONLY the shadow
+          // detector's own dedicated AudioContext/nodes/ONNX session --
+          // never the shared stream (see silero-vad-shadow-runtime.ts's
+          // own doc comment on stream safety). Deliberately NOT nulling
+          // sileroShadowHandleRef.current here -- see that ref's own doc
+          // comment for why readSileroShadowReportData must still be able
+          // to read its final diagnostics after this point.
+          sileroShadowHandleRef.current?.stop();
           streamRef.current = null;
           // The MediaRecorder instance itself is genuinely done the
           // moment onstop fires, regardless of how long the async
@@ -500,18 +588,20 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                   sttProviderErrorMessage: providerDiagnostics?.providerErrorMessage,
                   sttProviderFetchErrorName: providerDiagnostics?.providerFetchErrorName,
                   ...vadDiagnosticsToReportFields(readVoiceActivityDiagnostics()),
+                  ...sileroShadowDiagnosticsToReportFields(readSileroShadowReportData()),
                 });
               },
               onSuccess: (transcript, _transcriptId, marks, sttProviderMs, attemptNumber, sttModel) => {
                 setProcessing(false);
                 const mergedMarks = mergeVoiceLatencyMarks(micMarksRef.current, marks);
                 const vadDiagnostics = readVoiceActivityDiagnostics();
+                const sileroShadow = readSileroShadowReportData();
                 // Empty/whitespace-only would only ever come from a
                 // genuinely unexpected backend response (the route itself
                 // already fails closed on an empty transcript) -- this is
                 // belt-and-suspenders, not the primary guard.
                 if (shouldAutoSubmitTranscript(transcript)) {
-                  onTranscript(transcript, { attemptId, marks: mergedMarks, sttProviderMs, sttModel, vadDiagnostics });
+                  onTranscript(transcript, { attemptId, marks: mergedMarks, sttProviderMs, sttModel, vadDiagnostics, sileroShadow });
                 } else {
                   // Same reasoning as the onFailure branch above: this
                   // turn also ends here, since onTranscript (and therefore
@@ -524,6 +614,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                     sttModel: sttModel ?? undefined,
                     elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(mergedMarks, performance.now()),
                     ...vadDiagnosticsToReportFields(vadDiagnostics),
+                    ...sileroShadowDiagnosticsToReportFields(sileroShadow),
                   });
                 }
               },
@@ -538,6 +629,39 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
         startingRef.current = false;
         logClient("recorder_started", { attemptId, mimeType: media.mimeType || null, source: "chat_composer" });
         micMarksRef.current = markVoiceLatencyStage(micMarksRef.current, "recording_started", performance.now());
+
+        // VAD Round 10 (2026-08-23), Silero shadow mode, Phase A: fully
+        // independent of the heuristic VAD block below -- started on the
+        // SAME stream (a read-only tap, never getUserMedia'd again and
+        // never capable of stopping its tracks -- see
+        // silero-vad-shadow-runtime.ts's own doc comment on stream
+        // safety), but never blocks or depends on the heuristic block
+        // succeeding or failing. Lazy by construction: the dynamic
+        // import() inside startSileroVadShadow/loadOnnxRuntime is only
+        // ever reached once a recording actually starts, never on page
+        // load. Fire-and-forget: startSileroVadShadow's own contract
+        // guarantees it never throws/rejects (every failure degrades to
+        // an "unavailable" handle instead) -- this outer try/catch is
+        // pure defense-in-depth, matching this project's own established
+        // "never trust a single layer" discipline for anything touching
+        // browser-only audio APIs. STRICT SHADOW MODE: nothing in this
+        // block ever reads from or writes to hasStoppedRef/recorder.current
+        // in a way that could affect the real recording -- hasStoppedRef
+        // is only ever READ (to avoid leaving an orphaned AudioContext
+        // running past a recording that already ended), never set here.
+        void (async () => {
+          try {
+            const handle = await startSileroVadShadow(stream);
+            if (hasStoppedRef.current) {
+              handle.stop();
+              return;
+            }
+            sileroShadowHandleRef.current = handle;
+          } catch {
+            // Belt-and-suspenders only -- see this block's own doc
+            // comment above.
+          }
+        })();
 
         const AudioContextCtor = resolveAudioContextConstructor();
         if (AudioContextCtor) {
@@ -608,7 +732,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
         setError(t(reason === "denied" ? "consultAi.voiceError.permissionDenied" : "consultAi.voiceError.microphoneUnavailable"));
       }
     })();
-  }, [recording, clientId, language, t, onTranscript, readVoiceActivityDiagnostics]);
+  }, [recording, clientId, language, t, onTranscript, readVoiceActivityDiagnostics, readSileroShadowReportData]);
 
   // Cleanup on unmount: release the microphone and stop VAD sampling even
   // if the component goes away mid-recording -- detaching the recorder's
@@ -620,6 +744,10 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
       startingRef.current = false;
       vadCleanupRef.current?.();
       vadCleanupRef.current = null;
+      // VAD Round 10 (2026-08-23): mirrors media.onstop's own cleanup --
+      // releases only the shadow detector's own resources, never the
+      // MediaStream stopped explicitly two lines below.
+      sileroShadowHandleRef.current?.stop();
       if (recorder.current) {
         recorder.current.onstop = null;
         recorder.current.ondataavailable = null;

@@ -615,6 +615,91 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     logSpy.mockRestore();
   });
 
+  // VAD Round 10 (2026-08-23), Silero shadow mode, Phase A: see
+  // voice-latency-logic.ts's own VoiceLatencyTerminalDiagnostics doc
+  // comment for what each answers. STRICT SHADOW MODE, diagnostic-only.
+  it("logs the VAD ROUND 10 Silero shadow diagnostics when the client reported them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-132",
+      outcome: "tts_completed",
+      summary: validSummary(),
+      vadModelAvailable: true,
+      vadModelName: "silero-vad",
+      vadModelVersion: "v5",
+      vadModelLoadMs: 420,
+      vadModelPeakSpeechProbability: 0.97,
+      vadModelMeanSpeechProbability: 0.61,
+      vadModelSpeechQualifiedSampleCount: 40,
+      vadModelTotalSampleCount: 75,
+      vadModelInferencePeakMs: 6,
+      vadModelInferenceMeanMs: 2,
+      vadModelSpeechProbabilityStdDev: 0.22,
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadModelAvailable: true,
+      vadModelName: "silero-vad",
+      vadModelVersion: "v5",
+      vadModelLoadMs: 420,
+      vadModelPeakSpeechProbability: 0.97,
+      vadModelMeanSpeechProbability: 0.61,
+      vadModelSpeechQualifiedSampleCount: 40,
+      vadModelTotalSampleCount: 75,
+      vadModelInferencePeakMs: 6,
+      vadModelInferenceMeanMs: 2,
+      vadModelSpeechProbabilityStdDev: 0.22,
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs the VAD ROUND 10 Silero shadow diagnostics as null (never fabricated) when the client didn't report them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-133", outcome: "tts_completed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadModelAvailable: null,
+      vadModelName: null,
+      vadModelVersion: null,
+      vadModelLoadMs: null,
+      vadModelPeakSpeechProbability: null,
+      vadModelMeanSpeechProbability: null,
+      vadModelSpeechQualifiedSampleCount: null,
+      vadModelTotalSampleCount: null,
+      vadModelInferencePeakMs: null,
+      vadModelInferenceMeanMs: null,
+      vadModelSpeechProbabilityStdDev: null,
+      vadModelError: null,
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs an honest 'model unavailable' shape (available: false, a real error message) exactly as the fail-open contract requires", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-134",
+      outcome: "tts_completed",
+      summary: validSummary(),
+      vadModelAvailable: false,
+      vadModelError: "AudioContext is not available in this browser.",
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadModelAvailable: false,
+      vadModelError: "AudioContext is not available in this browser.",
+    });
+    logSpy.mockRestore();
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): the real Gemini
   // provider failure detail, closing the gap where a provider HTTP error,
   // a network/timeout failure, and an empty-transcript response all

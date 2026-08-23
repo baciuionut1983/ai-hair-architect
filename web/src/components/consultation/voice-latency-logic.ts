@@ -466,6 +466,25 @@ export interface VoiceLatencyTerminalDiagnostics {
   // voice-activity-logic.ts's own ROUND 9 VoiceActivityDiagnostics doc
   // comment for what this answers.
   vadPeakStreakSpectralHitCount?: number;
+  // VAD Round 10 (2026-08-23), Silero shadow mode, Phase A: see
+  // silero-vad-shadow-runtime.ts's own doc comment and
+  // use-voice-recording.ts's own sileroShadowDiagnosticsToReportFields for
+  // what each answers -- STRICT SHADOW MODE, diagnostic-only, never
+  // consulted by the actual VAD decision (evaluateVadSample).
+  // Undefined (never fabricated) whenever shadow mode was never even
+  // attempted for this recording.
+  vadModelAvailable?: boolean;
+  vadModelName?: string;
+  vadModelVersion?: string;
+  vadModelLoadMs?: number;
+  vadModelPeakSpeechProbability?: number;
+  vadModelMeanSpeechProbability?: number;
+  vadModelSpeechQualifiedSampleCount?: number;
+  vadModelTotalSampleCount?: number;
+  vadModelInferencePeakMs?: number;
+  vadModelInferenceMeanMs?: number;
+  vadModelSpeechProbabilityStdDev?: number;
+  vadModelError?: string;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see
