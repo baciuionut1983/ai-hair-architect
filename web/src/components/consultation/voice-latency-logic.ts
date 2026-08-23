@@ -455,6 +455,13 @@ export interface VoiceLatencyTerminalDiagnostics {
   vadAmbientSpectralRatioEstimate?: number;
   vadPeakAmbientSpectralRatioEstimate?: number;
   vadSpectralLiftQualifiedSampleCount?: number;
+  // VAD start-detection hardening, ROUND 8 (2026-08-22): see
+  // voice-activity-logic.ts's own ROUND 8 VoiceActivityDiagnostics doc
+  // comments for exactly what each answers.
+  vadLongestSpectralQualifiedRunMs?: number;
+  vadSpectralQualifiedRunCount?: number;
+  vadLongestFullyQualifiedRunMs?: number;
+  vadFullyQualifiedRunCount?: number;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see

@@ -540,6 +540,51 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     logSpy.mockRestore();
   });
 
+  // VAD start-detection hardening, ROUND 8 (2026-08-22): a real production
+  // test with instrumental music and no voice at all produced a false
+  // positive at aggregate rates indistinguishable from genuine speech --
+  // see voice-activity-logic.ts's own ROUND 8 VoiceActivityDiagnostics
+  // doc comments for what each of these answers.
+  it("logs the VAD ROUND 8 diagnostic accumulators when the client reported them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-128",
+      outcome: "tts_completed",
+      summary: validSummary(),
+      vadLongestSpectralQualifiedRunMs: 5800,
+      vadSpectralQualifiedRunCount: 1,
+      vadLongestFullyQualifiedRunMs: 400,
+      vadFullyQualifiedRunCount: 6,
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadLongestSpectralQualifiedRunMs: 5800,
+      vadSpectralQualifiedRunCount: 1,
+      vadLongestFullyQualifiedRunMs: 400,
+      vadFullyQualifiedRunCount: 6,
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs the VAD ROUND 8 diagnostic accumulators as null (never fabricated) when the client didn't report them", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-129", outcome: "tts_completed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadLongestSpectralQualifiedRunMs: null,
+      vadSpectralQualifiedRunCount: null,
+      vadLongestFullyQualifiedRunMs: null,
+      vadFullyQualifiedRunCount: null,
+    });
+    logSpy.mockRestore();
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): the real Gemini
   // provider failure detail, closing the gap where a provider HTTP error,
   // a network/timeout failure, and an empty-transcript response all

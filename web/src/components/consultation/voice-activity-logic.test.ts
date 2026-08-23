@@ -1295,6 +1295,112 @@ describe("evaluateVadSample", () => {
       expect(state.peakAmbientSpectralRatioEstimate).toBe(peakAfterBurst);
     });
   });
+
+  // VAD start-detection hardening, ROUND 8 (2026-08-22): a real production
+  // test with INSTRUMENTAL MUSIC AND NO VOICE AT ALL produced a false
+  // positive -- START confirmed and stayed "listening" for 6 real
+  // seconds. vadSpectralLiftQualifiedSampleCount was 0 (ROUND 7's own
+  // lift path is NOT the cause); the STRICT, original absolute spectral
+  // gate was satisfied directly (spectralQualifiedSampleCount 51/88,
+  // peak ratio 0.89) at an aggregate rate LOWER than the confirmed
+  // genuine-speech success (471570b: 72/92) -- aggregate rate statistics
+  // cannot discriminate these two cases. See this module's own ROUND 8
+  // doc comment for the temporal-continuity hypothesis this diagnostic-
+  // only telemetry is designed to test: a held musical note/chord
+  // produces ONE long unbroken run of qualifying samples; genuine,
+  // phoneme-driven speech is hypothesized to produce MANY short ones.
+  // These tests prove the new counters measure this correctly -- they do
+  // NOT gate any decision this round (see the final test in this block).
+  describe("ROUND 8: run-length telemetry (diagnostic-only, tests the speech-vs-music temporal-continuity hypothesis)", () => {
+    // Loud AND spectrally concentrated on EVERY sample, sustained
+    // continuously -- a held chord or melodic line staying in the
+    // perceptually-salient midrange, exactly as the real production
+    // report's peak ratio (0.89) and STT-confirmed voice-free audio imply.
+    const SUSTAINED_INSTRUMENTAL_MUSIC: VadSample = { rmsLevel: 0.4, speechBandRatio: 0.75 };
+
+    it("reproduces the production shape: sustained instrumental music produces ONE long, unbroken spectral run", () => {
+      let state = initVadState(0);
+      let t = 0;
+      for (let i = 0; i < 60; i += 1) {
+        // 6 seconds, matching the real production report's vadSpeechDurationMs.
+        t += 100;
+        state = evaluateVadSample(state, SUSTAINED_INSTRUMENTAL_MUSIC, t).state;
+      }
+      expect(state.hasDetectedSpeech).toBe(true); // unfixed this round -- deliberately, see below
+      expect(state.spectralQualifiedRunCount).toBe(1); // one single continuous run
+      expect(state.longestSpectralQualifiedRunMs).toBeGreaterThan(5000); // nearly the whole recording
+      // No gap-bridging was ever needed -- the gap-TOLERANT streak length
+      // and the ZERO-tolerance raw run length are essentially the same,
+      // exactly what "one continuous stretch" predicts.
+      expect(state.maxCandidateStreakMs).toBeGreaterThan(5000);
+    });
+
+    it("genuine phoneme-alternating speech produces MANY short spectral runs, even at a comparable aggregate qualification rate to the music case", () => {
+      let state = initVadState(0);
+      let t = 0;
+      for (let i = 0; i < 20; i += 1) {
+        // Alternates a sample that fails spectral (LOUD_BROADBAND_PHONEME)
+        // with one that passes it (AMPLITUDE_DIP) -- every qualifying
+        // instant is isolated, surrounded by non-qualifying samples on
+        // both sides, exactly like real speech's own phoneme-rate
+        // volatility (see the ROUND 4 doc comment this fixture pair was
+        // originally designed to demonstrate).
+        const sample = i % 2 === 0 ? LOUD_BROADBAND_PHONEME : AMPLITUDE_DIP;
+        t += 100;
+        state = evaluateVadSample(state, sample, t).state;
+      }
+      // 10 of 20 samples qualify spectrally (50%) -- the same order of
+      // magnitude as both the music false positive (58%) and the genuine
+      // speech success (78%) -- aggregate rate alone cannot tell this
+      // apart from either.
+      expect(state.spectralQualifiedSampleCount).toBe(10);
+      // But the run-length signature is starkly different from sustained
+      // music: every qualifying instant is its own isolated, single-
+      // sample run.
+      expect(state.spectralQualifiedRunCount).toBe(10);
+      expect(state.longestSpectralQualifiedRunMs).toBe(0);
+    });
+
+    it("longestFullyQualifiedRunMs/fullyQualifiedRunCount track the same-sample-BOTH-gates signal independently from the spectral-only signal", () => {
+      let state = initVadState(0);
+      let t = 0;
+      // CLEAR_SPEECH passes both gates on the same sample -- three
+      // consecutive hits form one unbroken run of 200ms (t=0 to t=200).
+      for (let i = 0; i < 3; i += 1) {
+        state = evaluateVadSample(state, CLEAR_SPEECH, t).state;
+        t += 100;
+      }
+      expect(state.fullyQualifiedRunCount).toBe(1);
+      expect(state.longestFullyQualifiedRunMs).toBe(200);
+
+      // A genuine gap (both gates fail) ends the run.
+      state = evaluateVadSample(state, SILENCE, t).state;
+      t += 100;
+      expect(state.fullyQualifiedRunCount).toBe(1); // unchanged -- no new run started yet
+
+      // A second, SHORTER run starts -- longestFullyQualifiedRunMs must
+      // still remember the first, longer one.
+      state = evaluateVadSample(state, CLEAR_SPEECH, t).state;
+      expect(state.fullyQualifiedRunCount).toBe(2);
+      expect(state.longestFullyQualifiedRunMs).toBe(200); // still the first run's length, not overwritten by the shorter second one
+    });
+
+    it("this new telemetry does not gate any VAD decision -- the real production music false positive still confirms speech, unfixed, exactly as this round's task required (telemetry-only)", () => {
+      const state = initVadState(0);
+      let t = 0;
+      let result: VadEvaluation = { state, decision: "continue" };
+      for (let i = 0; i < 60; i += 1) {
+        t += 100;
+        result = evaluateVadSample(result.state, SUSTAINED_INSTRUMENTAL_MUSIC, t);
+      }
+      // Deliberately NOT fixed this round -- see this module's own ROUND
+      // 8 doc comment for why implementing a run-length-based decision
+      // rule now, without a validated boundary between "a real sustained
+      // vowel" and "a held musical note", would be exactly the
+      // speculative tuning this round was told not to do.
+      expect(result.state.hasDetectedSpeech).toBe(true);
+    });
+  });
 });
 
 // End-of-speech hardening (2026-08-20), Task E: proves the telemetry
@@ -1331,6 +1437,10 @@ describe("computeVoiceActivityDiagnostics", () => {
     ambientSpectralRatioEstimate: 0.22,
     peakAmbientSpectralRatioEstimate: 0.28,
     spectralLiftQualifiedSampleCount: 5,
+    longestSpectralQualifiedRunMs: 350,
+    spectralQualifiedRunCount: 7,
+    longestFullyQualifiedRunMs: 150,
+    fullyQualifiedRunCount: 4,
   };
 
   it("computes a full breakdown for a normal stop_silence turn", () => {
@@ -1469,6 +1579,10 @@ describe("computeVoiceActivityDiagnostics", () => {
       ambientSpectralRatioEstimate: 0.2,
       peakAmbientSpectralRatioEstimate: 0.25,
       spectralLiftQualifiedSampleCount: 6,
+      longestSpectralQualifiedRunMs: 400,
+      spectralQualifiedRunCount: 5,
+      longestFullyQualifiedRunMs: 180,
+      fullyQualifiedRunCount: 3,
     });
     expect(diagnostics.peakRms).toBe(0.18);
     expect(diagnostics.peakSpeechBandRatio).toBe(0.41);
@@ -1498,6 +1612,12 @@ describe("computeVoiceActivityDiagnostics", () => {
     expect(diagnostics.ambientSpectralRatioEstimate).toBe(0.2);
     expect(diagnostics.peakAmbientSpectralRatioEstimate).toBe(0.25);
     expect(diagnostics.spectralLiftQualifiedSampleCount).toBe(6);
+    // ROUND 8: also NOT gated on hadConfirmedSpeech -- diagnostic-only,
+    // pass-through unconditionally, same as the ROUND 7 fields above.
+    expect(diagnostics.longestSpectralQualifiedRunMs).toBe(400);
+    expect(diagnostics.spectralQualifiedRunCount).toBe(5);
+    expect(diagnostics.longestFullyQualifiedRunMs).toBe(180);
+    expect(diagnostics.fullyQualifiedRunCount).toBe(3);
   });
 
   // VAD false-negative hardening (2026-08-21), Task 13: proves
@@ -1547,6 +1667,10 @@ describe("computeVoiceActivityDiagnostics", () => {
       ambientSpectralRatioEstimate: afterGap.state.ambientSpectralRatioEstimate,
       peakAmbientSpectralRatioEstimate: afterGap.state.peakAmbientSpectralRatioEstimate,
       spectralLiftQualifiedSampleCount: afterGap.state.spectralLiftQualifiedSampleCount,
+      longestSpectralQualifiedRunMs: afterGap.state.longestSpectralQualifiedRunMs,
+      spectralQualifiedRunCount: afterGap.state.spectralQualifiedRunCount,
+      longestFullyQualifiedRunMs: afterGap.state.longestFullyQualifiedRunMs,
+      fullyQualifiedRunCount: afterGap.state.fullyQualifiedRunCount,
     });
 
     expect(diagnostics.speechDetectedAtMs).toBeNull();
@@ -1615,6 +1739,12 @@ describe("initVadState", () => {
       peakAmbientSpectralRatioEstimate: 0,
       lastSpectralQualifiedAtForStart: null,
       spectralLiftQualifiedSampleCount: 0,
+      spectralRunStartedAt: null,
+      longestSpectralQualifiedRunMs: 0,
+      spectralQualifiedRunCount: 0,
+      fullyQualifiedRunStartedAt: null,
+      longestFullyQualifiedRunMs: 0,
+      fullyQualifiedRunCount: 0,
     });
   });
 });

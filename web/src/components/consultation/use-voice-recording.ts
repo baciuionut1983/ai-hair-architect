@@ -260,6 +260,13 @@ export function vadDiagnosticsToReportFields(diagnostics: VoiceActivityDiagnosti
     vadAmbientSpectralRatioEstimate: diagnostics.ambientSpectralRatioEstimate,
     vadPeakAmbientSpectralRatioEstimate: diagnostics.peakAmbientSpectralRatioEstimate,
     vadSpectralLiftQualifiedSampleCount: diagnostics.spectralLiftQualifiedSampleCount,
+    // VAD start-detection hardening, ROUND 8 (2026-08-22): see
+    // VoiceActivityDiagnostics's own ROUND 8 doc comments for what each
+    // answers.
+    vadLongestSpectralQualifiedRunMs: diagnostics.longestSpectralQualifiedRunMs,
+    vadSpectralQualifiedRunCount: diagnostics.spectralQualifiedRunCount,
+    vadLongestFullyQualifiedRunMs: diagnostics.longestFullyQualifiedRunMs,
+    vadFullyQualifiedRunCount: diagnostics.fullyQualifiedRunCount,
   };
 }
 
@@ -368,6 +375,12 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
       ambientSpectralRatioEstimate: vadStateRef.current?.ambientSpectralRatioEstimate ?? 0,
       peakAmbientSpectralRatioEstimate: vadStateRef.current?.peakAmbientSpectralRatioEstimate ?? 0,
       spectralLiftQualifiedSampleCount: vadStateRef.current?.spectralLiftQualifiedSampleCount ?? 0,
+      // VAD start-detection hardening, ROUND 8 (2026-08-22): same "0 is
+      // truthful, never fabricated" contract as the earlier fields above.
+      longestSpectralQualifiedRunMs: vadStateRef.current?.longestSpectralQualifiedRunMs ?? 0,
+      spectralQualifiedRunCount: vadStateRef.current?.spectralQualifiedRunCount ?? 0,
+      longestFullyQualifiedRunMs: vadStateRef.current?.longestFullyQualifiedRunMs ?? 0,
+      fullyQualifiedRunCount: vadStateRef.current?.fullyQualifiedRunCount ?? 0,
     });
   }, []);
 

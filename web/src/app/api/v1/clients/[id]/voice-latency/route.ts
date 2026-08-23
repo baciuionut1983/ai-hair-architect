@@ -121,6 +121,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       vadAmbientSpectralRatioEstimate: parsed.value.vadAmbientSpectralRatioEstimate ?? null,
       vadPeakAmbientSpectralRatioEstimate: parsed.value.vadPeakAmbientSpectralRatioEstimate ?? null,
       vadSpectralLiftQualifiedSampleCount: parsed.value.vadSpectralLiftQualifiedSampleCount ?? null,
+      vadLongestSpectralQualifiedRunMs: parsed.value.vadLongestSpectralQualifiedRunMs ?? null,
+      vadSpectralQualifiedRunCount: parsed.value.vadSpectralQualifiedRunCount ?? null,
+      vadLongestFullyQualifiedRunMs: parsed.value.vadLongestFullyQualifiedRunMs ?? null,
+      vadFullyQualifiedRunCount: parsed.value.vadFullyQualifiedRunCount ?? null,
       // STT Flash-Lite root-cause diagnosis (2026-08-20): see
       // voice-latency-telemetry-logic.ts's own doc comment on these same 3
       // fields for exactly what they mean and why.

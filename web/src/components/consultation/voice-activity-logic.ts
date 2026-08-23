@@ -569,6 +569,74 @@
 // threshold today. See this round's own regression tests for direct
 // proof against an artificially elevated ambient baseline, not just the
 // default one.
+//
+// VAD start-detection hardening, ROUND 8 (2026-08-22): after 3 clean
+// real production tests confirmed normal speech AND speech-over-music
+// both work correctly on 7852039, a fourth real test -- INSTRUMENTAL
+// MUSIC WITH NO VOICE AT ALL -- produced a false positive: START
+// confirmed at 801ms and stayed "listening" for 6 real seconds.
+// Crucially, vadSpectralLiftQualifiedSampleCount was 0 -- this round's
+// own ROUND 7 lift path never engaged and is NOT the cause. The STRICT,
+// ORIGINAL absolute spectral gate (>=0.45, unchanged since round 1) was
+// satisfied directly: spectralQualifiedSampleCount 51/88 (58%), peak
+// ratio 0.89, fullyQualifiedSampleCount (same-sample, both gates) 19/88.
+//
+// ROOT CAUSE (acoustic, not a threshold or a round-7 regression): the
+// module's own founding premise -- "sustained ambient sources (music,
+// hair dryers, hum) do not concentrate energy in the 300-3400Hz speech
+// band the way voice does" -- is TRUE for broadband/percussive/atonal
+// sources (confirmed correct across every prior round's own regression
+// tests, all still passing) but FALSE for melodic/tonal instrumental
+// music. 300-3400Hz is not actually voice-specific; it is the frequency
+// range human hearing is most sensitive to, which is exactly why speech
+// evolved to be perceptually salient there AND why melodic instruments
+// (guitar, piano, lead synth, etc.) and musical mixing/mastering
+// convention both concentrate a track's "presence" in that same range,
+// for the same underlying psychoacoustic reason. A held chord or melodic
+// line can clear the SAME absolute threshold real speech does, for the
+// SAME structural reason -- not a coincidence or a mistuned number.
+//
+// Why this is NOT simply "the threshold needs to be higher": the
+// confirmed-genuine successful test (471570b) had an EVEN HIGHER
+// spectral-qualified rate (72/92, 78%) and fully-qualified rate (28/92,
+// 30%) than this music false positive (58%, 22%) -- aggregate rate
+// statistics, computed identically for both, cannot tell them apart; the
+// music case looks LESS extreme by these numbers, not more. No fixed or
+// adaptive absolute-ratio threshold, raised or lowered, can separate two
+// distributions that already overlap this way in aggregate -- confirmed
+// by direct comparison, not assumed.
+//
+// This round deliberately ships DIAGNOSTIC TELEMETRY ONLY, not a new
+// confirmation algorithm, per the same Phase-D discipline as round 2:
+// the well-reasoned candidate discriminator (see below) cannot yet be
+// calibrated or validated without per-sample TEMPORAL data neither this
+// nor any prior test has captured.
+//
+// CANDIDATE DIRECTION (not implemented, telemetry added to test it): a
+// genuinely speech-specific signal every prior round's own module
+// comments already describe but never formally measured -- sibilants,
+// plosives, and formant transitions make real speech's spectral
+// concentration VOLATILE at ~50-150ms granularity (phoneme rate), while
+// a held musical note or chord stays spectrally concentrated
+// CONTINUOUSLY for as long as the note sustains (often hundreds of ms to
+// several seconds). This predicts genuine speech should show MANY SHORT
+// unbroken runs of spectralQualified=true, while melodic music should
+// show FEWER, LONGER unbroken runs, even at IDENTICAL aggregate
+// qualification rates -- exactly the dimension aggregate counts cannot
+// see. longestSpectralQualifiedRunMs/spectralQualifiedRunCount and
+// longestFullyQualifiedRunMs/fullyQualifiedRunCount (see VadState/
+// VoiceActivityDiagnostics below) measure this directly, using ONLY
+// data already computed every sample (no new DSP, no new browser API) --
+// comparing them against the EXISTING, gap-TOLERANT maxCandidateStreakMs
+// will show whether a confirmed streak was built from many short,
+// gap-bridged bursts (speech-like) or one genuinely continuous stretch
+// that never needed gap tolerance at all (music-like). Deliberately NOT
+// used to gate any decision this round -- the right run-length boundary
+// between "a real sustained vowel" and "a held musical note" is not yet
+// known, and guessing it risks exactly the "ajustare speculativă" this
+// round was explicitly told not to make, in either direction (too
+// permissive still lets music through; too strict could reject a
+// genuine, unhurried speaker).
 
 export interface VadConfig {
   // Absolute floor beneath which nothing ever counts as speech, regardless
@@ -799,6 +867,34 @@ export interface VadState {
   // START-only lift path (not the absolute 0.45 threshold) -- shows
   // directly how much this round's fix contributed on a given recording.
   spectralLiftQualifiedSampleCount: number;
+  // VAD start-detection hardening, ROUND 8 (2026-08-22): diagnostic-only
+  // (never gates any decision) -- see this module's own ROUND 8 doc
+  // comment for the real production evidence (instrumental music with no
+  // voice satisfying the strict spectral gate at rates aggregate stats
+  // cannot distinguish from genuine speech) and the temporal-continuity
+  // hypothesis this data is designed to test. When the current sample
+  // extends an unbroken run, null otherwise (the run just ended/never
+  // started).
+  spectralRunStartedAt: number | null;
+  // The longest unbroken (ZERO gap tolerance -- unlike the existing,
+  // gap-TOLERANT maxCandidateStreakMs) run of consecutive
+  // spectralQualified=true samples this recording -- a held musical note
+  // or chord is hypothesized to produce one long run; real speech's own
+  // phoneme-rate volatility is hypothesized to produce many short ones.
+  longestSpectralQualifiedRunMs: number;
+  // How many DISTINCT such runs occurred (each gap, however brief, ends
+  // one run and starts counting toward the next) -- compare against
+  // spectralQualifiedSampleCount / spectralQualifiedRunCount for the
+  // average run length, and against longestSpectralQualifiedRunMs for
+  // whether qualifying evidence was scattered or clustered.
+  spectralQualifiedRunCount: number;
+  // Same run-tracking, but for `candidate` (BOTH gates on the identical
+  // sample, the strictest possible per-sample test) instead of spectral
+  // alone -- shows whether the samples that fed fullyQualifiedSampleCount
+  // came in one continuous stretch or many short ones.
+  fullyQualifiedRunStartedAt: number | null;
+  longestFullyQualifiedRunMs: number;
+  fullyQualifiedRunCount: number;
 }
 
 export function initVadState(recordingStartedAt: number): VadState {
@@ -831,6 +927,12 @@ export function initVadState(recordingStartedAt: number): VadState {
     peakAmbientSpectralRatioEstimate: 0,
     lastSpectralQualifiedAtForStart: null,
     spectralLiftQualifiedSampleCount: 0,
+    spectralRunStartedAt: null,
+    longestSpectralQualifiedRunMs: 0,
+    spectralQualifiedRunCount: 0,
+    fullyQualifiedRunStartedAt: null,
+    longestFullyQualifiedRunMs: 0,
+    fullyQualifiedRunCount: 0,
   };
 }
 
@@ -999,6 +1101,23 @@ export function evaluateVadSample(
     state.hasDetectedSpeech && speechRefresh && state.lastSpeechAt !== null
       ? Math.max(state.longestPostConfirmationGapMs, now - state.lastSpeechAt)
       : state.longestPostConfirmationGapMs;
+  // VAD start-detection hardening, ROUND 8 (2026-08-22): diagnostic-only
+  // run-length tracking -- see this module's own ROUND 8 doc comment for
+  // the temporal-continuity hypothesis this data is designed to test.
+  // ZERO gap tolerance by construction (any single non-qualifying sample
+  // ends the run), unlike the existing, gap-TOLERANT maxCandidateStreakMs.
+  const spectralRunStartedAt = spectralQualified ? (state.spectralRunStartedAt ?? now) : null;
+  const longestSpectralQualifiedRunMs = spectralQualified
+    ? Math.max(state.longestSpectralQualifiedRunMs, now - (spectralRunStartedAt as number))
+    : state.longestSpectralQualifiedRunMs;
+  const spectralQualifiedRunCount =
+    spectralQualified && state.spectralRunStartedAt === null ? state.spectralQualifiedRunCount + 1 : state.spectralQualifiedRunCount;
+  const fullyQualifiedRunStartedAt = candidate ? (state.fullyQualifiedRunStartedAt ?? now) : null;
+  const longestFullyQualifiedRunMs = candidate
+    ? Math.max(state.longestFullyQualifiedRunMs, now - (fullyQualifiedRunStartedAt as number))
+    : state.longestFullyQualifiedRunMs;
+  const fullyQualifiedRunCount =
+    candidate && state.fullyQualifiedRunStartedAt === null ? state.fullyQualifiedRunCount + 1 : state.fullyQualifiedRunCount;
   const diagnosticAccumulators = {
     peakRms,
     peakSpeechBandRatio,
@@ -1020,6 +1139,12 @@ export function evaluateVadSample(
     peakAmbientSpectralRatioEstimate,
     lastSpectralQualifiedAtForStart,
     spectralLiftQualifiedSampleCount,
+    spectralRunStartedAt,
+    longestSpectralQualifiedRunMs,
+    spectralQualifiedRunCount,
+    fullyQualifiedRunStartedAt,
+    longestFullyQualifiedRunMs,
+    fullyQualifiedRunCount,
   };
 
   // The noise floor only ever learns from samples that show NO credible
@@ -1377,6 +1502,30 @@ export interface VoiceActivityDiagnostics {
   // where the lift path never engaged (e.g. a quiet room, where the
   // absolute threshold alone already worked) or never needed to.
   spectralLiftQualifiedSampleCount: number;
+  // VAD start-detection hardening, ROUND 8 (2026-08-22): diagnostic-only,
+  // never used by any VAD decision -- see this module's own ROUND 8 doc
+  // comment for the real production evidence (instrumental music with no
+  // voice satisfying the strict spectral gate at aggregate rates
+  // indistinguishable from genuine speech) and the temporal-continuity
+  // hypothesis these fields test: a held musical note/chord is
+  // hypothesized to produce ONE long unbroken run of qualifying samples;
+  // real speech's own phoneme-rate volatility is hypothesized to produce
+  // MANY short ones, even at an identical aggregate qualification rate.
+  //
+  // The longest unbroken (zero gap tolerance) run of consecutive
+  // spectralQualified=true samples this recording -- compare against the
+  // existing, gap-TOLERANT maxCandidateSpeechMs to see whether a
+  // confirmed streak needed gap-bridging (many short bursts, speech-like)
+  // or was one genuinely continuous stretch (music-like).
+  longestSpectralQualifiedRunMs: number;
+  // How many DISTINCT such runs occurred -- combined with
+  // spectralQualifiedSampleCount, gives the average run length.
+  spectralQualifiedRunCount: number;
+  // Same run-tracking, but for samples passing BOTH gates on the
+  // identical sample (the strictest possible per-sample test) instead of
+  // spectral alone.
+  longestFullyQualifiedRunMs: number;
+  fullyQualifiedRunCount: number;
 }
 
 export function computeVoiceActivityDiagnostics(params: {
@@ -1407,6 +1556,10 @@ export function computeVoiceActivityDiagnostics(params: {
   ambientSpectralRatioEstimate: number;
   peakAmbientSpectralRatioEstimate: number;
   spectralLiftQualifiedSampleCount: number;
+  longestSpectralQualifiedRunMs: number;
+  spectralQualifiedRunCount: number;
+  longestFullyQualifiedRunMs: number;
+  fullyQualifiedRunCount: number;
 }): VoiceActivityDiagnostics {
   const speechDetectedAtMs =
     params.speechDetectedAt !== null ? Math.max(0, Math.round(params.speechDetectedAt - params.recordingStartedAt)) : null;
@@ -1453,5 +1606,9 @@ export function computeVoiceActivityDiagnostics(params: {
     ambientSpectralRatioEstimate: params.ambientSpectralRatioEstimate,
     peakAmbientSpectralRatioEstimate: params.peakAmbientSpectralRatioEstimate,
     spectralLiftQualifiedSampleCount: params.spectralLiftQualifiedSampleCount,
+    longestSpectralQualifiedRunMs: params.longestSpectralQualifiedRunMs,
+    spectralQualifiedRunCount: params.spectralQualifiedRunCount,
+    longestFullyQualifiedRunMs: params.longestFullyQualifiedRunMs,
+    fullyQualifiedRunCount: params.fullyQualifiedRunCount,
   };
 }

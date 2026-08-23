@@ -205,6 +205,13 @@ export interface VoiceLatencyTelemetryInput {
   vadAmbientSpectralRatioEstimate?: number;
   vadPeakAmbientSpectralRatioEstimate?: number;
   vadSpectralLiftQualifiedSampleCount?: number;
+  // VAD start-detection hardening, ROUND 8 (2026-08-22): see
+  // voice-activity-logic.ts's own ROUND 8 VoiceActivityDiagnostics doc
+  // comments for exactly what each answers.
+  vadLongestSpectralQualifiedRunMs?: number;
+  vadSpectralQualifiedRunCount?: number;
+  vadLongestFullyQualifiedRunMs?: number;
+  vadFullyQualifiedRunCount?: number;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -554,6 +561,18 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
   const vadSpectralLiftQualifiedSampleCount = parseOptionalNonNegativeInteger(input, "vadSpectralLiftQualifiedSampleCount");
   if (!vadSpectralLiftQualifiedSampleCount.ok) return { ok: false, reason: "invalid_vad_spectral_lift_qualified_sample_count" };
 
+  // VAD start-detection hardening, ROUND 8 (2026-08-22): see
+  // voice-activity-logic.ts's own ROUND 8 VoiceActivityDiagnostics doc
+  // comments for exactly what each answers.
+  const vadLongestSpectralQualifiedRunMs = parseOptionalDurationField(input, "vadLongestSpectralQualifiedRunMs");
+  if (!vadLongestSpectralQualifiedRunMs.ok) return { ok: false, reason: "invalid_vad_longest_spectral_qualified_run_ms" };
+  const vadSpectralQualifiedRunCount = parseOptionalNonNegativeInteger(input, "vadSpectralQualifiedRunCount");
+  if (!vadSpectralQualifiedRunCount.ok) return { ok: false, reason: "invalid_vad_spectral_qualified_run_count" };
+  const vadLongestFullyQualifiedRunMs = parseOptionalDurationField(input, "vadLongestFullyQualifiedRunMs");
+  if (!vadLongestFullyQualifiedRunMs.ok) return { ok: false, reason: "invalid_vad_longest_fully_qualified_run_ms" };
+  const vadFullyQualifiedRunCount = parseOptionalNonNegativeInteger(input, "vadFullyQualifiedRunCount");
+  if (!vadFullyQualifiedRunCount.ok) return { ok: false, reason: "invalid_vad_fully_qualified_run_count" };
+
   let sttProviderHttpStatus: number | undefined;
   if (input.sttProviderHttpStatus !== undefined) {
     if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
@@ -739,6 +758,16 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(vadSpectralLiftQualifiedSampleCount.value !== undefined
         ? { vadSpectralLiftQualifiedSampleCount: vadSpectralLiftQualifiedSampleCount.value }
         : {}),
+      ...(vadLongestSpectralQualifiedRunMs.value !== undefined
+        ? { vadLongestSpectralQualifiedRunMs: vadLongestSpectralQualifiedRunMs.value }
+        : {}),
+      ...(vadSpectralQualifiedRunCount.value !== undefined
+        ? { vadSpectralQualifiedRunCount: vadSpectralQualifiedRunCount.value }
+        : {}),
+      ...(vadLongestFullyQualifiedRunMs.value !== undefined
+        ? { vadLongestFullyQualifiedRunMs: vadLongestFullyQualifiedRunMs.value }
+        : {}),
+      ...(vadFullyQualifiedRunCount.value !== undefined ? { vadFullyQualifiedRunCount: vadFullyQualifiedRunCount.value } : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
       ...(sttProviderErrorMessage !== undefined ? { sttProviderErrorMessage } : {}),

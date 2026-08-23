@@ -1060,6 +1060,108 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // VAD start-detection hardening, ROUND 8 (2026-08-22): a real production
+  // test with instrumental music and no voice at all produced a false
+  // positive at aggregate rates indistinguishable from genuine speech --
+  // see voice-activity-logic.ts's own ROUND 8 VoiceActivityDiagnostics
+  // doc comments for the temporal-continuity hypothesis these
+  // diagnostic-only fields test.
+  describe("VAD ROUND 8 diagnostic accumulators (vadLongestSpectralQualifiedRunMs / vadSpectralQualifiedRunCount / vadLongestFullyQualifiedRunMs / vadFullyQualifiedRunCount)", () => {
+    it("accepts a fully-populated set of these fields", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadLongestSpectralQualifiedRunMs: 5800,
+        vadSpectralQualifiedRunCount: 1,
+        vadLongestFullyQualifiedRunMs: 400,
+        vadFullyQualifiedRunCount: 6,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadLongestSpectralQualifiedRunMs: 5800,
+          vadSpectralQualifiedRunCount: 1,
+          vadLongestFullyQualifiedRunMs: 400,
+          vadFullyQualifiedRunCount: 6,
+        }),
+      });
+    });
+
+    it("accepts zero for every field -- a truthful 'never observed', not rejected as missing", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadLongestSpectralQualifiedRunMs: 0,
+        vadSpectralQualifiedRunCount: 0,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ vadLongestSpectralQualifiedRunMs: 0, vadSpectralQualifiedRunCount: 0 }),
+      });
+    });
+
+    it("rejects a negative value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadFullyQualifiedRunCount: -1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_fully_qualified_run_count" });
+    });
+
+    it("rejects a non-integer count", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadSpectralQualifiedRunCount: 3.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_spectral_qualified_run_count" });
+    });
+
+    it("rejects an implausible vadLongestSpectralQualifiedRunMs -- never a real one", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadLongestSpectralQualifiedRunMs: 10 * 60 * 1000,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_longest_spectral_qualified_run_ms" });
+    });
+
+    it("rejects an implausible vadLongestFullyQualifiedRunMs -- never a real one", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadLongestFullyQualifiedRunMs: 10 * 60 * 1000,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_longest_fully_qualified_run_ms" });
+    });
+
+    it("omits every field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of [
+          "vadLongestSpectralQualifiedRunMs",
+          "vadSpectralQualifiedRunCount",
+          "vadLongestFullyQualifiedRunMs",
+          "vadFullyQualifiedRunCount",
+        ]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
   // production STT failure be attributed, directly from this one log line,
   // to the real Gemini HTTP status/canonical error status, or to a real
