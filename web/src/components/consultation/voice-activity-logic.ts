@@ -637,6 +637,126 @@
 // round was explicitly told not to make, in either direction (too
 // permissive still lets music through; too strict could reject a
 // genuine, unhurried speaker).
+//
+// VAD start-detection hardening, ROUND 9 (2026-08-23): a follow-up real
+// production test on ea1c112 (ROUND 8's telemetry live), again pure
+// instrumental music with confirmed zero human voice, reproduced the
+// SAME false positive (START confirmed at 402ms) -- but this time the
+// new run-length telemetry answers ROUND 8's own open question directly,
+// and the answer is NOT what ROUND 8 hypothesized. spectralLiftQualifiedSampleCount
+// was 0 (round 7's lift path is again not the cause). spectralQualifiedSampleCount
+// was only 1/25, fullyQualifiedSampleCount 1/25, and -- the decisive new
+// data -- longestSpectralQualifiedRunMs was 0 with spectralQualifiedRunCount
+// 1, and longestFullyQualifiedRunMs 0 with fullyQualifiedRunCount 1. This
+// is the OPPOSITE of round 8's "held note = one LONG run" prediction: the
+// music here produced the SHORTEST possible run -- a single, isolated,
+// non-repeating 100ms sample -- not a sustained one. ROUND 8's specific
+// temporal-continuity hypothesis (long sustained runs = music, many short
+// runs = speech) is REFUTED by this test as the explanation for THIS
+// failure mode; a different, independently demonstrable mechanism is
+// responsible instead.
+//
+// ROOT CAUSE (demonstrated directly from evaluateVadSample below, not
+// inferred from aggregate rates): windowedCandidate/startWindowedCandidate
+// (ROUND 4/7) let ONE spectral qualification "vouch" for OTHER, merely
+// amplitude-qualified samples up to speechEvidenceWindowMs (300ms) away in
+// EITHER direction, via the `amplitudeQualified && spectralRecentlyQualified`
+// (or its START-only equivalent) clause. In this recording, exactly ONE
+// sample was ever spectrally qualified; the other 3 of the 4 recorded
+// windowedCandidateSampleCount hits carried NO spectral evidence of their
+// own -- they qualified purely because they fell within 300ms of that
+// single spectral instant and were independently amplitude-qualified
+// (amplitudeQualifiedSampleCount was 8/25). Those 4 hits, spread across
+// ~297ms (vadMaxCandidateSpeechMs), were enough to cross minSpeechDurationMs
+// (250ms) via the existing gap-tolerant streak machinery (ROUND 1/5) and
+// flip hasDetectedSpeech at 402ms -- exactly reproducing the report's
+// speechDetectedAtMs/speechEndedAtMs both landing on 402ms (that streak's
+// last-ever windowedCandidate hit; no further evidence ever arrived, so
+// lastSpeechAt never advanced past it before stop_silence fired 2108ms
+// later). This is fully mechanical and reproducible from the code and the
+// telemetry alone -- no guessing was required. It also reveals the
+// cross-modal window (designed in ROUND 4 to bridge ONE alternating
+// phoneme's loud/narrow-band moments within a single syllable) being used
+// here for something it was never intended to do: retroactively and
+// prospectively "laundering" a single coincidental spectral spike (a
+// percussive transient, a chord onset, a brief mixing artifact) across
+// up to ~600ms of otherwise-unrelated, purely-amplitude evidence.
+//
+// FAZA B DECISION: yes, this test is sufficient -- the mechanism is
+// demonstrated from the code, not merely correlated from aggregate rates
+// (which ROUND 8 already proved cannot discriminate this case). START can
+// be, and here was, confirmed from evidence that is genuinely too
+// fragmented: a single, non-recurring instant of the module's own most
+// voice-specific signal (spectral concentration), amplified by a window
+// mechanism into a multi-sample streak with no OTHER independent spectral
+// corroboration anywhere in it.
+//
+// THE FIX: require the START streak to contain at least
+// minStartSpectralHitCount (2) DISTINCT samples that individually clear
+// the spectral gate for START purposes (spectralQualifiedForStart, so
+// ROUND 7's lift path still counts) before hasDetectedSpeech is allowed
+// to flip true -- in addition to, not instead of, the existing
+// minSpeechDurationMs streak-duration requirement. 2 is not a value fitted
+// to this test: it is the smallest count that can express "this evidence
+// recurred" at all -- 1 occurrence is, by construction, indistinguishable
+// from a single isolated transient (a click, an onset, a coincidental
+// spike), and no amount of duration or amplitude corroboration around it
+// changes that. This is a NEW, independent requirement alongside the
+// existing gap-tolerant streak/window machinery, not a reversion of it:
+// windowedCandidate, startWindowedCandidate, the cross-modal recency
+// window, and the gap-tolerant streak survival rule are all UNCHANGED --
+// still exactly as validated by rounds 4-7's own real production
+// evidence for genuine speech and speech-over-noise. Only the FINAL gate
+// on flipping hasDetectedSpeech gains a second, independent condition.
+//
+// Why genuine speech is not put at risk: every documented genuine-speech
+// production success this file's own history has real numbers for shows
+// spectral qualification rates from 17% (round 6) up to 78% (471570b) of
+// the WHOLE recording -- orders of magnitude above the single-instant
+// case this round's failure produced (4% of a short clip, and the ONLY
+// spectral hit in it). A streak spanning enough samples to reach
+// minSpeechDurationMs (250ms, roughly 2-3 sampling intervals at the
+// 100ms polling rate) drawn from a recording with a genuine, recurring
+// spectral signal will overwhelmingly contain more than one spectrally-
+// qualified sample; the practical effect on real speech is, at most, a
+// short additional delay (a few hundred ms) waiting for a second
+// qualifying instant to arrive within the SAME already-tolerant window/
+// gap machinery -- never an outright rejection, since the streak is not
+// discarded while it survives, only withheld from confirming. This is a
+// strictly MORE conservative START, exactly as this round's task
+// required, and does not touch CONTINUATION (round 6's own, separately
+// gated spectral-alone rule, reachable only once hasDetectedSpeech is
+// already true) or the noise-floor adaptation (rounds 3/5), both of
+// which remain exactly as they were.
+//
+// Why a sustained single musical note/chord is a DIFFERENT, out-of-scope
+// problem, correctly left alone: a note held continuously for >= 250ms
+// produces MULTIPLE consecutive same-frame-qualified samples (satisfying
+// the ORIGINAL, unchanged same-frame `candidate` path directly, no window
+// needed) -- each one independently spectrally qualified, so it already
+// satisfies minStartSpectralHitCount>=2 today, exactly as it already
+// satisfied every earlier round's own logic. This was already an
+// acknowledged, unsolved acoustic-overlap limitation of a 2-signal
+// classifier (see ROUND 8's own "why this is NOT simply the threshold
+// needs to be higher" finding) BEFORE this round, is not what this
+// round's own real test demonstrated (spectralQualifiedRunCount was 1,
+// not a long sustained run), and is not solved or worsened by this
+// round's fix -- solving it would require a materially different signal
+// (e.g. pitch/harmonicity analysis) this codebase does not have, not a
+// count-of-recurrences check. Documented here, again, as a known
+// limitation rather than patched speculatively.
+//
+// What was explicitly NOT done: no existing threshold (minSpeechBandRatio,
+// noiseFloorMargin, spectralLiftMargin/Activation) was raised or lowered;
+// no existing gap-tolerance or window value (maxCandidateGapMs,
+// speechEvidenceWindowMs) was changed; CONTINUATION's own rule and the
+// noise floor's own exclusion condition were not touched; no run-length-
+// in-milliseconds boundary was invented (ROUND 8's own run-length
+// hypothesis, refuted above as the mechanism for THIS failure, is left as
+// telemetry only, exactly as before -- this round's fix uses a plain
+// per-streak COUNT of qualifying samples, not run duration, since the
+// demonstrated failure was about the ABSENCE of a second qualifying
+// instant, not about how long any one run lasted).
 
 export interface VadConfig {
   // Absolute floor beneath which nothing ever counts as speech, regardless
@@ -733,6 +853,18 @@ export interface VadConfig {
   // spurious reading can never qualify purely from a low ambient
   // baseline plus a technically-satisfied margin.
   minSpeechBandRatioFloor: number;
+  // VAD start-detection hardening, ROUND 9 (2026-08-23): the minimum
+  // number of DISTINCT samples, within the currently-forming START
+  // streak, that must individually clear the spectral gate
+  // (spectralQualifiedForStart) before the streak may actually flip
+  // hasDetectedSpeech -- in addition to, not instead of,
+  // minSpeechDurationMs. See this module's own ROUND 9 doc comment for
+  // the real production false positive this closes (a single, isolated
+  // spectral instant laundered into a full streak purely via the
+  // cross-modal recency window). Not a fitted/tuned acoustic threshold --
+  // 2 is the smallest count that can express "this evidence recurred at
+  // all"; 1 is, by construction, a single isolated instant.
+  minStartSpectralHitCount: number;
 }
 
 export const DEFAULT_VAD_CONFIG: VadConfig = {
@@ -749,6 +881,7 @@ export const DEFAULT_VAD_CONFIG: VadConfig = {
   spectralLiftActivationThreshold: 0.15,
   spectralLiftMargin: 0.15,
   minSpeechBandRatioFloor: 0.3,
+  minStartSpectralHitCount: 2,
 };
 
 // One fresh audio-level sample. Both fields are computed browser-side from
@@ -895,6 +1028,20 @@ export interface VadState {
   fullyQualifiedRunStartedAt: number | null;
   longestFullyQualifiedRunMs: number;
   fullyQualifiedRunCount: number;
+  // VAD start-detection hardening, ROUND 9 (2026-08-23): how many DISTINCT
+  // samples, since the CURRENTLY-ALIVE start streak began (reset exactly
+  // when speechStreakStartedAt itself resets), individually cleared the
+  // spectral gate for START purposes (spectralQualifiedForStart) -- see
+  // minStartSpectralHitCount's own doc comment. Deliberately scoped to the
+  // streak, unlike spectralQualifiedSampleCount (whole-recording, never
+  // resets) -- this is what actually gates confirmation.
+  streakSpectralHitCount: number;
+  // The highest streakSpectralHitCount ever reached this recording, even
+  // after a later reset -- lets a real production report see directly how
+  // much spectral recurrence the longest-forming streak actually had,
+  // without needing to infer it from whether hasDetectedSpeech ever
+  // flipped true.
+  peakStreakSpectralHitCount: number;
 }
 
 export function initVadState(recordingStartedAt: number): VadState {
@@ -933,6 +1080,8 @@ export function initVadState(recordingStartedAt: number): VadState {
     fullyQualifiedRunStartedAt: null,
     longestFullyQualifiedRunMs: 0,
     fullyQualifiedRunCount: 0,
+    streakSpectralHitCount: 0,
+    peakStreakSpectralHitCount: 0,
   };
 }
 
@@ -1244,12 +1393,16 @@ export function evaluateVadSample(
     const candidateResetCount =
       state.speechStreakStartedAt !== null && !streakSurvives ? state.candidateResetCount + 1 : state.candidateResetCount;
     const elapsedSinceStart = now - state.recordingStartedAt;
+    // VAD start-detection hardening, ROUND 9 (2026-08-23): streakSpectralHitCount
+    // shares the streak's own reset trigger exactly -- see this module's
+    // own ROUND 9 doc comment and minStartSpectralHitCount's doc comment.
     const nextState: VadState = {
       ...state,
       ...diagnosticAccumulators,
       noiseFloorEstimate,
       candidateResetCount,
       speechStreakStartedAt: streakSurvives ? state.speechStreakStartedAt : null,
+      streakSpectralHitCount: streakSurvives ? state.streakSpectralHitCount : 0,
     };
     if (elapsedSinceStart >= config.noSpeechTimeoutMs) {
       return { state: nextState, decision: "stop_no_speech_timeout" };
@@ -1271,7 +1424,28 @@ export function evaluateVadSample(
     // from ROUND 6.
     const speechStreakStartedAt = state.speechStreakStartedAt ?? now;
     const streakDuration = now - speechStreakStartedAt;
-    const hasDetectedSpeech = state.hasDetectedSpeech || streakDuration >= config.minSpeechDurationMs;
+    // VAD start-detection hardening, ROUND 9 (2026-08-23): a second,
+    // independent requirement alongside streakDuration -- see this
+    // module's own ROUND 9 doc comment and minStartSpectralHitCount's own
+    // doc comment for the real production false positive (a single,
+    // isolated spectral instant laundered into a full duration-qualifying
+    // streak purely via the cross-modal recency window below) this
+    // closes. Counts DISTINCT samples in the currently-alive streak that
+    // individually cleared the spectral gate for START purposes -- reset
+    // to 0/1 exactly when the streak itself starts fresh (isNewStreak),
+    // otherwise accumulated alongside it.
+    const isNewStreak = state.speechStreakStartedAt === null;
+    const streakSpectralHitCount = spectralQualifiedForStart
+      ? isNewStreak
+        ? 1
+        : state.streakSpectralHitCount + 1
+      : isNewStreak
+        ? 0
+        : state.streakSpectralHitCount;
+    const peakStreakSpectralHitCount = Math.max(state.peakStreakSpectralHitCount, streakSpectralHitCount);
+    const hasDetectedSpeech =
+      state.hasDetectedSpeech ||
+      (streakDuration >= config.minSpeechDurationMs && streakSpectralHitCount >= config.minStartSpectralHitCount);
 
     return {
       state: {
@@ -1279,6 +1453,8 @@ export function evaluateVadSample(
         ...diagnosticAccumulators,
         noiseFloorEstimate,
         speechStreakStartedAt,
+        streakSpectralHitCount,
+        peakStreakSpectralHitCount,
         hasDetectedSpeech,
         lastSpeechAt: now,
         maxCandidateStreakMs: Math.max(state.maxCandidateStreakMs, streakDuration),
@@ -1526,6 +1702,17 @@ export interface VoiceActivityDiagnostics {
   // spectral alone.
   longestFullyQualifiedRunMs: number;
   fullyQualifiedRunCount: number;
+  // VAD start-detection hardening, ROUND 9 (2026-08-23): see this
+  // module's own ROUND 9 doc comment for the real production false
+  // positive (a single, isolated spectral instant laundered into a full
+  // streak via the cross-modal recency window) this answers directly.
+  // The highest count of DISTINCT, individually spectrally-qualified
+  // samples any single (still-alive) START streak reached this
+  // recording -- a recording where minStartSpectralHitCount blocked
+  // confirmation shows this staying below the config value even while
+  // maxCandidateSpeechMs (streak duration) reached or exceeded
+  // minSpeechDurationMs; a genuine confirmation shows it at or above.
+  peakStreakSpectralHitCount: number;
 }
 
 export function computeVoiceActivityDiagnostics(params: {
@@ -1560,6 +1747,7 @@ export function computeVoiceActivityDiagnostics(params: {
   spectralQualifiedRunCount: number;
   longestFullyQualifiedRunMs: number;
   fullyQualifiedRunCount: number;
+  peakStreakSpectralHitCount: number;
 }): VoiceActivityDiagnostics {
   const speechDetectedAtMs =
     params.speechDetectedAt !== null ? Math.max(0, Math.round(params.speechDetectedAt - params.recordingStartedAt)) : null;
@@ -1610,5 +1798,6 @@ export function computeVoiceActivityDiagnostics(params: {
     spectralQualifiedRunCount: params.spectralQualifiedRunCount,
     longestFullyQualifiedRunMs: params.longestFullyQualifiedRunMs,
     fullyQualifiedRunCount: params.fullyQualifiedRunCount,
+    peakStreakSpectralHitCount: params.peakStreakSpectralHitCount,
   };
 }

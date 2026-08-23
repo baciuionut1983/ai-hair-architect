@@ -212,6 +212,10 @@ export interface VoiceLatencyTelemetryInput {
   vadSpectralQualifiedRunCount?: number;
   vadLongestFullyQualifiedRunMs?: number;
   vadFullyQualifiedRunCount?: number;
+  // VAD start-detection hardening, ROUND 9 (2026-08-23): see
+  // voice-activity-logic.ts's own ROUND 9 VoiceActivityDiagnostics doc
+  // comment for what this answers.
+  vadPeakStreakSpectralHitCount?: number;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -573,6 +577,12 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
   const vadFullyQualifiedRunCount = parseOptionalNonNegativeInteger(input, "vadFullyQualifiedRunCount");
   if (!vadFullyQualifiedRunCount.ok) return { ok: false, reason: "invalid_vad_fully_qualified_run_count" };
 
+  // VAD start-detection hardening, ROUND 9 (2026-08-23): see
+  // voice-activity-logic.ts's own ROUND 9 VoiceActivityDiagnostics doc
+  // comment for what this answers.
+  const vadPeakStreakSpectralHitCount = parseOptionalNonNegativeInteger(input, "vadPeakStreakSpectralHitCount");
+  if (!vadPeakStreakSpectralHitCount.ok) return { ok: false, reason: "invalid_vad_peak_streak_spectral_hit_count" };
+
   let sttProviderHttpStatus: number | undefined;
   if (input.sttProviderHttpStatus !== undefined) {
     if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
@@ -768,6 +778,9 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
         ? { vadLongestFullyQualifiedRunMs: vadLongestFullyQualifiedRunMs.value }
         : {}),
       ...(vadFullyQualifiedRunCount.value !== undefined ? { vadFullyQualifiedRunCount: vadFullyQualifiedRunCount.value } : {}),
+      ...(vadPeakStreakSpectralHitCount.value !== undefined
+        ? { vadPeakStreakSpectralHitCount: vadPeakStreakSpectralHitCount.value }
+        : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
       ...(sttProviderErrorMessage !== undefined ? { sttProviderErrorMessage } : {}),

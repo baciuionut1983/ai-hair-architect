@@ -1326,7 +1326,21 @@ describe("evaluateVadSample", () => {
         t += 100;
         state = evaluateVadSample(state, SUSTAINED_INSTRUMENTAL_MUSIC, t).state;
       }
-      expect(state.hasDetectedSpeech).toBe(true); // unfixed this round -- deliberately, see below
+      // VAD start-detection hardening, ROUND 9 (2026-08-23): still true,
+      // and correctly so -- see this module's own ROUND 9 doc comment
+      // ("why a sustained single musical note/chord is a DIFFERENT,
+      // out-of-scope problem, correctly left alone"). Every sample here is
+      // independently BOTH-gates-qualified (same-frame AND), so
+      // minStartSpectralHitCount>=2 is satisfied immediately alongside
+      // minSpeechDurationMs, at the same instant it always was -- ROUND
+      // 9's fix targets a SINGLE isolated spectral instant laundered via
+      // the cross-modal window, not a genuinely, repeatedly qualifying
+      // signal (whatever produces it). This is NOT the shape the real
+      // ea1c112 production test that motivated ROUND 9 actually had
+      // (that one had exactly 1 spectral hit total, not many) -- see the
+      // dedicated "ROUND 9" describe block below for that exact
+      // reproduction.
+      expect(state.hasDetectedSpeech).toBe(true);
       expect(state.spectralQualifiedRunCount).toBe(1); // one single continuous run
       expect(state.longestSpectralQualifiedRunMs).toBeGreaterThan(5000); // nearly the whole recording
       // No gap-bridging was ever needed -- the gap-TOLERANT streak length
@@ -1385,7 +1399,7 @@ describe("evaluateVadSample", () => {
       expect(state.longestFullyQualifiedRunMs).toBe(200); // still the first run's length, not overwritten by the shorter second one
     });
 
-    it("this new telemetry does not gate any VAD decision -- the real production music false positive still confirms speech, unfixed, exactly as this round's task required (telemetry-only)", () => {
+    it("this telemetry alone still does not gate any VAD decision -- a SUSTAINED musical note remains a distinct, unfixed, acknowledged limitation (see ROUND 9 for the different, isolated-instant shape that IS now fixed)", () => {
       const state = initVadState(0);
       let t = 0;
       let result: VadEvaluation = { state, decision: "continue" };
@@ -1393,12 +1407,110 @@ describe("evaluateVadSample", () => {
         t += 100;
         result = evaluateVadSample(result.state, SUSTAINED_INSTRUMENTAL_MUSIC, t);
       }
-      // Deliberately NOT fixed this round -- see this module's own ROUND
-      // 8 doc comment for why implementing a run-length-based decision
-      // rule now, without a validated boundary between "a real sustained
-      // vowel" and "a held musical note", would be exactly the
-      // speculative tuning this round was told not to do.
+      // Deliberately still NOT fixed by ROUND 9 either -- this fixture is
+      // a genuinely, repeatedly (same-frame) qualifying signal for its
+      // entire duration, not a single isolated instant, so it was never
+      // the failure mode ROUND 9's minStartSpectralHitCount targets (see
+      // this module's own ROUND 9 doc comment). A sustained tonal source
+      // perfectly mimicking prolonged voice on this classifier's only two
+      // signals remains an honest, documented acoustic-overlap limitation.
       expect(result.state.hasDetectedSpeech).toBe(true);
+    });
+  });
+
+  // VAD start-detection hardening, ROUND 9 (2026-08-23): a follow-up real
+  // production test on ea1c112 (pure instrumental music, confirmed zero
+  // human voice) reproduced a false positive with a DIFFERENT shape than
+  // ROUND 8's own sustained-note hypothesis: exactly ONE spectrally-
+  // qualified sample in the whole recording (spectralQualifiedSampleCount
+  // 1/25, fullyQualifiedSampleCount 1/25, longestSpectralQualifiedRunMs 0,
+  // spectralQualifiedRunCount 1 -- the SHORTEST possible run, not a long
+  // one), yet START still confirmed at 402ms via 4 windowedCandidate hits
+  // spanning ~297ms -- see this module's own ROUND 9 doc comment for the
+  // full mechanical root cause (a single spectral instant "vouching" for
+  // otherwise-unrelated amplitude-only samples up to speechEvidenceWindowMs
+  // away). These tests reproduce that exact shape and prove the fix
+  // (requiring minStartSpectralHitCount distinct spectrally-qualified
+  // samples within the confirming streak) closes it without weakening
+  // genuine recurring evidence.
+  describe("ROUND 9: START requires genuine spectral recurrence, not one instant laundered through the cross-modal window", () => {
+    it("reproduces the exact real production false positive: ONE spectral/fully-qualified hit plus amplitude-only neighbors within the window builds a duration-qualifying streak that must NOT confirm speech", () => {
+      const state = initVadState(0);
+      let result: VadEvaluation = { state, decision: "continue" };
+      // t=100: amplitude-only (no spectral evidence anywhere yet) -- no streak.
+      result = evaluateVadSample(result.state, LOUD_BROADBAND_PHONEME, 100);
+      expect(result.state.hasDetectedSpeech).toBe(false);
+      // t=200: the ONE coincidental both-gates hit (a percussive transient,
+      // a chord onset -- exactly the real report's single
+      // fullyQualifiedSampleCount/spectralQualifiedSampleCount instant).
+      // Starts the streak.
+      result = evaluateVadSample(result.state, CLEAR_SPEECH, 200);
+      expect(result.state.hasDetectedSpeech).toBe(false);
+      expect(result.state.streakSpectralHitCount).toBe(1);
+      // t=300/400/500: amplitude-only again, each riding the OLD single
+      // spectral instant's own speechEvidenceWindowMs (300ms) recency --
+      // NO further spectral evidence ever occurs, exactly like the real
+      // report (spectralQualifiedSampleCount stayed at 1 for the whole
+      // recording). By t=500 the streak (started at t=200) has reached
+      // 300ms -- past minSpeechDurationMs (250ms), same as the real
+      // report's ~297ms -- but streakSpectralHitCount is still only 1.
+      result = evaluateVadSample(result.state, LOUD_BROADBAND_PHONEME, 300);
+      result = evaluateVadSample(result.state, LOUD_BROADBAND_PHONEME, 400);
+      result = evaluateVadSample(result.state, LOUD_BROADBAND_PHONEME, 500);
+      expect(result.state.maxCandidateStreakMs).toBeGreaterThanOrEqual(DEFAULT_VAD_CONFIG.minSpeechDurationMs);
+      expect(result.state.streakSpectralHitCount).toBe(1); // never recurred
+      expect(result.state.peakStreakSpectralHitCount).toBe(1);
+      // The core fix: duration alone (pre-ROUND-9 sufficient) is no longer
+      // enough -- speech must still not be confirmed.
+      expect(result.state.hasDetectedSpeech).toBe(false);
+
+      // With no further evidence at all, the streak eventually resets
+      // (gap exceeds tolerance) and, exactly like pure music with no
+      // voice, the recording runs out via the no-speech safety timeout --
+      // never stop_silence, since speech was never genuinely confirmed.
+      let t = 600;
+      while (result.decision === "continue" && t <= DEFAULT_VAD_CONFIG.noSpeechTimeoutMs) {
+        result = evaluateVadSample(result.state, SILENCE, t);
+        t += 100;
+      }
+      expect(result.state.hasDetectedSpeech).toBe(false);
+      expect(result.decision).toBe("stop_no_speech_timeout");
+    });
+
+    it("a SECOND, genuinely separate spectral instant within the same window DOES confirm -- the fix requires recurrence, not perfection", () => {
+      const state = initVadState(0);
+      let result: VadEvaluation = { state, decision: "continue" };
+      result = evaluateVadSample(result.state, LOUD_BROADBAND_PHONEME, 100);
+      result = evaluateVadSample(result.state, CLEAR_SPEECH, 200); // 1st spectral hit
+      expect(result.state.streakSpectralHitCount).toBe(1);
+      result = evaluateVadSample(result.state, LOUD_BROADBAND_PHONEME, 300);
+      // A genuinely SECOND spectral instant, still within the same
+      // gap-tolerant streak -- exactly the "recurrence" the fix requires.
+      result = evaluateVadSample(result.state, CLEAR_SPEECH, 400); // 2nd spectral hit
+      expect(result.state.streakSpectralHitCount).toBe(2);
+      // Duration since t=200 is only 200ms here -- one more sample is
+      // needed to also cross minSpeechDurationMs.
+      expect(result.state.hasDetectedSpeech).toBe(false);
+      result = evaluateVadSample(result.state, LOUD_BROADBAND_PHONEME, 500); // 300ms since t=200
+      expect(result.state.hasDetectedSpeech).toBe(true);
+    });
+
+    it("CONTINUATION (post-confirmation) is unaffected -- ROUND 6's spectral-alone rule never checks streak recurrence at all", () => {
+      let state = initVadState(0);
+      let result = evaluateVadSample(state, CLEAR_SPEECH, 0);
+      state = result.state;
+      result = evaluateVadSample(state, CLEAR_SPEECH, 300); // confirmed via 2 genuine hits
+      state = result.state;
+      expect(state.hasDetectedSpeech).toBe(true);
+
+      // A single, isolated spectral-only continuation sample, well past
+      // speechEvidenceWindowMs -- ROUND 6's continuationQualified rule
+      // (spectralQualified alone) refreshes lastSpeechAt unconditionally,
+      // with no recurrence requirement -- that requirement is scoped to
+      // START's own streak-confirmation gate only.
+      result = evaluateVadSample(state, AMPLITUDE_DIP, 1900);
+      expect(result.decision).toBe("continue");
+      expect(result.state.lastSpeechAt).toBe(1900);
     });
   });
 });
@@ -1441,6 +1553,7 @@ describe("computeVoiceActivityDiagnostics", () => {
     spectralQualifiedRunCount: 7,
     longestFullyQualifiedRunMs: 150,
     fullyQualifiedRunCount: 4,
+    peakStreakSpectralHitCount: 2,
   };
 
   it("computes a full breakdown for a normal stop_silence turn", () => {
@@ -1583,6 +1696,7 @@ describe("computeVoiceActivityDiagnostics", () => {
       spectralQualifiedRunCount: 5,
       longestFullyQualifiedRunMs: 180,
       fullyQualifiedRunCount: 3,
+      peakStreakSpectralHitCount: 1,
     });
     expect(diagnostics.peakRms).toBe(0.18);
     expect(diagnostics.peakSpeechBandRatio).toBe(0.41);
@@ -1618,6 +1732,10 @@ describe("computeVoiceActivityDiagnostics", () => {
     expect(diagnostics.spectralQualifiedRunCount).toBe(5);
     expect(diagnostics.longestFullyQualifiedRunMs).toBe(180);
     expect(diagnostics.fullyQualifiedRunCount).toBe(3);
+    // VAD start-detection hardening, ROUND 9 (2026-08-23): same
+    // pass-through, not-gated-on-hadConfirmedSpeech contract as the
+    // ROUND 7/8 fields above.
+    expect(diagnostics.peakStreakSpectralHitCount).toBe(1);
   });
 
   // VAD false-negative hardening (2026-08-21), Task 13: proves
@@ -1671,6 +1789,7 @@ describe("computeVoiceActivityDiagnostics", () => {
       spectralQualifiedRunCount: afterGap.state.spectralQualifiedRunCount,
       longestFullyQualifiedRunMs: afterGap.state.longestFullyQualifiedRunMs,
       fullyQualifiedRunCount: afterGap.state.fullyQualifiedRunCount,
+      peakStreakSpectralHitCount: afterGap.state.peakStreakSpectralHitCount,
     });
 
     expect(diagnostics.speechDetectedAtMs).toBeNull();
@@ -1745,6 +1864,8 @@ describe("initVadState", () => {
       fullyQualifiedRunStartedAt: null,
       longestFullyQualifiedRunMs: 0,
       fullyQualifiedRunCount: 0,
+      streakSpectralHitCount: 0,
+      peakStreakSpectralHitCount: 0,
     });
   });
 });

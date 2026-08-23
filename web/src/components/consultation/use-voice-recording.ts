@@ -267,6 +267,10 @@ export function vadDiagnosticsToReportFields(diagnostics: VoiceActivityDiagnosti
     vadSpectralQualifiedRunCount: diagnostics.spectralQualifiedRunCount,
     vadLongestFullyQualifiedRunMs: diagnostics.longestFullyQualifiedRunMs,
     vadFullyQualifiedRunCount: diagnostics.fullyQualifiedRunCount,
+    // VAD start-detection hardening, ROUND 9 (2026-08-23): see
+    // VoiceActivityDiagnostics's own ROUND 9 doc comment for what this
+    // answers.
+    vadPeakStreakSpectralHitCount: diagnostics.peakStreakSpectralHitCount,
   };
 }
 
@@ -381,6 +385,9 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
       spectralQualifiedRunCount: vadStateRef.current?.spectralQualifiedRunCount ?? 0,
       longestFullyQualifiedRunMs: vadStateRef.current?.longestFullyQualifiedRunMs ?? 0,
       fullyQualifiedRunCount: vadStateRef.current?.fullyQualifiedRunCount ?? 0,
+      // VAD start-detection hardening, ROUND 9 (2026-08-23): same "0 is
+      // truthful, never fabricated" contract as the earlier fields above.
+      peakStreakSpectralHitCount: vadStateRef.current?.peakStreakSpectralHitCount ?? 0,
     });
   }, []);
 

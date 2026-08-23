@@ -1162,6 +1162,66 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  describe("VAD ROUND 9 diagnostic accumulator (vadPeakStreakSpectralHitCount)", () => {
+    it("accepts a real value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadPeakStreakSpectralHitCount: 1,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ vadPeakStreakSpectralHitCount: 1 }),
+      });
+    });
+
+    it("accepts zero -- a truthful 'never observed', not rejected as missing", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadPeakStreakSpectralHitCount: 0,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({ vadPeakStreakSpectralHitCount: 0 }),
+      });
+    });
+
+    it("rejects a negative value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadPeakStreakSpectralHitCount: -1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_peak_streak_spectral_hit_count" });
+    });
+
+    it("rejects a non-integer count", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadPeakStreakSpectralHitCount: 1.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_peak_streak_spectral_hit_count" });
+    });
+
+    it("omits the field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect("vadPeakStreakSpectralHitCount" in result.value).toBe(false);
+      }
+    });
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
   // production STT failure be attributed, directly from this one log line,
   // to the real Gemini HTTP status/canonical error status, or to a real

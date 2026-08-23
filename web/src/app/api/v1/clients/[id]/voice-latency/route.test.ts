@@ -585,6 +585,36 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     logSpy.mockRestore();
   });
 
+  // VAD start-detection hardening, ROUND 9 (2026-08-23): see
+  // voice-activity-logic.ts's own ROUND 9 VoiceActivityDiagnostics doc
+  // comment for what this answers.
+  it("logs the VAD ROUND 9 diagnostic accumulator when the client reported it", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-130",
+      outcome: "tts_completed",
+      summary: validSummary(),
+      vadPeakStreakSpectralHitCount: 1,
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({ vadPeakStreakSpectralHitCount: 1 });
+    logSpy.mockRestore();
+  });
+
+  it("logs the VAD ROUND 9 diagnostic accumulator as null (never fabricated) when the client didn't report it", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-131", outcome: "tts_completed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({ vadPeakStreakSpectralHitCount: null });
+    logSpy.mockRestore();
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): the real Gemini
   // provider failure detail, closing the gap where a provider HTTP error,
   // a network/timeout failure, and an empty-transcript response all

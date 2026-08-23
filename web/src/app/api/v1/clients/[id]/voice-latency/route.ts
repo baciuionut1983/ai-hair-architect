@@ -125,6 +125,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       vadSpectralQualifiedRunCount: parsed.value.vadSpectralQualifiedRunCount ?? null,
       vadLongestFullyQualifiedRunMs: parsed.value.vadLongestFullyQualifiedRunMs ?? null,
       vadFullyQualifiedRunCount: parsed.value.vadFullyQualifiedRunCount ?? null,
+      // VAD start-detection hardening, ROUND 9 (2026-08-23): see
+      // voice-activity-logic.ts's own ROUND 9 VoiceActivityDiagnostics doc
+      // comment for what this answers.
+      vadPeakStreakSpectralHitCount: parsed.value.vadPeakStreakSpectralHitCount ?? null,
       // STT Flash-Lite root-cause diagnosis (2026-08-20): see
       // voice-latency-telemetry-logic.ts's own doc comment on these same 3
       // fields for exactly what they mean and why.
