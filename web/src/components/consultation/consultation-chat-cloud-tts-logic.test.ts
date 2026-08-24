@@ -88,6 +88,12 @@ describe("synthesizeCloudVoiceReply", () => {
       audioProcessingMs: null,
       serverTotalMs: null,
       responseHeaderNames: "",
+      attempt1Ms: null,
+      attempt1Outcome: null,
+      attempt1HttpStatus: null,
+      attempt2Ms: null,
+      attempt2Outcome: null,
+      attempt2HttpStatus: null,
     });
   });
 
@@ -169,6 +175,12 @@ describe("synthesizeCloudVoiceReply", () => {
       audioProcessingMs: 12,
       serverTotalMs: 19930,
       responseHeaderNames: expect.any(String),
+      attempt1Ms: null,
+      attempt1Outcome: null,
+      attempt1HttpStatus: null,
+      attempt2Ms: null,
+      attempt2Outcome: null,
+      attempt2HttpStatus: null,
     });
   });
 
@@ -208,7 +220,7 @@ describe("synthesizeCloudVoiceReply", () => {
       { fetch: vi.fn().mockResolvedValue(notOkResponse(503)) },
       { onSuccess: () => {}, onFailure },
     );
-    expect(onFailure).toHaveBeenCalledWith("unavailable", "VOICE_REPLY_UNAVAILABLE", undefined);
+    expect(onFailure).toHaveBeenCalledWith("unavailable", "VOICE_REPLY_UNAVAILABLE", undefined, undefined, undefined);
   });
 
   // TTS reliability hardening (2026-08-19): the server's own final error
@@ -223,7 +235,7 @@ describe("synthesizeCloudVoiceReply", () => {
       { fetch: vi.fn().mockResolvedValue(notOkResponse(504, { error: "VOICE_REPLY_TIMEOUT", providerAttemptCount: 2 })) },
       { onSuccess: () => {}, onFailure },
     );
-    expect(onFailure).toHaveBeenCalledWith("unavailable", "VOICE_REPLY_TIMEOUT", 2);
+    expect(onFailure).toHaveBeenCalledWith("unavailable", "VOICE_REPLY_TIMEOUT", 2, undefined, undefined);
   });
 
   it("calls onFailure('network') when fetch itself throws (offline, CORS, request never left the browser)", async () => {
@@ -375,7 +387,7 @@ describe("VOICE_REPLY_CLIENT diagnostics logging", () => {
 
     await synthesizeCloudVoiceReply("client-1", "text", "ro", { fetch: vi.fn().mockResolvedValue(brokenResponse) }, { onSuccess: () => {}, onFailure });
 
-    expect(onFailure).toHaveBeenCalledWith("unavailable", "unknown", undefined);
+    expect(onFailure).toHaveBeenCalledWith("unavailable", "unknown", undefined, undefined, undefined);
     const notOk = loggedLines().find((line) => line.event === "cloud_response_not_ok");
     expect(notOk).toMatchObject({ errorCode: "unknown" });
   });

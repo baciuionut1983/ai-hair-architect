@@ -9,6 +9,7 @@ import { isCloudTtsLanguageCode, toCloudTtsLanguageCode } from "@/lib/language-r
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
 import { isValidWavHeader, parseSampleRateFromMimeType, wrapPcmAsWav } from "@/lib/tts-audio-format";
 import { GeminiTtsProvider, type TtsProviderError } from "@/lib/tts-provider-gemini";
+import { classifyProviderAttemptOutcome, type ProviderAttemptTelemetry } from "@/lib/provider-attempt-telemetry-logic";
 
 // Server-side only, by design (requirement 9 / "API key doar server-side"):
 // the browser never sees TEXT_TO_SPEECH_API_KEY. This route's only job is
@@ -214,11 +215,30 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   let activeModel = primaryModel;
   let attemptNumber: 1 | 2 = 1;
   let providerCallStartedAt = Date.now();
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): see
+  // provider-attempt-telemetry-logic.ts's own doc comment for the real
+  // production gap this closes (a VOICE_REPLY_TIMEOUT after 2 attempts
+  // previously had no way to show which attempt(s) actually timed out, or
+  // for how long each one ran) -- attempt2 stays undefined whenever no
+  // retry happens.
+  let attempt1: ProviderAttemptTelemetry | undefined;
+  let attempt2: ProviderAttemptTelemetry | undefined;
   let result;
   try {
     result = await new GeminiTtsProvider({ apiKey, model: activeModel, timeoutMs: PROVIDER_TIMEOUT_MS }).synthesize(text, languageCode);
   } catch (firstError) {
     const firstProviderError = firstError as TtsProviderError;
+    const firstAttemptMs = Date.now() - providerCallStartedAt;
+    attempt1 = {
+      ms: firstAttemptMs,
+      outcome: classifyProviderAttemptOutcome({
+        succeeded: false,
+        timedOut: firstProviderError.code === "TIMEOUT",
+        httpStatus: firstProviderError.status,
+        invalidResponse: firstProviderError.code === "INVALID_FORMAT",
+      }),
+      httpStatus: firstProviderError.status,
+    };
     logVoiceReply("FAILED", "provider_call", {
       resultCode: mapProviderErrorToResponse(firstProviderError).body.error,
       providerErrorCode: firstProviderError.code,
@@ -230,6 +250,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       textLength: text.length,
       voiceTurnId,
       providerAttemptNumber: attemptNumber,
+      attemptMs: attempt1.ms,
+      attemptOutcome: attempt1.outcome,
     });
     // Defense-in-depth, on top of recordAiUsageEvent's own never-throws
     // contract: a metering problem must never turn an already-failed
@@ -254,7 +276,10 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
     if (firstProviderError.retryable !== true) {
       const { status, body: errorBody } = mapProviderErrorToResponse(firstProviderError);
-      return NextResponse.json({ ...errorBody, providerAttemptCount: attemptNumber }, { status });
+      return NextResponse.json(
+        { ...errorBody, providerAttemptCount: attemptNumber, ...attemptFields(attempt1, attempt2) },
+        { status },
+      );
     }
 
     attemptNumber = 2;
@@ -264,6 +289,17 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       result = await new GeminiTtsProvider({ apiKey, model: activeModel, timeoutMs: PROVIDER_TIMEOUT_MS }).synthesize(text, languageCode);
     } catch (secondError) {
       const secondProviderError = secondError as TtsProviderError;
+      const secondAttemptMs = Date.now() - providerCallStartedAt;
+      attempt2 = {
+        ms: secondAttemptMs,
+        outcome: classifyProviderAttemptOutcome({
+          succeeded: false,
+          timedOut: secondProviderError.code === "TIMEOUT",
+          httpStatus: secondProviderError.status,
+          invalidResponse: secondProviderError.code === "INVALID_FORMAT",
+        }),
+        httpStatus: secondProviderError.status,
+      };
       logVoiceReply("FAILED", "provider_call", {
         resultCode: mapProviderErrorToResponse(secondProviderError).body.error,
         providerErrorCode: secondProviderError.code,
@@ -275,6 +311,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
         textLength: text.length,
         voiceTurnId,
         providerAttemptNumber: attemptNumber,
+        attemptMs: attempt2.ms,
+        attemptOutcome: attempt2.outcome,
       });
       try {
         await recordAiUsageEvent({
@@ -288,13 +326,16 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           model: activeModel,
           outcome: "FAILED",
           errorCategory: secondProviderError.code,
-          latencyMs: Date.now() - providerCallStartedAt,
+          latencyMs: secondAttemptMs,
         });
       } catch {
         // Intentionally swallowed -- see comment above.
       }
       const { status, body: errorBody } = mapProviderErrorToResponse(secondProviderError);
-      return NextResponse.json({ ...errorBody, providerAttemptCount: attemptNumber }, { status });
+      return NextResponse.json(
+        { ...errorBody, providerAttemptCount: attemptNumber, ...attemptFields(attempt1, attempt2) },
+        { status },
+      );
     }
   }
 
@@ -307,6 +348,14 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // ttsProviderMs distinct from its own round-trip measurement. Reflects
   // whichever attempt (1 or 2) actually succeeded.
   const providerLatencyMs = Date.now() - providerCallStartedAt;
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): whichever attempt slot just
+  // succeeded -- mirrors consultation-chat-service.ts's own identical
+  // pattern exactly.
+  if (attemptNumber === 1) {
+    attempt1 = { ms: providerLatencyMs, outcome: "success" };
+  } else {
+    attempt2 = { ms: providerLatencyMs, outcome: "success" };
+  }
 
   // TTS latency root-cause (2026-08-19, Round 7): this AWAITED DB write
   // sits directly in the critical path between the provider call finishing
@@ -375,7 +424,12 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       providerAttemptNumber: attemptNumber,
     });
     return NextResponse.json(
-      { error: "VOICE_REPLY_FAILED", message: "Voice reply returned an unexpected response. The text reply above is still available.", providerAttemptCount: attemptNumber },
+      {
+        error: "VOICE_REPLY_FAILED",
+        message: "Voice reply returned an unexpected response. The text reply above is still available.",
+        providerAttemptCount: attemptNumber,
+        ...attemptFields(attempt1, attempt2),
+      },
       { status: 502 },
     );
   }
@@ -438,8 +492,63 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       "X-Usage-Write-Ms": String(usageWriteMs),
       "X-Audio-Processing-Ms": String(audioProcessingMs),
       "X-Server-Total-Ms": String(serverTotalMs),
+      // VOICE NEXT LEVEL, Phase D (2026-08-24): per-attempt breakdown --
+      // see provider-attempt-telemetry-logic.ts's own doc comment. Headers
+      // (not a JSON body field) for the same reason X-Provider-Latency-Ms
+      // already is: the success body is raw audio bytes. X-Attempt2-*
+      // headers are simply absent (never a placeholder value) whenever no
+      // retry happened.
+      ...headerAttemptFields(attempt1, attempt2),
     },
   });
+}
+
+// VOICE NEXT LEVEL, Phase D (2026-08-24): shared by every JSON failure
+// response above -- one definition of "how attempt1/attempt2 telemetry
+// maps onto response fields" so the three call sites (non-retryable
+// first-attempt failure, second-attempt failure, WAV-validation failure)
+// can never drift from each other. Omits a field entirely (never a
+// fabricated null/0) whenever that attempt never happened, or its own
+// httpStatus genuinely isn't known (e.g. a network-level failure with no
+// real HTTP response at all).
+function attemptFields(attempt1: ProviderAttemptTelemetry | undefined, attempt2: ProviderAttemptTelemetry | undefined) {
+  return {
+    ...(attempt1
+      ? {
+          ttsAttempt1Ms: attempt1.ms,
+          ttsAttempt1Outcome: attempt1.outcome,
+          ...(attempt1.httpStatus !== undefined ? { ttsAttempt1HttpStatus: attempt1.httpStatus } : {}),
+        }
+      : {}),
+    ...(attempt2
+      ? {
+          ttsAttempt2Ms: attempt2.ms,
+          ttsAttempt2Outcome: attempt2.outcome,
+          ...(attempt2.httpStatus !== undefined ? { ttsAttempt2HttpStatus: attempt2.httpStatus } : {}),
+        }
+      : {}),
+  };
+}
+
+// Header-string equivalent of attemptFields above, for the success
+// response (raw audio bytes, so telemetry can only ride along as
+// headers, same reasoning as X-Provider-Latency-Ms).
+function headerAttemptFields(
+  attempt1: ProviderAttemptTelemetry | undefined,
+  attempt2: ProviderAttemptTelemetry | undefined,
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (attempt1) {
+    headers["X-Attempt1-Ms"] = String(attempt1.ms);
+    headers["X-Attempt1-Outcome"] = attempt1.outcome;
+    if (attempt1.httpStatus !== undefined) headers["X-Attempt1-Http-Status"] = String(attempt1.httpStatus);
+  }
+  if (attempt2) {
+    headers["X-Attempt2-Ms"] = String(attempt2.ms);
+    headers["X-Attempt2-Outcome"] = attempt2.outcome;
+    if (attempt2.httpStatus !== undefined) headers["X-Attempt2-Http-Status"] = String(attempt2.httpStatus);
+  }
+  return headers;
 }
 
 // STORAGE (requirement 8): this route deliberately never writes the

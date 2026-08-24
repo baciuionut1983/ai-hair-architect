@@ -367,7 +367,16 @@ describe("sendConsultationMessage", () => {
     // Consultation reliability hardening: TIMEOUT is retryable, so this
     // stub (which always throws) is called twice -- attemptCount 2 proves
     // the retry actually happened, not just that the final code is right.
-    expect(result).toEqual({ outcome: "failed", code: "PROVIDER_TIMEOUT", providerAttemptCount: 2 });
+    // VOICE NEXT LEVEL, Phase D: attempt1/attempt2 prove BOTH real
+    // attempts' own telemetry survived to the final result, not just the
+    // count.
+    expect(result).toEqual({
+      outcome: "failed",
+      code: "PROVIDER_TIMEOUT",
+      providerAttemptCount: 2,
+      attempt1: { ms: expect.any(Number), outcome: "timeout" },
+      attempt2: { ms: expect.any(Number), outcome: "timeout" },
+    });
     // The assistant's reply is never recorded on failure -- only the
     // stylist's own message (recorded before the provider call) exists,
     // and only ONCE, regardless of how many provider attempts followed.
@@ -412,7 +421,13 @@ describe("sendConsultationMessage", () => {
 
     const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: timeoutProvider });
 
-    expect(result).toEqual({ outcome: "failed", code: "PROVIDER_TIMEOUT", providerAttemptCount: 2 });
+    expect(result).toEqual({
+      outcome: "failed",
+      code: "PROVIDER_TIMEOUT",
+      providerAttemptCount: 2,
+      attempt1: { ms: expect.any(Number), outcome: "timeout" },
+      attempt2: { ms: expect.any(Number), outcome: "timeout" },
+    });
     expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "FAILED", errorCategory: "TIMEOUT", feature: "consultation_chat" }),
     );
@@ -439,7 +454,12 @@ describe("sendConsultationMessage", () => {
     const result = await sendConsultationMessage("owner-1", CLIENT_A, "Remember this.", undefined, { env: GEMINI_ENV, createProvider: inconsistentProvider });
 
     // retryable:false -- never retried, so exactly one attempt.
-    expect(result).toEqual({ outcome: "failed", code: "MALFORMED_PROVIDER_RESPONSE", providerAttemptCount: 1 });
+    expect(result).toEqual({
+      outcome: "failed",
+      code: "MALFORMED_PROVIDER_RESPONSE",
+      providerAttemptCount: 1,
+      attempt1: { ms: expect.any(Number), outcome: "invalid_response" },
+    });
     expect(messageRepoMock.recordConsultationMessage).toHaveBeenCalledTimes(1);
     expect(messageRepoMock.recordConsultationMessage).toHaveBeenCalledWith(expect.objectContaining({ role: "stylist" }));
   });
@@ -465,6 +485,31 @@ describe("sendConsultationMessage", () => {
       expect(result).toMatchObject({ outcome: "succeeded", providerAttemptCount: 2 });
     });
 
+    // VOICE NEXT LEVEL, Phase D (2026-08-24): proves BOTH real attempts'
+    // own telemetry survive to a SUCCESSFUL final result -- attempt1
+    // shows the real 503 that was recovered from, attempt2 shows the
+    // real success, closing the gap where a recovered turn's own
+    // providerLatencyMs only ever reflected the winning attempt.
+    it("exposes attempt1 (the recovered 5xx) and attempt2 (the winning success) on a successful retry", async () => {
+      let calls = 0;
+      const provider = stubProvider(async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw Object.assign(new Error("service unavailable"), { code: "PROVIDER_ERROR", retryable: true, status: 503 });
+        }
+        return { reply: "Here's what I'd recommend.", needsClarification: false };
+      });
+
+      const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
+
+      expect(result).toMatchObject({
+        outcome: "succeeded",
+        providerAttemptCount: 2,
+        attempt1: { ms: expect.any(Number), outcome: "http_5xx", httpStatus: 503 },
+        attempt2: { ms: expect.any(Number), outcome: "success" },
+      });
+    });
+
     it("never retries a permanent (non-retryable) failure -- exactly one provider call, never a second identical attempt that could never change the outcome", async () => {
       let calls = 0;
       const provider = stubProvider(async () => {
@@ -475,7 +520,12 @@ describe("sendConsultationMessage", () => {
       const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
 
       expect(calls).toBe(1);
-      expect(result).toEqual({ outcome: "failed", code: "PROVIDER_AUTHENTICATION_FAILURE", providerAttemptCount: 1 });
+      expect(result).toEqual({
+        outcome: "failed",
+        code: "PROVIDER_AUTHENTICATION_FAILURE",
+        providerAttemptCount: 1,
+        attempt1: { ms: expect.any(Number), outcome: "network_error" },
+      });
     });
 
     // Consult AI 404/PROVIDER_UNAVAILABLE root-cause diagnosis (2026-08-21):
@@ -503,6 +553,7 @@ describe("sendConsultationMessage", () => {
         providerHttpStatus: 404,
         providerErrorStatus: "NOT_FOUND",
         providerErrorMessage: "This model models/gemini-3.6-flash is no longer available to new users.",
+        attempt1: { ms: expect.any(Number), outcome: "http_error", httpStatus: 404 },
       });
     });
 
@@ -535,7 +586,12 @@ describe("sendConsultationMessage", () => {
 
       const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
 
-      expect(result).toEqual({ outcome: "failed", code: "PROVIDER_AUTHENTICATION_FAILURE", providerAttemptCount: 1 });
+      expect(result).toEqual({
+        outcome: "failed",
+        code: "PROVIDER_AUTHENTICATION_FAILURE",
+        providerAttemptCount: 1,
+        attempt1: { ms: expect.any(Number), outcome: "network_error" },
+      });
     });
 
     it("also fails closed if BOTH the first attempt and the retry are transient failures -- two real attempts, still no fabricated reply", async () => {
@@ -548,7 +604,13 @@ describe("sendConsultationMessage", () => {
       const result = await sendConsultationMessage("owner-1", CLIENT_A, "hi", undefined, { env: GEMINI_ENV, createProvider: provider });
 
       expect(calls).toBe(2);
-      expect(result).toEqual({ outcome: "failed", code: "PROVIDER_TIMEOUT", providerAttemptCount: 2 });
+      expect(result).toEqual({
+        outcome: "failed",
+        code: "PROVIDER_TIMEOUT",
+        providerAttemptCount: 2,
+        attempt1: { ms: expect.any(Number), outcome: "timeout" },
+        attempt2: { ms: expect.any(Number), outcome: "timeout" },
+      });
     });
 
     it("never persists a duplicate stylist message after a consultation retry -- exactly one write, made before either provider attempt", async () => {

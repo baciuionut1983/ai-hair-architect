@@ -538,6 +538,35 @@ export interface VoiceLatencyTerminalDiagnostics {
   // round fixes -- see SileroContinuationReportContext.legacyStopSuppressedCount's
   // own doc comment (use-voice-recording.ts) for exactly what this counts.
   vadLegacyStopSuppressedByModelCount?: number;
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): per-attempt provider timing
+  // breakdown for Consult AI -- see consultation-chat-service.ts's own
+  // attempt1/attempt2 doc comment and provider-attempt-telemetry-logic.ts's
+  // own ProviderAttemptOutcome doc comment for the real production gap
+  // this closes (a FAILED, both-attempts-timed-out turn previously had no
+  // way to show which attempt(s) actually timed out). attempt2* is
+  // present only when a retry actually happened.
+  consultationAttempt1Ms?: number;
+  consultationAttempt1Outcome?: string;
+  consultationAttempt1HttpStatus?: number;
+  consultationAttempt2Ms?: number;
+  consultationAttempt2Outcome?: string;
+  consultationAttempt2HttpStatus?: number;
+  // Same shape/reasoning as the consultation* fields above, for TTS (see
+  // voice-reply/route.ts's own attempt1/attempt2 headers).
+  ttsAttempt1Ms?: number;
+  ttsAttempt1Outcome?: string;
+  ttsAttempt1HttpStatus?: number;
+  ttsAttempt2Ms?: number;
+  ttsAttempt2Outcome?: string;
+  ttsAttempt2HttpStatus?: number;
+  // Same shape/reasoning as the consultation*/tts* fields above, for STT
+  // (see teach-ai-panel-logic.ts's own attempt1/attempt2 tracking).
+  sttAttempt1Ms?: number;
+  sttAttempt1Outcome?: string;
+  sttAttempt1HttpStatus?: number;
+  sttAttempt2Ms?: number;
+  sttAttempt2Outcome?: string;
+  sttAttempt2HttpStatus?: number;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see

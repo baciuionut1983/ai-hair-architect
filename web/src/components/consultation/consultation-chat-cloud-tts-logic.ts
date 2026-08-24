@@ -74,6 +74,18 @@ export interface CloudVoiceReplyServerTiming {
   // dropped in transit (this list would be missing the new ones) or
   // something else -- never guessed.
   responseHeaderNames: string;
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): the real per-attempt
+  // breakdown -- see voice-reply/route.ts's own X-Attempt1-*/X-Attempt2-*
+  // headers and provider-attempt-telemetry-logic.ts's own doc comment for
+  // the real production gap this closes. null (never fabricated) whenever
+  // that attempt's own header is genuinely absent -- attempt2* stays null
+  // for every turn that never retried.
+  attempt1Ms: number | null;
+  attempt1Outcome: string | null;
+  attempt1HttpStatus: number | null;
+  attempt2Ms: number | null;
+  attempt2Outcome: string | null;
+  attempt2HttpStatus: number | null;
 }
 
 export interface SynthesizeCloudVoiceReplyDeps {
@@ -111,7 +123,19 @@ export interface SynthesizeCloudVoiceReplyCallbacks {
   // for voice latency telemetry -- undefined only when genuinely
   // unavailable (e.g. "network", where no server response body exists at
   // all), never fabricated.
-  onFailure: (reason: CloudVoiceReplyFailureReason, errorCode?: string, providerAttemptCount?: number) => void;
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): attempt1/attempt2 mirror
+  // CloudVoiceReplyServerTiming's own identical fields, read from the
+  // failure JSON body instead of response headers (a failure response has
+  // a real JSON body, unlike a success response's raw audio bytes) --
+  // undefined only for a genuine "network" failure, where no server
+  // response body exists at all to read them from.
+  onFailure: (
+    reason: CloudVoiceReplyFailureReason,
+    errorCode?: string,
+    providerAttemptCount?: number,
+    attempt1?: { ms: number; outcome: string; httpStatus?: number },
+    attempt2?: { ms: number; outcome: string; httpStatus?: number },
+  ) => void;
 }
 
 export async function synthesizeCloudVoiceReply(
@@ -151,14 +175,34 @@ export async function synthesizeCloudVoiceReply(
     // providerAttemptCount? } body on failure, but this must never throw
     // the whole flow into the catch-all below if that body is somehow
     // missing/malformed.
+    type FailureBody = {
+      error?: string;
+      providerAttemptCount?: number;
+      ttsAttempt1Ms?: number;
+      ttsAttempt1Outcome?: string;
+      ttsAttempt1HttpStatus?: number;
+      ttsAttempt2Ms?: number;
+      ttsAttempt2Outcome?: string;
+      ttsAttempt2HttpStatus?: number;
+    };
     const parsedBody = await response
       .clone()
       .json()
-      .then((body: { error?: string; providerAttemptCount?: number }) => body)
-      .catch(() => null as { error?: string; providerAttemptCount?: number } | null);
+      .then((body: FailureBody) => body)
+      .catch(() => null as FailureBody | null);
     const errorCode = parsedBody?.error ?? "unknown";
     logVoiceReplyClientEvent("cloud_response_not_ok", { status: response.status, errorCode });
-    callbacks.onFailure("unavailable", errorCode, parsedBody?.providerAttemptCount);
+    callbacks.onFailure(
+      "unavailable",
+      errorCode,
+      parsedBody?.providerAttemptCount,
+      parsedBody?.ttsAttempt1Ms !== undefined && parsedBody?.ttsAttempt1Outcome !== undefined
+        ? { ms: parsedBody.ttsAttempt1Ms, outcome: parsedBody.ttsAttempt1Outcome, httpStatus: parsedBody.ttsAttempt1HttpStatus }
+        : undefined,
+      parsedBody?.ttsAttempt2Ms !== undefined && parsedBody?.ttsAttempt2Outcome !== undefined
+        ? { ms: parsedBody.ttsAttempt2Ms, outcome: parsedBody.ttsAttempt2Outcome, httpStatus: parsedBody.ttsAttempt2HttpStatus }
+        : undefined,
+    );
     return;
   }
 
@@ -176,6 +220,12 @@ export async function synthesizeCloudVoiceReply(
       audioProcessingMs: numericHeader("X-Audio-Processing-Ms"),
       serverTotalMs: numericHeader("X-Server-Total-Ms"),
       responseHeaderNames: Array.from(response.headers.keys()).join(","),
+      attempt1Ms: numericHeader("X-Attempt1-Ms"),
+      attempt1Outcome: response.headers.get("X-Attempt1-Outcome"),
+      attempt1HttpStatus: numericHeader("X-Attempt1-Http-Status"),
+      attempt2Ms: numericHeader("X-Attempt2-Ms"),
+      attempt2Outcome: response.headers.get("X-Attempt2-Outcome"),
+      attempt2HttpStatus: numericHeader("X-Attempt2-Http-Status"),
     };
     logVoiceReplyClientEvent("cloud_success", { audioBytes: blob.size });
     callbacks.onSuccess(blob, timing);

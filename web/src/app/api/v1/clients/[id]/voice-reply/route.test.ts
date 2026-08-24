@@ -374,6 +374,20 @@ describe("TTS reliability hardening (single automatic retry)", () => {
     expect(response.headers.get("X-Provider-Attempt-Count")).toBe("1");
   });
 
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): the real, per-attempt
+  // breakdown -- see provider-attempt-telemetry-logic.ts's own doc
+  // comment for the production gap this closes. On a clean first-attempt
+  // success, attempt1 reflects "success" and attempt2 is genuinely absent
+  // (no X-Attempt2-* headers at all), never a fabricated placeholder.
+  it("exposes X-Attempt1-* headers as 'success' on a first-attempt success, with no X-Attempt2-* headers at all", async () => {
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(response.headers.get("X-Attempt1-Outcome")).toBe("success");
+    expect(Number.isInteger(Number(response.headers.get("X-Attempt1-Ms")))).toBe(true);
+    expect(response.headers.has("X-Attempt2-Ms")).toBe(false);
+    expect(response.headers.has("X-Attempt2-Outcome")).toBe(false);
+  });
+
   it("recovers a TIMEOUT via the single automatic retry -- second attempt succeeds", async () => {
     ttsProviderMock.synthesize
       .mockRejectedValueOnce(createTtsProviderError("TIMEOUT", true))
@@ -384,6 +398,24 @@ describe("TTS reliability hardening (single automatic retry)", () => {
     expect(response.status).toBe(200);
     expect(ttsProviderMock.synthesize).toHaveBeenCalledTimes(2);
     expect(response.headers.get("X-Provider-Attempt-Count")).toBe("2");
+  });
+
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): proves BOTH attempts' own
+  // telemetry survive to the successful response -- attempt1 shows the
+  // real timeout that was recovered from, attempt2 shows the real
+  // success, never merged into one number the way providerLatencyMs
+  // alone (whichever attempt won) already did before this round.
+  it("exposes attempt1='timeout' and attempt2='success' headers after a recovered retry", async () => {
+    ttsProviderMock.synthesize
+      .mockRejectedValueOnce(createTtsProviderError("TIMEOUT", true))
+      .mockResolvedValueOnce(SAMPLE_AUDIO);
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    expect(response.headers.get("X-Attempt1-Outcome")).toBe("timeout");
+    expect(Number.isInteger(Number(response.headers.get("X-Attempt1-Ms")))).toBe(true);
+    expect(response.headers.get("X-Attempt2-Outcome")).toBe("success");
+    expect(Number.isInteger(Number(response.headers.get("X-Attempt2-Ms")))).toBe(true);
   });
 
   it("recovers a transient RATE_LIMITED (429) via the single automatic retry -- second attempt succeeds", async () => {
@@ -438,6 +470,38 @@ describe("TTS reliability hardening (single automatic retry)", () => {
     const body = await response.json();
     expect(body.error).toBe("VOICE_REPLY_TIMEOUT");
     expect(body.providerAttemptCount).toBe(2);
+  });
+
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): the exact real-production
+  // shape this round's task reported (errorCode="VOICE_REPLY_TIMEOUT",
+  // providerAttemptCount=2) -- proves the failure JSON body itself (not
+  // headers, since a JSON error response carries no binary-audio
+  // constraint) now shows BOTH attempts timed out, closing the gap where
+  // only the aggregate outcome/count was ever visible.
+  it("includes ttsAttempt1/ttsAttempt2 telemetry in the failure JSON body when both attempts time out", async () => {
+    ttsProviderMock.synthesize.mockRejectedValue(createTtsProviderError("TIMEOUT", true));
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    const body = await response.json();
+    expect(body.ttsAttempt1Outcome).toBe("timeout");
+    expect(typeof body.ttsAttempt1Ms).toBe("number");
+    expect(body.ttsAttempt2Outcome).toBe("timeout");
+    expect(typeof body.ttsAttempt2Ms).toBe("number");
+  });
+
+  // A permanent, non-retryable failure never reaches a second attempt --
+  // ttsAttempt2* must be genuinely absent, not a fabricated null.
+  it("includes only ttsAttempt1 telemetry (never a fabricated attempt2) when the first failure is non-retryable", async () => {
+    ttsProviderMock.synthesize.mockRejectedValue(createTtsProviderError("NOT_CONFIGURED", false, 401));
+
+    const response = await invoke({ text: "hello", language: "en" });
+
+    const body = await response.json();
+    expect(body.ttsAttempt1Outcome).toBe("http_error");
+    expect(body.ttsAttempt1HttpStatus).toBe(401);
+    expect("ttsAttempt2Ms" in body).toBe(false);
+    expect("ttsAttempt2Outcome" in body).toBe(false);
   });
 
   // No duplicate audio: this whole retry happens inside ONE request/

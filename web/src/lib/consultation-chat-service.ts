@@ -17,6 +17,7 @@ import { retrieveRelevantMemories } from "@/lib/professional-memory-repository";
 import { buildClientProfessionalMemory } from "@/lib/consultation-client-context";
 import { detectMessageLanguage } from "@/lib/message-language-detector";
 import type { LanguageCode } from "@/lib/language-registry";
+import { classifyProviderAttemptOutcome, type ProviderAttemptTelemetry } from "@/lib/provider-attempt-telemetry-logic";
 
 export type ConsultationChatResultCode =
   | "PROCESSING_DISABLED"
@@ -89,6 +90,16 @@ export type SendConsultationMessageResult =
       failedFirstAttemptMs: number;
       serverTotalMs: number;
       unattributedMs: number;
+      // VOICE NEXT LEVEL, Phase D (2026-08-24): the real, per-attempt
+      // breakdown -- see provider-attempt-telemetry-logic.ts's own doc
+      // comment for the exact production gap this closes (a FAILED,
+      // both-attempts-timed-out turn previously had no way to show which
+      // attempt(s) actually timed out, or for how long each one ran).
+      // attempt2 is undefined whenever no retry happened (attemptNumber
+      // stayed 1) -- never a fabricated placeholder for an attempt that
+      // never occurred.
+      attempt1: ProviderAttemptTelemetry;
+      attempt2?: ProviderAttemptTelemetry;
       // Consult AI provider latency variance audit (2026-08-21): real
       // Gemini-supplied token counts (never estimated -- undefined
       // whenever the provider genuinely didn't include one) plus safe
@@ -121,6 +132,14 @@ export type SendConsultationMessageResult =
       providerHttpStatus?: number;
       providerErrorStatus?: string;
       providerErrorMessage?: string;
+      // VOICE NEXT LEVEL, Phase D (2026-08-24): same shape/reasoning as
+      // the success branch's own attempt1/attempt2 fields above --
+      // undefined (never fabricated) whenever the failure never reached
+      // the provider call at all (config/persistence failures, where
+      // "an attempt" isn't a meaningful concept, matching
+      // providerAttemptCount's own existing convention above).
+      attempt1?: ProviderAttemptTelemetry;
+      attempt2?: ProviderAttemptTelemetry;
     };
 
 export interface SendConsultationMessageDependencies {
@@ -451,6 +470,13 @@ export async function sendConsultationMessage(
     // 0 when no retry happens, matching every other duration's own
     // "never fabricated" convention.
     let failedFirstAttemptMs = 0;
+    // VOICE NEXT LEVEL, Phase D (2026-08-24): built alongside the existing
+    // failedFirstAttemptMs/recordAttempt calls, from the SAME already-
+    // computed values (never a second, independent measurement) -- see
+    // this function's own attempt1/attempt2 doc comment on the return
+    // type above.
+    let attempt1: ProviderAttemptTelemetry | undefined;
+    let attempt2: ProviderAttemptTelemetry | undefined;
     let result: Awaited<ReturnType<ConsultationChatProvider["respond"]>>;
     try {
       result = await activeProvider.respond(message, context, controller.signal);
@@ -458,6 +484,16 @@ export async function sendConsultationMessage(
       const firstResultCode = classifyProviderFailure(firstError);
       const firstProviderError = firstError as Partial<ChatProviderError> | undefined;
       failedFirstAttemptMs = Date.now() - providerCallStartedAt;
+      attempt1 = {
+        ms: failedFirstAttemptMs,
+        outcome: classifyProviderAttemptOutcome({
+          succeeded: false,
+          timedOut: firstProviderError?.code === "TIMEOUT",
+          httpStatus: firstProviderError?.status,
+          invalidResponse: firstProviderError?.code === "INVALID_FORMAT",
+        }),
+        httpStatus: firstProviderError?.status,
+      };
       logConsultationChatFailure({
         stage: "provider_call",
         resultCode: firstResultCode,
@@ -473,13 +509,15 @@ export async function sendConsultationMessage(
         providerRawMessage: firstProviderError?.providerRawMessage,
         voiceTurnId,
         providerAttemptNumber: attemptNumber,
+        attemptMs: attempt1.ms,
+        attemptOutcome: attempt1.outcome,
       });
       await recordAttempt(activeProvider, attemptNumber, "FAILED", failedFirstAttemptMs, {
         errorCategory: firstProviderError?.code ?? firstResultCode,
       });
 
       if (firstProviderError?.retryable !== true) {
-        return failure(firstResultCode, attemptNumber, firstProviderError);
+        return failure(firstResultCode, attemptNumber, firstProviderError, attempt1, attempt2);
       }
 
       attemptNumber = 2;
@@ -490,6 +528,17 @@ export async function sendConsultationMessage(
       } catch (secondError) {
         const secondResultCode = classifyProviderFailure(secondError);
         const secondProviderError = secondError as Partial<ChatProviderError> | undefined;
+        const secondAttemptMs = Date.now() - providerCallStartedAt;
+        attempt2 = {
+          ms: secondAttemptMs,
+          outcome: classifyProviderAttemptOutcome({
+            succeeded: false,
+            timedOut: secondProviderError?.code === "TIMEOUT",
+            httpStatus: secondProviderError?.status,
+            invalidResponse: secondProviderError?.code === "INVALID_FORMAT",
+          }),
+          httpStatus: secondProviderError?.status,
+        };
         logConsultationChatFailure({
           stage: "provider_call",
           resultCode: secondResultCode,
@@ -505,11 +554,13 @@ export async function sendConsultationMessage(
           providerRawMessage: secondProviderError?.providerRawMessage,
           voiceTurnId,
           providerAttemptNumber: attemptNumber,
+          attemptMs: attempt2.ms,
+          attemptOutcome: attempt2.outcome,
         });
-        await recordAttempt(activeProvider, attemptNumber, "FAILED", Date.now() - providerCallStartedAt, {
+        await recordAttempt(activeProvider, attemptNumber, "FAILED", secondAttemptMs, {
           errorCategory: secondProviderError?.code ?? secondResultCode,
         });
-        return failure(secondResultCode, attemptNumber, secondProviderError);
+        return failure(secondResultCode, attemptNumber, secondProviderError, attempt1, attempt2);
       }
     }
 
@@ -523,6 +574,16 @@ export async function sendConsultationMessage(
     // that write's time in a field whose name promises pure provider
     // latency).
     const providerOnlyMs = Date.now() - providerCallStartedAt;
+    // VOICE NEXT LEVEL, Phase D (2026-08-24): attempt1 was already set
+    // above whenever a retry happened (the failed first attempt's own
+    // telemetry) -- here we only ever fill in whichever attempt slot
+    // actually just succeeded, never overwriting a real failure already
+    // recorded in the other slot.
+    if (attemptNumber === 1) {
+      attempt1 = { ms: providerOnlyMs, outcome: "success" };
+    } else {
+      attempt2 = { ms: providerOnlyMs, outcome: "success" };
+    }
     await recordAttempt(activeProvider, attemptNumber, "SUCCEEDED", providerOnlyMs, {
       providerRequestId: result.providerRequestId,
       usage: result.usage,
@@ -625,6 +686,12 @@ export async function sendConsultationMessage(
       unattributedMs,
       usage: result.usage,
       thinkingMode: result.thinkingMode,
+      // VOICE NEXT LEVEL, Phase D (2026-08-24): attempt1 is guaranteed set
+      // by this point (either directly above, when attemptNumber stayed
+      // 1, or inside the earlier catch block, when a retry happened) --
+      // the fallback here is defensive-only, never expected to trigger.
+      attempt1: attempt1 ?? { ms: providerOnlyMs, outcome: "success" },
+      attempt2,
       ...contextSizes,
     };
   } catch (error) {
@@ -760,6 +827,12 @@ function failure(
   code: ConsultationChatResultCode,
   providerAttemptCount?: 1 | 2,
   providerError?: Partial<ChatProviderError>,
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): optional, trailing -- every
+  // existing call site that never had attempt telemetry to report
+  // (config/persistence failures before the provider was ever called)
+  // keeps working unchanged, simply omitting both.
+  attempt1?: ProviderAttemptTelemetry,
+  attempt2?: ProviderAttemptTelemetry,
 ): SendConsultationMessageResult {
   return {
     outcome: "failed",
@@ -768,6 +841,8 @@ function failure(
     ...(providerError?.status !== undefined ? { providerHttpStatus: providerError.status } : {}),
     ...(providerError?.providerCanonicalStatus !== undefined ? { providerErrorStatus: providerError.providerCanonicalStatus } : {}),
     ...(providerError?.providerRawMessage !== undefined ? { providerErrorMessage: providerError.providerRawMessage } : {}),
+    ...(attempt1 ? { attempt1 } : {}),
+    ...(attempt2 ? { attempt2 } : {}),
   };
 }
 
@@ -812,6 +887,15 @@ function logConsultationChatFailure(input: {
   errorName?: string;
   voiceTurnId?: string;
   providerAttemptNumber?: number;
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): THIS one attempt's own real
+  // duration/outcome -- see provider-attempt-telemetry-logic.ts's own doc
+  // comment for why this closes a real, previously-invisible gap on the
+  // "both attempts failed" path specifically (Case 1 of that round's own
+  // task: a PROVIDER_TIMEOUT after 2 attempts, ~59.4s total, with
+  // previously NO way to tell from Railway logs alone how that time split
+  // between the two attempts).
+  attemptMs?: number;
+  attemptOutcome?: string;
 }): void {
   console.error(
     JSON.stringify({
@@ -833,6 +917,8 @@ function logConsultationChatFailure(input: {
       errorName: input.errorName ?? null,
       voiceTurnId: input.voiceTurnId ?? null,
       providerAttemptNumber: input.providerAttemptNumber ?? null,
+      attemptMs: input.attemptMs ?? null,
+      attemptOutcome: input.attemptOutcome ?? null,
     }),
   );
 }

@@ -29,6 +29,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { LanguageCode } from "@/lib/language-registry";
+import type { ProviderAttemptTelemetry } from "@/lib/provider-attempt-telemetry-logic";
 import type { TranslationKey } from "@/lib/translations";
 
 import { decodeBlobAsWav } from "./audio-wav-encode";
@@ -219,6 +220,11 @@ export interface VoiceTurnLatencyInfo {
   // sileroStartGate, for the same reason. Null whenever
   // SILERO_CONTINUATION_ENABLED was off for this build.
   sileroContinuation: SileroContinuationReportContext | null;
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): STT's own per-attempt
+  // telemetry -- see teach-ai-panel-logic.ts's own UploadAttemptResult.telemetry
+  // doc comment. attempt2 undefined whenever no retry happened.
+  sttAttempt1?: ProviderAttemptTelemetry;
+  sttAttempt2?: ProviderAttemptTelemetry;
 }
 
 export interface UseVoiceRecordingResult {
@@ -279,6 +285,21 @@ function computeSpeechBandRatio(analyser: AnalyserNode, audioContext: AudioConte
     }
   }
   return totalEnergy > 0 ? speechBandEnergy / totalEnergy : 0;
+}
+
+// VOICE NEXT LEVEL, Phase D (2026-08-24): maps STT's own per-attempt
+// telemetry (see teach-ai-panel-logic.ts's own UploadAttemptResult.telemetry
+// doc comment) onto reportVoiceLatencySummary's own flat, sttAttempt*
+// fields -- {} for attempt2 when no retry ever happened, never a
+// fabricated placeholder.
+function sttAttemptReportFields(
+  attempt1: ProviderAttemptTelemetry | undefined,
+  attempt2: ProviderAttemptTelemetry | undefined,
+): Partial<VoiceLatencyTerminalDiagnostics> {
+  return {
+    ...(attempt1 ? { sttAttempt1Ms: attempt1.ms, sttAttempt1Outcome: attempt1.outcome, ...(attempt1.httpStatus !== undefined ? { sttAttempt1HttpStatus: attempt1.httpStatus } : {}) } : {}),
+    ...(attempt2 ? { sttAttempt2Ms: attempt2.ms, sttAttempt2Outcome: attempt2.outcome, ...(attempt2.httpStatus !== undefined ? { sttAttempt2HttpStatus: attempt2.httpStatus } : {}) } : {}),
+  };
 }
 
 // End-of-speech hardening (2026-08-20), Task E: maps the pure
@@ -877,7 +898,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                   ...sileroContinuationToReportFields(readSileroContinuationReportContext()),
                 });
               },
-              onFailure: (_message, reason, marks, attemptNumber, providerDiagnostics) => {
+              onFailure: (_message, reason, marks, attemptNumber, providerDiagnostics, sttAttempt1, sttAttempt2) => {
                 setProcessing(false);
                 setError(t(translationKeyForReason(reason)));
                 // The turn ends here (no Consult AI/TTS stage will ever
@@ -901,13 +922,14 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                   sttProviderErrorStatus: providerDiagnostics?.providerErrorStatus,
                   sttProviderErrorMessage: providerDiagnostics?.providerErrorMessage,
                   sttProviderFetchErrorName: providerDiagnostics?.providerFetchErrorName,
+                  ...sttAttemptReportFields(sttAttempt1, sttAttempt2),
                   ...vadDiagnosticsToReportFields(readVoiceActivityDiagnostics()),
                   ...sileroShadowDiagnosticsToReportFields(readSileroShadowReportData()),
                   ...sileroStartGateToReportFields(readSileroStartGateReportContext()),
                   ...sileroContinuationToReportFields(readSileroContinuationReportContext()),
                 });
               },
-              onSuccess: (transcript, _transcriptId, marks, sttProviderMs, attemptNumber, sttModel) => {
+              onSuccess: (transcript, _transcriptId, marks, sttProviderMs, attemptNumber, sttModel, sttAttempt1, sttAttempt2) => {
                 setProcessing(false);
                 const mergedMarks = mergeVoiceLatencyMarks(micMarksRef.current, marks);
                 const vadDiagnostics = readVoiceActivityDiagnostics();
@@ -928,6 +950,8 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                     sileroShadow,
                     sileroStartGate,
                     sileroContinuation,
+                    sttAttempt1,
+                    sttAttempt2,
                   });
                 } else {
                   // Same reasoning as the onFailure branch above: this
@@ -940,6 +964,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                     providerAttemptCount: attemptNumber,
                     sttModel: sttModel ?? undefined,
                     elapsedSinceMicRequestMs: computeElapsedSinceMicRequestMs(mergedMarks, performance.now()),
+                    ...sttAttemptReportFields(sttAttempt1, sttAttempt2),
                     ...vadDiagnosticsToReportFields(vadDiagnostics),
                     ...sileroShadowDiagnosticsToReportFields(sileroShadow),
                     ...sileroStartGateToReportFields(sileroStartGate),

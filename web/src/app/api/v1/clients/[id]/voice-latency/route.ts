@@ -175,6 +175,27 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       vadContinuationFallbackUsed: parsed.value.vadContinuationFallbackUsed ?? null,
       vadContinuationFallbackReason: parsed.value.vadContinuationFallbackReason ?? null,
       vadLegacyStopSuppressedByModelCount: parsed.value.vadLegacyStopSuppressedByModelCount ?? null,
+      // VOICE NEXT LEVEL, Phase D (2026-08-24): see voice-latency-logic.ts's
+      // own VoiceLatencyTerminalDiagnostics doc comment for what each
+      // answers.
+      consultationAttempt1Ms: parsed.value.consultationAttempt1Ms ?? null,
+      consultationAttempt1Outcome: parsed.value.consultationAttempt1Outcome ?? null,
+      consultationAttempt1HttpStatus: parsed.value.consultationAttempt1HttpStatus ?? null,
+      consultationAttempt2Ms: parsed.value.consultationAttempt2Ms ?? null,
+      consultationAttempt2Outcome: parsed.value.consultationAttempt2Outcome ?? null,
+      consultationAttempt2HttpStatus: parsed.value.consultationAttempt2HttpStatus ?? null,
+      ttsAttempt1Ms: parsed.value.ttsAttempt1Ms ?? null,
+      ttsAttempt1Outcome: parsed.value.ttsAttempt1Outcome ?? null,
+      ttsAttempt1HttpStatus: parsed.value.ttsAttempt1HttpStatus ?? null,
+      ttsAttempt2Ms: parsed.value.ttsAttempt2Ms ?? null,
+      ttsAttempt2Outcome: parsed.value.ttsAttempt2Outcome ?? null,
+      ttsAttempt2HttpStatus: parsed.value.ttsAttempt2HttpStatus ?? null,
+      sttAttempt1Ms: parsed.value.sttAttempt1Ms ?? null,
+      sttAttempt1Outcome: parsed.value.sttAttempt1Outcome ?? null,
+      sttAttempt1HttpStatus: parsed.value.sttAttempt1HttpStatus ?? null,
+      sttAttempt2Ms: parsed.value.sttAttempt2Ms ?? null,
+      sttAttempt2Outcome: parsed.value.sttAttempt2Outcome ?? null,
+      sttAttempt2HttpStatus: parsed.value.sttAttempt2HttpStatus ?? null,
       // STT Flash-Lite root-cause diagnosis (2026-08-20): see
       // voice-latency-telemetry-logic.ts's own doc comment on these same 3
       // fields for exactly what they mean and why.

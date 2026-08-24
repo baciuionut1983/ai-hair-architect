@@ -919,6 +919,60 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     logSpy.mockRestore();
   });
 
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): see voice-latency-logic.ts's
+  // own VoiceLatencyTerminalDiagnostics doc comment for what each
+  // answers -- the exact real production shape reported for this round's
+  // own task (both Consult AI and TTS timing out after 2 attempts each).
+  it("logs the VOICE NEXT LEVEL Phase D attempt-level fields for all three pipelines when reported", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-145",
+      outcome: "tts_failed",
+      summary: validSummary(),
+      consultationAttempt1Ms: 30012,
+      consultationAttempt1Outcome: "timeout",
+      consultationAttempt2Ms: 29876,
+      consultationAttempt2Outcome: "timeout",
+      ttsAttempt1Ms: 20005,
+      ttsAttempt1Outcome: "timeout",
+      ttsAttempt2Ms: 19998,
+      ttsAttempt2Outcome: "timeout",
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      consultationAttempt1Ms: 30012,
+      consultationAttempt1Outcome: "timeout",
+      consultationAttempt2Ms: 29876,
+      consultationAttempt2Outcome: "timeout",
+      ttsAttempt1Ms: 20005,
+      ttsAttempt1Outcome: "timeout",
+      ttsAttempt2Ms: 19998,
+      ttsAttempt2Outcome: "timeout",
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs the Phase D attempt-level fields as null (never fabricated) when not reported", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-146", outcome: "tts_completed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      consultationAttempt1Ms: null,
+      consultationAttempt1Outcome: null,
+      ttsAttempt1Ms: null,
+      ttsAttempt1Outcome: null,
+      sttAttempt1Ms: null,
+      sttAttempt1Outcome: null,
+    });
+    logSpy.mockRestore();
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): the real Gemini
   // provider failure detail, closing the gap where a provider HTTP error,
   // a network/timeout failure, and an empty-transcript response all

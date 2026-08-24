@@ -1845,6 +1845,134 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): see voice-latency-logic.ts's
+  // own VoiceLatencyTerminalDiagnostics doc comment and
+  // provider-attempt-telemetry-logic.ts's own doc comment for what each
+  // answers and the real production gap this closes (a both-attempts-
+  // failed Consult AI/TTS turn previously had no attempt-level breakdown
+  // at all).
+  describe("VOICE NEXT LEVEL Phase D attempt-level telemetry (consultation/tts/stt x attempt1/attempt2)", () => {
+    it("accepts a fully-populated 'both attempts failed' shape for all three pipelines", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_failed",
+        summary: validSummary(),
+        consultationAttempt1Ms: 30012,
+        consultationAttempt1Outcome: "timeout",
+        consultationAttempt2Ms: 29876,
+        consultationAttempt2Outcome: "timeout",
+        ttsAttempt1Ms: 20005,
+        ttsAttempt1Outcome: "timeout",
+        ttsAttempt2Ms: 19998,
+        ttsAttempt2Outcome: "timeout",
+        sttAttempt1Ms: 812,
+        sttAttempt1Outcome: "success",
+        sttAttempt1HttpStatus: 200,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          consultationAttempt1Ms: 30012,
+          consultationAttempt1Outcome: "timeout",
+          consultationAttempt2Ms: 29876,
+          consultationAttempt2Outcome: "timeout",
+          ttsAttempt1Ms: 20005,
+          ttsAttempt1Outcome: "timeout",
+          ttsAttempt2Ms: 19998,
+          ttsAttempt2Outcome: "timeout",
+          sttAttempt1Ms: 812,
+          sttAttempt1Outcome: "success",
+          sttAttempt1HttpStatus: 200,
+        }),
+      });
+    });
+
+    it("accepts every real ProviderAttemptOutcome value", () => {
+      for (const outcome of ["success", "timeout", "http_429", "http_5xx", "http_error", "network_error", "invalid_response"]) {
+        const result = parseVoiceLatencyTelemetryPayload({
+          attemptId: "attempt-1",
+          outcome: "tts_completed",
+          summary: validSummary(),
+          consultationAttempt1Outcome: outcome,
+        });
+        expect(result).toEqual({ ok: true, value: expect.objectContaining({ consultationAttempt1Outcome: outcome }) });
+      }
+    });
+
+    it("rejects an unknown attempt outcome value -- the vocabulary is closed, never a free-form string", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        ttsAttempt2Outcome: "provider_gremlins",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_tts_attempt2_outcome" });
+    });
+
+    it("rejects an implausible attempt duration -- never a real one", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        sttAttempt1Ms: 10 * 60 * 1000,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_stt_attempt1_ms" });
+    });
+
+    it("rejects an implausible attempt httpStatus", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        consultationAttempt2HttpStatus: 9999,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_consultation_attempt2_http_status" });
+    });
+
+    it("accepts zero for an attempt Ms -- a truthful 'instant', not rejected as missing", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        ttsAttempt1Ms: 0,
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ ttsAttempt1Ms: 0 }) });
+    });
+
+    it("omits every field entirely when not provided -- never fabricated, and attempt2 stays absent when no retry happened", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of [
+          "consultationAttempt1Ms",
+          "consultationAttempt1Outcome",
+          "consultationAttempt1HttpStatus",
+          "consultationAttempt2Ms",
+          "consultationAttempt2Outcome",
+          "consultationAttempt2HttpStatus",
+          "ttsAttempt1Ms",
+          "ttsAttempt1Outcome",
+          "ttsAttempt1HttpStatus",
+          "ttsAttempt2Ms",
+          "ttsAttempt2Outcome",
+          "ttsAttempt2HttpStatus",
+          "sttAttempt1Ms",
+          "sttAttempt1Outcome",
+          "sttAttempt1HttpStatus",
+          "sttAttempt2Ms",
+          "sttAttempt2Outcome",
+          "sttAttempt2HttpStatus",
+        ]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
   // production STT failure be attributed, directly from this one log line,
   // to the real Gemini HTTP status/canonical error status, or to a real

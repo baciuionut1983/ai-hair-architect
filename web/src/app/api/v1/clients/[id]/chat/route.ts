@@ -152,6 +152,12 @@ export async function POST(
         ...(result.providerHttpStatus !== undefined ? { providerHttpStatus: result.providerHttpStatus } : {}),
         ...(result.providerErrorStatus !== undefined ? { providerErrorStatus: result.providerErrorStatus } : {}),
         ...(result.providerErrorMessage !== undefined ? { providerErrorMessage: result.providerErrorMessage } : {}),
+        // VOICE NEXT LEVEL, Phase D (2026-08-24): see
+        // consultation-chat-service.ts's own attempt1/attempt2 doc comment
+        // -- undefined whenever the failure never reached the provider
+        // call at all (e.g. config/persistence).
+        ...(result.attempt1 ? { consultationAttempt1Ms: result.attempt1.ms, consultationAttempt1Outcome: result.attempt1.outcome, ...(result.attempt1.httpStatus !== undefined ? { consultationAttempt1HttpStatus: result.attempt1.httpStatus } : {}) } : {}),
+        ...(result.attempt2 ? { consultationAttempt2Ms: result.attempt2.ms, consultationAttempt2Outcome: result.attempt2.outcome, ...(result.attempt2.httpStatus !== undefined ? { consultationAttempt2HttpStatus: result.attempt2.httpStatus } : {}) } : {}),
       },
       { status: CONSULTATION_CHAT_RESULT_HTTP_STATUS[result.code] }
     );
@@ -191,6 +197,26 @@ export async function POST(
     consultationMemoryChars: result.consultationMemoryChars,
     consultationInputChars: result.consultationInputChars,
     consultationThinkingMode: result.thinkingMode,
+    // VOICE NEXT LEVEL, Phase D (2026-08-24): see
+    // consultation-chat-service.ts's own attempt1/attempt2 doc comment.
+    // Defensive optional-chaining (attempt1 is always set on a real
+    // success, per that file's own contract) rather than assuming it,
+    // since this route's own test double mocks sendConsultationMessage
+    // directly and may not model every field.
+    ...(result.attempt1
+      ? {
+          consultationAttempt1Ms: result.attempt1.ms,
+          consultationAttempt1Outcome: result.attempt1.outcome,
+          ...(result.attempt1.httpStatus !== undefined ? { consultationAttempt1HttpStatus: result.attempt1.httpStatus } : {}),
+        }
+      : {}),
+    ...(result.attempt2
+      ? {
+          consultationAttempt2Ms: result.attempt2.ms,
+          consultationAttempt2Outcome: result.attempt2.outcome,
+          ...(result.attempt2.httpStatus !== undefined ? { consultationAttempt2HttpStatus: result.attempt2.httpStatus } : {}),
+        }
+      : {}),
   };
 
   return NextResponse.json(response, { status: 200 });

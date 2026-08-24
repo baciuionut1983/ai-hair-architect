@@ -26,6 +26,7 @@
 // with no reload required.
 
 import type { LanguageCode } from "@/lib/language-registry";
+import { classifyProviderAttemptOutcome, type ProviderAttemptTelemetry } from "@/lib/provider-attempt-telemetry-logic";
 
 import { markVoiceLatencyStage, type VoiceLatencyMarks } from "./voice-latency-logic";
 
@@ -67,6 +68,12 @@ export interface FinishRecordingCallbacks {
   // voice-transcript/route.ts's own doc comment) -- undefined whenever the
   // failure never reached the provider at all (e.g. a config/persistence
   // failure), never fabricated field-by-field.
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): attempt1/attempt2 are each
+  // ONE real attempt's own duration/outcome/status -- see
+  // UploadAttemptResult's own telemetry doc comment. attempt1 is always
+  // present whenever this callback fires from a real upload attempt
+  // (undefined only for the outer catch-all, before any attempt was ever
+  // made); attempt2 only when a retry actually happened.
   onFailure: (
     message: string,
     reason: VoiceTranscriptionFailureReason,
@@ -78,6 +85,8 @@ export interface FinishRecordingCallbacks {
       providerErrorMessage?: string;
       providerFetchErrorName?: string;
     },
+    attempt1?: ProviderAttemptTelemetry,
+    attempt2?: ProviderAttemptTelemetry,
   ) => void;
   // Voice latency audit (2026-08-18): marks covers every recording_stopped
   // through transcript_ready stage this call reached; sttProviderMs is the
@@ -92,6 +101,8 @@ export interface FinishRecordingCallbacks {
   // hardcoded default actually ran) -- null only when the response
   // genuinely didn't include one, never fabricated. Lets a real production
   // test be attributed to a model directly from VOICE_LATENCY_SUMMARY.
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): see onFailure's own
+  // attempt1/attempt2 doc comment below -- identical shape/reasoning.
   onSuccess: (
     transcript: string,
     transcriptId: string | undefined,
@@ -99,6 +110,8 @@ export interface FinishRecordingCallbacks {
     sttProviderMs: number | null,
     attemptNumber: number,
     sttModel: string | null,
+    attempt1?: ProviderAttemptTelemetry,
+    attempt2?: ProviderAttemptTelemetry,
   ) => void;
   // VAD Round 12 (2026-08-23): called INSTEAD of ever attempting a
   // transcription upload, whenever the caller passes hasConfirmedSpeech:
@@ -260,6 +273,12 @@ type UploadAttemptResult =
       respondedAt: number;
       sttProviderMs: number | null;
       sttModel: string | null;
+      // VOICE NEXT LEVEL, Phase D (2026-08-24): this ONE attempt's own
+      // real duration/outcome/status -- see
+      // provider-attempt-telemetry-logic.ts's own doc comment. Always
+      // present on every branch (never optional) -- an HTTP attempt was
+      // genuinely made by the time this function ever returns.
+      telemetry: ProviderAttemptTelemetry;
     }
   | {
       outcome: "failure";
@@ -275,6 +294,7 @@ type UploadAttemptResult =
       providerErrorStatus?: string;
       providerErrorMessage?: string;
       providerFetchErrorName?: string;
+      telemetry: ProviderAttemptTelemetry;
     };
 
 async function attemptUpload(
@@ -300,6 +320,12 @@ async function attemptUpload(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), CLIENT_UPLOAD_TIMEOUT_MS);
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): this ONE attempt's own start
+  // instant -- deliberately separate from finishRecording's own marks
+  // (stt_request_started, which only ever covers attempt 1), so a retry's
+  // own attempt 2 gets an honest, independent duration rather than
+  // inheriting attempt 1's already-elapsed time.
+  const attemptStartedAt = performance.now();
 
   let response: Response;
   try {
@@ -328,7 +354,17 @@ async function attemptUpload(
     // message this app always showed) rather than overclaiming the AI
     // service specifically is at fault when the request may never have
     // reached it at all.
-    return { outcome: "failure", message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, reason: "unknown", retryable: true, respondedAt: performance.now() };
+    return {
+      outcome: "failure",
+      message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE,
+      reason: "unknown",
+      retryable: true,
+      respondedAt: performance.now(),
+      telemetry: {
+        ms: performance.now() - attemptStartedAt,
+        outcome: classifyProviderAttemptOutcome({ succeeded: false, timedOut: controller.signal.aborted }),
+      },
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -367,7 +403,18 @@ async function attemptUpload(
       status: response.status,
       errorName: error instanceof Error ? error.name : "unknown",
     });
-    return { outcome: "failure", message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE, reason: "unknown", retryable: true, respondedAt: performance.now() };
+    return {
+      outcome: "failure",
+      message: GENERIC_TRANSCRIPTION_FAILURE_MESSAGE,
+      reason: "unknown",
+      retryable: true,
+      respondedAt: performance.now(),
+      telemetry: {
+        ms: performance.now() - attemptStartedAt,
+        outcome: classifyProviderAttemptOutcome({ succeeded: false, timedOut: false, httpStatus: response.status, invalidResponse: true }),
+        httpStatus: response.status,
+      },
+    };
   }
 
   if (!response.ok) {
@@ -388,6 +435,11 @@ async function attemptUpload(
       providerErrorStatus: payload.providerErrorStatus,
       providerErrorMessage: payload.providerErrorMessage,
       providerFetchErrorName: payload.providerFetchErrorName,
+      telemetry: {
+        ms: performance.now() - attemptStartedAt,
+        outcome: classifyProviderAttemptOutcome({ succeeded: false, timedOut: false, httpStatus: response.status }),
+        httpStatus: response.status,
+      },
     };
   }
 
@@ -404,6 +456,7 @@ async function attemptUpload(
     // Round 11: the server's own resolved model string (voice-transcript/
     // route.ts's `model`) -- never fabricated when absent.
     sttModel: typeof payload.model === "string" ? payload.model : null,
+    telemetry: { ms: performance.now() - attemptStartedAt, outcome: "success", httpStatus: response.status },
   };
 }
 
@@ -534,6 +587,14 @@ export async function finishRecording(
     marks = markVoiceLatencyStage(marks, "stt_request_started", performance.now());
     attemptNumber = 1;
     let result = await attemptUpload(clientId, blob, language, attemptId, attemptNumber, deps.fetch);
+    // VOICE NEXT LEVEL, Phase D (2026-08-24): attempt 1's own telemetry,
+    // captured BEFORE it can be superseded by a retry -- see
+    // UploadAttemptResult's own telemetry doc comment for the real
+    // production gap this closes (a failed, then-retried attempt's own
+    // duration/outcome/status was previously only ever console-logged,
+    // never reaching VOICE_LATENCY_SUMMARY at all).
+    const sttAttempt1 = result.telemetry;
+    let sttAttempt2: ProviderAttemptTelemetry | undefined;
 
     // Never more than one retry, and only for a failure explicitly
     // classified as transient -- a permanent failure (wrong format, no
@@ -543,6 +604,7 @@ export async function finishRecording(
       attemptNumber = 2;
       logClient("retry_started", { attemptId, attemptNumber });
       result = await attemptUpload(clientId, blob, language, attemptId, attemptNumber, deps.fetch);
+      sttAttempt2 = result.telemetry;
     }
 
     // Reflects whichever attempt actually determined the outcome (the
@@ -553,15 +615,23 @@ export async function finishRecording(
 
     if (result.outcome === "success") {
       marks = markVoiceLatencyStage(marks, "transcript_ready", result.respondedAt);
-      callbacks.onSuccess(result.transcript, result.transcriptId, marks, result.sttProviderMs, attemptNumber, result.sttModel);
+      callbacks.onSuccess(result.transcript, result.transcriptId, marks, result.sttProviderMs, attemptNumber, result.sttModel, sttAttempt1, sttAttempt2);
     } else {
       logClient("request_failed", { attemptId, attemptNumber, reason: "upload_failed", failureReason: result.reason });
-      callbacks.onFailure(result.message, result.reason, marks, attemptNumber, {
-        providerHttpStatus: result.providerHttpStatus,
-        providerErrorStatus: result.providerErrorStatus,
-        providerErrorMessage: result.providerErrorMessage,
-        providerFetchErrorName: result.providerFetchErrorName,
-      });
+      callbacks.onFailure(
+        result.message,
+        result.reason,
+        marks,
+        attemptNumber,
+        {
+          providerHttpStatus: result.providerHttpStatus,
+          providerErrorStatus: result.providerErrorStatus,
+          providerErrorMessage: result.providerErrorMessage,
+          providerFetchErrorName: result.providerFetchErrorName,
+        },
+        sttAttempt1,
+        sttAttempt2,
+      );
     }
     logClient("cleanup_completed", { attemptId });
   } catch (error) {

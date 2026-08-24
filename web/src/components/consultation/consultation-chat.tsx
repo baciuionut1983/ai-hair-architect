@@ -13,6 +13,7 @@ import type {
   ConsultationMessageRecord
 } from "@/lib/contracts";
 import { humanizeEnumValue } from "@/lib/humanize-enum-value";
+import type { ProviderAttemptTelemetry } from "@/lib/provider-attempt-telemetry-logic";
 import { conversationSupportedLanguages, getLanguageDefinition, isCloudTtsLanguageCode, toCloudTtsLanguageCode, type LanguageCode } from "@/lib/language-registry";
 import type { TranslationKey } from "@/lib/translations";
 import { useUiLanguage } from "@/lib/ui-language-context";
@@ -117,12 +118,27 @@ interface VoiceTurnLatencyContext {
   consultationFailedFirstAttemptMs?: number;
   consultationServerTotalMs?: number;
   consultationUnattributedMs?: number;
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): carried through the same way
+  // as the other consultation* timing fields above -- see
+  // consultation-chat-service.ts's own attempt1/attempt2 doc comment.
+  consultationAttempt1Ms?: number;
+  consultationAttempt1Outcome?: string;
+  consultationAttempt1HttpStatus?: number;
+  consultationAttempt2Ms?: number;
+  consultationAttempt2Outcome?: string;
+  consultationAttempt2HttpStatus?: number;
   // Round 11 (gemini-2.5-flash-lite STT evaluation): the server's own
   // resolved STT model string, carried through so the turn's FINAL
   // VOICE_LATENCY_SUMMARY (concluded from speakMessage, not just an
   // STT-only failure) can still be attributed to a model -- never
   // fabricated when absent.
   sttModel?: string | null;
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): carried through the same way
+  // as sttModel, for the same reason -- STT's own per-attempt telemetry
+  // (see teach-ai-panel-logic.ts's own UploadAttemptResult.telemetry doc
+  // comment). attempt2 undefined whenever no retry happened.
+  sttAttempt1?: ProviderAttemptTelemetry;
+  sttAttempt2?: ProviderAttemptTelemetry;
   // End-of-speech hardening (2026-08-20): carried through the same way as
   // sttModel, for the same reason -- never fabricated when VAD never ran
   // for this attempt.
@@ -553,6 +569,16 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         consultationMemoryChars?: number;
         consultationInputChars?: number;
         consultationThinkingMode?: string;
+        // VOICE NEXT LEVEL, Phase D (2026-08-24): see
+        // consultation-chat-service.ts's own attempt1/attempt2 doc
+        // comment. Never fabricated -- undefined whenever the failure
+        // never reached the provider call at all.
+        consultationAttempt1Ms?: number;
+        consultationAttempt1Outcome?: string;
+        consultationAttempt1HttpStatus?: number;
+        consultationAttempt2Ms?: number;
+        consultationAttempt2Outcome?: string;
+        consultationAttempt2HttpStatus?: number;
       } = {},
     ) => {
       if (!voiceTurn) return;
@@ -618,6 +644,12 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
                 providerHttpStatus?: number;
                 providerErrorStatus?: string;
                 providerErrorMessage?: string;
+                consultationAttempt1Ms?: number;
+                consultationAttempt1Outcome?: string;
+                consultationAttempt1HttpStatus?: number;
+                consultationAttempt2Ms?: number;
+                consultationAttempt2Outcome?: string;
+                consultationAttempt2HttpStatus?: number;
               }
             | null;
           concludeVoiceTurn(marks, "consultation_failed", undefined, {
@@ -626,6 +658,12 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
             consultationProviderHttpStatus: errorBody?.providerHttpStatus,
             consultationProviderErrorStatus: errorBody?.providerErrorStatus,
             consultationProviderErrorMessage: errorBody?.providerErrorMessage,
+            consultationAttempt1Ms: errorBody?.consultationAttempt1Ms,
+            consultationAttempt1Outcome: errorBody?.consultationAttempt1Outcome,
+            consultationAttempt1HttpStatus: errorBody?.consultationAttempt1HttpStatus,
+            consultationAttempt2Ms: errorBody?.consultationAttempt2Ms,
+            consultationAttempt2Outcome: errorBody?.consultationAttempt2Outcome,
+            consultationAttempt2HttpStatus: errorBody?.consultationAttempt2HttpStatus,
           });
         }
         return;
@@ -643,6 +681,8 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
                 marks,
                 sttProviderMs: voiceTurn.sttProviderMs,
                 sttModel: voiceTurn.sttModel,
+                sttAttempt1: voiceTurn.sttAttempt1,
+                sttAttempt2: voiceTurn.sttAttempt2,
                 vadDiagnostics: voiceTurn.vadDiagnostics,
                 sileroShadow: voiceTurn.sileroShadow,
                 sileroStartGate: voiceTurn.sileroStartGate,
@@ -662,6 +702,12 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
                 consultationMemoryChars: payload.consultationMemoryChars,
                 consultationInputChars: payload.consultationInputChars,
                 consultationThinkingMode: payload.consultationThinkingMode,
+                consultationAttempt1Ms: payload.consultationAttempt1Ms,
+                consultationAttempt1Outcome: payload.consultationAttempt1Outcome,
+                consultationAttempt1HttpStatus: payload.consultationAttempt1HttpStatus,
+                consultationAttempt2Ms: payload.consultationAttempt2Ms,
+                consultationAttempt2Outcome: payload.consultationAttempt2Outcome,
+                consultationAttempt2HttpStatus: payload.consultationAttempt2HttpStatus,
               }
             : undefined,
         );
@@ -680,6 +726,12 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
           consultationMemoryChars: payload.consultationMemoryChars,
           consultationInputChars: payload.consultationInputChars,
           consultationThinkingMode: payload.consultationThinkingMode,
+          consultationAttempt1Ms: payload.consultationAttempt1Ms,
+          consultationAttempt1Outcome: payload.consultationAttempt1Outcome,
+          consultationAttempt1HttpStatus: payload.consultationAttempt1HttpStatus,
+          consultationAttempt2Ms: payload.consultationAttempt2Ms,
+          consultationAttempt2Outcome: payload.consultationAttempt2Outcome,
+          consultationAttempt2HttpStatus: payload.consultationAttempt2HttpStatus,
         });
       }
     } catch {
@@ -771,6 +823,14 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       ttsTiming: CloudVoiceReplyServerTiming | null,
       errorCode?: string,
       providerAttemptCount?: number,
+      // VOICE NEXT LEVEL, Phase D (2026-08-24): TTS's own per-attempt
+      // breakdown -- separate params (not folded into ttsTiming) since a
+      // total TTS failure has no real ttsTiming object at all (no headers
+      // to read), but DOES have real attempt telemetry from the failure
+      // JSON body (see synthesizeCloudVoiceReply's own onFailure doc
+      // comment). undefined for every call site that has neither.
+      ttsAttempt1?: { ms: number; outcome: string; httpStatus?: number },
+      ttsAttempt2?: { ms: number; outcome: string; httpStatus?: number },
     ) => {
       if (!voiceLatency) return;
       const summary = computeVoiceLatencySummary(finalMarks, {
@@ -806,6 +866,14 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         // tts_completed/tts_fallback_local/tts_failed, not just an
         // STT-only outcome -- still attributes to the STT model that ran.
         sttModel: voiceLatency.sttModel ?? undefined,
+        // VOICE NEXT LEVEL, Phase D (2026-08-24): carried through the
+        // same way as sttModel above, for the same reason.
+        sttAttempt1Ms: voiceLatency.sttAttempt1?.ms,
+        sttAttempt1Outcome: voiceLatency.sttAttempt1?.outcome,
+        sttAttempt1HttpStatus: voiceLatency.sttAttempt1?.httpStatus,
+        sttAttempt2Ms: voiceLatency.sttAttempt2?.ms,
+        sttAttempt2Outcome: voiceLatency.sttAttempt2?.outcome,
+        sttAttempt2HttpStatus: voiceLatency.sttAttempt2?.httpStatus,
         // Consult AI provider latency variance audit (2026-08-21): carried
         // through from voiceLatency the same way sttModel is above -- never
         // fabricated when Consult AI genuinely didn't report one.
@@ -818,6 +886,28 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         consultationMemoryChars: voiceLatency.consultationMemoryChars,
         consultationInputChars: voiceLatency.consultationInputChars,
         consultationThinkingMode: voiceLatency.consultationThinkingMode,
+        // VOICE NEXT LEVEL, Phase D (2026-08-24): carried through from
+        // voiceLatency the same way as the other consultation* fields
+        // above -- never fabricated when Consult AI genuinely didn't
+        // report one.
+        consultationAttempt1Ms: voiceLatency.consultationAttempt1Ms,
+        consultationAttempt1Outcome: voiceLatency.consultationAttempt1Outcome,
+        consultationAttempt1HttpStatus: voiceLatency.consultationAttempt1HttpStatus,
+        consultationAttempt2Ms: voiceLatency.consultationAttempt2Ms,
+        consultationAttempt2Outcome: voiceLatency.consultationAttempt2Outcome,
+        consultationAttempt2HttpStatus: voiceLatency.consultationAttempt2HttpStatus,
+        // VOICE NEXT LEVEL, Phase D (2026-08-24): prefers ttsTiming's own
+        // headers (the success path) -- falls back to the ttsAttempt1/2
+        // params (a total TTS failure, which has real JSON attempt
+        // telemetry but no headers/ttsTiming object at all) -- never both
+        // at once, since exactly one of the two is ever populated for a
+        // given call.
+        ttsAttempt1Ms: ttsTiming?.attempt1Ms ?? ttsAttempt1?.ms,
+        ttsAttempt1Outcome: ttsTiming?.attempt1Outcome ?? ttsAttempt1?.outcome,
+        ttsAttempt1HttpStatus: ttsTiming?.attempt1HttpStatus ?? ttsAttempt1?.httpStatus,
+        ttsAttempt2Ms: ttsTiming?.attempt2Ms ?? ttsAttempt2?.ms,
+        ttsAttempt2Outcome: ttsTiming?.attempt2Outcome ?? ttsAttempt2?.outcome,
+        ttsAttempt2HttpStatus: ttsTiming?.attempt2HttpStatus ?? ttsAttempt2?.httpStatus,
         ...vadDiagnosticsToReportFields(voiceLatency.vadDiagnostics ?? null),
         ...sileroShadowDiagnosticsToReportFields(voiceLatency.sileroShadow ?? null),
         ...sileroStartGateToReportFields(voiceLatency.sileroStartGate ?? null),
@@ -939,7 +1029,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
             triggerLocalFallback();
           });
         },
-        onFailure: (reason, ttsErrorCode, ttsProviderAttemptCount) => {
+        onFailure: (reason, ttsErrorCode, ttsProviderAttemptCount, ttsAttempt1, ttsAttempt2) => {
           // See the identical guard in onSuccess above.
           if (voiceReplyAttemptRef.current !== myAttempt) {
             logVoiceReplyClientEvent("cloud_response_superseded", { stage: "failure" });
@@ -955,8 +1045,10 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
           // synthesizeCloudVoiceReply's coarse "network"/"unavailable"
           // classification -- undefined only for a genuine network-level
           // failure, where no server response body exists at all to read
-          // a code from.
-          concludeVoiceTurn(ttsMarks, "tts_failed", null, ttsErrorCode ?? reason, ttsProviderAttemptCount);
+          // a code from. ttsAttempt1/ttsAttempt2 (VOICE NEXT LEVEL, Phase
+          // D): the real per-attempt breakdown, read from the failure
+          // JSON body -- undefined for the same "network" case.
+          concludeVoiceTurn(ttsMarks, "tts_failed", null, ttsErrorCode ?? reason, ttsProviderAttemptCount, ttsAttempt1, ttsAttempt2);
         },
       },
       voiceLatency?.attemptId,

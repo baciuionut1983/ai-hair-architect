@@ -13,6 +13,24 @@
 // can be unit-tested without a real Next.js Request, matching this
 // codebase's established "-logic.ts" convention.
 
+// VOICE NEXT LEVEL, Phase D (2026-08-24): the exact set of real values
+// provider-attempt-telemetry-logic.ts's own classifyProviderAttemptOutcome
+// can produce -- duplicated as a plain string literal set (not an import
+// of a runtime const) to keep this file's own "unit-testable without a
+// real Next.js Request, zero framework dependency" contract intact, same
+// reasoning this file's own module doc comment already gives for every
+// other duplicated vocabulary here (e.g. VOICE_LATENCY_SUMMARY_FIELDS
+// below).
+const PROVIDER_ATTEMPT_OUTCOMES = new Set([
+  "success",
+  "timeout",
+  "http_429",
+  "http_5xx",
+  "http_error",
+  "network_error",
+  "invalid_response",
+]);
+
 // Every way a voice turn is known to conclude, matching this app's own
 // sendMessage/speakMessage/finishRecording branches exactly -- an
 // operator reading Railway logs can tell not just HOW LONG a turn took,
@@ -267,6 +285,28 @@ export interface VoiceLatencyTelemetryInput {
   vadContinuationFallbackUsed?: boolean;
   vadContinuationFallbackReason?: "model_loading" | "model_unavailable" | "model_error";
   vadLegacyStopSuppressedByModelCount?: number;
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): see voice-latency-logic.ts's
+  // own VoiceLatencyTerminalDiagnostics doc comment for what each
+  // answers, and provider-attempt-telemetry-logic.ts's own doc comment
+  // for the ProviderAttemptOutcome vocabulary.
+  consultationAttempt1Ms?: number;
+  consultationAttempt1Outcome?: string;
+  consultationAttempt1HttpStatus?: number;
+  consultationAttempt2Ms?: number;
+  consultationAttempt2Outcome?: string;
+  consultationAttempt2HttpStatus?: number;
+  ttsAttempt1Ms?: number;
+  ttsAttempt1Outcome?: string;
+  ttsAttempt1HttpStatus?: number;
+  ttsAttempt2Ms?: number;
+  ttsAttempt2Outcome?: string;
+  ttsAttempt2HttpStatus?: number;
+  sttAttempt1Ms?: number;
+  sttAttempt1Outcome?: string;
+  sttAttempt1HttpStatus?: number;
+  sttAttempt2Ms?: number;
+  sttAttempt2Outcome?: string;
+  sttAttempt2HttpStatus?: number;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -421,6 +461,39 @@ function parseOptionalBoundedFloat(
     return { ok: false };
   }
   return { ok: true, value: raw };
+}
+
+// VOICE NEXT LEVEL, Phase D (2026-08-24): one shared parser for the
+// (ms, outcome, httpStatus) triple every attempt-level field family
+// (consultation/tts/stt x attempt1/attempt2) uses identically -- reused
+// six times below rather than six near-duplicate blocks, so the three
+// pipelines' validation can never silently drift from each other.
+function parseAttemptTelemetry(
+  input: Record<string, unknown>,
+  msField: string,
+  outcomeField: string,
+  httpStatusField: string,
+  reasonPrefix: string,
+): { ok: true; ms: number | undefined; outcome: string | undefined; httpStatus: number | undefined } | { ok: false; reason: string } {
+  const ms = parseOptionalDurationField(input, msField);
+  if (!ms.ok) return { ok: false, reason: `invalid_${reasonPrefix}_ms` };
+  let outcome: string | undefined;
+  const rawOutcome = input[outcomeField];
+  if (rawOutcome !== undefined) {
+    if (typeof rawOutcome !== "string" || !PROVIDER_ATTEMPT_OUTCOMES.has(rawOutcome)) {
+      return { ok: false, reason: `invalid_${reasonPrefix}_outcome` };
+    }
+    outcome = rawOutcome;
+  }
+  let httpStatus: number | undefined;
+  const rawStatus = input[httpStatusField];
+  if (rawStatus !== undefined) {
+    if (typeof rawStatus !== "number" || !isPlausibleHttpStatus(rawStatus)) {
+      return { ok: false, reason: `invalid_${reasonPrefix}_http_status` };
+    }
+    httpStatus = rawStatus;
+  }
+  return { ok: true, ms: ms.value, outcome, httpStatus };
 }
 
 export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTelemetryValidationResult {
@@ -802,6 +875,34 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
   const vadLegacyStopSuppressedByModelCount = parseOptionalNonNegativeInteger(input, "vadLegacyStopSuppressedByModelCount");
   if (!vadLegacyStopSuppressedByModelCount.ok) return { ok: false, reason: "invalid_vad_legacy_stop_suppressed_by_model_count" };
 
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): see voice-latency-logic.ts's
+  // own VoiceLatencyTerminalDiagnostics doc comment for what each
+  // answers.
+  const consultationAttempt1 = parseAttemptTelemetry(
+    input,
+    "consultationAttempt1Ms",
+    "consultationAttempt1Outcome",
+    "consultationAttempt1HttpStatus",
+    "consultation_attempt1",
+  );
+  if (!consultationAttempt1.ok) return consultationAttempt1;
+  const consultationAttempt2 = parseAttemptTelemetry(
+    input,
+    "consultationAttempt2Ms",
+    "consultationAttempt2Outcome",
+    "consultationAttempt2HttpStatus",
+    "consultation_attempt2",
+  );
+  if (!consultationAttempt2.ok) return consultationAttempt2;
+  const ttsAttempt1 = parseAttemptTelemetry(input, "ttsAttempt1Ms", "ttsAttempt1Outcome", "ttsAttempt1HttpStatus", "tts_attempt1");
+  if (!ttsAttempt1.ok) return ttsAttempt1;
+  const ttsAttempt2 = parseAttemptTelemetry(input, "ttsAttempt2Ms", "ttsAttempt2Outcome", "ttsAttempt2HttpStatus", "tts_attempt2");
+  if (!ttsAttempt2.ok) return ttsAttempt2;
+  const sttAttempt1 = parseAttemptTelemetry(input, "sttAttempt1Ms", "sttAttempt1Outcome", "sttAttempt1HttpStatus", "stt_attempt1");
+  if (!sttAttempt1.ok) return sttAttempt1;
+  const sttAttempt2 = parseAttemptTelemetry(input, "sttAttempt2Ms", "sttAttempt2Outcome", "sttAttempt2HttpStatus", "stt_attempt2");
+  if (!sttAttempt2.ok) return sttAttempt2;
+
   let sttProviderHttpStatus: number | undefined;
   if (input.sttProviderHttpStatus !== undefined) {
     if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
@@ -1054,6 +1155,27 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(vadLegacyStopSuppressedByModelCount.value !== undefined
         ? { vadLegacyStopSuppressedByModelCount: vadLegacyStopSuppressedByModelCount.value }
         : {}),
+      // VOICE NEXT LEVEL, Phase D (2026-08-24): see voice-latency-logic.ts's
+      // own VoiceLatencyTerminalDiagnostics doc comment for what each
+      // answers.
+      ...(consultationAttempt1.ms !== undefined ? { consultationAttempt1Ms: consultationAttempt1.ms } : {}),
+      ...(consultationAttempt1.outcome !== undefined ? { consultationAttempt1Outcome: consultationAttempt1.outcome } : {}),
+      ...(consultationAttempt1.httpStatus !== undefined ? { consultationAttempt1HttpStatus: consultationAttempt1.httpStatus } : {}),
+      ...(consultationAttempt2.ms !== undefined ? { consultationAttempt2Ms: consultationAttempt2.ms } : {}),
+      ...(consultationAttempt2.outcome !== undefined ? { consultationAttempt2Outcome: consultationAttempt2.outcome } : {}),
+      ...(consultationAttempt2.httpStatus !== undefined ? { consultationAttempt2HttpStatus: consultationAttempt2.httpStatus } : {}),
+      ...(ttsAttempt1.ms !== undefined ? { ttsAttempt1Ms: ttsAttempt1.ms } : {}),
+      ...(ttsAttempt1.outcome !== undefined ? { ttsAttempt1Outcome: ttsAttempt1.outcome } : {}),
+      ...(ttsAttempt1.httpStatus !== undefined ? { ttsAttempt1HttpStatus: ttsAttempt1.httpStatus } : {}),
+      ...(ttsAttempt2.ms !== undefined ? { ttsAttempt2Ms: ttsAttempt2.ms } : {}),
+      ...(ttsAttempt2.outcome !== undefined ? { ttsAttempt2Outcome: ttsAttempt2.outcome } : {}),
+      ...(ttsAttempt2.httpStatus !== undefined ? { ttsAttempt2HttpStatus: ttsAttempt2.httpStatus } : {}),
+      ...(sttAttempt1.ms !== undefined ? { sttAttempt1Ms: sttAttempt1.ms } : {}),
+      ...(sttAttempt1.outcome !== undefined ? { sttAttempt1Outcome: sttAttempt1.outcome } : {}),
+      ...(sttAttempt1.httpStatus !== undefined ? { sttAttempt1HttpStatus: sttAttempt1.httpStatus } : {}),
+      ...(sttAttempt2.ms !== undefined ? { sttAttempt2Ms: sttAttempt2.ms } : {}),
+      ...(sttAttempt2.outcome !== undefined ? { sttAttempt2Outcome: sttAttempt2.outcome } : {}),
+      ...(sttAttempt2.httpStatus !== undefined ? { sttAttempt2HttpStatus: sttAttempt2.httpStatus } : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
       ...(sttProviderErrorMessage !== undefined ? { sttProviderErrorMessage } : {}),

@@ -461,6 +461,20 @@ export interface ConsultationChatResponse {
   // or "default" when no override applied -- see
   // consultation-chat-provider.ts's own ConsultationChatResult doc comment.
   consultationThinkingMode?: string;
+  // VOICE NEXT LEVEL, Phase D (2026-08-24): per-attempt breakdown -- see
+  // consultation-chat-service.ts's own SendConsultationMessageResult doc
+  // comment (attempt1/attempt2) and provider-attempt-telemetry-logic.ts's
+  // own doc comment for the real production gap this closes (a FAILED,
+  // both-attempts-timed-out turn previously had no way to show which
+  // attempt(s) actually timed out). Flattened (not a nested object) to
+  // match this contract's own existing flat-field convention.
+  // attempt2* is present only when a retry actually happened.
+  consultationAttempt1Ms?: number;
+  consultationAttempt1Outcome?: string;
+  consultationAttempt1HttpStatus?: number;
+  consultationAttempt2Ms?: number;
+  consultationAttempt2Outcome?: string;
+  consultationAttempt2HttpStatus?: number;
 }
 
 export interface ConsultationCreateRequest {
