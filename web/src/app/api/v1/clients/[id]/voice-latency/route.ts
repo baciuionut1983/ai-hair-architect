@@ -157,6 +157,13 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
       sttSkipped: parsed.value.sttSkipped ?? null,
       sttSkipReason: parsed.value.sttSkipReason ?? null,
+      // VAD Round 13 (2026-08-24), Phase B.2: see voice-latency-logic.ts's
+      // own VoiceLatencyTerminalDiagnostics doc comment for what each
+      // answers.
+      vadModelPreloadAttempted: parsed.value.vadModelPreloadAttempted ?? null,
+      vadModelPreloadCompleted: parsed.value.vadModelPreloadCompleted ?? null,
+      vadModelPreloadMs: parsed.value.vadModelPreloadMs ?? null,
+      vadModelWasPreloadedAtRecordingStart: parsed.value.vadModelWasPreloadedAtRecordingStart ?? null,
       // STT Flash-Lite root-cause diagnosis (2026-08-20): see
       // voice-latency-telemetry-logic.ts's own doc comment on these same 3
       // fields for exactly what they mean and why.

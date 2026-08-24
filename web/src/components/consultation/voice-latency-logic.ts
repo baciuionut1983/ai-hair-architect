@@ -509,6 +509,16 @@ export interface VoiceLatencyTerminalDiagnostics {
   // provider failure).
   sttSkipped?: boolean;
   sttSkipReason?: "no_confirmed_speech";
+  // VAD Round 13 (2026-08-24), Phase B.2: see use-voice-recording.ts's own
+  // sileroShadowDiagnosticsToReportFields doc comment and
+  // silero-vad-shadow-runtime.ts's own getSileroPreloadTelemetry/
+  // SileroShadowModelInfo.wasPreloaded doc comments for what each
+  // answers. Lets a real production report show directly whether preload
+  // avoided a model_loading fallback for a given recording.
+  vadModelPreloadAttempted?: boolean;
+  vadModelPreloadCompleted?: boolean;
+  vadModelPreloadMs?: number;
+  vadModelWasPreloadedAtRecordingStart?: boolean;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see

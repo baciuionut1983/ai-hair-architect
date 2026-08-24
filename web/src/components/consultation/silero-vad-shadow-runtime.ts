@@ -76,6 +76,7 @@ import {
   type SileroShadowDiagnosticsState,
 } from "./silero-vad-shadow-logic";
 import { evaluateSileroStartGateFrame, initSileroStartGateState, type SileroStartGateState } from "./silero-start-gate-logic";
+import { createAsyncSingletonCache } from "@/lib/async-singleton-cache";
 
 const MODEL_NAME = "silero-vad";
 const MODEL_VERSION = "v5";
@@ -97,6 +98,13 @@ export interface SileroShadowModelInfo {
   // provider/browser error object, matching this app's existing
   // provider-error-message convention (voice-latency-telemetry-logic.ts).
   error: string | null;
+  // VAD Round 13 (2026-08-24), Phase B.2: true when the shared model/session
+  // singleton (see startSileroPreloadAttempt below) was ALREADY resolved
+  // at the exact moment THIS recording started -- the decisive, per-
+  // recording proof that preload avoided a model_loading wait, distinct
+  // from loadMs above (which already, with no changes to its own meaning,
+  // naturally drops to near-zero once this is true).
+  wasPreloaded: boolean;
 }
 
 export interface SileroShadowHandle {
@@ -150,9 +158,10 @@ function unavailableHandle(modelInfo: SileroShadowModelInfo): SileroShadowHandle
 
 // Lazily imported ONLY from here (never at this module's own top level),
 // so onnxruntime-web's JS (and, transitively, its WASM/model fetches) is
-// never even requested until a recording actually starts -- see this
-// round's own report for the measured bundle/asset impact this keeps out
-// of the initial page load.
+// never even requested until either the preload trigger fires or a
+// recording actually starts (see this round's own ROUND 13 doc comment
+// below for when that first happens) -- see this round's own report for
+// the measured bundle/asset impact this keeps out of the initial page load.
 async function loadOnnxRuntime() {
   const ort = await import("onnxruntime-web/wasm");
   ort.env.wasm.wasmPaths = {
@@ -164,6 +173,105 @@ async function loadOnnxRuntime() {
   // this module's own doc comment above for the verified reasoning.
   ort.env.wasm.numThreads = 1;
   return ort;
+}
+
+type OrtModule = Awaited<ReturnType<typeof loadOnnxRuntime>>;
+type SileroSession = import("onnxruntime-web/wasm").InferenceSession;
+
+// Shared by both the preload path and the cold-load fallback path (a
+// mic-press that races ahead of any preload) -- a single definition of
+// "what does a valid Silero session look like" so the two paths can never
+// silently drift apart.
+async function createAndValidateSession(ort: OrtModule): Promise<SileroSession> {
+  const session = await ort.InferenceSession.create(ONNX_MODEL_URL, { executionProviders: ["wasm"] });
+  const requiredInputs = ["input", "state", "sr"];
+  const missingInputs = requiredInputs.filter((name) => !session.inputNames.includes(name));
+  if (missingInputs.length > 0 || session.outputNames.length < 2) {
+    throw new Error(
+      `Silero VAD ONNX model has an unexpected signature (inputs: ${session.inputNames.join(",")}; outputs: ${session.outputNames.join(",")}).`,
+    );
+  }
+  return session;
+}
+
+// VAD Round 13 (2026-08-24), Phase B.2: model/session preload singleton.
+//
+// LIFECYCLE AUDIT (done before writing any of this -- see this round's own
+// report for the full write-up): the dynamic import(), the ONNX model
+// fetch, WASM instantiation, and InferenceSession.create() (this file's
+// OWN loadOnnxRuntime/createAndValidateSession above) are ALL completely
+// independent of any MediaStream/microphone -- none of them reference
+// `stream`, call getUserMedia, or need microphone permission. The ONLY
+// stream-dependent step in the whole pipeline is
+// `audioContext.createMediaStreamSource(stream)` inside
+// startSileroVadShadow below, together with the AudioWorkletNode graph
+// built on top of it -- everything before that point can run ahead of
+// time, with zero audio/permission involvement.
+//
+// The InferenceSession itself is STATELESS across calls from ONNX
+// Runtime's own point of view: every recurrent LSTM value Silero needs is
+// a plain JS Float32Array WE own and pass in fresh on each call (see
+// silero-vad-shadow-logic.ts's own SileroRecurrentState) -- the session
+// object holds no per-recording state at all, so ONE session can safely
+// be reused, sequentially or concurrently, across many recordings. Only
+// `recurrent`/`diagnostics`/`startGateState` (all created fresh inside
+// startSileroVadShadow, per call, exactly as before this round) are
+// per-recording and must never be shared.
+//
+// Built on createAsyncSingletonCache (async-singleton-cache.ts) -- a
+// small, fully generic, pure primitive extracted specifically so THIS
+// exact dedup/reuse/reset-on-failure mechanism is unit-tested directly
+// (with a fake factory), independent of the real, browser-only
+// onnxruntime-web loading this module plugs into it. See that module's
+// own doc comment for the precise concurrency semantics (dedup while
+// pending, cache forever on success, genuine retry after a definitive
+// failure, never an unhandled rejection regardless of whether a caller
+// awaits the returned promise).
+const sileroPreloadCache = createAsyncSingletonCache<{ ort: OrtModule; session: SileroSession }>(async () => {
+  const ort = await loadOnnxRuntime();
+  const session = await createAndValidateSession(ort);
+  return { ort, session };
+});
+
+function startSileroPreloadAttempt(): Promise<{ ort: OrtModule; session: SileroSession }> {
+  return sileroPreloadCache.start();
+}
+
+// Fires the background warm-up -- called from use-voice-recording.ts's
+// own mount effect (see that file's own ROUND 13 doc comment for exactly
+// when and why), and ALSO called internally by startSileroVadShadow
+// itself so a mic press that races ahead of any preload trigger still
+// goes through this exact same cache (unifying "explicit preload" and
+// "implicit first use" into one mechanism, one cache). Never throws or
+// rejects to the caller in a way that requires handling -- see
+// async-singleton-cache.ts's own doc comment on why an unawaited
+// start() can never produce an unhandled rejection.
+export function preloadSileroModel(): void {
+  sileroPreloadCache.markAttempted();
+  void sileroPreloadCache.start();
+}
+
+export function isSileroModelPreloaded(): boolean {
+  return sileroPreloadCache.isReady();
+}
+
+export interface SileroPreloadTelemetry {
+  attempted: boolean;
+  completed: boolean;
+  preloadMs: number | null;
+}
+
+// Diagnostic-only -- read by use-voice-recording.ts at report time,
+// mirroring how getDiagnostics()/getModelInfo() are read elsewhere in
+// this file. Reflects the SHARED cache's own state, not any one
+// recording's -- see SileroShadowModelInfo.loadMs (per-recording, already
+// existed before this round) for "how long did THIS recording wait",
+// which naturally drops to near-zero once a recording reuses an
+// already-ready cache, with no changes needed to that field's own
+// meaning.
+export function getSileroPreloadTelemetry(): SileroPreloadTelemetry {
+  const telemetry = sileroPreloadCache.getTelemetry();
+  return { attempted: telemetry.attempted, completed: telemetry.completed, preloadMs: telemetry.durationMs };
 }
 
 // Runs one 512-sample frame through the model, updating both the
@@ -224,18 +332,22 @@ export async function startSileroVadShadow(stream: MediaStream): Promise<SileroS
         version: MODEL_VERSION,
         loadMs: null,
         error: "AudioContext is not available in this browser.",
+        wasPreloaded: false,
       });
     }
 
-    const ort = await loadOnnxRuntime();
-    const session = await ort.InferenceSession.create(ONNX_MODEL_URL, { executionProviders: ["wasm"] });
-    const requiredInputs = ["input", "state", "sr"];
-    const missingInputs = requiredInputs.filter((name) => !session.inputNames.includes(name));
-    if (missingInputs.length > 0 || session.outputNames.length < 2) {
-      throw new Error(
-        `Silero VAD ONNX model has an unexpected signature (inputs: ${session.inputNames.join(",")}; outputs: ${session.outputNames.join(",")}).`,
-      );
-    }
+    // VAD Round 13 (2026-08-24), Phase B.2: captured BEFORE awaiting the
+    // shared singleton below, so this is an honest, per-recording
+    // snapshot of "was the model already ready when THIS recording
+    // started" -- never fabricated after the fact. Reuses the EXACT same
+    // singleton preloadSileroModel() (use-voice-recording.ts's own mount
+    // effect) already started/warmed -- a mic press that races ahead of
+    // any preload (or when preload was never triggered at all, e.g. this
+    // app's own teach-ai-panel.tsx flow, which never mounts
+    // useVoiceRecording) transparently falls through to a fresh cold
+    // load through this SAME function, never a duplicate one.
+    const wasPreloaded = isSileroModelPreloaded();
+    const { ort, session } = await startSileroPreloadAttempt();
 
     // A SEPARATE AudioContext from the existing heuristic's own one in
     // use-voice-recording.ts, deliberately constructed at Silero's own
@@ -289,7 +401,7 @@ export async function startSileroVadShadow(stream: MediaStream): Promise<SileroS
     };
 
     const loadMs = performance.now() - loadStartedAt;
-    const modelInfo: SileroShadowModelInfo = { available: true, name: MODEL_NAME, version: MODEL_VERSION, loadMs, error: null };
+    const modelInfo: SileroShadowModelInfo = { available: true, name: MODEL_NAME, version: MODEL_VERSION, loadMs, error: null, wasPreloaded };
 
     return {
       getDiagnostics: () => diagnostics,
@@ -313,7 +425,14 @@ export async function startSileroVadShadow(stream: MediaStream): Promise<SileroS
         // comment on stream safety; createMediaStreamSource never took
         // ownership of `stream` in the first place).
         void audioContext.close().catch(() => {});
-        void session.release?.().catch(() => {});
+        // VAD Round 13 (2026-08-24), Phase B.2: deliberately does NOT
+        // call session.release() anymore -- the session is now the
+        // SHARED singleton (see startSileroPreloadAttempt above), reused
+        // across recordings for the rest of this page's lifetime.
+        // Releasing it here would destroy it for every future recording,
+        // defeating preload/reuse entirely. Only this recording's own
+        // AudioContext/nodes (created fresh above, never shared) are torn
+        // down.
       },
     };
   } catch (error) {
@@ -323,6 +442,7 @@ export async function startSileroVadShadow(stream: MediaStream): Promise<SileroS
       version: MODEL_VERSION,
       loadMs: performance.now() - loadStartedAt,
       error: sanitizeErrorMessage(error),
+      wasPreloaded: isSileroModelPreloaded(),
     });
   }
 }

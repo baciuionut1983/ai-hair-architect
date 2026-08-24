@@ -803,6 +803,48 @@ describe("POST /api/v1/clients/[id]/voice-latency", () => {
     logSpy.mockRestore();
   });
 
+  // VAD Round 13 (2026-08-24), Phase B.2: see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  it("logs the VAD ROUND 13 preload fields when the model was already ready before mic press", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({
+      attemptId: "attempt-140",
+      outcome: "tts_completed",
+      summary: validSummary(),
+      vadModelPreloadAttempted: true,
+      vadModelPreloadCompleted: true,
+      vadModelPreloadMs: 1120,
+      vadModelWasPreloadedAtRecordingStart: true,
+    });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadModelPreloadAttempted: true,
+      vadModelPreloadCompleted: true,
+      vadModelPreloadMs: 1120,
+      vadModelWasPreloadedAtRecordingStart: true,
+    });
+    logSpy.mockRestore();
+  });
+
+  it("logs the VAD ROUND 13 preload fields as null (never fabricated) when not reported", async () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await invoke({ attemptId: "attempt-141", outcome: "tts_completed", summary: validSummary() });
+
+    const [line] = logSpy.mock.calls[0] as [string];
+    const parsed = JSON.parse(line.slice("VOICE LATENCY SUMMARY ".length));
+    expect(parsed).toMatchObject({
+      vadModelPreloadAttempted: null,
+      vadModelPreloadCompleted: null,
+      vadModelPreloadMs: null,
+      vadModelWasPreloadedAtRecordingStart: null,
+    });
+    logSpy.mockRestore();
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): the real Gemini
   // provider failure detail, closing the gap where a provider HTTP error,
   // a network/timeout failure, and an empty-transcript response all

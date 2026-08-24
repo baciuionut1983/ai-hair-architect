@@ -251,6 +251,12 @@ export interface VoiceLatencyTelemetryInput {
   // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
   sttSkipped?: boolean;
   sttSkipReason?: "no_confirmed_speech";
+  // VAD Round 13 (2026-08-24), Phase B.2: see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  vadModelPreloadAttempted?: boolean;
+  vadModelPreloadCompleted?: boolean;
+  vadModelPreloadMs?: number;
+  vadModelWasPreloadedAtRecordingStart?: boolean;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -723,6 +729,32 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     sttSkipReason = input.sttSkipReason;
   }
 
+  // VAD Round 13 (2026-08-24), Phase B.2: see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  let vadModelPreloadAttempted: boolean | undefined;
+  if (input.vadModelPreloadAttempted !== undefined) {
+    if (typeof input.vadModelPreloadAttempted !== "boolean") {
+      return { ok: false, reason: "invalid_vad_model_preload_attempted" };
+    }
+    vadModelPreloadAttempted = input.vadModelPreloadAttempted;
+  }
+  let vadModelPreloadCompleted: boolean | undefined;
+  if (input.vadModelPreloadCompleted !== undefined) {
+    if (typeof input.vadModelPreloadCompleted !== "boolean") {
+      return { ok: false, reason: "invalid_vad_model_preload_completed" };
+    }
+    vadModelPreloadCompleted = input.vadModelPreloadCompleted;
+  }
+  const vadModelPreloadMs = parseOptionalDurationField(input, "vadModelPreloadMs");
+  if (!vadModelPreloadMs.ok) return { ok: false, reason: "invalid_vad_model_preload_ms" };
+  let vadModelWasPreloadedAtRecordingStart: boolean | undefined;
+  if (input.vadModelWasPreloadedAtRecordingStart !== undefined) {
+    if (typeof input.vadModelWasPreloadedAtRecordingStart !== "boolean") {
+      return { ok: false, reason: "invalid_vad_model_was_preloaded_at_recording_start" };
+    }
+    vadModelWasPreloadedAtRecordingStart = input.vadModelWasPreloadedAtRecordingStart;
+  }
+
   let sttProviderHttpStatus: number | undefined;
   if (input.sttProviderHttpStatus !== undefined) {
     if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
@@ -953,6 +985,10 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(vadStartGateFallbackReason !== undefined ? { vadStartGateFallbackReason } : {}),
       ...(sttSkipped !== undefined ? { sttSkipped } : {}),
       ...(sttSkipReason !== undefined ? { sttSkipReason } : {}),
+      ...(vadModelPreloadAttempted !== undefined ? { vadModelPreloadAttempted } : {}),
+      ...(vadModelPreloadCompleted !== undefined ? { vadModelPreloadCompleted } : {}),
+      ...(vadModelPreloadMs.value !== undefined ? { vadModelPreloadMs: vadModelPreloadMs.value } : {}),
+      ...(vadModelWasPreloadedAtRecordingStart !== undefined ? { vadModelWasPreloadedAtRecordingStart } : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
       ...(sttProviderErrorMessage !== undefined ? { sttProviderErrorMessage } : {}),

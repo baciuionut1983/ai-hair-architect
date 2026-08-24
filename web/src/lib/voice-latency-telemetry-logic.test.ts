@@ -1579,6 +1579,119 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // VAD Round 13 (2026-08-24), Phase B.2: see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  describe("VAD ROUND 13 Silero preload fields", () => {
+    it("accepts the real 'preloaded, ready before mic press' shape", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelPreloadAttempted: true,
+        vadModelPreloadCompleted: true,
+        vadModelPreloadMs: 1120,
+        vadModelWasPreloadedAtRecordingStart: true,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadModelPreloadAttempted: true,
+          vadModelPreloadCompleted: true,
+          vadModelPreloadMs: 1120,
+          vadModelWasPreloadedAtRecordingStart: true,
+        }),
+      });
+    });
+
+    it("accepts the 'preload attempted but recording started first' shape (fallback still engaged)", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelPreloadAttempted: true,
+        vadModelPreloadCompleted: false,
+        vadModelWasPreloadedAtRecordingStart: false,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadModelPreloadAttempted: true,
+          vadModelPreloadCompleted: false,
+          vadModelWasPreloadedAtRecordingStart: false,
+        }),
+      });
+    });
+
+    it("rejects a non-boolean vadModelPreloadAttempted", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelPreloadAttempted: "yes",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_model_preload_attempted" });
+    });
+
+    it("rejects a non-boolean vadModelPreloadCompleted", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelPreloadCompleted: 1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_model_preload_completed" });
+    });
+
+    it("rejects a non-boolean vadModelWasPreloadedAtRecordingStart", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelWasPreloadedAtRecordingStart: "true",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_model_was_preloaded_at_recording_start" });
+    });
+
+    it("rejects an implausible vadModelPreloadMs -- never a real one", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelPreloadMs: 10 * 60 * 1000,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_model_preload_ms" });
+    });
+
+    it("accepts zero for vadModelPreloadMs -- a truthful 'instant', not rejected as missing", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadModelPreloadMs: 0,
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ vadModelPreloadMs: 0 }) });
+    });
+
+    it("omits every field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of [
+          "vadModelPreloadAttempted",
+          "vadModelPreloadCompleted",
+          "vadModelPreloadMs",
+          "vadModelWasPreloadedAtRecordingStart",
+        ]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
   // production STT failure be attributed, directly from this one log line,
   // to the real Gemini HTTP status/canonical error status, or to a real

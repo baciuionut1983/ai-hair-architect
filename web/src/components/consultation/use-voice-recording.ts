@@ -34,7 +34,13 @@ import type { TranslationKey } from "@/lib/translations";
 import { decodeBlobAsWav } from "./audio-wav-encode";
 import { DEFAULT_SILERO_START_GATE_CONFIG, resolveSileroStartAuthority } from "./silero-start-gate-logic";
 import { summarizeSileroShadowDiagnostics, type SileroShadowDiagnosticsState } from "./silero-vad-shadow-logic";
-import { startSileroVadShadow, type SileroShadowModelInfo } from "./silero-vad-shadow-runtime";
+import {
+  getSileroPreloadTelemetry,
+  preloadSileroModel,
+  startSileroVadShadow,
+  type SileroPreloadTelemetry,
+  type SileroShadowModelInfo,
+} from "./silero-vad-shadow-runtime";
 import {
   bindFetch,
   classifyMicrophoneStartError,
@@ -321,6 +327,12 @@ export function vadDiagnosticsToReportFields(diagnostics: VoiceActivityDiagnosti
 export interface SileroShadowReportData {
   modelInfo: SileroShadowModelInfo;
   diagnostics: SileroShadowDiagnosticsState;
+  // VAD Round 13 (2026-08-24), Phase B.2: the shared preload singleton's
+  // own state (see silero-vad-shadow-runtime.ts's own
+  // getSileroPreloadTelemetry) -- a session-level fact, not specific to
+  // this one recording (modelInfo.wasPreloaded above is the per-recording
+  // half of the same story).
+  preload: SileroPreloadTelemetry;
 }
 
 // Maps SileroShadowReportData onto reportVoiceLatencySummary's own flat,
@@ -352,6 +364,15 @@ export function sileroShadowDiagnosticsToReportFields(data: SileroShadowReportDa
     vadModelInferenceMeanMs: summary.meanInferenceMs ?? undefined,
     vadModelSpeechProbabilityStdDev: summary.speechProbabilityStdDev ?? undefined,
     ...(error !== undefined ? { vadModelError: error } : {}),
+    // VAD Round 13 (2026-08-24), Phase B.2: see
+    // silero-vad-shadow-runtime.ts's own getSileroPreloadTelemetry doc
+    // comment and SileroShadowModelInfo.wasPreloaded doc comment for what
+    // each answers -- lets a real production report show directly
+    // whether preload avoided a model_loading wait for this recording.
+    vadModelPreloadAttempted: data.preload.attempted,
+    vadModelPreloadCompleted: data.preload.completed,
+    ...(data.preload.preloadMs !== null ? { vadModelPreloadMs: data.preload.preloadMs } : {}),
+    vadModelWasPreloadedAtRecordingStart: data.modelInfo.wasPreloaded,
   };
 }
 
@@ -401,6 +422,43 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // VAD Round 13 (2026-08-24), Phase B.2: background warm-up. Fires once,
+  // on mount -- this hook is only ever used by consultation-chat.tsx (see
+  // this file's own module doc comment on the isolation guarantee from
+  // teach-ai-panel.tsx's own, separate recording flow, which never mounts
+  // this hook and therefore never triggers this), so "this hook mounted"
+  // already means "the stylist opened Consult AI", exactly the trigger
+  // this round's own task asked for -- no separate signal needed.
+  //
+  // Deliberately fire-and-forget and deliberately NOT gated on
+  // SILERO_START_GATE_ENABLED: Phase A's own shadow mode already runs
+  // unconditionally on every recording regardless of that flag (collecting
+  // telemetry even when Phase B is off) -- warming the SAME assets earlier
+  // is a direct, non-breaking extension of that already-established
+  // behavior, not something new tied to the flag.
+  //
+  // Deferred via requestIdleCallback (falling back to a short setTimeout
+  // on Safari, which has never implemented it) so this ~15MB fetch does
+  // not compete with Consult AI's own, more urgent initial data loads
+  // (history, client context) for bandwidth/main-thread time immediately
+  // on mount -- "idle preload after mount", per this round's own task.
+  // Zero getUserMedia, zero MediaStream, zero microphone permission
+  // prompt -- preloadSileroModel() only ever touches the model/WASM
+  // loading path (see silero-vad-shadow-runtime.ts's own ROUND 13 doc
+  // comment on exactly why that is safe to do without a stream at all).
+  useEffect(() => {
+    const w = window as typeof window & {
+      requestIdleCallback?: (callback: () => void) => number;
+      cancelIdleCallback?: (handle: number) => void;
+    };
+    if (typeof w.requestIdleCallback === "function") {
+      const handle = w.requestIdleCallback(() => preloadSileroModel());
+      return () => w.cancelIdleCallback?.(handle);
+    }
+    const timeoutId = window.setTimeout(() => preloadSileroModel(), 1000);
+    return () => window.clearTimeout(timeoutId);
+  }, []);
   const recorder = useRef<MediaRecorder | null>(null);
   const chunks = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
@@ -487,7 +545,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
   const readSileroShadowReportData = useCallback((): SileroShadowReportData | null => {
     const handle = sileroShadowHandleRef.current;
     if (!handle) return null;
-    return { modelInfo: handle.getModelInfo(), diagnostics: handle.getDiagnostics() };
+    return { modelInfo: handle.getModelInfo(), diagnostics: handle.getDiagnostics(), preload: getSileroPreloadTelemetry() };
   }, []);
 
   // VAD Round 11 (2026-08-23), Phase B: null whenever the flag was OFF
