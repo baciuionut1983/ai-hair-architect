@@ -75,6 +75,11 @@ import {
   type SileroRecurrentState,
   type SileroShadowDiagnosticsState,
 } from "./silero-vad-shadow-logic";
+import {
+  evaluateSileroContinuationGateFrame,
+  initSileroContinuationGateState,
+  type SileroContinuationGateState,
+} from "./silero-continuation-gate-logic";
 import { evaluateSileroStartGateFrame, initSileroStartGateState, type SileroStartGateState } from "./silero-start-gate-logic";
 import { createAsyncSingletonCache } from "@/lib/async-singleton-cache";
 
@@ -121,6 +126,12 @@ export interface SileroShadowHandle {
   // own glue layer is the ONLY place that ever reads this to affect a
   // real decision.
   getStartGateState(): SileroStartGateState;
+  // VAD Round 14 (2026-08-24), Phase C: the CONTINUATION gate's own live
+  // state (see silero-continuation-gate-logic.ts) -- same "always
+  // compute, caller decides" principle as getStartGateState() above,
+  // computed on every successful frame regardless of Phase C's own
+  // feature flag.
+  getContinuationGateState(): SileroContinuationGateState;
   // Idempotent -- safe to call more than once (mirrors vadCleanupRef's
   // own contract in use-voice-recording.ts). Never touches the shared
   // MediaStream passed into startSileroVadShadow (see this module's own
@@ -148,10 +159,12 @@ function resolveAudioContextConstructor(): (new (options?: { sampleRate?: number
 function unavailableHandle(modelInfo: SileroShadowModelInfo): SileroShadowHandle {
   const diagnostics = initSileroShadowDiagnostics();
   const startGateState = initSileroStartGateState();
+  const continuationGateState = initSileroContinuationGateState();
   return {
     getDiagnostics: () => diagnostics,
     getModelInfo: () => modelInfo,
     getStartGateState: () => startGateState,
+    getContinuationGateState: () => continuationGateState,
     stop: () => {},
   };
 }
@@ -381,6 +394,13 @@ export async function startSileroVadShadow(stream: MediaStream): Promise<SileroS
     // SileroShadowHandle.getStartGateState for why this runs regardless
     // of whether Phase B's own feature flag is enabled.
     let startGateState = initSileroStartGateState();
+    // VAD Round 14 (2026-08-24), Phase C: same "always compute" principle
+    // as startGateState above -- see SileroShadowHandle.getContinuationGateState's
+    // own doc comment. Created fresh here, per recording, exactly like
+    // recurrent/diagnostics/startGateState -- never shared across
+    // recordings (only the ONNX session itself is a shared singleton, see
+    // sileroPreloadCache above; this state is not).
+    let continuationGateState = initSileroContinuationGateState();
     let stopped = false;
 
     workletNode.port.onmessage = (event: MessageEvent<Float32Array>) => {
@@ -393,6 +413,14 @@ export async function startSileroVadShadow(stream: MediaStream): Promise<SileroS
           recurrent = result.recurrent;
           diagnostics = recordSileroFrameResult(diagnostics, result.probability, result.inferenceMs);
           startGateState = evaluateSileroStartGateFrame(startGateState, result.probability, performance.now());
+          // VAD Round 14 (2026-08-24), Phase C: a separate performance.now()
+          // call, deliberately NOT sharing startGateState's own timestamp
+          // above -- keeps this round's diff on the pre-existing START gate
+          // line at zero, per this round's own explicit "NU modifica START
+          // gate" constraint. The few microseconds' difference between the
+          // two calls is immaterial at this module's own ~32ms frame
+          // cadence.
+          continuationGateState = evaluateSileroContinuationGateFrame(continuationGateState, result.probability, performance.now());
         })
         .catch((error: unknown) => {
           if (stopped) return;
@@ -407,6 +435,7 @@ export async function startSileroVadShadow(stream: MediaStream): Promise<SileroS
       getDiagnostics: () => diagnostics,
       getModelInfo: () => modelInfo,
       getStartGateState: () => startGateState,
+      getContinuationGateState: () => continuationGateState,
       stop: () => {
         if (stopped) return;
         stopped = true;

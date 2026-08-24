@@ -1692,6 +1692,159 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
     });
   });
 
+  // VAD Round 14 (2026-08-24), Phase C: see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  describe("VAD ROUND 14 Silero continuation gate fields", () => {
+    it("accepts a fully-populated, real-shaped 'silero suppressed a premature stop' payload", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadContinuationMode: "silero",
+        vadContinuationModelThreshold: 0.5,
+        vadContinuationModelLastSpeechAtMs: 2800,
+        vadContinuationModelSilenceCandidateAtMs: 3100,
+        vadContinuationModelSilenceConfirmedAtMs: 4800,
+        vadContinuationFallbackUsed: false,
+        vadLegacyStopSuppressedByModelCount: 12,
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadContinuationMode: "silero",
+          vadContinuationModelThreshold: 0.5,
+          vadContinuationModelLastSpeechAtMs: 2800,
+          vadContinuationModelSilenceCandidateAtMs: 3100,
+          vadContinuationModelSilenceConfirmedAtMs: 4800,
+          vadContinuationFallbackUsed: false,
+          vadLegacyStopSuppressedByModelCount: 12,
+        }),
+      });
+    });
+
+    it("accepts a fully-populated 'fallback used' payload", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadContinuationMode: "silero",
+        vadContinuationFallbackUsed: true,
+        vadContinuationFallbackReason: "model_error",
+      });
+      expect(result).toEqual({
+        ok: true,
+        value: expect.objectContaining({
+          vadContinuationMode: "silero",
+          vadContinuationFallbackUsed: true,
+          vadContinuationFallbackReason: "model_error",
+        }),
+      });
+    });
+
+    it("accepts vadContinuationMode: 'legacy' (the flag-off default)", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadContinuationMode: "legacy",
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ vadContinuationMode: "legacy" }) });
+    });
+
+    it("accepts zero for vadLegacyStopSuppressedByModelCount -- a truthful 'never needed', not rejected as missing", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadLegacyStopSuppressedByModelCount: 0,
+      });
+      expect(result).toEqual({ ok: true, value: expect.objectContaining({ vadLegacyStopSuppressedByModelCount: 0 }) });
+    });
+
+    it("rejects an unknown vadContinuationMode value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadContinuationMode: "hybrid",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_continuation_mode" });
+    });
+
+    it("rejects an unknown vadContinuationFallbackReason value", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadContinuationFallbackReason: "network_error",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_continuation_fallback_reason" });
+    });
+
+    it("rejects a threshold above 1", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadContinuationModelThreshold: 1.5,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_continuation_model_threshold" });
+    });
+
+    it("rejects a negative vadLegacyStopSuppressedByModelCount", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadLegacyStopSuppressedByModelCount: -1,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_legacy_stop_suppressed_by_model_count" });
+    });
+
+    it("rejects a non-boolean vadContinuationFallbackUsed", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadContinuationFallbackUsed: "yes",
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_continuation_fallback_used" });
+    });
+
+    it("rejects an implausible vadContinuationModelLastSpeechAtMs -- never a real one", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+        vadContinuationModelLastSpeechAtMs: 10 * 60 * 1000,
+      });
+      expect(result).toEqual({ ok: false, reason: "invalid_vad_continuation_model_last_speech_at_ms" });
+    });
+
+    it("omits every field entirely when not provided -- never fabricated", () => {
+      const result = parseVoiceLatencyTelemetryPayload({
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: validSummary(),
+      });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        for (const field of [
+          "vadContinuationMode",
+          "vadContinuationModelThreshold",
+          "vadContinuationModelLastSpeechAtMs",
+          "vadContinuationModelSilenceCandidateAtMs",
+          "vadContinuationModelSilenceConfirmedAtMs",
+          "vadContinuationFallbackUsed",
+          "vadContinuationFallbackReason",
+          "vadLegacyStopSuppressedByModelCount",
+        ]) {
+          expect(field in result.value).toBe(false);
+        }
+      }
+    });
+  });
+
   // STT Flash-Lite root-cause diagnosis (2026-08-20): lets a real
   // production STT failure be attributed, directly from this one log line,
   // to the real Gemini HTTP status/canonical error status, or to a real

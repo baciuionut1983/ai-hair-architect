@@ -164,6 +164,17 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
       vadModelPreloadCompleted: parsed.value.vadModelPreloadCompleted ?? null,
       vadModelPreloadMs: parsed.value.vadModelPreloadMs ?? null,
       vadModelWasPreloadedAtRecordingStart: parsed.value.vadModelWasPreloadedAtRecordingStart ?? null,
+      // VAD Round 14 (2026-08-24), Phase C: see voice-latency-logic.ts's
+      // own VoiceLatencyTerminalDiagnostics doc comment for what each
+      // answers.
+      vadContinuationMode: parsed.value.vadContinuationMode ?? null,
+      vadContinuationModelThreshold: parsed.value.vadContinuationModelThreshold ?? null,
+      vadContinuationModelLastSpeechAtMs: parsed.value.vadContinuationModelLastSpeechAtMs ?? null,
+      vadContinuationModelSilenceCandidateAtMs: parsed.value.vadContinuationModelSilenceCandidateAtMs ?? null,
+      vadContinuationModelSilenceConfirmedAtMs: parsed.value.vadContinuationModelSilenceConfirmedAtMs ?? null,
+      vadContinuationFallbackUsed: parsed.value.vadContinuationFallbackUsed ?? null,
+      vadContinuationFallbackReason: parsed.value.vadContinuationFallbackReason ?? null,
+      vadLegacyStopSuppressedByModelCount: parsed.value.vadLegacyStopSuppressedByModelCount ?? null,
       // STT Flash-Lite root-cause diagnosis (2026-08-20): see
       // voice-latency-telemetry-logic.ts's own doc comment on these same 3
       // fields for exactly what they mean and why.

@@ -519,6 +519,25 @@ export interface VoiceLatencyTerminalDiagnostics {
   vadModelPreloadCompleted?: boolean;
   vadModelPreloadMs?: number;
   vadModelWasPreloadedAtRecordingStart?: boolean;
+  // VAD Round 14 (2026-08-24), Phase C: see
+  // silero-continuation-gate-logic.ts's own doc comment and
+  // use-voice-recording.ts's own sileroContinuationToReportFields doc
+  // comment for what each answers. vadContinuationMode is always present
+  // whenever ANY VAD telemetry is reported at all (it describes this
+  // build's own configuration, not a per-recording measurement) -- every
+  // other field is undefined unless the flag was actually on for this
+  // recording.
+  vadContinuationMode?: "legacy" | "silero";
+  vadContinuationModelThreshold?: number;
+  vadContinuationModelLastSpeechAtMs?: number;
+  vadContinuationModelSilenceCandidateAtMs?: number;
+  vadContinuationModelSilenceConfirmedAtMs?: number;
+  vadContinuationFallbackUsed?: boolean;
+  vadContinuationFallbackReason?: "model_loading" | "model_unavailable" | "model_error";
+  // The direct, per-recording proof of the premature-stop regression this
+  // round fixes -- see SileroContinuationReportContext.legacyStopSuppressedCount's
+  // own doc comment (use-voice-recording.ts) for exactly what this counts.
+  vadLegacyStopSuppressedByModelCount?: number;
 }
 
 // Fire-and-forget: ships the SAME summary already logged locally (see

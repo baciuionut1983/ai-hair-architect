@@ -257,6 +257,16 @@ export interface VoiceLatencyTelemetryInput {
   vadModelPreloadCompleted?: boolean;
   vadModelPreloadMs?: number;
   vadModelWasPreloadedAtRecordingStart?: boolean;
+  // VAD Round 14 (2026-08-24), Phase C: see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  vadContinuationMode?: "legacy" | "silero";
+  vadContinuationModelThreshold?: number;
+  vadContinuationModelLastSpeechAtMs?: number;
+  vadContinuationModelSilenceCandidateAtMs?: number;
+  vadContinuationModelSilenceConfirmedAtMs?: number;
+  vadContinuationFallbackUsed?: boolean;
+  vadContinuationFallbackReason?: "model_loading" | "model_unavailable" | "model_error";
+  vadLegacyStopSuppressedByModelCount?: number;
 }
 
 export type VoiceLatencyTelemetryValidationResult =
@@ -755,6 +765,43 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     vadModelWasPreloadedAtRecordingStart = input.vadModelWasPreloadedAtRecordingStart;
   }
 
+  // VAD Round 14 (2026-08-24), Phase C: see voice-latency-logic.ts's own
+  // VoiceLatencyTerminalDiagnostics doc comment for what each answers.
+  let vadContinuationMode: "legacy" | "silero" | undefined;
+  if (input.vadContinuationMode !== undefined) {
+    if (input.vadContinuationMode !== "legacy" && input.vadContinuationMode !== "silero") {
+      return { ok: false, reason: "invalid_vad_continuation_mode" };
+    }
+    vadContinuationMode = input.vadContinuationMode;
+  }
+  const vadContinuationModelThreshold = parseOptionalBoundedFloat(input, "vadContinuationModelThreshold", 1);
+  if (!vadContinuationModelThreshold.ok) return { ok: false, reason: "invalid_vad_continuation_model_threshold" };
+  const vadContinuationModelLastSpeechAtMs = parseOptionalDurationField(input, "vadContinuationModelLastSpeechAtMs");
+  if (!vadContinuationModelLastSpeechAtMs.ok) return { ok: false, reason: "invalid_vad_continuation_model_last_speech_at_ms" };
+  const vadContinuationModelSilenceCandidateAtMs = parseOptionalDurationField(input, "vadContinuationModelSilenceCandidateAtMs");
+  if (!vadContinuationModelSilenceCandidateAtMs.ok) return { ok: false, reason: "invalid_vad_continuation_model_silence_candidate_at_ms" };
+  const vadContinuationModelSilenceConfirmedAtMs = parseOptionalDurationField(input, "vadContinuationModelSilenceConfirmedAtMs");
+  if (!vadContinuationModelSilenceConfirmedAtMs.ok) return { ok: false, reason: "invalid_vad_continuation_model_silence_confirmed_at_ms" };
+  let vadContinuationFallbackUsed: boolean | undefined;
+  if (input.vadContinuationFallbackUsed !== undefined) {
+    if (typeof input.vadContinuationFallbackUsed !== "boolean") {
+      return { ok: false, reason: "invalid_vad_continuation_fallback_used" };
+    }
+    vadContinuationFallbackUsed = input.vadContinuationFallbackUsed;
+  }
+  let vadContinuationFallbackReason: "model_loading" | "model_unavailable" | "model_error" | undefined;
+  if (input.vadContinuationFallbackReason !== undefined) {
+    // Reuses VAD_START_GATE_FALLBACK_REASONS -- the same 3 real values
+    // either Silero gate (START or CONTINUATION) can ever produce as a
+    // fallback reason, see that const's own doc comment.
+    if (!VAD_START_GATE_FALLBACK_REASONS.has(input.vadContinuationFallbackReason as string)) {
+      return { ok: false, reason: "invalid_vad_continuation_fallback_reason" };
+    }
+    vadContinuationFallbackReason = input.vadContinuationFallbackReason as "model_loading" | "model_unavailable" | "model_error";
+  }
+  const vadLegacyStopSuppressedByModelCount = parseOptionalNonNegativeInteger(input, "vadLegacyStopSuppressedByModelCount");
+  if (!vadLegacyStopSuppressedByModelCount.ok) return { ok: false, reason: "invalid_vad_legacy_stop_suppressed_by_model_count" };
+
   let sttProviderHttpStatus: number | undefined;
   if (input.sttProviderHttpStatus !== undefined) {
     if (typeof input.sttProviderHttpStatus !== "number" || !isPlausibleHttpStatus(input.sttProviderHttpStatus)) {
@@ -989,6 +1036,24 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
       ...(vadModelPreloadCompleted !== undefined ? { vadModelPreloadCompleted } : {}),
       ...(vadModelPreloadMs.value !== undefined ? { vadModelPreloadMs: vadModelPreloadMs.value } : {}),
       ...(vadModelWasPreloadedAtRecordingStart !== undefined ? { vadModelWasPreloadedAtRecordingStart } : {}),
+      ...(vadContinuationMode !== undefined ? { vadContinuationMode } : {}),
+      ...(vadContinuationModelThreshold.value !== undefined
+        ? { vadContinuationModelThreshold: vadContinuationModelThreshold.value }
+        : {}),
+      ...(vadContinuationModelLastSpeechAtMs.value !== undefined
+        ? { vadContinuationModelLastSpeechAtMs: vadContinuationModelLastSpeechAtMs.value }
+        : {}),
+      ...(vadContinuationModelSilenceCandidateAtMs.value !== undefined
+        ? { vadContinuationModelSilenceCandidateAtMs: vadContinuationModelSilenceCandidateAtMs.value }
+        : {}),
+      ...(vadContinuationModelSilenceConfirmedAtMs.value !== undefined
+        ? { vadContinuationModelSilenceConfirmedAtMs: vadContinuationModelSilenceConfirmedAtMs.value }
+        : {}),
+      ...(vadContinuationFallbackUsed !== undefined ? { vadContinuationFallbackUsed } : {}),
+      ...(vadContinuationFallbackReason !== undefined ? { vadContinuationFallbackReason } : {}),
+      ...(vadLegacyStopSuppressedByModelCount.value !== undefined
+        ? { vadLegacyStopSuppressedByModelCount: vadLegacyStopSuppressedByModelCount.value }
+        : {}),
       ...(sttProviderHttpStatus !== undefined ? { sttProviderHttpStatus } : {}),
       ...(sttProviderErrorStatus !== undefined ? { sttProviderErrorStatus } : {}),
       ...(sttProviderErrorMessage !== undefined ? { sttProviderErrorMessage } : {}),

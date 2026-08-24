@@ -32,6 +32,11 @@ import type { LanguageCode } from "@/lib/language-registry";
 import type { TranslationKey } from "@/lib/translations";
 
 import { decodeBlobAsWav } from "./audio-wav-encode";
+import {
+  DEFAULT_SILERO_CONTINUATION_GATE_CONFIG,
+  initSileroContinuationGateState,
+  resolveSileroContinuationAuthority,
+} from "./silero-continuation-gate-logic";
 import { DEFAULT_SILERO_START_GATE_CONFIG, resolveSileroStartAuthority } from "./silero-start-gate-logic";
 import { summarizeSileroShadowDiagnostics, type SileroShadowDiagnosticsState } from "./silero-vad-shadow-logic";
 import {
@@ -116,6 +121,26 @@ const VAD_MODE = "heuristic-rms-spectral-v1";
 // Phase A's own shadow mode.
 const SILERO_START_GATE_ENABLED = process.env.NEXT_PUBLIC_VAD_SILERO_START_GATE_ENABLED === "true";
 
+// VAD Round 14 (2026-08-24), Phase C: a SEPARATE build-time flag from
+// SILERO_START_GATE_ENABLED above -- Phase C is its own, independently
+// toggleable rollout, per this round's own explicit "flag separat"
+// requirement. OFF by default, matching every prior Silero flag in this
+// saga.
+//
+// SCOPE: this flag affects ONLY which signal is allowed to declare
+// CONTINUATION/end-of-speech, and ONLY once hasDetectedSpeech is already
+// true (by either authority -- Phase B's Silero START gate, or the
+// legacy heuristic, independent of whether Phase B's own flag is on).
+// See silero-continuation-gate-logic.ts's own resolveSileroContinuationAuthority
+// for the exact rule: Silero becomes authoritative when healthy, the
+// heuristic's own unmodified continuation decision is the fallback
+// whenever Silero is still loading, failed to load, or has thrown a
+// runtime error -- "model failure != microphone failure" holds exactly as
+// it does for Phase A/B. OFF reproduces Phase B/B.2 behavior exactly (the
+// heuristic's own continuation/silence-countdown/stop machinery, fully
+// unmodified, stays the sole authority for anything after START).
+const SILERO_CONTINUATION_ENABLED = process.env.NEXT_PUBLIC_VAD_SILERO_CONTINUATION_ENABLED === "true";
+
 // Voice reliability hardening (2026-08-18): maps finishRecording's own
 // honest failure reason to this app's centralized i18n dictionary (see
 // translations.ts's consultAi.voiceError.* keys) -- the caller's `t`
@@ -190,6 +215,10 @@ export interface VoiceTurnLatencyInfo {
   // consultation-chat.tsx the same way sileroShadow already is. Null
   // whenever SILERO_START_GATE_ENABLED was off for this build.
   sileroStartGate: SileroStartGateReportContext | null;
+  // VAD Round 14 (2026-08-24), Phase C: carried through the same way as
+  // sileroStartGate, for the same reason. Null whenever
+  // SILERO_CONTINUATION_ENABLED was off for this build.
+  sileroContinuation: SileroContinuationReportContext | null;
 }
 
 export interface UseVoiceRecordingResult {
@@ -418,6 +447,59 @@ export function sileroStartGateToReportFields(context: SileroStartGateReportCont
   };
 }
 
+// VAD Round 14 (2026-08-24), Phase C: a snapshot of the CONTINUATION
+// gate's own per-recording outcome -- carried through onTranscript exactly
+// like SileroStartGateReportContext, so a successful turn's final
+// VOICE_LATENCY report can show, from one line, whether Silero's own
+// continuation authority was ever engaged, when it last saw speech, when
+// it flagged/confirmed silence, whether fallback was used, and -- the
+// decisive proof this round's own fix is working -- how many ticks the
+// legacy heuristic would have stopped prematurely had Silero not
+// suppressed it.
+export interface SileroContinuationReportContext {
+  fallbackUsed: boolean;
+  fallbackReason: "model_loading" | "model_unavailable" | "model_error" | null;
+  // Offsets from recording start (this app's own established telemetry
+  // convention), null whenever the underlying gate field itself is still
+  // null (speech never confirmed by this gate, or the recording ended
+  // before a candidate/confirmation ever happened).
+  lastSpeechAtMs: number | null;
+  silenceCandidateAtMs: number | null;
+  silenceConfirmedAtMs: number | null;
+  // How many ticks this recording's own legacy heuristic decision was
+  // "stop_silence" while Silero's own continuation gate had NOT confirmed
+  // silence -- i.e. how many times a premature stop was actually
+  // suppressed. Counted per TICK (not per distinct episode), so this
+  // number is roughly proportional to how much real speech time was saved
+  // from being cut off -- the direct, per-recording proof of the
+  // regression this round fixes. 0 is a truthful "never needed", not a
+  // fabricated placeholder.
+  legacyStopSuppressedCount: number;
+}
+
+// Maps SileroContinuationReportContext onto reportVoiceLatencySummary's
+// own flat, vad-prefixed fields -- mirrors sileroStartGateToReportFields
+// exactly. vadContinuationMode is reported UNCONDITIONALLY (describes this
+// build's own configuration, always genuinely known); every other field
+// is gated on `context` being non-null (the flag was actually ON for this
+// recording).
+export function sileroContinuationToReportFields(context: SileroContinuationReportContext | null): Partial<VoiceLatencyTerminalDiagnostics> {
+  return {
+    vadContinuationMode: SILERO_CONTINUATION_ENABLED ? "silero" : "legacy",
+    ...(context
+      ? {
+          vadContinuationModelThreshold: DEFAULT_SILERO_CONTINUATION_GATE_CONFIG.probabilityThreshold,
+          ...(context.lastSpeechAtMs !== null ? { vadContinuationModelLastSpeechAtMs: context.lastSpeechAtMs } : {}),
+          ...(context.silenceCandidateAtMs !== null ? { vadContinuationModelSilenceCandidateAtMs: context.silenceCandidateAtMs } : {}),
+          ...(context.silenceConfirmedAtMs !== null ? { vadContinuationModelSilenceConfirmedAtMs: context.silenceConfirmedAtMs } : {}),
+          vadContinuationFallbackUsed: context.fallbackUsed,
+          ...(context.fallbackReason !== null ? { vadContinuationFallbackReason: context.fallbackReason } : {}),
+          vadLegacyStopSuppressedByModelCount: context.legacyStopSuppressedCount,
+        }
+      : {}),
+  };
+}
+
 export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVoiceRecordingOptions): UseVoiceRecordingResult {
   const [recording, setRecording] = useState(false);
   const [processing, setProcessing] = useState(false);
@@ -541,6 +623,16 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
   // convention as the other vad*Ref fields.
   const sileroStartGateFallbackUsedRef = useRef(false);
   const sileroStartGateFallbackReasonRef = useRef<"model_loading" | "model_unavailable" | "model_error" | null>(null);
+  // VAD Round 14 (2026-08-24), Phase C: independent from Phase B's own
+  // fallback refs above -- START and CONTINUATION fallback are separate
+  // events (Silero could confirm START healthily and only degrade later,
+  // mid-utterance). Reset per recording, same convention.
+  const sileroContinuationFallbackUsedRef = useRef(false);
+  const sileroContinuationFallbackReasonRef = useRef<"model_loading" | "model_unavailable" | "model_error" | null>(null);
+  // The direct, per-recording proof of the regression this round fixes --
+  // see SileroContinuationReportContext.legacyStopSuppressedCount's own
+  // doc comment. Reset per recording, same convention.
+  const vadLegacyStopSuppressedByModelCountRef = useRef(0);
 
   const readSileroShadowReportData = useCallback((): SileroShadowReportData | null => {
     const handle = sileroShadowHandleRef.current;
@@ -566,6 +658,25 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
           ? Math.max(0, Math.round(confirmedAtAbsolute - recordingStartedAt))
           : null,
       qualifiedFrameCount: startGateState?.peakQualifiedFrameCount ?? 0,
+    };
+  }, []);
+
+  // VAD Round 14 (2026-08-24), Phase C: null whenever the flag was OFF for
+  // this recording (Phase C fields simply don't apply), same convention as
+  // readSileroStartGateReportContext above.
+  const readSileroContinuationReportContext = useCallback((): SileroContinuationReportContext | null => {
+    if (!SILERO_CONTINUATION_ENABLED) return null;
+    const continuationGateState = sileroShadowHandleRef.current?.getContinuationGateState() ?? null;
+    const recordingStartedAt = vadRecordingStartedAtRef.current;
+    const toOffset = (absolute: number | null): number | null =>
+      absolute !== null && recordingStartedAt !== null ? Math.max(0, Math.round(absolute - recordingStartedAt)) : null;
+    return {
+      fallbackUsed: sileroContinuationFallbackUsedRef.current,
+      fallbackReason: sileroContinuationFallbackReasonRef.current,
+      lastSpeechAtMs: toOffset(continuationGateState?.lastSpeechAtMs ?? null),
+      silenceCandidateAtMs: toOffset(continuationGateState?.silenceCandidateAtMs ?? null),
+      silenceConfirmedAtMs: toOffset(continuationGateState?.silenceConfirmedAtMs ?? null),
+      legacyStopSuppressedCount: vadLegacyStopSuppressedByModelCountRef.current,
     };
   }, []);
 
@@ -679,6 +790,12 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
     // convention as the refs above.
     sileroStartGateFallbackUsedRef.current = false;
     sileroStartGateFallbackReasonRef.current = null;
+    // VAD Round 14 (2026-08-24), Phase C: reset per-recording, same
+    // convention as the refs above -- prevents any leakage between
+    // recordings (required test 20).
+    sileroContinuationFallbackUsedRef.current = false;
+    sileroContinuationFallbackReasonRef.current = null;
+    vadLegacyStopSuppressedByModelCountRef.current = 0;
 
     void (async () => {
       try {
@@ -757,6 +874,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                   ...vadDiagnosticsToReportFields(readVoiceActivityDiagnostics()),
                   ...sileroShadowDiagnosticsToReportFields(readSileroShadowReportData()),
                   ...sileroStartGateToReportFields(readSileroStartGateReportContext()),
+                  ...sileroContinuationToReportFields(readSileroContinuationReportContext()),
                 });
               },
               onFailure: (_message, reason, marks, attemptNumber, providerDiagnostics) => {
@@ -786,6 +904,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                   ...vadDiagnosticsToReportFields(readVoiceActivityDiagnostics()),
                   ...sileroShadowDiagnosticsToReportFields(readSileroShadowReportData()),
                   ...sileroStartGateToReportFields(readSileroStartGateReportContext()),
+                  ...sileroContinuationToReportFields(readSileroContinuationReportContext()),
                 });
               },
               onSuccess: (transcript, _transcriptId, marks, sttProviderMs, attemptNumber, sttModel) => {
@@ -794,6 +913,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                 const vadDiagnostics = readVoiceActivityDiagnostics();
                 const sileroShadow = readSileroShadowReportData();
                 const sileroStartGate = readSileroStartGateReportContext();
+                const sileroContinuation = readSileroContinuationReportContext();
                 // Empty/whitespace-only would only ever come from a
                 // genuinely unexpected backend response (the route itself
                 // already fails closed on an empty transcript) -- this is
@@ -807,6 +927,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                     vadDiagnostics,
                     sileroShadow,
                     sileroStartGate,
+                    sileroContinuation,
                   });
                 } else {
                   // Same reasoning as the onFailure branch above: this
@@ -822,6 +943,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                     ...vadDiagnosticsToReportFields(vadDiagnostics),
                     ...sileroShadowDiagnosticsToReportFields(sileroShadow),
                     ...sileroStartGateToReportFields(sileroStartGate),
+                    ...sileroContinuationToReportFields(sileroContinuation),
                   });
                 }
               },
@@ -890,7 +1012,8 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
               const speechBandRatio = computeSpeechBandRatio(analyser, audioContext, freqBuffer);
               const now = performance.now();
               const wasSpeechConfirmed = vadState.hasDetectedSpeech;
-              const { state: rawState, decision } = evaluateVadSample(vadState, { rmsLevel, speechBandRatio }, now);
+              const { state: rawState, decision: rawDecision } = evaluateVadSample(vadState, { rmsLevel, speechBandRatio }, now);
+              let decision = rawDecision;
               // VAD Round 11 (2026-08-23), Phase B: while not yet confirmed
               // BEFORE this tick, Silero (when enabled and healthy) is the
               // ONLY thing allowed to flip hasDetectedSpeech true -- see
@@ -926,6 +1049,45 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
                   // comment).
                   sileroStartGateFallbackUsedRef.current = true;
                   sileroStartGateFallbackReasonRef.current = authority.fallbackReason;
+                }
+              }
+              // VAD Round 14 (2026-08-24), Phase C: once START is
+              // confirmed (by either authority, above), Silero's own
+              // continuation gate (when enabled and healthy) becomes the
+              // SOLE authority on whether this is real silence -- see
+              // resolveSileroContinuationAuthority's own doc comment for
+              // the full rule and the real production bug this closes.
+              // Deliberately called UNCONDITIONALLY (mirroring Phase B's
+              // own style) whenever the flag is on -- the function's own
+              // first branch is a no-op pass-through until state.hasDetectedSpeech
+              // is true, so a music-only recording (START never confirmed)
+              // structurally can never reach this override at all.
+              if (SILERO_CONTINUATION_ENABLED) {
+                const shadowHandle = sileroShadowHandleRef.current;
+                const modelInfo = shadowHandle?.getModelInfo() ?? null;
+                const shadowDiagnostics = shadowHandle?.getDiagnostics() ?? null;
+                const continuationGateState = shadowHandle?.getContinuationGateState() ?? initSileroContinuationGateState();
+                const continuationAuthority = resolveSileroContinuationAuthority({
+                  hasDetectedSpeech: state.hasDetectedSpeech,
+                  heuristicDecision: decision,
+                  heuristicLastSpeechAt: state.lastSpeechAt,
+                  sileroModelAvailable: modelInfo?.available ?? null,
+                  sileroErrorCount: shadowDiagnostics?.errorCount ?? 0,
+                  continuationGateState,
+                  fallbackAlreadyUsedThisRecording: sileroContinuationFallbackUsedRef.current,
+                });
+                decision = continuationAuthority.decision;
+                state = { ...state, lastSpeechAt: continuationAuthority.lastSpeechAt };
+                if (continuationAuthority.legacyStopSuppressed) {
+                  vadLegacyStopSuppressedByModelCountRef.current += 1;
+                }
+                if (continuationAuthority.fallbackEngaged) {
+                  // Reason captured once, at the first tick fallback
+                  // engages -- never overwritten afterward (see
+                  // resolveSileroContinuationAuthority's own
+                  // fallbackEngaged doc comment).
+                  sileroContinuationFallbackUsedRef.current = true;
+                  sileroContinuationFallbackReasonRef.current = continuationAuthority.fallbackReason;
                 }
               }
               vadState = state;
@@ -986,6 +1148,7 @@ export function useVoiceRecording({ clientId, language, t, onTranscript }: UseVo
     readVoiceActivityDiagnostics,
     readSileroShadowReportData,
     readSileroStartGateReportContext,
+    readSileroContinuationReportContext,
   ]);
 
   // Cleanup on unmount: release the microphone and stop VAD sampling even

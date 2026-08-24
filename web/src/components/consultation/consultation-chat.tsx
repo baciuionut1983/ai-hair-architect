@@ -50,10 +50,12 @@ import {
 import { TeachAiPanel } from "./teach-ai-panel";
 import { bindFetch } from "./teach-ai-panel-logic";
 import {
+  sileroContinuationToReportFields,
   sileroShadowDiagnosticsToReportFields,
   sileroStartGateToReportFields,
   useVoiceRecording,
   vadDiagnosticsToReportFields,
+  type SileroContinuationReportContext,
   type SileroShadowReportData,
   type SileroStartGateReportContext,
   type VoiceTurnLatencyInfo,
@@ -133,6 +135,9 @@ interface VoiceTurnLatencyContext {
   // VAD Round 11 (2026-08-23), Phase B: carried through the same way as
   // sileroShadow, for the same reason.
   sileroStartGate?: SileroStartGateReportContext | null;
+  // VAD Round 14 (2026-08-24), Phase C: carried through the same way as
+  // sileroStartGate, for the same reason.
+  sileroContinuation?: SileroContinuationReportContext | null;
   // Consult AI provider latency variance audit (2026-08-21): the server's
   // own real token usage + context-size metadata, threaded through the
   // same way as the other consultation* fields above -- see
@@ -565,6 +570,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         ...vadDiagnosticsToReportFields(voiceTurn.vadDiagnostics ?? null),
         ...sileroShadowDiagnosticsToReportFields(voiceTurn.sileroShadow ?? null),
         ...sileroStartGateToReportFields(voiceTurn.sileroStartGate ?? null),
+        ...sileroContinuationToReportFields(voiceTurn.sileroContinuation ?? null),
       });
     };
 
@@ -640,6 +646,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
                 vadDiagnostics: voiceTurn.vadDiagnostics,
                 sileroShadow: voiceTurn.sileroShadow,
                 sileroStartGate: voiceTurn.sileroStartGate,
+                sileroContinuation: voiceTurn.sileroContinuation,
                 consultationProviderMs: payload.providerLatencyMs,
                 consultationPreProviderMs: payload.preProviderReadsMs,
                 consultationReplyWriteMs: payload.replyWriteMs,
@@ -814,6 +821,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         ...vadDiagnosticsToReportFields(voiceLatency.vadDiagnostics ?? null),
         ...sileroShadowDiagnosticsToReportFields(voiceLatency.sileroShadow ?? null),
         ...sileroStartGateToReportFields(voiceLatency.sileroStartGate ?? null),
+        ...sileroContinuationToReportFields(voiceLatency.sileroContinuation ?? null),
       });
     };
 
