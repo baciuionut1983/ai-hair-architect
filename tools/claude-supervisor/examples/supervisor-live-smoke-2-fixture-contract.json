@@ -1,7 +1,7 @@
 {
   "taskId": "supervisor-live-smoke-2-fixture",
   "title": "Supervisor v1.2 live smoke: create one disposable fixture file",
-  "approvedPrompt": "Create a new file at exactly this path: smoke-fixtures/marker.txt\nIts content must be exactly one line: SUPERVISOR_V1_2_LIVE_SMOKE_OK\nDo not create, modify, or delete any other file. Do not run any git commands yourself.",
+  "approvedPrompt": "Edit the existing file at exactly this path: smoke-fixtures/marker.txt\nReplace its entire content with exactly one line: SUPERVISOR_V1_2_LIVE_SMOKE_OK\nDo not create, modify, or delete any other file. Do not run any git commands yourself.",
   "scope": ["smoke-fixtures/marker.txt"],
   "protectedAreas": [
     "web/",
