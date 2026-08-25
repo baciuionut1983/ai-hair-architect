@@ -79,6 +79,30 @@ export interface LaunchArgsInput {
   cwd: string;
 }
 
+// v1.2.1 root-cause fix (see this round's own final report): in
+// non-interactive `-p` mode, Claude Code's own built-in safety layer
+// denies EVERY Write/Edit tool call with "...which is a sensitive file"
+// unless at least one explicit, path-scoped `--allowedTools
+// Write(<pattern>)`/`Edit(<pattern>)` rule is present -- CONFIRMED live,
+// repeatedly: `--permission-mode acceptEdits` ALONE never unlocks real
+// file writes in `-p` mode, regardless of the target path (three
+// different real paths were denied identically, none of which matched
+// Claude Code's own documented protected-paths denylist -- .git/.claude/
+// etc. -- confirmed by reading the installed binary's own embedded
+// strings). ALSO CONFIRMED live: this allow-rule does NOT provide real
+// per-file enforcement -- once ANY qualifying Write/Edit rule is
+// present, the executor can edit ANY file the real `--add-dir` boundary
+// already exposes (a live test scoped narrowly to one file still edited
+// a completely different one in the same session). `--add-dir` itself
+// (directory-level) IS a real, enforced boundary (proven independently
+// in v1.1's own Phase 4 resume smoke test). Given path-scoping is not
+// genuinely enforceable here, this uses the honest, maximally-permissive
+// pattern for the already-`--add-dir`-scoped directory -- the ACTUAL
+// security boundary against an executor touching the wrong files is,
+// and remains, scope-guard.ts's own independent post-hoc git-diff
+// verification (classifyDiff/pre-commit-review), never this CLI flag.
+const ALLOWED_WRITE_EDIT_TOOLS = ["--allowedTools", "Write(**)", "Edit(**)"];
+
 // The FIRST launch of a task -- includes the full approved prompt
 // verbatim (see task-contract.ts's own doc comment: the Supervisor never
 // rewrites it).
@@ -94,6 +118,7 @@ export function buildLaunchArgs(input: LaunchArgsInput): string[] {
     "--include-partial-messages",
     "--permission-mode",
     input.permissionMode,
+    ...ALLOWED_WRITE_EDIT_TOOLS,
     "--add-dir",
     input.cwd,
   ];
@@ -131,6 +156,7 @@ export function buildResumeArgs(input: ResumeArgsInput): string[] {
     "--include-partial-messages",
     "--permission-mode",
     input.permissionMode,
+    ...ALLOWED_WRITE_EDIT_TOOLS,
     "--add-dir",
     input.cwd,
   ];

@@ -80,6 +80,19 @@ describe("buildLaunchArgs", () => {
     const args = buildLaunchArgs({ sessionId: "id", prompt: "task", permissionMode: "acceptEdits", cwd: "/repo" });
     expect(args).not.toContain("--resume");
   });
+
+  // v1.2.1 root-cause fix: --permission-mode acceptEdits ALONE never
+  // unlocks a real Write/Edit tool call in non-interactive -p mode --
+  // confirmed live, repeatedly (see this round's own final report). An
+  // explicit --allowedTools Write/Edit rule is required or every
+  // Write/Edit is denied as "...which is a sensitive file", regardless
+  // of the target path.
+  it("includes an explicit --allowedTools rule authorizing Write and Edit -- required for real file edits in -p mode", () => {
+    const args = buildLaunchArgs({ sessionId: "id", prompt: "task", permissionMode: "acceptEdits", cwd: "/repo" });
+    const toolsIndex = args.indexOf("--allowedTools");
+    expect(toolsIndex).toBeGreaterThanOrEqual(0);
+    expect(args.slice(toolsIndex + 1, toolsIndex + 3)).toEqual(expect.arrayContaining([expect.stringContaining("Write"), expect.stringContaining("Edit")]));
+  });
 });
 
 describe("buildResumeArgs", () => {
@@ -116,5 +129,10 @@ describe("buildResumeArgs", () => {
     const first = buildResumeArgs({ sessionId: "id", prompt: RESUME_INSTRUCTION, permissionMode: "acceptEdits", cwd: "/repo" });
     const second = buildResumeArgs({ sessionId: "id", prompt: RESUME_INSTRUCTION, permissionMode: "acceptEdits", cwd: "/repo" });
     expect(first).toEqual(second);
+  });
+
+  it("also includes the --allowedTools Write/Edit rule on resume, same as launch", () => {
+    const args = buildResumeArgs({ sessionId: "id", prompt: RESUME_INSTRUCTION, permissionMode: "acceptEdits", cwd: "/repo" });
+    expect(args.indexOf("--allowedTools")).toBeGreaterThanOrEqual(0);
   });
 });
