@@ -104,6 +104,46 @@ describe("decideNextAction -- EXECUTOR_RESULT: completed_success, scope classifi
   });
 });
 
+// v1.3: the Agent SDK transport's reducer (agent-sdk-events.ts) attaches
+// two additive, OPTIONAL diagnostic fields to ExecutorOutcome --
+// outcomeKind/permissionDenialCount -- that the CLI transport never
+// sets. This proves decideNextAction's own branching is provably inert
+// to their presence: identical outcome.status must produce an identical
+// decision whether or not these v1.3-only fields are populated, so
+// wiring in the new transport can never silently change existing
+// decision behavior.
+describe("decideNextAction -- v1.3 Agent SDK diagnostic fields are inert", () => {
+  it("produces the identical decision for a completed_success outcome with or without outcomeKind/permissionDenialCount set", () => {
+    const withoutSdkFields = decideNextAction(initialRunState("task-1"), contract(), {
+      type: "EXECUTOR_RESULT",
+      outcome: outcome(),
+      changedFiles: ["web/src/lib/tts-provider-gemini.ts"],
+    });
+    const withSdkFields = decideNextAction(initialRunState("task-1"), contract(), {
+      type: "EXECUTOR_RESULT",
+      outcome: outcome({ outcomeKind: "success", permissionDenialCount: 3 }),
+      changedFiles: ["web/src/lib/tts-provider-gemini.ts"],
+    });
+    expect(withSdkFields).toEqual(withoutSdkFields);
+  });
+
+  it("produces the identical decision for an incomplete outcome regardless of which v1.3 outcomeKind (transport_error/cancelled/malformed/permission_denied_only) is attached", () => {
+    const baseline = decideNextAction({ ...initialRunState("task-1"), restartCount: 0 }, contract(), {
+      type: "EXECUTOR_RESULT",
+      outcome: outcome({ status: "incomplete", detail: "no result event observed" }),
+      changedFiles: [],
+    });
+    for (const outcomeKind of ["transport_error", "cancelled", "malformed", "permission_denied_only"] as const) {
+      const withKind = decideNextAction({ ...initialRunState("task-1"), restartCount: 0 }, contract(), {
+        type: "EXECUTOR_RESULT",
+        outcome: outcome({ status: "incomplete", detail: "no result event observed", outcomeKind }),
+        changedFiles: [],
+      });
+      expect(withKind).toEqual(baseline);
+    }
+  });
+});
+
 describe("decideNextAction -- CHECK_RESULT", () => {
   it("moves forward when a check passes", () => {
     const action = decideNextAction(initialRunState("task-1"), contract(), { type: "CHECK_RESULT", check: "web_typecheck", passed: true, detail: "clean" });

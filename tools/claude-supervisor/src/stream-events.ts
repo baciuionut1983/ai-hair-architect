@@ -97,11 +97,25 @@ export function parseStreamJsonLine(line: string): ParsedStreamEvent | null {
   return { kind: "other", raw: parsed };
 }
 
+// v1.3: additive, optional diagnostic enrichment for the Agent SDK
+// transport (see agent-sdk-events.ts) -- never branched on by
+// decide-next-action.ts/state-machine.ts, which continue to read only
+// `status` exactly as before. This is what lets Phase 6's own "at
+// minimum distinguish" list (success / executor error / transport error
+// / cancelled / permission denial / malformed) be represented WITHOUT
+// widening `status` itself or touching the orchestrator's decision
+// logic. The CLI transport (stream-events.ts's own reduceExecutorOutcome
+// below) never sets this -- it remains undefined for that transport,
+// which is a valid, backward-compatible absence, not a regression.
+export type SdkOutcomeKind = "success" | "executor_error" | "transport_error" | "cancelled" | "permission_denied_only" | "malformed";
+
 export interface ExecutorOutcome {
   status: "completed_success" | "completed_error" | "incomplete";
   detail: string;
   sessionId: string | null;
   apiRetryCount: number;
+  outcomeKind?: SdkOutcomeKind;
+  permissionDenialCount?: number;
 }
 
 // Reduces a full sequence of parsed events (everything observed on

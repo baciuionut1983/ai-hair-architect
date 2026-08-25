@@ -16,8 +16,11 @@ import { pathToFileURL } from "node:url";
 import { acquireLock, releaseLock } from "./lock.js";
 import { captureGitSnapshot, verifyHeadMatchesOrigin } from "./git-inspect.js";
 import { runActiveExecution, runPreflight, runQualityGatesAndCommitPush } from "./orchestrator.js";
+import type { ExecutorLauncher } from "./orchestrator.js";
 import { initialRunState, loadRunStateFromDisk, runStateFilePath, saveRunStateToDisk } from "./persistence.js";
+import { createAgentSdkExecutorLauncher } from "./agent-sdk-executor-launcher.js";
 import { createRealExecutorLauncher, resolveRealClaudeBinary } from "./real-executor-launcher.js";
+import { selectExecutorTransport } from "./executor-transport-selection.js";
 import { validateTaskContract } from "./task-contract.js";
 import { reconcileOnRestart } from "./restart-recovery.js";
 import { resolveCheckExecution } from "./check-registry.js";
@@ -198,17 +201,30 @@ async function main(): Promise<void> {
       return;
     }
 
-    const binaryPath = resolveRealClaudeBinary();
-    if (binaryPath === null) {
-      console.log(
-        "[SUPERVISOR] ACTIVE mode: could not resolve a real Claude Code binary (checked CLAUDE_SUPERVISOR_CLAUDE_BINARY and the known install candidates). Escalating without launching anything.",
-      );
-      saveRunStateToDisk(statePath, { ...runState, state: "ESCALATED", updatedAt: new Date().toISOString(), lastAction: "could not resolve claude binary" });
-      return;
+    // v1.3: transport selection is explicit and fail-closed -- default
+    // is the Agent SDK transport (this round's own migration target);
+    // the legacy claude -p CLI transport is reachable only via the exact
+    // CLAUDE_SUPERVISOR_TRANSPORT=cli-legacy opt-in, never automatically,
+    // and never as a silent fallback in either direction (see this
+    // round's own approved plan, "Legacy CLI transport").
+    const transportSelection = selectExecutorTransport(process.env);
+    let launcher: ExecutorLauncher;
+    if (transportSelection.transport === "cli-legacy") {
+      console.log("[SUPERVISOR] ACTIVE mode: CLAUDE_SUPERVISOR_TRANSPORT=cli-legacy -- using the legacy claude -p CLI transport (explicit opt-in, not the default).");
+      const binaryPath = resolveRealClaudeBinary();
+      if (binaryPath === null) {
+        console.log(
+          "[SUPERVISOR] ACTIVE mode: could not resolve a real Claude Code binary (checked CLAUDE_SUPERVISOR_CLAUDE_BINARY and the known install candidates). Escalating without launching anything.",
+        );
+        saveRunStateToDisk(statePath, { ...runState, state: "ESCALATED", updatedAt: new Date().toISOString(), lastAction: "could not resolve claude binary" });
+        return;
+      }
+      launcher = createRealExecutorLauncher(binaryPath);
+    } else {
+      launcher = createAgentSdkExecutorLauncher();
     }
 
     const sessionId = randomUUID();
-    const launcher = createRealExecutorLauncher(binaryPath);
     const now = (): string => new Date().toISOString();
     const captureChangedFiles = async (cwd: string): Promise<readonly string[]> => (await captureGitSnapshot(cwd)).changedFiles;
 
