@@ -85,6 +85,44 @@ describe("runPreCommitReview", () => {
     expect(record.conditions.find((c) => c.name === "no_unexpected_untracked_files")?.passed).toBe(true);
   });
 
+  // v1.3 regression test -- the exact real bug this round's own live
+  // smoke test found: a newly-created, genuinely in-scope file is
+  // untracked at review time by construction (it hasn't been staged
+  // yet), so it must not be flagged as "unexpected" as long as
+  // git-inspect.ts's own changedFiles (which, since v1.3, includes
+  // newly-created files -- see extractUntrackedFilePaths) already
+  // accounts for it. This is what actually unblocks a create-a-new-file
+  // task from ever reaching a real commit.
+  it("does not flag a newly-created untracked file that changedFiles already independently accounts for", () => {
+    const record = runPreCommitReview(
+      baseInput({
+        changedFiles: ["tools/claude-supervisor/fixtures/marker.txt"],
+        statusLines: ["?? tools/claude-supervisor/fixtures/marker.txt", "?? .claude/"],
+      }),
+      () => "t",
+    );
+    expect(record.ok).toBe(true);
+    expect(record.conditions.find((c) => c.name === "no_unexpected_untracked_files")?.passed).toBe(true);
+  });
+
+  // A genuinely stray file must still be caught even when SOME other,
+  // legitimate new file is also present in the same run -- the fix must
+  // not accidentally allowlist everything untracked once changedFiles is
+  // non-empty.
+  it("still flags a genuinely stray untracked file even alongside a real, in-scope newly-created one", () => {
+    const record = runPreCommitReview(
+      baseInput({
+        changedFiles: ["tools/claude-supervisor/fixtures/marker.txt"],
+        statusLines: ["?? tools/claude-supervisor/fixtures/marker.txt", "?? some-stray-file.txt", "?? .claude/"],
+      }),
+      () => "t",
+    );
+    expect(record.ok).toBe(false);
+    const condition = record.conditions.find((c) => c.name === "no_unexpected_untracked_files");
+    expect(condition?.passed).toBe(false);
+    expect(condition?.detail).toBe("some-stray-file.txt");
+  });
+
   // Test requirement (Phase 3): ".claude/ untouched".
   it("fails claude_dir_untouched if .claude/ shows as MODIFIED (tracked), not just untracked", () => {
     const record = runPreCommitReview(baseInput({ statusLines: [" M .claude/settings.json"] }), () => "t");

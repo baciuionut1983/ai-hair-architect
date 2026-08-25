@@ -35,13 +35,34 @@ export async function captureGitSnapshot(cwd: string): Promise<GitSnapshot> {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
-  const changedFiles = diffNameResult.stdout
+  const trackedChangedFiles = diffNameResult.stdout
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+  // v1.3 fix: `git diff --name-only` is structurally blind to brand-new
+  // (untracked) files -- it only ever diffs the working tree against the
+  // index for files git already tracks. Without this, a real live smoke
+  // test proved that classifyDiff (scope-guard.ts) never sees a
+  // newly-created file at all, so protectedAreas enforcement would
+  // silently never apply to file CREATION, only to modification of
+  // already-tracked files. Unioning in the untracked entries from
+  // statusLines (itself now per-file, not per-directory, thanks to
+  // GIT_STATUS_ARGS's own --untracked-files=all) closes that gap. No
+  // overlap is possible between the two sources by construction: a path
+  // git already tracks can never also appear as a "??" status line.
+  const changedFiles = [...trackedChangedFiles, ...extractUntrackedFilePaths(statusLines)];
   const diffStatSummary = diffStatResult.stdout.trim().length > 0 ? summarizeLastLine(diffStatResult.stdout) : null;
 
   return { headSha, originMasterSha, statusLines, changedFiles, diffStatSummary };
+}
+
+// `git status --short`'s untracked-entry format is "?? <path>". Shared,
+// exported pure parsing so pre-commit-review.ts's own untracked-file
+// check can correlate its statusLines against exactly the same paths
+// this module puts in changedFiles, rather than maintaining a second,
+// possibly-diverging copy of this one-line parse.
+export function extractUntrackedFilePaths(statusLines: readonly string[]): string[] {
+  return statusLines.filter((line) => line.startsWith("??")).map((line) => line.slice(2).trim());
 }
 
 // `git diff --stat`'s own last line is already the canonical "N files

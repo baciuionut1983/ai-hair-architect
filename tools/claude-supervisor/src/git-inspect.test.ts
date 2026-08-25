@@ -4,7 +4,7 @@
 // a claim about it", so its own tests hold it to the same standard:
 // prove the parsing is correct against real `git` output, not a
 // hand-written fixture that might not match what git actually prints.
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -75,6 +75,35 @@ describe("captureGitSnapshot", () => {
     writeFileSync(join(repoDir, "untracked.txt"), "new\n", "utf8");
     const snapshot = await captureGitSnapshot(repoDir);
     expect(snapshot.statusLines.some((line: string) => line.includes("untracked.txt"))).toBe(true);
+  });
+
+  // v1.3 regression test -- this round's own real live smoke test proved
+  // `git diff --name-only` alone is blind to brand-new files, which made
+  // scope-guard.ts's classifyDiff (fed from changedFiles) silently never
+  // check a newly-created file against protectedAreas at all.
+  it("includes a newly-created untracked file in changedFiles, not just statusLines", async () => {
+    writeFileSync(join(repoDir, "new-file.txt"), "brand new\n", "utf8");
+    const snapshot = await captureGitSnapshot(repoDir);
+    expect(snapshot.changedFiles).toContain("new-file.txt");
+  });
+
+  // The exact real bug scenario: a file created inside a directory that
+  // did not exist before must be listed as the individual file path
+  // (thanks to GIT_STATUS_ARGS's own --untracked-files=all), never
+  // collapsed to just the containing directory -- a collapsed "dir/"
+  // entry can never be correlated against a per-file protectedAreas
+  // pattern or an exact scope path.
+  it("lists the individual file path, not a collapsed directory, for a new file inside a brand-new directory", async () => {
+    mkdirSync(join(repoDir, "brand-new-dir"));
+    writeFileSync(join(repoDir, "brand-new-dir", "inner.txt"), "content\n", "utf8");
+    const snapshot = await captureGitSnapshot(repoDir);
+    expect(snapshot.changedFiles).toContain("brand-new-dir/inner.txt");
+    expect(snapshot.changedFiles).not.toContain("brand-new-dir/");
+  });
+
+  it("still shows an empty changedFiles when the tree is genuinely clean (no regression from the untracked-file union)", async () => {
+    const snapshot = await captureGitSnapshot(repoDir);
+    expect(snapshot.changedFiles).toEqual([]);
   });
 });
 

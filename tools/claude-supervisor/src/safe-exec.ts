@@ -78,7 +78,18 @@ export function execSafe(program: string, args: readonly string[], options: Exec
 // Read-only git inspection commands the Supervisor runs to verify the
 // executor's own claims independently -- see git-inspect.ts for the
 // parsing layer built on top of these.
-export const GIT_STATUS_ARGS = ["status", "--short"] as const;
+// v1.3 fix: `--untracked-files=all` -- without it, git collapses a
+// brand-new directory into a single "?? dir/" status line instead of
+// listing the files inside it, which made a newly-created file
+// impossible to correlate with git-inspect.ts's own per-file
+// changedFiles list (see this round's own live smoke test finding: a
+// real Write inside a new tools/claude-supervisor/fixtures/ directory
+// was invisible at the file level). Bounded here: this repo's own
+// .gitignore already excludes node_modules/dist/build artifacts, so
+// this never enumerates anything but genuinely relevant new files, and
+// this command runs at most once per Supervisor invocation, never in a
+// hot loop.
+export const GIT_STATUS_ARGS = ["status", "--short", "--untracked-files=all"] as const;
 export const GIT_DIFF_STAT_ARGS = ["diff", "--stat"] as const;
 export const GIT_DIFF_NAME_ONLY_ARGS = ["diff", "--name-only"] as const;
 export const GIT_LOG_ONE_ARGS = ["log", "-1", "--format=%H"] as const;

@@ -6,6 +6,7 @@
 // orchestrator logs verbatim -- "If any condition fails: NO COMMIT" is
 // enforced by the caller checking `.ok`, never by this function itself
 // performing any action.
+import { extractUntrackedFilePaths } from "./git-inspect.js";
 import { classifyDiff } from "./scope-guard.js";
 import { isSameContract } from "./task-contract.js";
 import type { TaskContract } from "./types.js";
@@ -33,11 +34,6 @@ export interface ReviewRecord {
   timestamp: string;
   ok: boolean;
   conditions: readonly ReviewCondition[];
-}
-
-function isUntrackedLine(line: string): string | null {
-  if (!line.startsWith("??")) return null;
-  return line.slice(2).trim();
 }
 
 export function runPreCommitReview(input: PreCommitReviewInput, now: () => string): ReviewRecord {
@@ -73,10 +69,22 @@ export function runPreCommitReview(input: PreCommitReviewInput, now: () => strin
     detail: input.checksAllPassed ? "all required checks passed" : "at least one required check did not pass",
   });
 
-  const unexpectedUntracked = input.statusLines
-    .map((line) => isUntrackedLine(line))
-    .filter((path): path is string => path !== null)
-    .filter((path) => !input.allowedUntrackedPrefixes.some((prefix) => path.startsWith(prefix)));
+  // v1.3 fix: an untracked line is "expected" if EITHER it matches
+  // allowedUntrackedPrefixes (the existing .claude/ exception) OR its
+  // path is already present in input.changedFiles -- i.e. it's a file
+  // the independently-computed diff already accounts for, which the
+  // no_protected_files_touched/no_level3_files_touched conditions above
+  // have ALREADY run through classifyDiff. This is deliberately not a
+  // second, separate allowlist: it ties the exception to the one
+  // real, already-verified fact (the diff), never to anything the
+  // executor merely claims. A genuinely stray file the executor created
+  // outside of what git-inspect.ts's own changedFiles reports (which,
+  // since v1.3, includes newly-created files too -- see
+  // extractUntrackedFilePaths) still falls through and gets flagged.
+  const changedFileSet = new Set(input.changedFiles);
+  const unexpectedUntracked = extractUntrackedFilePaths(input.statusLines)
+    .filter((path) => !input.allowedUntrackedPrefixes.some((prefix) => path.startsWith(prefix)))
+    .filter((path) => !changedFileSet.has(path));
   conditions.push({
     name: "no_unexpected_untracked_files",
     passed: unexpectedUntracked.length === 0,
@@ -88,7 +96,7 @@ export function runPreCommitReview(input: PreCommitReviewInput, now: () => strin
   // entry is this whole project's own established, expected state (see
   // ALLOWED_UNTRACKED_PREFIXES in cli.ts) and must never be flagged.
   const claudeDirTouched = input.statusLines.some((line) => {
-    if (isUntrackedLine(line) !== null) return false;
+    if (line.startsWith("??")) return false;
     const path = line.slice(2).trim();
     return path.startsWith(".claude/") || path === ".claude";
   });
