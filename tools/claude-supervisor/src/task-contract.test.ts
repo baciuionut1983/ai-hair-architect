@@ -55,8 +55,19 @@ describe("validateTaskContract", () => {
     });
   });
 
-  it("rejects an empty requiredChecks array", () => {
-    expect(validateTaskContract(validRaw({ requiredChecks: [] }))).toEqual({
+  // An empty requiredChecks array is legitimate (e.g. a "make no
+  // repository changes" smoke-test task has nothing to build/lint/test)
+  // -- protectedAreas, not requiredChecks, is what must never be empty.
+  it("accepts an empty requiredChecks array", () => {
+    const result = validateTaskContract(validRaw({ requiredChecks: [] }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.contract.requiredChecks).toEqual([]);
+    }
+  });
+
+  it("rejects a non-array requiredChecks", () => {
+    expect(validateTaskContract(validRaw({ requiredChecks: "tsc" }))).toEqual({
       ok: false,
       reason: "missing_or_invalid_requiredChecks",
     });

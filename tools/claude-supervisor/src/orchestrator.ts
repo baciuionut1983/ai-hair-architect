@@ -13,9 +13,11 @@
 import { classifyDiff } from "./scope-guard.js";
 import { captureGitSnapshot, isWorkingTreeCleanExcept } from "./git-inspect.js";
 import { decideNextAction, type Observation } from "./decide-next-action.js";
-import { transition } from "./state-machine.js";
+import { decideRestart } from "./restart-policy.js";
+import { transition, type SupervisorEvent } from "./state-machine.js";
 import { logSupervisorEvent } from "./logger.js";
-import type { SupervisorRunState, TaskContract } from "./types.js";
+import { verifySessionIdMatches, type ExecutorOutcome } from "./stream-events.js";
+import type { SupervisorLogEntry, SupervisorRunState, SupervisorState, TaskContract } from "./types.js";
 
 export interface PreflightObservation {
   clean: boolean;
@@ -88,3 +90,134 @@ export function applyDecision(runState: SupervisorRunState, contract: TaskContra
 // import local to this module's real usage rather than every caller
 // re-importing scope-guard.ts directly.
 export { classifyDiff };
+
+// ---------------------------------------------------------------------
+// ACTIVE MODE (Supervisor v1.1) -- minimal, explicitly bounded per this
+// round's own task spec Phase 6: launch one executor, observe its
+// structured stream, detect completion/interruption, resume within the
+// restart policy, perform independent git inspection, enforce scope
+// policy, and stop/escalate. Required checks / commit / push / CI-watch
+// are DELIBERATELY NOT invoked from this loop in v1.1 -- see this
+// round's own final report's "what ACTIVE mode still cannot do": the
+// task spec's own Phase 6 bullet list names exactly these nine
+// capabilities and no more, and reaching further (auto-running checks,
+// auto-committing) in the same pass that first proves the launch/stream/
+// resume mechanism works live would combine two separate risk surfaces
+// this task explicitly asked to keep apart ("Do NOT yet allow Supervisor
+// to invent new task instructions").
+//
+// The actual `claude` process spawn is injected as an ExecutorLauncher
+// (see real-executor-launcher.ts for the real implementation wiring
+// claude-cli.ts + executor-runner.ts) so this entire loop -- including
+// the interruption/restart/backoff/scope-enforcement decision path --
+// is fully unit-testable with a fake launcher, never a real spawn.
+export interface ExecutorLauncher {
+  launch(sessionId: string, prompt: string, cwd: string): Promise<ExecutorOutcome>;
+  resume(sessionId: string, cwd: string): Promise<ExecutorOutcome>;
+}
+
+export interface RunActiveExecutionOptions {
+  contract: TaskContract;
+  runState: SupervisorRunState;
+  cwd: string;
+  sessionId: string;
+  launcher: ExecutorLauncher;
+  // Independent verification, never the executor's own claim -- real
+  // usage passes `(cwd) => captureGitSnapshot(cwd).then((s) =>
+  // s.changedFiles)`; tests inject a fake to control the diff without a
+  // real git repo.
+  captureChangedFiles: (cwd: string) => Promise<readonly string[]>;
+  now: () => string;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface ActiveExecutionResult {
+  runState: SupervisorRunState;
+  log: SupervisorLogEntry[];
+}
+
+const DEFAULT_SLEEP = (ms: number): Promise<void> => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+
+export async function runActiveExecution(options: RunActiveExecutionOptions): Promise<ActiveExecutionResult> {
+  const sleep = options.sleep ?? DEFAULT_SLEEP;
+  const log: SupervisorLogEntry[] = [];
+  let runState = options.runState;
+
+  // Applies one state-machine transition, appends one log entry (via the
+  // real logger, so every ACTIVE-mode decision is written in the exact
+  // "[SUPERVISOR] taskId=... state=... action=... result=..." format),
+  // and folds the result back into runState. An event the state machine
+  // rejects from the current state is a genuine bug in this loop's own
+  // sequencing (never a normal runtime outcome) -- surfaced by simply
+  // leaving the state unchanged rather than throwing, so a live run
+  // degrades to "stuck, visible in the log" instead of crashing.
+  function record(event: SupervisorEvent, humanMessage: string): SupervisorState {
+    const result = transition(runState.state, event);
+    const nextState: SupervisorState = result.ok ? result.next : runState.state;
+    const entry: SupervisorLogEntry = {
+      taskId: options.contract.taskId,
+      state: nextState,
+      executorSession: runState.executorSessionId,
+      action: event.type,
+      result: result.ok ? humanMessage : `${humanMessage} [REJECTED: ${result.reason}]`,
+      timestamp: options.now(),
+    };
+    log.push(entry);
+    logSupervisorEvent(entry);
+    runState = { ...runState, state: nextState, updatedAt: options.now(), lastAction: entry.result };
+    return nextState;
+  }
+
+  record({ type: "EXECUTOR_LAUNCHED" }, `Launching executor session ${options.sessionId} with the approved prompt.`);
+  runState = { ...runState, executorSessionId: options.sessionId };
+  let outcome = await options.launcher.launch(options.sessionId, options.contract.approvedPrompt, options.cwd);
+
+  for (;;) {
+    // A resume (or, defensively, even a first launch) that reports a
+    // DIFFERENT session id than the one requested is never trusted at
+    // face value -- see stream-events.ts's own doc comment on
+    // verifySessionIdMatches and this round's own Phase 4 requirement
+    // "no new uncontrolled executor/session is created".
+    if (outcome.sessionId !== null && !verifySessionIdMatches(options.sessionId, outcome)) {
+      record(
+        { type: "HARD_STOP_TRIGGERED", reason: `observed session id ${outcome.sessionId} does not match the requested ${options.sessionId}` },
+        `Session id mismatch: requested ${options.sessionId}, observed ${outcome.sessionId}. Treating as an uncontrolled session, never proceeding.`,
+      );
+      return { runState, log };
+    }
+
+    if (outcome.status === "incomplete") {
+      const decision = decideNextAction(runState, options.contract, { type: "EXECUTOR_RESULT", outcome, changedFiles: [] });
+      record(decision.event, decision.humanMessage);
+
+      const restart = decideRestart(runState.restartCount);
+      if (restart.action === "ESCALATE") {
+        record({ type: "RESTART_EXHAUSTED", reason: restart.reason }, `Restart budget exhausted: ${restart.reason}. Escalating, never looping further.`);
+        return { runState, log };
+      }
+      record({ type: "RESTART_APPROVED" }, `Restart ${restart.attemptNumber}/3 approved after a ${restart.backoffMs}ms backoff.`);
+      runState = { ...runState, restartCount: restart.attemptNumber };
+      await sleep(restart.backoffMs);
+      record({ type: "EXECUTOR_LAUNCHED" }, `Resuming session ${options.sessionId} with the fixed continuation instruction.`);
+      outcome = await options.launcher.resume(options.sessionId, options.cwd);
+      continue;
+    }
+
+    if (outcome.status === "completed_error") {
+      const decision = decideNextAction(runState, options.contract, { type: "EXECUTOR_RESULT", outcome, changedFiles: [] });
+      record(decision.event, decision.humanMessage);
+      return { runState, log };
+    }
+
+    // completed_success -- first the unconditional state-machine hop
+    // (EXECUTOR_RUNNING -> TECHNICAL_REVIEW) that only a clean completion
+    // ever takes, THEN the scope-classification event decideNextAction
+    // computes from the INDEPENDENTLY captured diff (never the
+    // executor's own claim of what it changed).
+    record({ type: "EXECUTOR_COMPLETED_CLEANLY" }, "Executor completed cleanly (result event, subtype success). Entering technical review.");
+    const changedFiles = await options.captureChangedFiles(options.cwd);
+    const decision = decideNextAction(runState, options.contract, { type: "EXECUTOR_RESULT", outcome, changedFiles });
+    record(decision.event, decision.humanMessage);
+    return { runState, log };
+  }
+}

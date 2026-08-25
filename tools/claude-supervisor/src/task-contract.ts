@@ -39,7 +39,13 @@ export function validateTaskContract(input: unknown): TaskContractValidationResu
   if (!isStringArray(raw.protectedAreas) || raw.protectedAreas.length === 0) {
     return { ok: false, reason: "missing_or_invalid_protectedAreas" };
   }
-  if (!Array.isArray(raw.requiredChecks) || raw.requiredChecks.length === 0) {
+  // Unlike protectedAreas, an EMPTY requiredChecks array is legitimate --
+  // see this round's own live-smoke-test task's own example contract
+  // (a "make no repository changes" task has no build/test/lint output
+  // to verify; scope-guard.ts's protectedAreas enforcement is what keeps
+  // that task safe, not requiredChecks). Only the array's SHAPE is
+  // enforced here, never its non-emptiness.
+  if (!Array.isArray(raw.requiredChecks)) {
     return { ok: false, reason: "missing_or_invalid_requiredChecks" };
   }
   for (const check of raw.requiredChecks) {

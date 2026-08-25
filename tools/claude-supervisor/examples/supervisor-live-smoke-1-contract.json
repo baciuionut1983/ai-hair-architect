@@ -1,0 +1,8 @@
+{
+  "taskId": "supervisor-live-smoke-1",
+  "title": "Supervisor Live Smoke",
+  "approvedPrompt": "Respond with exactly OK and make no repository changes.",
+  "scope": ["no-repo-change"],
+  "protectedAreas": ["*"],
+  "requiredChecks": []
+}

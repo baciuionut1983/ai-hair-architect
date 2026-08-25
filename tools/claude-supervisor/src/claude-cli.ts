@@ -45,7 +45,8 @@
 //     require hooks either way, so this is a forward-compatible choice,
 //     not a functional requirement of v1 itself.
 import { existsSync } from "node:fs";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
 
 export interface ResolveClaudeBinaryOptions {
   envOverride?: string;
@@ -89,6 +90,7 @@ export function buildLaunchArgs(input: LaunchArgsInput): string[] {
     input.sessionId,
     "--output-format",
     "stream-json",
+    "--verbose",
     "--include-partial-messages",
     "--permission-mode",
     input.permissionMode,
@@ -117,6 +119,7 @@ export function buildResumeArgs(input: ResumeArgsInput): string[] {
     input.sessionId,
     "--output-format",
     "stream-json",
+    "--verbose",
     "--include-partial-messages",
     "--permission-mode",
     input.permissionMode,
@@ -125,8 +128,10 @@ export function buildResumeArgs(input: ResumeArgsInput): string[] {
   ];
 }
 
+export type ExecutorChildProcess = ChildProcessByStdio<null, Readable, Readable>;
+
 export interface SpawnedExecutor {
-  process: ChildProcessWithoutNullStreams;
+  process: ExecutorChildProcess;
   sessionId: string;
 }
 
@@ -135,8 +140,23 @@ export interface SpawnedExecutor {
 // line-reader (parsing stream-json events) and its own `exit`/`close`
 // listener to `process` directly; this function's only job is
 // resolving the binary and building a correctly-shaped child process.
+//
+// stdin is explicitly "ignore" (closed at spawn), never an open, empty
+// pipe: v1.1 always drives the executor via `--input-format text` (the
+// default) with the prompt passed through argv (`-p`), never via
+// `--input-format stream-json` piped over stdin. Confirmed live during
+// this round's own Phase 2 smoke test: an inherited-but-unwritten stdin
+// pipe makes the real binary print "Warning: no stdin data received in
+// 3s, proceeding without it" and stall for that full 3s on every single
+// launch/resume -- "ignore" removes the open pipe entirely so the CLI
+// sees closed stdin immediately and skips the wait.
 export function spawnExecutor(binaryPath: string, args: readonly string[], cwd: string): SpawnedExecutor {
-  const child = spawn(binaryPath, args, { cwd, shell: false, windowsHide: true }) as ChildProcessWithoutNullStreams;
+  const child = spawn(binaryPath, args, {
+    cwd,
+    shell: false,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
   const sessionIdIndex = args.indexOf("--session-id");
   const resumeIndex = args.indexOf("--resume");
   const sessionId = sessionIdIndex >= 0 ? args[sessionIdIndex + 1] : resumeIndex >= 0 ? args[resumeIndex + 1] : "";

@@ -34,4 +34,34 @@ describe("parseCliArgs", () => {
       throw new Error("expected a successful parse");
     }
   });
+
+  // Test requirement 9: ACTIVE mode requires the explicit --active flag
+  // -- there must be no way to reach it merely by omitting --dry-run.
+  it("defaults active to false when --active is not passed", () => {
+    const result = parseCliArgs(["--task", "/c.json"]);
+    if (!("error" in result)) {
+      expect(result.active).toBe(false);
+    } else {
+      throw new Error("expected a successful parse");
+    }
+  });
+
+  it("recognizes an explicit --active flag", () => {
+    const result = parseCliArgs(["--task", "/c.json", "--active"]);
+    if (!("error" in result)) {
+      expect(result.active).toBe(true);
+    } else {
+      throw new Error("expected a successful parse");
+    }
+  });
+
+  it("--dry-run and --active are independent flags -- --dry-run alone never implies --active nor vice versa", () => {
+    const result = parseCliArgs(["--task", "/c.json", "--dry-run"]);
+    if (!("error" in result)) {
+      expect(result.dryRun).toBe(true);
+      expect(result.active).toBe(false);
+    } else {
+      throw new Error("expected a successful parse");
+    }
+  });
 });
