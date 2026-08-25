@@ -14,6 +14,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { acquireLock, releaseLock } from "./lock.js";
+import { containsClaudeDirSegment } from "./clean-path-guard.js";
 import { captureGitSnapshot, verifyHeadMatchesOrigin } from "./git-inspect.js";
 import { runActiveExecution, runPreflight, runQualityGatesAndCommitPush } from "./orchestrator.js";
 import type { ExecutorLauncher } from "./orchestrator.js";
@@ -198,6 +199,23 @@ async function main(): Promise<void> {
     if (!preflight.clean) {
       console.log("[SUPERVISOR] ACTIVE mode: preflight failed -- never launching an executor against an unclean working tree. Escalating.");
       saveRunStateToDisk(statePath, { ...runState, state: "ESCALATED", updatedAt: new Date().toISOString(), lastAction: `preflight failed: ${preflight.reason ?? "unknown"}` });
+      return;
+    }
+
+    // v1.3.1: clean-path precondition, fail-closed. This round's own
+    // live clean-path isolation validation found that Claude Code's
+    // built-in "sensitive file" Write/Edit classifier fires
+    // nondeterministically whenever cwd sits under a ".claude" ancestor
+    // segment (exactly this repo's own canonical checkout location), and
+    // that the identical real create/edit/read/resume-edit cycle
+    // succeeds cleanly once that segment is absent. Never launching a
+    // real executor against a cwd known to trigger this, regardless of
+    // which transport is selected below -- see clean-path-guard.ts.
+    if (containsClaudeDirSegment(options.cwd)) {
+      console.log(
+        `[SUPERVISOR] ACTIVE mode: refusing to launch -- cwd (${options.cwd}) contains a ".claude" path segment, which this round's own live testing confirmed causes nondeterministic Write/Edit denials. Re-run from a clean path (e.g. a git worktree outside any .claude ancestor directory) instead. Escalating without launching anything.`,
+      );
+      saveRunStateToDisk(statePath, { ...runState, state: "ESCALATED", updatedAt: new Date().toISOString(), lastAction: `refused to launch: cwd contains a .claude path segment (${options.cwd})` });
       return;
     }
 
