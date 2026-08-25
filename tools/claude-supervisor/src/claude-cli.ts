@@ -101,20 +101,28 @@ export function buildLaunchArgs(input: LaunchArgsInput): string[] {
 
 export interface ResumeArgsInput {
   sessionId: string;
+  // v1.2: explicit, not hardcoded -- a plain executor-interruption
+  // resume always passes RESUME_INSTRUCTION (below) verbatim, but
+  // correction-loop.ts's own FIXED, deterministically-built correction
+  // prompt (Phase 2/7) needs to be sent via this exact same --resume
+  // mechanism too. Both remain "fixed instructions" in spirit -- never
+  // Claude's own free text, never re-paraphrased -- this parameter only
+  // makes explicit WHICH fixed instruction a given resume uses.
+  prompt: string;
   permissionMode: "acceptEdits" | "manual" | "plan";
   cwd: string;
-  // The FIXED, non-negotiable continuation instruction -- see this
-  // round's own task spec's own exact wording, reused verbatim rather
-  // than re-paraphrased by the Supervisor itself (a paraphrase risks
-  // silently narrowing or widening what "continue" means for this task).
 }
-const RESUME_INSTRUCTION =
+// The FIXED, non-negotiable continuation instruction -- see this round's
+// own task spec's own exact wording, reused verbatim rather than
+// re-paraphrased by the Supervisor itself (a paraphrase risks silently
+// narrowing or widening what "continue" means for this task).
+export const RESUME_INSTRUCTION =
   "Continuă exact din starea actuală. Verifică modificările deja existente și nu recrea munca finalizată. Continuă taskul aprobat.";
 
 export function buildResumeArgs(input: ResumeArgsInput): string[] {
   return [
     "-p",
-    RESUME_INSTRUCTION,
+    input.prompt,
     "--resume",
     input.sessionId,
     "--output-format",

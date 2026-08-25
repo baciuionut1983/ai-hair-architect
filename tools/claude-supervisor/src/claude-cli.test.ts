@@ -1,6 +1,6 @@
 ﻿import { describe, expect, it } from "vitest";
 
-import { buildLaunchArgs, buildResumeArgs, resolveClaudeBinary } from "./claude-cli.js";
+import { RESUME_INSTRUCTION, buildLaunchArgs, buildResumeArgs, resolveClaudeBinary } from "./claude-cli.js";
 
 describe("resolveClaudeBinary", () => {
   it("prefers an explicit env override when it exists on disk", () => {
@@ -84,26 +84,37 @@ describe("buildLaunchArgs", () => {
 
 describe("buildResumeArgs", () => {
   it("resumes the exact given session id via --resume", () => {
-    const args = buildResumeArgs({ sessionId: "22222222-2222-2222-2222-222222222222", permissionMode: "acceptEdits", cwd: "/repo" });
+    const args = buildResumeArgs({ sessionId: "22222222-2222-2222-2222-222222222222", prompt: RESUME_INSTRUCTION, permissionMode: "acceptEdits", cwd: "/repo" });
     const resumeIndex = args.indexOf("--resume");
     expect(args[resumeIndex + 1]).toBe("22222222-2222-2222-2222-222222222222");
   });
 
-  it("uses the fixed, non-negotiable continuation instruction -- never re-paraphrased per call", () => {
-    const args = buildResumeArgs({ sessionId: "id", permissionMode: "acceptEdits", cwd: "/repo" });
+  it("uses the fixed, non-negotiable continuation instruction when explicitly passed -- never re-paraphrased per call", () => {
+    const args = buildResumeArgs({ sessionId: "id", prompt: RESUME_INSTRUCTION, permissionMode: "acceptEdits", cwd: "/repo" });
     const promptIndex = args.indexOf("-p");
     expect(args[promptIndex + 1]).toContain("Continuă exact din starea actuală");
     expect(args[promptIndex + 1]).toContain("nu recrea munca finalizată");
   });
 
+  // v1.2: the correction loop (Phase 2/7) resumes the SAME session with
+  // a DIFFERENT fixed instruction (correction-loop.ts's own
+  // buildCorrectionPrompt) -- prompt is now an explicit parameter, never
+  // hardcoded inside this function, so both use cases share one argv
+  // builder.
+  it("accepts any explicit fixed prompt, e.g. a correction-loop prompt, not only RESUME_INSTRUCTION", () => {
+    const args = buildResumeArgs({ sessionId: "id", prompt: "The following check failed: supervisor_typecheck", permissionMode: "acceptEdits", cwd: "/repo" });
+    const promptIndex = args.indexOf("-p");
+    expect(args[promptIndex + 1]).toBe("The following check failed: supervisor_typecheck");
+  });
+
   it("never includes --session-id on a resume -- --resume alone identifies the session", () => {
-    const args = buildResumeArgs({ sessionId: "id", permissionMode: "acceptEdits", cwd: "/repo" });
+    const args = buildResumeArgs({ sessionId: "id", prompt: RESUME_INSTRUCTION, permissionMode: "acceptEdits", cwd: "/repo" });
     expect(args).not.toContain("--session-id");
   });
 
   it("produces the identical resume instruction across repeated calls -- deterministic, not regenerated text", () => {
-    const first = buildResumeArgs({ sessionId: "id", permissionMode: "acceptEdits", cwd: "/repo" });
-    const second = buildResumeArgs({ sessionId: "id", permissionMode: "acceptEdits", cwd: "/repo" });
+    const first = buildResumeArgs({ sessionId: "id", prompt: RESUME_INSTRUCTION, permissionMode: "acceptEdits", cwd: "/repo" });
+    const second = buildResumeArgs({ sessionId: "id", prompt: RESUME_INSTRUCTION, permissionMode: "acceptEdits", cwd: "/repo" });
     expect(first).toEqual(second);
   });
 });

@@ -18,7 +18,7 @@ function contract(): TaskContract {
     approvedPrompt: "Do the approved thing.",
     scope: ["TTS experiment"],
     protectedAreas: ["VAD", "billing", "auth"],
-    requiredChecks: ["tsc", "eslint", "vitest", "build"],
+    requiredChecks: ["web_typecheck", "web_lint", "web_tests_relevant", "web_build"],
   });
   if (!result.ok) throw new Error("invalid fixture");
   return result.contract;

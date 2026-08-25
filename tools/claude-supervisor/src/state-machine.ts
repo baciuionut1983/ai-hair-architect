@@ -33,6 +33,12 @@ export type SupervisorEvent =
   | { type: "CHECKS_FAILED"; reason: string }
   | { type: "COMMIT_VERIFIED" }
   | { type: "PUSH_VERIFIED" }
+  // v1.2: the task contract's own allowedOperations did not authorize
+  // "commit" or "push" (see commit-policy.ts) -- this is NOT a failure,
+  // it is an expected boundary requiring a human to finish manually, so
+  // it routes to WAITING_FOR_HUMAN, never HARD_STOP or a silent
+  // COMPLETED (which would falsely imply nothing was left to do).
+  | { type: "OPERATION_NOT_AUTHORIZED"; reason: string }
   | { type: "CI_STARTED" }
   | { type: "CI_SUCCEEDED" }
   | { type: "CI_FAILED_LEVEL_1"; reason: string }
@@ -137,6 +143,7 @@ export function transition(current: SupervisorState, event: SupervisorEvent): Tr
     case "COMMIT_READY":
       if (event.type === "COMMIT_VERIFIED") return { ok: true, next: "COMMIT_READY" };
       if (event.type === "PUSH_VERIFIED") return { ok: true, next: "PUSHED" };
+      if (event.type === "OPERATION_NOT_AUTHORIZED") return { ok: true, next: "WAITING_FOR_HUMAN" };
       break;
 
     case "PUSHED":

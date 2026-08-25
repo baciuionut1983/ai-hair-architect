@@ -17,6 +17,8 @@ describe("serializeRunState", () => {
         "state",
         "executorSessionId",
         "restartCount",
+        "correctionCount",
+        "recentCorrectionFingerprints",
         "lastKnownHeadSha",
         "lastDiffSummary",
         "createdAt",

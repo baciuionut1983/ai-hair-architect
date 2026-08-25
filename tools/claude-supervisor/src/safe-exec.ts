@@ -75,31 +75,6 @@ export function execSafe(program: string, args: readonly string[], options: Exec
   });
 }
 
-// The FIXED, human-auditable registry mapping a task contract's own
-// requiredChecks NAME (a closed enum, see task-contract.ts's own
-// validation) to the real program+argv that check runs -- resolved by
-// exact-name lookup only, never by interpolating the name into a shell
-// string. `cwd` for every entry is the Next.js app directory
-// (web/), matching how every check in this repo has always been run
-// throughout this whole project's history.
-export interface CheckCommand {
-  program: string;
-  args: string[];
-}
-
-export function resolveCheckCommand(checkName: "tsc" | "eslint" | "vitest" | "build"): CheckCommand {
-  switch (checkName) {
-    case "tsc":
-      return { program: "npx", args: ["tsc", "--noEmit", "-p", "tsconfig.json"] };
-    case "eslint":
-      return { program: "npx", args: ["eslint", "."] };
-    case "vitest":
-      return { program: "npx", args: ["vitest", "run"] };
-    case "build":
-      return { program: "npm", args: ["run", "build"] };
-  }
-}
-
 // Read-only git inspection commands the Supervisor runs to verify the
 // executor's own claims independently -- see git-inspect.ts for the
 // parsing layer built on top of these.

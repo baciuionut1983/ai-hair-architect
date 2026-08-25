@@ -10,7 +10,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { buildLaunchArgs, buildResumeArgs, resolveClaudeBinary, spawnExecutor } from "./claude-cli.js";
+import { RESUME_INSTRUCTION, buildLaunchArgs, buildResumeArgs, resolveClaudeBinary, spawnExecutor } from "./claude-cli.js";
 import { observeExecutorProcess } from "./executor-runner.js";
 import type { ExecutorLauncher } from "./orchestrator.js";
 import type { ExecutorOutcome } from "./stream-events.js";
@@ -59,8 +59,8 @@ export function createRealExecutorLauncher(binaryPath: string, permissionMode: P
       const { process: child } = spawnExecutor(binaryPath, args, cwd);
       return observeExecutorProcess(child);
     },
-    resume(sessionId: string, cwd: string): Promise<ExecutorOutcome> {
-      const args = buildResumeArgs({ sessionId, permissionMode, cwd });
+    resume(sessionId: string, cwd: string, prompt: string = RESUME_INSTRUCTION): Promise<ExecutorOutcome> {
+      const args = buildResumeArgs({ sessionId, prompt, permissionMode, cwd });
       const { process: child } = spawnExecutor(binaryPath, args, cwd);
       return observeExecutorProcess(child);
     },

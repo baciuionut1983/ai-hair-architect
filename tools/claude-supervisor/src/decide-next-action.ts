@@ -9,7 +9,7 @@ import { decideRestart } from "./restart-policy.js";
 import { classifyDiff } from "./scope-guard.js";
 import type { SupervisorEvent } from "./state-machine.js";
 import type { ExecutorOutcome } from "./stream-events.js";
-import type { CiWatchResult } from "./ci-watch.js";
+import { classifyCiOutcome, type CiWatchResult } from "./ci-watch.js";
 import type { RequiredCheckName, SupervisorRunState, TaskContract } from "./types.js";
 
 export type Observation =
@@ -85,9 +85,19 @@ export function decideNextAction(runState: SupervisorRunState, contract: TaskCon
       return { event: { type: "SCOPE_CLEAN" }, humanMessage: "Diff is fully in scope -- proceeding to required checks." };
     }
 
+    // v1.2 bug fix (found via runQualityGatesAndCommitPush's own first
+    // real exercise of this branch): a single passed check is a
+    // self-loop on CHECKS_RUNNING, NOT a transition into
+    // TECHNICAL_REVIEW -- CHECKS_STARTED is the state machine's own
+    // modeled CHECKS_RUNNING self-loop event; REVIEW_STARTED is only
+    // ever valid from TECHNICAL_REVIEW and was never actually reachable
+    // from here (every real call was silently REJECTED by transition(),
+    // logged but otherwise harmless since the state coincidentally
+    // stayed CHECKS_RUNNING either way -- still a genuine bug, now
+    // fixed rather than left to keep silently rejecting).
     case "CHECK_RESULT":
       return observation.passed
-        ? { event: { type: "REVIEW_STARTED" }, humanMessage: `Check '${observation.check}' passed.` }
+        ? { event: { type: "CHECKS_STARTED" }, humanMessage: `Check '${observation.check}' passed.` }
         : {
             event: { type: "CHECKS_FAILED", reason: `${observation.check}: ${observation.detail}` },
             humanMessage: `Check '${observation.check}' failed independently (verified by the Supervisor itself, not taken from the executor's own claim) -- sending the executor a correction request.`,
@@ -107,17 +117,39 @@ export function decideNextAction(runState: SupervisorRunState, contract: TaskCon
             humanMessage: "The executor claimed to push, but HEAD does not match origin/master. This is not trusted at face value.",
           };
 
-    case "CI_RESULT":
-      if (!observation.result.allCompleted) {
-        return { event: { type: "CI_STARTED" }, humanMessage: "CI still in progress -- continuing to wait, never declaring done early." };
+    // v1.2: classifyCiOutcome interprets the FINAL polling result (the
+    // orchestrator's own pollUntilComplete already owns the "still
+    // waiting" loop -- see ci-watch.ts's own doc comment) in light of
+    // this task's own declared ciPolicy, so a Supervisor-only commit
+    // that legitimately produces zero web checks is never mistaken for
+    // a failure, and a "required" task that genuinely never got any
+    // checks is never mistaken for a silent success either.
+    case "CI_RESULT": {
+      const outcome = classifyCiOutcome(contract.ciPolicy, observation.result);
+      switch (outcome) {
+        case "no_checks_expected":
+          return {
+            event: { type: "CI_SUCCEEDED" },
+            humanMessage: `No CI checks expected for this task (ciPolicy=${contract.ciPolicy}) -- treating as passed without waiting further.`,
+          };
+        case "success":
+          return { event: { type: "CI_SUCCEEDED" }, humanMessage: "CI succeeded -- verified independently via the GitHub API, not the executor's own claim." };
+        case "failure":
+          return {
+            event: { type: "CI_FAILED_LEVEL_1", reason: JSON.stringify(observation.result.checks) },
+            humanMessage: "CI failed. If the failure is clearly attributable to this task's own code, a correction request will follow; otherwise this pauses for review.",
+          };
+        case "cancelled":
+        case "timed_out":
+          return {
+            event: { type: "CI_FAILED_NEEDS_REVIEW", reason: `${outcome}: ${JSON.stringify(observation.result.checks)}` },
+            humanMessage:
+              outcome === "cancelled"
+                ? "A CI check was cancelled -- likely an external/human action, not a code defect. Needs human review, never an automatic correction."
+                : "CI did not report a real result within the poll budget for a task that declared CI required. Needs human review, never a silent pass or an automatic correction.",
+          };
       }
-      if (observation.result.overallSuccess) {
-        return { event: { type: "CI_SUCCEEDED" }, humanMessage: "CI succeeded -- verified independently via the GitHub API, not the executor's own claim." };
-      }
-      return {
-        event: { type: "CI_FAILED_LEVEL_1", reason: JSON.stringify(observation.result.checks) },
-        humanMessage: "CI failed. If the failure is clearly attributable to this task's own code, a correction request will follow; otherwise this pauses for review.",
-      };
+    }
 
     case "PRODUCTION_VALIDATION_NEEDED":
       return {

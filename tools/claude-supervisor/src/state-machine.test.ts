@@ -69,6 +69,13 @@ describe("transition -- scope enforcement", () => {
   });
 });
 
+describe("transition -- v1.2 commit/push authorization boundary", () => {
+  it("routes an unauthorized commit/push attempt from COMMIT_READY to WAITING_FOR_HUMAN, never HARD_STOP or a silent COMPLETED", () => {
+    const result = transition("COMMIT_READY", { type: "OPERATION_NOT_AUTHORIZED", reason: "allowedOperations does not include 'commit'" });
+    expect(result).toEqual({ ok: true, next: "WAITING_FOR_HUMAN" });
+  });
+});
+
 describe("transition -- HARD_STOP is reachable from nearly every non-terminal state", () => {
   const nonTerminalStates: SupervisorState[] = [
     "IDLE",

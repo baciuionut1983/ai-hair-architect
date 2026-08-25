@@ -64,4 +64,39 @@ describe("parseCliArgs", () => {
       throw new Error("expected a successful parse");
     }
   });
+
+  it("defaults approveProductionTaskId to null when not passed", () => {
+    const result = parseCliArgs(["--task", "/c.json"]);
+    if (!("error" in result)) {
+      expect(result.approveProductionTaskId).toBeNull();
+    } else {
+      throw new Error("expected a successful parse");
+    }
+  });
+
+  // Phase 10: --approve-production is the ONLY human production-
+  // validation completion mechanism, and it is a closed, taskId-only
+  // argument -- it never accepts or forwards arbitrary command text.
+  it("recognizes --approve-production <taskId> without requiring --task at all", () => {
+    const result = parseCliArgs(["--approve-production", "supervisor-live-smoke-1"]);
+    if (!("error" in result)) {
+      expect(result.approveProductionTaskId).toBe("supervisor-live-smoke-1");
+    } else {
+      throw new Error("expected a successful parse");
+    }
+  });
+
+  it("rejects --approve-production with no taskId argument", () => {
+    const result = parseCliArgs(["--approve-production"]);
+    expect("error" in result).toBe(true);
+  });
+
+  it("respects an explicit --state-dir alongside --approve-production", () => {
+    const result = parseCliArgs(["--approve-production", "task-1", "--state-dir", "/custom/state"]);
+    if (!("error" in result)) {
+      expect(result.stateDir).toBe("/custom/state");
+    } else {
+      throw new Error("expected a successful parse");
+    }
+  });
 });

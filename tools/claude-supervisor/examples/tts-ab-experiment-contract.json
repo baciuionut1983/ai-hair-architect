@@ -4,5 +4,8 @@
   "approvedPrompt": "PLACEHOLDER -- the real approved prompt goes here once this task is actually authorized.",
   "scope": ["TTS experiment"],
   "protectedAreas": ["VAD", "billing", "auth"],
-  "requiredChecks": ["tsc", "eslint", "vitest", "build"]
+  "requiredChecks": ["web_typecheck", "web_lint", "web_tests_relevant", "web_build"],
+  "allowedOperations": ["commit", "push"],
+  "ciPolicy": "required",
+  "productionValidation": "required"
 }

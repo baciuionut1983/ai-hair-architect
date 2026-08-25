@@ -6,9 +6,11 @@
 // this package's own top-level doc comment on why the contract is
 // treated as immutable once accepted.
 
-import type { RequiredCheckName, TaskContract, TaskContractValidationResult } from "./types.js";
+import { isKnownCheckName } from "./check-registry.js";
+import type { CiPolicy, ProductionValidationPolicy, RequiredCheckName, TaskContract, TaskContractValidationResult } from "./types.js";
 
-const REQUIRED_CHECK_NAMES: ReadonlySet<string> = new Set(["tsc", "eslint", "vitest", "build", "ci"]);
+const CI_POLICIES: ReadonlySet<string> = new Set(["required", "optional", "none"]);
+const PRODUCTION_VALIDATION_POLICIES: ReadonlySet<string> = new Set(["required", "not_required"]);
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
@@ -49,7 +51,7 @@ export function validateTaskContract(input: unknown): TaskContractValidationResu
     return { ok: false, reason: "missing_or_invalid_requiredChecks" };
   }
   for (const check of raw.requiredChecks) {
-    if (typeof check !== "string" || !REQUIRED_CHECK_NAMES.has(check)) {
+    if (typeof check !== "string" || !isKnownCheckName(check)) {
       return { ok: false, reason: `invalid_required_check:${String(check)}` };
     }
   }
@@ -59,8 +61,20 @@ export function validateTaskContract(input: unknown): TaskContractValidationResu
   if (raw.forbiddenOperations !== undefined && !isStringArray(raw.forbiddenOperations)) {
     return { ok: false, reason: "invalid_forbiddenOperations" };
   }
+  if (raw.ciPolicy !== undefined && (typeof raw.ciPolicy !== "string" || !CI_POLICIES.has(raw.ciPolicy))) {
+    return { ok: false, reason: `invalid_ciPolicy:${String(raw.ciPolicy)}` };
+  }
+  if (raw.productionValidation !== undefined && (typeof raw.productionValidation !== "string" || !PRODUCTION_VALIDATION_POLICIES.has(raw.productionValidation))) {
+    return { ok: false, reason: `invalid_productionValidation:${String(raw.productionValidation)}` };
+  }
 
   const createdAt = isNonEmptyString(raw.createdAt) ? raw.createdAt : new Date().toISOString();
+  // Both default to the SAFEST backward-compatible value: "optional" CI
+  // never blocks on missing checks, "not_required" production validation
+  // matches v1.1's own behavior (CI success alone was already enough) --
+  // so every pre-existing v1/v1.1 contract remains valid unmodified.
+  const ciPolicy = (raw.ciPolicy as CiPolicy | undefined) ?? "optional";
+  const productionValidation = (raw.productionValidation as ProductionValidationPolicy | undefined) ?? "not_required";
 
   const contract: TaskContract = {
     taskId: raw.taskId,
@@ -71,6 +85,8 @@ export function validateTaskContract(input: unknown): TaskContractValidationResu
     requiredChecks: raw.requiredChecks as RequiredCheckName[],
     ...(raw.allowedOperations !== undefined ? { allowedOperations: raw.allowedOperations as string[] } : {}),
     ...(raw.forbiddenOperations !== undefined ? { forbiddenOperations: raw.forbiddenOperations as string[] } : {}),
+    ciPolicy,
+    productionValidation,
     createdAt,
   };
   return { ok: true, contract };
@@ -89,6 +105,9 @@ export function isSameContract(a: TaskContract, b: TaskContract): boolean {
     a.approvedPrompt === b.approvedPrompt &&
     JSON.stringify(a.scope) === JSON.stringify(b.scope) &&
     JSON.stringify(a.protectedAreas) === JSON.stringify(b.protectedAreas) &&
-    JSON.stringify(a.requiredChecks) === JSON.stringify(b.requiredChecks)
+    JSON.stringify(a.requiredChecks) === JSON.stringify(b.requiredChecks) &&
+    a.ciPolicy === b.ciPolicy &&
+    a.productionValidation === b.productionValidation &&
+    JSON.stringify(a.allowedOperations ?? []) === JSON.stringify(b.allowedOperations ?? [])
   );
 }

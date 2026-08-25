@@ -1,6 +1,6 @@
 ﻿import { describe, expect, it, vi } from "vitest";
 
-import { fetchCheckRuns, pollUntilComplete } from "./ci-watch.js";
+import { classifyCiOutcome, deriveOwnerRepoFromGit, fetchCheckRuns, pollUntilComplete, type CiWatchResult } from "./ci-watch.js";
 
 function fakeFetch(body: unknown, ok = true) {
   return vi.fn().mockResolvedValue({ ok, json: async () => body });
@@ -48,7 +48,7 @@ describe("fetchCheckRuns", () => {
   it("returns an honest empty/false result when the API response is not ok, never throwing", async () => {
     const fetchImpl = fakeFetch({}, false);
     const result = await fetchCheckRuns("owner", "repo", "abc123", fetchImpl);
-    expect(result).toEqual({ allCompleted: false, overallSuccess: false, checks: [] });
+    expect(result).toEqual({ allCompleted: false, overallSuccess: false, checks: [], timedOut: false });
   });
 
   it("returns allCompleted=false (never true) when there are zero check-runs at all -- CI has not started reporting yet", async () => {
@@ -82,5 +82,76 @@ describe("pollUntilComplete", () => {
     expect(result.allCompleted).toBe(false);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledTimes(3);
+  });
+
+  it("marks timedOut:true only when the budget was exhausted, never on a genuine early completion", async () => {
+    const completedFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ check_runs: [{ status: "completed", conclusion: "success" }] }) });
+    const completedResult = await pollUntilComplete("owner", "repo", "abc123", completedFetch, { maxAttempts: 10, sleep: vi.fn() });
+    expect(completedResult.timedOut).toBe(false);
+
+    const stuckFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ check_runs: [{ status: "in_progress", conclusion: null }] }) });
+    const stuckResult = await pollUntilComplete("owner", "repo", "abc123", stuckFetch, { maxAttempts: 2, sleep: vi.fn() });
+    expect(stuckResult.timedOut).toBe(true);
+  });
+});
+
+describe("deriveOwnerRepoFromGit", () => {
+  it("derives owner/repo from a real git remote get-url origin call (injected exec)", async () => {
+    const execImpl = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "https://github.com/baciuionut1983/ai-hair-architect.git\n" });
+    const result = await deriveOwnerRepoFromGit("/repo", execImpl);
+    expect(result).toEqual({ owner: "baciuionut1983", repo: "ai-hair-architect" });
+    expect(execImpl).toHaveBeenCalledWith("git", ["remote", "get-url", "origin"], { cwd: "/repo" });
+  });
+
+  it("returns null when the git command itself fails, never throwing", async () => {
+    const execImpl = vi.fn().mockResolvedValue({ exitCode: 1, stdout: "" });
+    expect(await deriveOwnerRepoFromGit("/repo", execImpl)).toBeNull();
+  });
+
+  it("returns null when the remote is not a GitHub URL", async () => {
+    const execImpl = vi.fn().mockResolvedValue({ exitCode: 0, stdout: "https://gitlab.com/owner/repo.git\n" });
+    expect(await deriveOwnerRepoFromGit("/repo", execImpl)).toBeNull();
+  });
+});
+
+describe("classifyCiOutcome", () => {
+  function result(overrides: Partial<CiWatchResult> = {}): CiWatchResult {
+    return { allCompleted: true, overallSuccess: true, checks: [], timedOut: false, ...overrides };
+  }
+
+  // Test requirement 22: no-checks-expected.
+  it("classifies ciPolicy 'none' as no_checks_expected regardless of the (never even needed) result", () => {
+    expect(classifyCiOutcome("none", result({ allCompleted: false, overallSuccess: false }))).toBe("no_checks_expected");
+  });
+
+  it("classifies zero real checks as no_checks_expected under 'optional' -- never a false failure", () => {
+    expect(classifyCiOutcome("optional", result({ checks: [] }))).toBe("no_checks_expected");
+  });
+
+  it("classifies zero real checks under 'required' as timed_out (a real anomaly needing review), never a silent success", () => {
+    expect(classifyCiOutcome("required", result({ allCompleted: false, overallSuccess: false, checks: [] }))).toBe("timed_out");
+  });
+
+  // Test requirement 19: CI success.
+  it("classifies a completed, all-successful result as success", () => {
+    const r = result({ checks: [{ status: "completed", conclusion: "success", name: "a", htmlUrl: null }] });
+    expect(classifyCiOutcome("required", r)).toBe("success");
+  });
+
+  // Test requirement 20: CI failure.
+  it("classifies a completed, failed result as failure", () => {
+    const r = result({ overallSuccess: false, checks: [{ status: "completed", conclusion: "failure", name: "a", htmlUrl: null }] });
+    expect(classifyCiOutcome("required", r)).toBe("failure");
+  });
+
+  // Test requirement 21: CI cancelled.
+  it("classifies a cancelled check-run as cancelled, distinct from a plain failure", () => {
+    const r = result({ overallSuccess: false, checks: [{ status: "completed", conclusion: "cancelled", name: "a", htmlUrl: null }] });
+    expect(classifyCiOutcome("required", r)).toBe("cancelled");
+  });
+
+  it("classifies an exhausted poll budget (never completed) as timed_out when real checks exist", () => {
+    const r = result({ allCompleted: false, overallSuccess: false, timedOut: true, checks: [{ status: "in_progress", conclusion: null, name: "a", htmlUrl: null }] });
+    expect(classifyCiOutcome("required", r)).toBe("timed_out");
   });
 });

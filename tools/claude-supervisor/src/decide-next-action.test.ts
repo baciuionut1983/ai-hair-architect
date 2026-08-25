@@ -13,7 +13,7 @@ function contract(overrides: Partial<TaskContract> = {}): TaskContract {
     approvedPrompt: "Do the approved thing.",
     scope: ["TTS experiment"],
     protectedAreas: ["VAD", "billing", "auth"],
-    requiredChecks: ["tsc", "eslint", "vitest", "build"],
+    requiredChecks: ["web_typecheck", "web_lint", "web_tests_relevant", "web_build"],
     ...overrides,
   });
   if (!result.ok) throw new Error("test fixture contract is invalid");
@@ -106,18 +106,21 @@ describe("decideNextAction -- EXECUTOR_RESULT: completed_success, scope classifi
 
 describe("decideNextAction -- CHECK_RESULT", () => {
   it("moves forward when a check passes", () => {
-    const action = decideNextAction(initialRunState("task-1"), contract(), { type: "CHECK_RESULT", check: "tsc", passed: true, detail: "clean" });
-    expect(action.event).toEqual({ type: "REVIEW_STARTED" });
+    const action = decideNextAction(initialRunState("task-1"), contract(), { type: "CHECK_RESULT", check: "web_typecheck", passed: true, detail: "clean" });
+    // CHECKS_STARTED is CHECKS_RUNNING's own modeled self-loop -- a
+    // single passed check never leaves CHECKS_RUNNING by itself (only
+    // ALL_CHECKS_PASSED does, see the next describe block).
+    expect(action.event).toEqual({ type: "CHECKS_STARTED" });
   });
 
   it("requests a correction when a check fails, attributing it to the Supervisor's own independent verification", () => {
     const action = decideNextAction(initialRunState("task-1"), contract(), {
       type: "CHECK_RESULT",
-      check: "vitest",
+      check: "web_tests_relevant",
       passed: false,
       detail: "3 tests failed",
     });
-    expect(action.event).toEqual({ type: "CHECKS_FAILED", reason: "vitest: 3 tests failed" });
+    expect(action.event).toEqual({ type: "CHECKS_FAILED", reason: "web_tests_relevant: 3 tests failed" });
     expect(action.humanMessage).toContain("verified by the Supervisor itself");
   });
 });
@@ -134,29 +137,56 @@ describe("decideNextAction -- PUSH_VERIFIED_RESULT", () => {
   });
 });
 
-describe("decideNextAction -- CI_RESULT", () => {
-  it("keeps waiting while CI has not finished", () => {
-    const action = decideNextAction(initialRunState("task-1"), contract(), {
+describe("decideNextAction -- CI_RESULT (v1.2, ciPolicy-aware via classifyCiOutcome)", () => {
+  it("declares success once CI has completed AND succeeded (ciPolicy=required)", () => {
+    const action = decideNextAction(initialRunState("task-1"), contract({ ciPolicy: "required" }), {
       type: "CI_RESULT",
-      result: { allCompleted: false, overallSuccess: false, checks: [] },
-    });
-    expect(action.event).toEqual({ type: "CI_STARTED" });
-  });
-
-  it("declares success only once CI has completed AND succeeded", () => {
-    const action = decideNextAction(initialRunState("task-1"), contract(), {
-      type: "CI_RESULT",
-      result: { allCompleted: true, overallSuccess: true, checks: [] },
+      result: { allCompleted: true, overallSuccess: true, checks: [{ status: "completed", conclusion: "success", name: "a", htmlUrl: null }], timedOut: false },
     });
     expect(action.event).toEqual({ type: "CI_SUCCEEDED" });
   });
 
   it("routes a real CI failure to the Level-1 correction path", () => {
-    const action = decideNextAction(initialRunState("task-1"), contract(), {
+    const action = decideNextAction(initialRunState("task-1"), contract({ ciPolicy: "required" }), {
       type: "CI_RESULT",
-      result: { allCompleted: true, overallSuccess: false, checks: [{ status: "completed", conclusion: "failure", name: "web-quality", htmlUrl: null }] },
+      result: { allCompleted: true, overallSuccess: false, checks: [{ status: "completed", conclusion: "failure", name: "web-quality", htmlUrl: null }], timedOut: false },
     });
     expect(action.event.type).toBe("CI_FAILED_LEVEL_1");
+  });
+
+  it("routes a cancelled CI run to CI_FAILED_NEEDS_REVIEW, never an automatic correction", () => {
+    const action = decideNextAction(initialRunState("task-1"), contract({ ciPolicy: "required" }), {
+      type: "CI_RESULT",
+      result: { allCompleted: true, overallSuccess: false, checks: [{ status: "completed", conclusion: "cancelled", name: "a", htmlUrl: null }], timedOut: false },
+    });
+    expect(action.event.type).toBe("CI_FAILED_NEEDS_REVIEW");
+  });
+
+  it("routes a poll-budget timeout on a required task to CI_FAILED_NEEDS_REVIEW", () => {
+    const action = decideNextAction(initialRunState("task-1"), contract({ ciPolicy: "required" }), {
+      type: "CI_RESULT",
+      result: { allCompleted: false, overallSuccess: false, checks: [{ status: "in_progress", conclusion: null, name: "a", htmlUrl: null }], timedOut: true },
+    });
+    expect(action.event.type).toBe("CI_FAILED_NEEDS_REVIEW");
+  });
+
+  // Test requirement 22: no-checks-expected -- a Supervisor-only commit
+  // legitimately triggers zero web checks (path filtering); never a
+  // false failure.
+  it("treats a Supervisor-only task (ciPolicy=none) as CI_SUCCEEDED without ever needing a real result", () => {
+    const action = decideNextAction(initialRunState("task-1"), contract({ ciPolicy: "none" }), {
+      type: "CI_RESULT",
+      result: { allCompleted: false, overallSuccess: false, checks: [], timedOut: false },
+    });
+    expect(action.event).toEqual({ type: "CI_SUCCEEDED" });
+  });
+
+  it("treats zero checks under ciPolicy=optional as CI_SUCCEEDED, never a failure", () => {
+    const action = decideNextAction(initialRunState("task-1"), contract({ ciPolicy: "optional" }), {
+      type: "CI_RESULT",
+      result: { allCompleted: false, overallSuccess: false, checks: [], timedOut: false },
+    });
+    expect(action.event).toEqual({ type: "CI_SUCCEEDED" });
   });
 });
 

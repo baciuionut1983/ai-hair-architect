@@ -42,12 +42,40 @@ export interface TaskContract {
   // protectedAreas/requiredChecks in spirit but is never itself
   // mechanically enforced (only protectedAreas is pattern-matched
   // against the real diff).
+  // v1.2: NO LONGER documentation-only -- "commit" and "push" are
+  // mechanically enforced gates (see commit-policy.ts/push-policy.ts):
+  // the Supervisor refuses to run `git commit`/`git push` at all unless
+  // the exact matching string is present here. forbiddenOperations
+  // remains documentation-only (there is no positive action list to gate
+  // a NEGATIVE permission against).
   allowedOperations?: string[];
   forbiddenOperations?: string[];
+  // Whether pushed CI is expected/required for this task -- see
+  // ci-watch.ts's own classifyCiOutcome. Defaults to "optional" when
+  // absent from the raw contract (task-contract.ts), so every existing
+  // v1/v1.1 contract remains valid without modification.
+  ciPolicy: CiPolicy;
+  // Whether a human must confirm a REAL production test before this task
+  // can reach COMPLETED -- see this round's own task spec Phase 8.
+  // Defaults to "not_required" when absent, matching v1.1's own
+  // behavior (CI success alone was already enough to finish).
+  productionValidation: ProductionValidationPolicy;
   createdAt: string;
 }
 
-export type RequiredCheckName = "tsc" | "eslint" | "vitest" | "build" | "ci";
+export type CiPolicy = "required" | "optional" | "none";
+export type ProductionValidationPolicy = "required" | "not_required";
+
+export type RequiredCheckName =
+  | "supervisor_test"
+  | "supervisor_typecheck"
+  | "supervisor_lint"
+  | "supervisor_build"
+  | "web_typecheck"
+  | "web_lint"
+  | "web_tests_relevant"
+  | "web_tests_full"
+  | "web_build";
 
 export interface TaskContractValidationOk {
   ok: true;
@@ -104,6 +132,18 @@ export interface SupervisorRunState {
   // fact.
   executorSessionId: string | null;
   restartCount: number;
+  // v1.2: a SEPARATE budget from restartCount -- see correction-loop.ts's
+  // own doc comment. restartCount tracks transport-interruption resumes;
+  // correctionCount tracks check/CI-failure correction resumes. Kept
+  // distinct so a task that both got interrupted once AND needed one
+  // correction is never confused with a task needing 2 of the same kind.
+  correctionCount: number;
+  // Bounded recent failure fingerprints (correction-loop.ts's own
+  // computeFailureFingerprint), oldest first -- used ONLY for
+  // isRepeatedFailure's own no-progress detection across a restart. Each
+  // entry is already derived from a check-runner.ts BOUNDED summary, so
+  // this list itself stays bounded too.
+  recentCorrectionFingerprints: (string | null)[];
   lastKnownHeadSha: string | null;
   // A short, human-readable summary (e.g. "M files changed, N
   // insertions(+), N deletions(-)") -- never the full diff body, which

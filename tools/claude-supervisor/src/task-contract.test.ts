@@ -9,7 +9,7 @@ function validRaw(overrides: Record<string, unknown> = {}): Record<string, unkno
     approvedPrompt: "Do the thing exactly as approved.",
     scope: ["TTS experiment"],
     protectedAreas: ["VAD", "billing", "auth"],
-    requiredChecks: ["tsc", "eslint", "vitest", "build"],
+    requiredChecks: ["web_typecheck", "web_lint", "web_tests_relevant", "web_build"],
     ...overrides,
   };
 }
@@ -20,8 +20,34 @@ describe("validateTaskContract", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.contract.taskId).toBe("task-1");
-      expect(result.contract.requiredChecks).toEqual(["tsc", "eslint", "vitest", "build"]);
+      expect(result.contract.requiredChecks).toEqual(["web_typecheck", "web_lint", "web_tests_relevant", "web_build"]);
     }
+  });
+
+  it("defaults ciPolicy to 'optional' and productionValidation to 'not_required' when absent -- v1.1 contracts stay valid unmodified", () => {
+    const result = validateTaskContract(validRaw());
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.contract.ciPolicy).toBe("optional");
+      expect(result.contract.productionValidation).toBe("not_required");
+    }
+  });
+
+  it("accepts an explicit ciPolicy/productionValidation and preserves them", () => {
+    const result = validateTaskContract(validRaw({ ciPolicy: "required", productionValidation: "required" }));
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.contract.ciPolicy).toBe("required");
+      expect(result.contract.productionValidation).toBe("required");
+    }
+  });
+
+  it("rejects an unrecognized ciPolicy value", () => {
+    expect(validateTaskContract(validRaw({ ciPolicy: "sometimes" }))).toEqual({ ok: false, reason: "invalid_ciPolicy:sometimes" });
+  });
+
+  it("rejects an unrecognized productionValidation value", () => {
+    expect(validateTaskContract(validRaw({ productionValidation: "maybe" }))).toEqual({ ok: false, reason: "invalid_productionValidation:maybe" });
   });
 
   it("rejects a non-object payload", () => {
@@ -74,7 +100,7 @@ describe("validateTaskContract", () => {
   });
 
   it("rejects an unrecognized requiredChecks entry -- never a free-form string the Supervisor would need to interpret", () => {
-    expect(validateTaskContract(validRaw({ requiredChecks: ["tsc", "run-rm-rf"] }))).toEqual({
+    expect(validateTaskContract(validRaw({ requiredChecks: ["supervisor_typecheck", "run-rm-rf"] }))).toEqual({
       ok: false,
       reason: "invalid_required_check:run-rm-rf",
     });
