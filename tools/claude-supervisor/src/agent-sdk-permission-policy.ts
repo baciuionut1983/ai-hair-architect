@@ -13,17 +13,29 @@
 // one-line, separately-reviewable change to EXECUTOR_ALLOWED_TOOLS, not
 // a redesign of this module.
 //
-// CRITICAL, empirically-discovered behavior this design accounts for
-// (see this round's own live probe `write-probe.mjs`, which produced a
-// real runtime warning: CLAUDE_SDK_CAN_USE_TOOL_SHADOWED): a bare tool
-// name in `allowedTools` auto-approves BEFORE `canUseTool` is ever
-// consulted. So `createExecutorCanUseTool` below is never the primary
-// gate for Read/Write/Edit -- those are auto-approved by allowedTools
-// directly. It is the FAIL-CLOSED BACKSTOP for any tool name not already
-// covered by allowedTools/disallowedTools (e.g. a future SDK version
-// that adds a new built-in tool this policy hasn't been updated for
-// yet) -- "unknown tool -> denied" is made true here, not assumed.
+// v1.3.1 UPDATE (clean-path isolation validation round): a real,
+// controlled live test proved `cwd` provides ZERO filesystem
+// containment on its own -- a Read/Edit call with an absolute path
+// entirely outside the approved cwd succeeded with no denial and no
+// friction. The SAME round also proved, empirically, that a canUseTool
+// callback that resolves the tool's own `file_path` input against cwd
+// and denies anything outside it DOES provide real, working
+// containment (a controlled out-of-cwd Read and Edit were both denied;
+// an in-cwd Edit still succeeded normally). That is what
+// createExecutorCanUseTool below now does.
+//
+// This required also fixing the ORIGINAL, empirically-discovered
+// v1.3 gotcha (see this round's own live probe `write-probe.mjs`,
+// which produced a real runtime warning: CLAUDE_SDK_CAN_USE_TOOL_
+// SHADOWED): a bare tool name in `allowedTools` auto-approves BEFORE
+// canUseTool is ever consulted, which would have silently bypassed
+// this exact path check for Read/Write/Edit. agent-sdk-executor-
+// launcher.ts's own Options no longer puts EXECUTOR_ALLOWED_TOOLS into
+// `allowedTools` -- canUseTool is now the SOLE gate for every tool,
+// including Read/Write/Edit, so this is no longer merely a backstop
+// for unenumerated future tools; it is the real, load-bearing check.
 import type { CanUseTool, PermissionMode } from "@anthropic-ai/claude-agent-sdk";
+import { isAbsolute, resolve, sep } from "node:path";
 
 export const EXECUTOR_ALLOWED_TOOLS = ["Read", "Write", "Edit"] as const;
 
@@ -47,19 +59,48 @@ export const EXECUTOR_PERMISSION_MODE: PermissionMode = "default";
 
 const ALLOWED_TOOL_SET: ReadonlySet<string> = new Set(EXECUTOR_ALLOWED_TOOLS);
 
-// Fail-closed: only ever returns "allow" for a tool name in
-// EXECUTOR_ALLOWED_TOOLS. Every other tool name -- known-disallowed or
-// entirely unrecognized -- is denied with a fixed, non-negotiable
-// message (never echoing arbitrary executor-controlled input back into
-// the denial reason).
-export function createExecutorCanUseTool(): CanUseTool {
-  return async (toolName) => {
-    if (ALLOWED_TOOL_SET.has(toolName)) {
-      return { behavior: "allow" };
+// Resolves `candidatePath` (as the SDK's own Read/Write/Edit tools
+// received it -- absolute or relative, forward or backward slashes,
+// either was observed live) against `cwd`, then checks it lands inside
+// it. Case-insensitive comparison: Windows paths/drive letters are not
+// case-sensitive, and this round's own v1.3 work already found a real
+// bug from assuming otherwise (real-executor-launcher.ts's own
+// normalizeWindowsCwd). `resolve` alone (no realpath/symlink
+// resolution) matches what this whole package's cwd handling already
+// does elsewhere -- consistent, not a new assumption.
+export function isPathWithinCwd(cwd: string, candidatePath: string): boolean {
+  const resolvedCwd = resolve(cwd).toLowerCase();
+  const resolvedTarget = (isAbsolute(candidatePath) ? resolve(candidatePath) : resolve(cwd, candidatePath)).toLowerCase();
+  return resolvedTarget === resolvedCwd || resolvedTarget.startsWith(resolvedCwd + sep.toLowerCase());
+}
+
+// Fail-closed, and -- since v1.3.1 -- the REAL gate, not just a
+// backstop (see this file's own top-level doc comment for why
+// allowedTools can no longer carry Read/Write/Edit). For Read/Write/
+// Edit: only allowed when the tool's own `file_path` input both exists
+// as a string AND resolves inside `cwd`; missing/wrong-typed/outside
+// all deny. Every other tool name is denied outright, exactly as
+// before. Never echoes arbitrary executor-controlled input back into
+// the denial reason beyond the path itself (already visible to the
+// model in its own tool call).
+export function createExecutorCanUseTool(cwd: string): CanUseTool {
+  return async (toolName, input) => {
+    if (!ALLOWED_TOOL_SET.has(toolName)) {
+      return {
+        behavior: "deny",
+        message: `${toolName} is not permitted for this Supervisor-managed executor session. Only Read, Write, and Edit are allowed.`,
+      };
     }
-    return {
-      behavior: "deny",
-      message: `${toolName} is not permitted for this Supervisor-managed executor session. Only Read, Write, and Edit are allowed.`,
-    };
+    const filePath = typeof input.file_path === "string" ? input.file_path : null;
+    if (filePath === null) {
+      return { behavior: "deny", message: `${toolName} call carried no recognizable file_path -- denied, fail-closed.` };
+    }
+    if (!isPathWithinCwd(cwd, filePath)) {
+      return {
+        behavior: "deny",
+        message: `${filePath} resolves outside the approved working directory (${cwd}) -- denied by Supervisor's own path-boundary check.`,
+      };
+    }
+    return { behavior: "allow" };
   };
 }

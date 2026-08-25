@@ -13,7 +13,7 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 import { RESUME_INSTRUCTION } from "./claude-cli.js";
 import { reduceSdkOutcome } from "./agent-sdk-events.js";
-import { createExecutorCanUseTool, EXECUTOR_ALLOWED_TOOLS, EXECUTOR_DISALLOWED_TOOLS, EXECUTOR_PERMISSION_MODE } from "./agent-sdk-permission-policy.js";
+import { createExecutorCanUseTool, EXECUTOR_DISALLOWED_TOOLS, EXECUTOR_PERMISSION_MODE } from "./agent-sdk-permission-policy.js";
 import type { ExecutorLauncher } from "./orchestrator.js";
 import { normalizeWindowsCwd } from "./real-executor-launcher.js";
 import type { ExecutorOutcome } from "./stream-events.js";
@@ -35,15 +35,26 @@ async function runQuery(prompt: string, cwd: string, sessionSelector: SessionSel
   let transportError: string | null = null;
   let wasCancelled = false;
 
+  const normalizedCwd = normalizeWindowsCwd(cwd);
+
   try {
+    // v1.3.1: allowedTools is deliberately EMPTY -- a bare tool name
+    // there auto-approves before canUseTool is ever consulted
+    // (CLAUDE_SDK_CAN_USE_TOOL_SHADOWED, see agent-sdk-permission-
+    // policy.ts's own doc comment), which would silently bypass the
+    // path-boundary check below for Read/Write/Edit. canUseTool is now
+    // the sole gate for every tool, and it is bound to this exact
+    // normalizedCwd -- the same value passed as `cwd` here -- so its
+    // path check is judging tool calls against the SAME directory the
+    // session was actually anchored to, never a stale or different one.
     for await (const message of query({
       prompt,
       options: {
-        cwd: normalizeWindowsCwd(cwd),
+        cwd: normalizedCwd,
         ...sessionSelector,
-        allowedTools: [...EXECUTOR_ALLOWED_TOOLS],
+        allowedTools: [],
         disallowedTools: [...EXECUTOR_DISALLOWED_TOOLS],
-        canUseTool: createExecutorCanUseTool(),
+        canUseTool: createExecutorCanUseTool(normalizedCwd),
         permissionMode: EXECUTOR_PERMISSION_MODE,
         abortController,
       },
