@@ -226,7 +226,18 @@ async function main(): Promise<void> {
 
     const sessionId = randomUUID();
     const now = (): string => new Date().toISOString();
-    const captureChangedFiles = async (cwd: string): Promise<readonly string[]> => (await captureGitSnapshot(cwd)).changedFiles;
+    // v1.3 fix: captureGitSnapshot's own changedFiles now includes newly-
+    // created (untracked) files, not just tracked-file diffs (see
+    // git-inspect.ts's own doc comment). Without this filter, .claude/'s
+    // own perpetually-untracked, never-git-tracked contents (this
+    // project's established, expected state -- see
+    // ALLOWED_UNTRACKED_PREFIXES above) would show up as "changed" on
+    // EVERY run and trip a Level 2 scope violation against .claude/ in
+    // protectedAreas, even though the executor never touched it. This
+    // applies the exact same, already-established exclusion used
+    // everywhere else in this file -- never a new, separate rule.
+    const captureChangedFiles = async (cwd: string): Promise<readonly string[]> =>
+      (await captureGitSnapshot(cwd)).changedFiles.filter((path) => !ALLOWED_UNTRACKED_PREFIXES.some((prefix) => path.startsWith(prefix)));
 
     console.log(`[SUPERVISOR] ACTIVE mode: launching executor session ${sessionId} for taskId=${contract.taskId}.`);
     const launchResult = await runActiveExecution({
