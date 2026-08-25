@@ -1,6 +1,30 @@
 import { describe, expect, it } from "vitest";
 
-import { defaultClaudeBinaryCandidates, resolveRealClaudeBinary } from "./real-executor-launcher.js";
+import { defaultClaudeBinaryCandidates, normalizeWindowsCwd, resolveRealClaudeBinary } from "./real-executor-launcher.js";
+
+describe("normalizeWindowsCwd", () => {
+  // Live-confirmed root cause of the "sensitive file" Write/Edit denial
+  // during this round's own live smoke test: Claude Code's own
+  // ~/.claude.json project-trust registry is keyed by cwd string INCLUDING
+  // drive-letter case, so a lowercase "c:/..." cwd is a completely
+  // different (never-trusted) entry than the real, already-trusted
+  // "C:/..." one.
+  it("uppercases a lowercase drive letter", () => {
+    expect(normalizeWindowsCwd("c:/Users/hp/.claude/projects/ai-hair-architect")).toBe("C:/Users/hp/.claude/projects/ai-hair-architect");
+  });
+
+  it("leaves an already-uppercase drive letter unchanged", () => {
+    expect(normalizeWindowsCwd("C:/Users/hp/repo")).toBe("C:/Users/hp/repo");
+  });
+
+  it("works with backslash paths too", () => {
+    expect(normalizeWindowsCwd("c:\\Users\\hp\\repo")).toBe("C:\\Users\\hp\\repo");
+  });
+
+  it("leaves a Unix-style path (no drive letter) completely unchanged", () => {
+    expect(normalizeWindowsCwd("/home/user/repo")).toBe("/home/user/repo");
+  });
+});
 
 describe("defaultClaudeBinaryCandidates", () => {
   it("includes the real, live-verified .exe path under %APPDATA%\\npm\\node_modules -- never the .cmd/.ps1 shim", () => {

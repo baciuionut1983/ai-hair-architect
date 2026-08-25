@@ -46,6 +46,28 @@ export function resolveRealClaudeBinary(env: NodeJS.ProcessEnv = process.env): s
 
 export type PermissionMode = "acceptEdits" | "manual" | "plan";
 
+// Windows-specific, LIVE-CONFIRMED finding from this round's own smoke
+// test: Claude Code's per-project trust registry (~/.claude.json's own
+// "projects" map) is keyed by the EXACT cwd string, including drive-
+// letter CASE. A spawned session given a lowercase-drive-letter cwd
+// (e.g. "c:/Users/hp/...") was silently treated as an entirely
+// DIFFERENT, NEVER-TRUSTED project from the already-trusted
+// "C:/Users/hp/..." entry (the form an interactive session/VS Code
+// normally produces) -- confirmed directly by reading the real
+// ~/.claude.json file, which had BOTH keys, one true and one false.
+// The practical symptom was a real Write/Edit tool call denied as
+// "requested permissions to edit ... which is a sensitive file" even
+// under --permission-mode acceptEdits, because the untrusted-project
+// path silently drops every real permissions.allow/additionalDirectories
+// entry. Normalizing the drive letter to uppercase before ever using cwd
+// for a real spawn avoids this entirely -- a Unix path (no drive letter)
+// passes through unchanged.
+export function normalizeWindowsCwd(cwd: string): string {
+  const match = /^([a-zA-Z]):(.*)$/.exec(cwd);
+  if (!match) return cwd;
+  return `${match[1].toUpperCase()}:${match[2]}`;
+}
+
 // `acceptEdits` is this function's own default -- matches this project's
 // own already-granted "autopilot" authorization (normal edits/tests/
 // commit/push without per-action confirmation; destructive operations
@@ -55,13 +77,15 @@ export type PermissionMode = "acceptEdits" | "manual" | "plan";
 export function createRealExecutorLauncher(binaryPath: string, permissionMode: PermissionMode = "acceptEdits"): ExecutorLauncher {
   return {
     launch(sessionId: string, prompt: string, cwd: string): Promise<ExecutorOutcome> {
-      const args = buildLaunchArgs({ sessionId, prompt, permissionMode, cwd });
-      const { process: child } = spawnExecutor(binaryPath, args, cwd);
+      const normalizedCwd = normalizeWindowsCwd(cwd);
+      const args = buildLaunchArgs({ sessionId, prompt, permissionMode, cwd: normalizedCwd });
+      const { process: child } = spawnExecutor(binaryPath, args, normalizedCwd);
       return observeExecutorProcess(child);
     },
     resume(sessionId: string, cwd: string, prompt: string = RESUME_INSTRUCTION): Promise<ExecutorOutcome> {
-      const args = buildResumeArgs({ sessionId, prompt, permissionMode, cwd });
-      const { process: child } = spawnExecutor(binaryPath, args, cwd);
+      const normalizedCwd = normalizeWindowsCwd(cwd);
+      const args = buildResumeArgs({ sessionId, prompt, permissionMode, cwd: normalizedCwd });
+      const { process: child } = spawnExecutor(binaryPath, args, normalizedCwd);
       return observeExecutorProcess(child);
     },
   };
