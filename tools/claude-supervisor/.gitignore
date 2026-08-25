@@ -1,5 +1,5 @@
 node_modules/
 dist/
-state/*.json
+state/*
 !state/.gitkeep
 *.log
