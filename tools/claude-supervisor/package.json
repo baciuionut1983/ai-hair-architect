@@ -1,0 +1,25 @@
+{
+  "name": "claude-supervisor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local dev-infrastructure watchdog for Claude Code coding sessions on this repo. NOT part of AI Hair Architect -- never imported by web/, never deployed, never bundled.",
+  "type": "module",
+  "bin": {
+    "claude-supervisor": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "eslint .",
+    "start": "tsx src/cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "eslint": "^10.9.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.68.0",
+    "vitest": "^3.2.6"
+  }
+}

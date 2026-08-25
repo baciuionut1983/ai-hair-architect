@@ -1,0 +1,8 @@
+{
+  "taskId": "tts-ab-experiment-1",
+  "title": "TTS A/B experiment: current model vs gemini-3.1-flash-tts-preview",
+  "approvedPrompt": "PLACEHOLDER -- the real approved prompt goes here once this task is actually authorized.",
+  "scope": ["TTS experiment"],
+  "protectedAreas": ["VAD", "billing", "auth"],
+  "requiredChecks": ["tsc", "eslint", "vitest", "build"]
+}

@@ -1,0 +1,37 @@
+﻿import { describe, expect, it } from "vitest";
+
+import { parseCliArgs } from "./cli.js";
+
+describe("parseCliArgs", () => {
+  it("rejects a missing --task flag", () => {
+    const result = parseCliArgs(["--dry-run"]);
+    expect("error" in result).toBe(true);
+  });
+
+  it("parses --task and defaults dryRun to false", () => {
+    const result = parseCliArgs(["--task", "/path/to/contract.json"]);
+    expect("error" in result).toBe(false);
+    if (!("error" in result)) {
+      expect(result.taskContractPath).toBe("/path/to/contract.json");
+      expect(result.dryRun).toBe(false);
+    }
+  });
+
+  it("recognizes --dry-run", () => {
+    const result = parseCliArgs(["--task", "/path/to/contract.json", "--dry-run"]);
+    if (!("error" in result)) {
+      expect(result.dryRun).toBe(true);
+    } else {
+      throw new Error("expected a successful parse");
+    }
+  });
+
+  it("recognizes an explicit --cwd override", () => {
+    const result = parseCliArgs(["--task", "/c.json", "--cwd", "/other/repo"]);
+    if (!("error" in result)) {
+      expect(result.cwd).toBe("/other/repo");
+    } else {
+      throw new Error("expected a successful parse");
+    }
+  });
+});
