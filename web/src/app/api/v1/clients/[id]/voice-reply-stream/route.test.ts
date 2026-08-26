@@ -44,6 +44,41 @@ function erroringAsyncGenerator(error: unknown): AsyncGenerator<Chunk> {
   return gen();
 }
 
+// Yields every real chunk first, exactly like chunksToAsyncGenerator, but
+// then throws -- models a genuine mid-stream provider failure (as opposed
+// to erroringAsyncGenerator's before-any-chunk failure, already covered
+// above).
+function chunksThenErrorAsyncGenerator(chunks: Chunk[], error: unknown): AsyncGenerator<Chunk> {
+  async function* gen(): AsyncGenerator<Chunk> {
+    for (const chunk of chunks) yield chunk;
+    throw error;
+  }
+  return gen();
+}
+
+// Gates each yield behind a real timer -- needed only for the cancel()
+// regression test below, so a real cancel() call can land while the
+// route's own producer loop is still genuinely mid-stream (a plain,
+// undelayed async generator here would race ahead of the test and finish
+// before cancel() ever had a chance to run).
+function chunksToAsyncGeneratorWithDelay(chunks: Chunk[], delayMs: number): AsyncGenerator<Chunk> {
+  async function* gen(): AsyncGenerator<Chunk> {
+    for (const chunk of chunks) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      yield chunk;
+    }
+  }
+  return gen();
+}
+
+// Finds the one JSON log line (among every console spy call) whose parsed
+// body contains the given stage -- every logVoiceReplyStream call in
+// route.ts is a single JSON.stringify'd argument, exactly matching this.
+function findLoggedLine(spy: { mock: { calls: unknown[][] } }, stage: string): Record<string, unknown> | undefined {
+  const line = spy.mock.calls.map((args) => String(args[0])).find((entry) => entry.includes(`"stage":"${stage}"`));
+  return line ? JSON.parse(line) : undefined;
+}
+
 function createTtsProviderError(code: string, retryable: boolean, status?: number): Error {
   const error = new Error(`Gemini TTS streaming ${code}`) as Error & { code: string; retryable: boolean; status?: number };
   error.code = code;
@@ -288,5 +323,180 @@ describe("AI usage metering", () => {
     const response = await invoke({ text: "hello", language: "en" });
     expect(response.status).toBe(200);
     await expect(response.arrayBuffer()).resolves.toBeDefined();
+  });
+});
+
+describe("POST /api/v1/clients/[id]/voice-reply-stream -- genuine mid-stream provider failure (unchanged behavior)", () => {
+  it("logs FAILED with the real partial chunkCount when the provider's stream throws after already yielding some chunks", async () => {
+    streamingProviderMock.synthesizeStream.mockReturnValue(
+      chunksThenErrorAsyncGenerator(
+        [
+          { pcm: Buffer.from([1, 2]), mimeType: "audio/L16;rate=24000" },
+          { pcm: Buffer.from([3, 4]), mimeType: "audio/L16;rate=24000" },
+        ],
+        createTtsProviderError("PROVIDER_ERROR", true, 503),
+      ),
+    );
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const response = await invoke({ text: "hello", language: "en" });
+      expect(response.status).toBe(200);
+      // The real controller.error() call (untouched by this test) genuinely
+      // errors the stream -- draining it is expected to reject.
+      await expect(response.arrayBuffer()).rejects.toBeDefined();
+
+      const failed = findLoggedLine(errorSpy, "provider_call");
+      expect(failed).toBeDefined();
+      expect(failed).toMatchObject({ status: "FAILED", chunkCount: 2, pcmBytesTotal: 4, providerErrorCode: "PROVIDER_ERROR" });
+
+      expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: "FAILED", errorCategory: "PROVIDER_ERROR" }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+// Regression coverage for the real, live end-to-end bug (gate
+// VOICE_REPLY_STREAM, providerErrorCode ERR_INVALID_STATE,
+// "Invalid state: Controller is already closed") this route was
+// investigated and fixed for: controller.close() (and, defensively,
+// controller.error()) can themselves throw once something else has
+// already torn the controller down from the outside, even though every
+// real chunk the provider produced was already enqueued successfully --
+// see route.ts's own comments at the ReadableStream construction site for
+// the full investigation notes. These tests reproduce that exact race by
+// patching the native ReadableStreamDefaultController prototype for the
+// duration of a single test (restored in a finally, every time) -- the
+// only way to force this specific, otherwise-unreproducible-in-isolation
+// native throw deterministically at the unit level.
+describe("POST /api/v1/clients/[id]/voice-reply-stream -- controller close()/error() teardown races (regression)", () => {
+  it("logs SUCCEEDED, not FAILED, and never crashes when controller.close() itself throws after every real chunk was already delivered", async () => {
+    const originalClose = ReadableStreamDefaultController.prototype.close;
+    const closePatch = vi.fn(() => {
+      throw new Error("Invalid state: Controller is already closed");
+    });
+    ReadableStreamDefaultController.prototype.close = closePatch as typeof originalClose;
+
+    try {
+      streamingProviderMock.synthesizeStream.mockReturnValue(
+        chunksToAsyncGenerator([
+          { pcm: Buffer.from([1, 2]), mimeType: "audio/L16;rate=24000" },
+          { pcm: Buffer.from([3, 4]), mimeType: "audio/L16;rate=24000" },
+        ]),
+      );
+      const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        const response = await invoke({ text: "hello", language: "en" });
+        expect(response.status).toBe(200);
+        // The patched close() always throws instead of ever really closing
+        // the stream, so the body itself never reaches "done" here -- this
+        // test asserts on the server-side logging/handling only, never on
+        // draining the (permanently-open, by construction) body.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(closePatch).toHaveBeenCalled();
+        expect(errorSpy).not.toHaveBeenCalled();
+
+        const succeeded = findLoggedLine(logSpy, "complete");
+        expect(succeeded).toBeDefined();
+        expect(succeeded).toMatchObject({ status: "SUCCEEDED", chunkCount: 2, pcmBytesTotal: 4, controllerAlreadyClosed: true });
+
+        expect(usageRepoMock.recordAiUsageEvent).toHaveBeenCalledWith(expect.objectContaining({ outcome: "SUCCEEDED" }));
+      } finally {
+        logSpy.mockRestore();
+        errorSpy.mockRestore();
+      }
+    } finally {
+      ReadableStreamDefaultController.prototype.close = originalClose;
+    }
+  });
+
+  it("never crashes the request handler even when controller.error() itself throws on a genuine mid-stream provider failure", async () => {
+    const originalError = ReadableStreamDefaultController.prototype.error;
+    const errorPatch = vi.fn(() => {
+      throw new Error("Invalid state: Controller is already closed");
+    });
+    ReadableStreamDefaultController.prototype.error = errorPatch as typeof originalError;
+
+    try {
+      streamingProviderMock.synthesizeStream.mockReturnValue(
+        chunksThenErrorAsyncGenerator(
+          [{ pcm: Buffer.from([1, 2]), mimeType: "audio/L16;rate=24000" }],
+          createTtsProviderError("PROVIDER_ERROR", false, 500),
+        ),
+      );
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        const response = await invoke({ text: "hello", language: "en" });
+        expect(response.status).toBe(200);
+        // The patched error() throws instead of ever really erroring the
+        // stream, so (exactly like the close() test above) the body never
+        // settles -- assert on logging/handling only.
+        await new Promise((resolve) => setTimeout(resolve, 20));
+
+        expect(errorPatch).toHaveBeenCalled();
+        const failed = findLoggedLine(errorSpy, "provider_call");
+        expect(failed).toBeDefined();
+        expect(failed).toMatchObject({ status: "FAILED", chunkCount: 1, providerErrorCode: "PROVIDER_ERROR" });
+      } finally {
+        errorSpy.mockRestore();
+      }
+    } finally {
+      ReadableStreamDefaultController.prototype.error = originalError;
+    }
+  });
+});
+
+describe("POST /api/v1/clients/[id]/voice-reply-stream -- cancel() (genuine client-initiated disconnect)", () => {
+  it("calls generator.return() to stop pulling more chunks, and logs an honest INFO event instead of a fake SUCCEEDED or FAILED", async () => {
+    const generator = chunksToAsyncGeneratorWithDelay(
+      [
+        { pcm: Buffer.from([1, 2]), mimeType: "audio/L16;rate=24000" },
+        { pcm: Buffer.from([3, 4]), mimeType: "audio/L16;rate=24000" },
+        { pcm: Buffer.from([5, 6]), mimeType: "audio/L16;rate=24000" },
+        { pcm: Buffer.from([7, 8]), mimeType: "audio/L16;rate=24000" },
+        { pcm: Buffer.from([9, 10]), mimeType: "audio/L16;rate=24000" },
+      ],
+      20,
+    );
+    const returnSpy = vi.spyOn(generator, "return");
+    streamingProviderMock.synthesizeStream.mockReturnValue(generator);
+
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const response = await invoke({ text: "hello", language: "en" });
+      expect(response.status).toBe(200);
+
+      // Cancel immediately -- the delayed generator above still has several
+      // real chunks left to produce, so this genuinely lands mid-stream
+      // rather than racing the natural end.
+      await response.body!.cancel("client_navigated_away");
+      // Let the in-flight generator.next()/return() queue settle.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(returnSpy).toHaveBeenCalled();
+
+      const cancelled = findLoggedLine(logSpy, "client_cancelled");
+      expect(cancelled).toBeDefined();
+      expect(cancelled).toMatchObject({ status: "INFO", gate: "VOICE_REPLY_STREAM" });
+      expect((cancelled as { chunkCount: number }).chunkCount).toBeLessThan(5);
+
+      // Never a fake success or a fake failure for a stream the client
+      // itself walked away from.
+      expect(findLoggedLine(logSpy, "complete")).toBeUndefined();
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(usageRepoMock.recordAiUsageEvent).not.toHaveBeenCalled();
+    } finally {
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
   });
 });

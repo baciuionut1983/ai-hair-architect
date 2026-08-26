@@ -237,12 +237,21 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   // already-fetched firstResult) is reused, never re-invoked -- a second
   // call to provider.synthesizeStream would start a second, real, billed
   // API request.
+  //
+  // chunkCount/pcmBytesTotal/timeToFirstProviderByteMs and clientCancelled
+  // are declared here, OUTSIDE start(), and closed over by both start()
+  // and cancel() below -- cancel() needs the live tallies for its own log
+  // line, and start()'s own catch block needs to know whether a given
+  // in-loop throw was actually a genuine provider failure or just the
+  // normal, expected fallout of cancel() having already stopped the
+  // generator (see both call sites below for the full reasoning).
+  let chunkCount = 0;
+  let pcmBytesTotal = 0;
+  let timeToFirstProviderByteMs: number | null = null;
+  let clientCancelled = false;
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      let chunkCount = 0;
-      let pcmBytesTotal = 0;
-      let timeToFirstProviderByteMs: number | null = null;
-
       try {
         let current = firstResult;
         while (!current.done) {
@@ -255,7 +264,40 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           controller.enqueue(new Uint8Array(chunk.pcm));
           current = await generator.next();
         }
-        controller.close();
+
+        // The loop above only exits once generator.next() itself reports
+        // `done` -- reachable two ways: (1) the provider's own stream
+        // genuinely ended (every real chunk already enqueued above), or
+        // (2) cancel() below already called generator.return() and the
+        // async-generator protocol is now reporting the generator closed,
+        // NOT a genuine end-of-reply. Those need different logging: (2)
+        // was already logged, honestly, by cancel() itself the moment it
+        // fired -- nothing here should also claim SUCCEEDED over audio
+        // that was actually cut short.
+        if (clientCancelled) return;
+
+        // Every real chunk the provider produced has now been enqueued.
+        // chunkCount/pcmBytesTotal already describe a fully successful
+        // delivery no matter what controller.close() does next.
+        //
+        // controller.close() has been observed, live, to itself throw
+        // ("Invalid state: Controller is already closed") after a real,
+        // complete delivery of several hundred chunks through the real
+        // client -- something (most likely the runtime's own
+        // stream-to-response plumbing, possibly the same mechanism
+        // cancel() below now hooks into) had already torn this controller
+        // down from the outside by the time this line ran. That is NOT a
+        // delivery failure -- every byte the client needed was already
+        // enqueued above -- so it must never be logged or billed as one.
+        // Catching it HERE, separately from the try/catch below (which
+        // exists for genuine mid-loop provider failures), is what keeps
+        // this race out of the FAILED branch entirely.
+        let controllerAlreadyClosed = false;
+        try {
+          controller.close();
+        } catch {
+          controllerAlreadyClosed = true;
+        }
 
         const totalProviderStreamMs = Date.now() - requestReceivedAt;
         logVoiceReplyStream("SUCCEEDED", "complete", {
@@ -267,6 +309,7 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           timeToFirstProviderByteMs,
           totalProviderStreamMs,
           pcmBytesTotal,
+          controllerAlreadyClosed,
         });
         // Fire-and-forget: unlike voice-reply/route.ts's own AWAITED
         // usage write (a deliberate, documented trade-off there), this
@@ -286,7 +329,25 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           latencyMs: Date.now() - providerCallStartedAt,
         }).catch(() => {});
       } catch (streamError) {
-        controller.error(streamError);
+        // A genuine mid-loop failure lands here two ways: a real provider
+        // error rejecting out of generator.next(), or controller.enqueue()
+        // throwing because cancel() below already moved this controller
+        // out of "readable" (the async-generator queueing protocol can
+        // let one more already-in-flight chunk resolve after
+        // generator.return() was requested -- see cancel()'s own comment).
+        // clientCancelled tells the two apart: cancel() already logged its
+        // own honest INFO event the moment it fired, so there is nothing
+        // further to log or bill here for that case.
+        if (clientCancelled) return;
+
+        try {
+          controller.error(streamError);
+        } catch {
+          // Already closed/errored/cancelled from the outside -- nothing
+          // left to signal downstream, and, exactly like
+          // controller.close() above, never something that should crash
+          // this handler.
+        }
 
         const providerError = streamError as TtsProviderError;
         const totalProviderStreamMs = Date.now() - requestReceivedAt;
@@ -318,6 +379,41 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
           latencyMs: Date.now() - providerCallStartedAt,
         }).catch(() => {});
       }
+    },
+    // A genuine client-initiated disconnect (tab closed, navigation away,
+    // the fetch itself aborted -- or the runtime's own stream plumbing
+    // deciding this response is done for reasons outside this route's
+    // control) is a real, different scenario from the close()-throws race
+    // handled above: here whatever was reading this stream is gone, so
+    // there is no one left to enqueue any more of this reply's audio to.
+    // Before this handler existed, that situation was invisible to this
+    // route entirely -- the producer loop above had no way to learn about
+    // it and would keep pulling (and paying for) more of a reply nobody
+    // could hear any more, until its own next controller call happened to
+    // throw.
+    //
+    // generator.return() is the async-generator protocol's own way to
+    // stop synthesizeStream's `for await` loop -- it lets that loop's own
+    // `finally` (clearTimeout) run and stops this route from continuing to
+    // pull further chunks from Gemini. Never awaited: cancel() itself must
+    // return promptly, and a hypothetical rejection here is not this
+    // route's problem to surface.
+    cancel(reason) {
+      clientCancelled = true;
+      generator.return(undefined).catch(() => {});
+
+      const totalProviderStreamMs = Date.now() - requestReceivedAt;
+      logVoiceReplyStream("INFO", "client_cancelled", {
+        model: streamingModel,
+        language,
+        languageCode,
+        textLength: text.length,
+        chunkCount,
+        timeToFirstProviderByteMs,
+        totalProviderStreamMs,
+        pcmBytesTotal,
+        reason: typeof reason === "string" ? reason.slice(0, MAX_LOGGED_PROVIDER_ERROR_LENGTH) : String(reason ?? "unknown").slice(0, MAX_LOGGED_PROVIDER_ERROR_LENGTH),
+      });
     },
   });
 
