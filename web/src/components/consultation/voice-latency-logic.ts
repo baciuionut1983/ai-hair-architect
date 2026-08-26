@@ -155,6 +155,32 @@ export interface VoiceLatencySummary {
   // fabricated, null unless every named component AND the total were
   // actually measured.
   voiceTurnUnattributedMs: number | null;
+  // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF -- see
+  // consultation-chat-streaming-tts-integration.ts's own
+  // isStreamingVoiceReplyEnabled): threaded through from that module's own
+  // StreamingVoiceReplyTelemetry exactly like every other provider-
+  // reported field above -- null (or false, for the one non-nullable
+  // boolean) whenever this turn never used the streaming candidate path
+  // at all, never fabricated. timeToFirstAudioMs's own existing
+  // computation is completely unchanged -- for a streaming turn, the
+  // SAME "playback_started" mark the full-WAV path has always set is what
+  // makes it correctly reflect the streaming case too (see
+  // consultation-chat.tsx's own streaming onFirstPlaybackStarted
+  // callback), not a second, separate calculation path.
+  ttsDeliveryMode: "full_wav" | "streaming" | null;
+  ttsChunkCount: number | null;
+  ttsFirstChunkProviderMs: number | null;
+  ttsFirstPlayableChunkMs: number | null;
+  ttsFirstPlaybackStartedMs: number | null;
+  // Whether this turn ever fell back from the streaming candidate path to
+  // the full-WAV path -- always a real boolean (false is a truthful,
+  // meaningful answer for every full-WAV-only turn too, never a
+  // fabricated placeholder), unlike every other field on this interface.
+  ttsFallbackToFullUsed: boolean;
+  ttsFallbackReason: string | null;
+  ttsPlaybackGapMaxMs: number | null;
+  ttsStreamingCompleted: boolean | null;
+  ttsStreamingError: string | null;
 }
 
 function diff(marks: VoiceLatencyMarks, from: VoiceLatencyStage, to: VoiceLatencyStage): number | null {
@@ -198,6 +224,22 @@ export interface VoiceLatencyProviderTimings {
   consultationFailedFirstAttemptMs?: number;
   consultationServerTotalMs?: number;
   consultationUnattributedMs?: number;
+  // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF): mirrors
+  // the pattern above exactly -- threaded through from consultation-chat.tsx's
+  // own concludeVoiceTurn (see its streamingContext trailing param) only
+  // when this turn actually attempted the streaming candidate path;
+  // undefined for every full-WAV turn, exactly like every other optional
+  // field here.
+  ttsDeliveryMode?: "full_wav" | "streaming";
+  ttsChunkCount?: number;
+  ttsFirstChunkProviderMs?: number;
+  ttsFirstPlayableChunkMs?: number;
+  ttsFirstPlaybackStartedMs?: number;
+  ttsFallbackToFullUsed?: boolean;
+  ttsFallbackReason?: string;
+  ttsPlaybackGapMaxMs?: number;
+  ttsStreamingCompleted?: boolean;
+  ttsStreamingError?: string;
 }
 
 export function computeVoiceLatencySummary(
@@ -284,6 +326,25 @@ export function computeVoiceLatencySummary(
     voiceTurnTotalMs: diff(marks, "mic_requested", "playback_started"),
     timeToPlaybackCompleteMs: diff(marks, "recording_stopped", "playback_ended"),
     voiceTurnUnattributedMs,
+    // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF): see
+    // this function's own VoiceLatencySummary/VoiceLatencyProviderTimings
+    // doc comments -- each individually null (or false for the one
+    // non-nullable boolean) whenever the caller never reported it, never
+    // fabricated.
+    ttsDeliveryMode: providerTimings.ttsDeliveryMode ?? null,
+    ttsChunkCount: typeof providerTimings.ttsChunkCount === "number" ? Math.round(providerTimings.ttsChunkCount) : null,
+    ttsFirstChunkProviderMs:
+      typeof providerTimings.ttsFirstChunkProviderMs === "number" ? Math.round(providerTimings.ttsFirstChunkProviderMs) : null,
+    ttsFirstPlayableChunkMs:
+      typeof providerTimings.ttsFirstPlayableChunkMs === "number" ? Math.round(providerTimings.ttsFirstPlayableChunkMs) : null,
+    ttsFirstPlaybackStartedMs:
+      typeof providerTimings.ttsFirstPlaybackStartedMs === "number" ? Math.round(providerTimings.ttsFirstPlaybackStartedMs) : null,
+    ttsFallbackToFullUsed: providerTimings.ttsFallbackToFullUsed ?? false,
+    ttsFallbackReason: providerTimings.ttsFallbackReason ?? null,
+    ttsPlaybackGapMaxMs:
+      typeof providerTimings.ttsPlaybackGapMaxMs === "number" ? Math.round(providerTimings.ttsPlaybackGapMaxMs) : null,
+    ttsStreamingCompleted: typeof providerTimings.ttsStreamingCompleted === "boolean" ? providerTimings.ttsStreamingCompleted : null,
+    ttsStreamingError: providerTimings.ttsStreamingError ?? null,
   };
 }
 

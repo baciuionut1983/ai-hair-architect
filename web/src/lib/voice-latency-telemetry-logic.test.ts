@@ -33,6 +33,20 @@ function validSummary() {
     voiceTurnTotalMs: 2100,
     timeToPlaybackCompleteMs: 2600,
     voiceTurnUnattributedMs: 84,
+    // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF): the
+    // default, non-streaming shape -- every existing test in this file
+    // that reuses validSummary() as-is is exercising a full-WAV turn,
+    // exactly like before this round.
+    ttsDeliveryMode: null,
+    ttsChunkCount: null,
+    ttsFirstChunkProviderMs: null,
+    ttsFirstPlayableChunkMs: null,
+    ttsFirstPlaybackStartedMs: null,
+    ttsFallbackToFullUsed: false,
+    ttsFallbackReason: null,
+    ttsPlaybackGapMaxMs: null,
+    ttsStreamingCompleted: null,
+    ttsStreamingError: null,
   };
 }
 
@@ -93,6 +107,16 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
         voiceTurnTotalMs: null,
         timeToPlaybackCompleteMs: null,
         voiceTurnUnattributedMs: null,
+        ttsDeliveryMode: null,
+        ttsChunkCount: null,
+        ttsFirstChunkProviderMs: null,
+        ttsFirstPlayableChunkMs: null,
+        ttsFirstPlaybackStartedMs: null,
+        ttsFallbackToFullUsed: false,
+        ttsFallbackReason: null,
+        ttsPlaybackGapMaxMs: null,
+        ttsStreamingCompleted: null,
+        ttsStreamingError: null,
       },
     });
     expect(result).toEqual({
@@ -126,9 +150,107 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
           voiceTurnTotalMs: null,
           timeToPlaybackCompleteMs: null,
           voiceTurnUnattributedMs: null,
+          ttsDeliveryMode: null,
+          ttsChunkCount: null,
+          ttsFirstChunkProviderMs: null,
+          ttsFirstPlayableChunkMs: null,
+          ttsFirstPlaybackStartedMs: null,
+          ttsFallbackToFullUsed: false,
+          ttsFallbackReason: null,
+          ttsPlaybackGapMaxMs: null,
+          ttsStreamingCompleted: null,
+          ttsStreamingError: null,
         },
       },
     });
+  });
+
+  // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF): proves
+  // the new fields are actually threaded through (not silently dropped by
+  // the summary allow-list -- see voice-latency-telemetry-logic.ts's own
+  // VoiceLatencyStreamingSummaryFields doc comment for why these needed
+  // their own, separately-typed validation).
+  it("accepts and threads through real streaming Voice Reply summary field values", () => {
+    const result = parseVoiceLatencyTelemetryPayload({
+      attemptId: "attempt-1",
+      outcome: "tts_completed",
+      summary: {
+        ...validSummary(),
+        ttsDeliveryMode: "streaming",
+        ttsChunkCount: 12,
+        ttsFirstChunkProviderMs: 110,
+        ttsFirstPlayableChunkMs: 125,
+        ttsFirstPlaybackStartedMs: 140,
+        ttsFallbackToFullUsed: false,
+        ttsFallbackReason: null,
+        ttsPlaybackGapMaxMs: 18,
+        ttsStreamingCompleted: true,
+        ttsStreamingError: null,
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        attemptId: "attempt-1",
+        outcome: "tts_completed",
+        summary: {
+          ...validSummary(),
+          ttsDeliveryMode: "streaming",
+          ttsChunkCount: 12,
+          ttsFirstChunkProviderMs: 110,
+          ttsFirstPlayableChunkMs: 125,
+          ttsFirstPlaybackStartedMs: 140,
+          ttsFallbackToFullUsed: false,
+          ttsFallbackReason: null,
+          ttsPlaybackGapMaxMs: 18,
+          ttsStreamingCompleted: true,
+          ttsStreamingError: null,
+        },
+      },
+    });
+  });
+
+  it("accepts ttsFallbackToFullUsed: true with a real ttsFallbackReason", () => {
+    const result = parseVoiceLatencyTelemetryPayload({
+      attemptId: "attempt-1",
+      outcome: "tts_completed",
+      summary: { ...validSummary(), ttsFallbackToFullUsed: true, ttsFallbackReason: "not_configured" },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      value: expect.objectContaining({
+        summary: expect.objectContaining({ ttsFallbackToFullUsed: true, ttsFallbackReason: "not_configured" }),
+      }),
+    });
+  });
+
+  it("rejects an invalid ttsDeliveryMode value -- a fixed enum, never a free-form string", () => {
+    const result = parseVoiceLatencyTelemetryPayload({
+      attemptId: "attempt-1",
+      outcome: "tts_completed",
+      summary: { ...validSummary(), ttsDeliveryMode: "made_up_mode" },
+    });
+    expect(result).toEqual({ ok: false, reason: "invalid_summary_field:ttsDeliveryMode" });
+  });
+
+  it("rejects a non-boolean ttsFallbackToFullUsed", () => {
+    const result = parseVoiceLatencyTelemetryPayload({
+      attemptId: "attempt-1",
+      outcome: "tts_completed",
+      summary: { ...validSummary(), ttsFallbackToFullUsed: "true" },
+    });
+    expect(result).toEqual({ ok: false, reason: "invalid_summary_field:ttsFallbackToFullUsed" });
+  });
+
+  it("rejects an implausibly large ttsChunkCount (garbage/overflow), never blocking a real long reply silently", () => {
+    const result = parseVoiceLatencyTelemetryPayload({
+      attemptId: "attempt-1",
+      outcome: "tts_completed",
+      summary: { ...validSummary(), ttsChunkCount: 1_000_000 },
+    });
+    expect(result).toEqual({ ok: false, reason: "invalid_summary_field:ttsChunkCount" });
   });
 
   it("treats a missing summary field the same as an explicit null", () => {

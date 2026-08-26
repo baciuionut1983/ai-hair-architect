@@ -121,7 +121,30 @@ const VOICE_LATENCY_SUMMARY_FIELDS = [
 
 export type VoiceLatencySummaryField = (typeof VOICE_LATENCY_SUMMARY_FIELDS)[number];
 
-export type VoiceLatencyTelemetrySummary = Record<VoiceLatencySummaryField, number | null>;
+// Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF -- see
+// consultation-chat-streaming-tts-integration.ts's own
+// isStreamingVoiceReplyEnabled): mirrors voice-latency-logic.ts's own new
+// VoiceLatencySummary fields exactly. Kept as a separate, additive
+// intersection rather than folded into VOICE_LATENCY_SUMMARY_FIELDS above
+// -- that array (and the uniform number|null loop it drives, below) is
+// deliberately single-typed; these 10 fields are NOT all numbers (a
+// delivery-mode string, an error string, two booleans), so they get their
+// own individually-typed, individually-validated handling right after
+// that loop instead of forcing a mixed-type value through it.
+export interface VoiceLatencyStreamingSummaryFields {
+  ttsDeliveryMode: "full_wav" | "streaming" | null;
+  ttsChunkCount: number | null;
+  ttsFirstChunkProviderMs: number | null;
+  ttsFirstPlayableChunkMs: number | null;
+  ttsFirstPlaybackStartedMs: number | null;
+  ttsFallbackToFullUsed: boolean;
+  ttsFallbackReason: string | null;
+  ttsPlaybackGapMaxMs: number | null;
+  ttsStreamingCompleted: boolean | null;
+  ttsStreamingError: string | null;
+}
+
+export type VoiceLatencyTelemetrySummary = Record<VoiceLatencySummaryField, number | null> & VoiceLatencyStreamingSummaryFields;
 
 // Terminal diagnostics for a FAILED (or otherwise non-fully-completed)
 // turn -- all optional, all technical/timing-only. `errorCode` is
@@ -396,6 +419,56 @@ function isSafeSingleLineText(value: string): boolean {
   return !/[\x00-\x1F\x7F]/.test(value);
 }
 
+// Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF): the
+// fixed set of real values voice-latency-logic.ts's own
+// VoiceLatencySummary.ttsDeliveryMode can produce -- never a free-form
+// string.
+const TTS_DELIVERY_MODES = new Set(["full_wav", "streaming"]);
+
+// A generous ceiling for a real streamed reply's chunk count (the real
+// provider's own chunks were confirmed live at ~1920 bytes each -- even a
+// very long reply is nowhere near this many) -- rejects only a clearly-
+// garbage value, never a real one.
+const MAX_PLAUSIBLE_CHUNK_COUNT = 100_000;
+
+// Shared by every one of the 4 new nullable streaming duration fields
+// (ttsFirstChunkProviderMs/ttsFirstPlayableChunkMs/ttsFirstPlaybackStartedMs/
+// ttsPlaybackGapMaxMs) -- unlike parseOptionalDurationField above, this
+// treats an explicit `null` the same as `undefined` (both mean "not
+// measured for this turn"), matching how computeVoiceLatencySummary itself
+// already emits `null` for every one of these when the corresponding
+// event never happened (see that function's own doc comment) -- these
+// values arrive nested inside `summary`, not as a top-level optional
+// field, so they are genuinely sent as `null` on the wire for every
+// full-WAV turn, never merely omitted.
+function parseNullableStreamingDurationField(
+  input: Record<string, unknown>,
+  field: string,
+): { ok: true; value: number | null } | { ok: false } {
+  const raw = input[field];
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0 || raw > MAX_PLAUSIBLE_DURATION_MS) {
+    return { ok: false };
+  }
+  return { ok: true, value: Math.round(raw) };
+}
+
+// Same null-or-undefined-means-null contract as
+// parseNullableStreamingDurationField above, for the one new integer COUNT
+// field (ttsChunkCount) rather than a duration.
+function parseNullableStreamingCountField(
+  input: Record<string, unknown>,
+  field: string,
+  max: number,
+): { ok: true; value: number | null } | { ok: false } {
+  const raw = input[field];
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0 || raw > max) {
+    return { ok: false };
+  }
+  return { ok: true, value: raw };
+}
+
 // Shared bound for every vad*DurationMs/*Ms offset field -- same reasoning
 // as MAX_PLAUSIBLE_DURATION_MS, reused directly since these are the same
 // class of "one real voice turn" duration.
@@ -530,6 +603,83 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     // computeVoiceLatencySummary rounding, never sub-millisecond noise.
     summary[field] = Math.round(value);
   }
+
+  // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF): the 10
+  // new VoiceLatencySummary fields, individually typed/validated (see
+  // VoiceLatencyStreamingSummaryFields's own doc comment for why these
+  // can't share the uniform number|null loop above). Still part of
+  // `summary` on the wire (computeVoiceLatencySummary emits them as part
+  // of the same object every other summary field lives in), so they're
+  // read from the same rawSummary object, not from the top-level body.
+  let ttsDeliveryMode: "full_wav" | "streaming" | null = null;
+  if (rawSummary.ttsDeliveryMode !== undefined && rawSummary.ttsDeliveryMode !== null) {
+    if (typeof rawSummary.ttsDeliveryMode !== "string" || !TTS_DELIVERY_MODES.has(rawSummary.ttsDeliveryMode)) {
+      return { ok: false, reason: "invalid_summary_field:ttsDeliveryMode" };
+    }
+    ttsDeliveryMode = rawSummary.ttsDeliveryMode as "full_wav" | "streaming";
+  }
+  summary.ttsDeliveryMode = ttsDeliveryMode;
+
+  const ttsChunkCount = parseNullableStreamingCountField(rawSummary, "ttsChunkCount", MAX_PLAUSIBLE_CHUNK_COUNT);
+  if (!ttsChunkCount.ok) return { ok: false, reason: "invalid_summary_field:ttsChunkCount" };
+  summary.ttsChunkCount = ttsChunkCount.value;
+
+  const ttsFirstChunkProviderMs = parseNullableStreamingDurationField(rawSummary, "ttsFirstChunkProviderMs");
+  if (!ttsFirstChunkProviderMs.ok) return { ok: false, reason: "invalid_summary_field:ttsFirstChunkProviderMs" };
+  summary.ttsFirstChunkProviderMs = ttsFirstChunkProviderMs.value;
+
+  const ttsFirstPlayableChunkMs = parseNullableStreamingDurationField(rawSummary, "ttsFirstPlayableChunkMs");
+  if (!ttsFirstPlayableChunkMs.ok) return { ok: false, reason: "invalid_summary_field:ttsFirstPlayableChunkMs" };
+  summary.ttsFirstPlayableChunkMs = ttsFirstPlayableChunkMs.value;
+
+  const ttsFirstPlaybackStartedMs = parseNullableStreamingDurationField(rawSummary, "ttsFirstPlaybackStartedMs");
+  if (!ttsFirstPlaybackStartedMs.ok) return { ok: false, reason: "invalid_summary_field:ttsFirstPlaybackStartedMs" };
+  summary.ttsFirstPlaybackStartedMs = ttsFirstPlaybackStartedMs.value;
+
+  let ttsFallbackToFullUsed = false;
+  if (rawSummary.ttsFallbackToFullUsed !== undefined && rawSummary.ttsFallbackToFullUsed !== null) {
+    if (typeof rawSummary.ttsFallbackToFullUsed !== "boolean") {
+      return { ok: false, reason: "invalid_summary_field:ttsFallbackToFullUsed" };
+    }
+    ttsFallbackToFullUsed = rawSummary.ttsFallbackToFullUsed;
+  }
+  summary.ttsFallbackToFullUsed = ttsFallbackToFullUsed;
+
+  let ttsFallbackReason: string | null = null;
+  if (rawSummary.ttsFallbackReason !== undefined && rawSummary.ttsFallbackReason !== null) {
+    if (typeof rawSummary.ttsFallbackReason !== "string" || !ERROR_CODE_PATTERN.test(rawSummary.ttsFallbackReason)) {
+      return { ok: false, reason: "invalid_summary_field:ttsFallbackReason" };
+    }
+    ttsFallbackReason = rawSummary.ttsFallbackReason;
+  }
+  summary.ttsFallbackReason = ttsFallbackReason;
+
+  const ttsPlaybackGapMaxMs = parseNullableStreamingDurationField(rawSummary, "ttsPlaybackGapMaxMs");
+  if (!ttsPlaybackGapMaxMs.ok) return { ok: false, reason: "invalid_summary_field:ttsPlaybackGapMaxMs" };
+  summary.ttsPlaybackGapMaxMs = ttsPlaybackGapMaxMs.value;
+
+  let ttsStreamingCompleted: boolean | null = null;
+  if (rawSummary.ttsStreamingCompleted !== undefined && rawSummary.ttsStreamingCompleted !== null) {
+    if (typeof rawSummary.ttsStreamingCompleted !== "boolean") {
+      return { ok: false, reason: "invalid_summary_field:ttsStreamingCompleted" };
+    }
+    ttsStreamingCompleted = rawSummary.ttsStreamingCompleted;
+  }
+  summary.ttsStreamingCompleted = ttsStreamingCompleted;
+
+  let ttsStreamingError: string | null = null;
+  if (rawSummary.ttsStreamingError !== undefined && rawSummary.ttsStreamingError !== null) {
+    if (
+      typeof rawSummary.ttsStreamingError !== "string" ||
+      rawSummary.ttsStreamingError.length === 0 ||
+      rawSummary.ttsStreamingError.length > MAX_PROVIDER_ERROR_MESSAGE_LENGTH ||
+      !isSafeSingleLineText(rawSummary.ttsStreamingError)
+    ) {
+      return { ok: false, reason: "invalid_summary_field:ttsStreamingError" };
+    }
+    ttsStreamingError = rawSummary.ttsStreamingError;
+  }
+  summary.ttsStreamingError = ttsStreamingError;
 
   // All three terminal-diagnostic fields are optional -- absent/invalid
   // simply means "not reported" (never fabricated), not a request-level

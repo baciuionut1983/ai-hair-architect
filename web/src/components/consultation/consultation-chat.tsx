@@ -19,6 +19,11 @@ import type { TranslationKey } from "@/lib/translations";
 import { useUiLanguage } from "@/lib/ui-language-context";
 
 import { logVoiceReplyClientEvent, synthesizeCloudVoiceReply, type CloudVoiceReplyServerTiming } from "./consultation-chat-cloud-tts-logic";
+import {
+  attemptStreamingVoiceReply,
+  isStreamingVoiceReplyEnabled,
+  type StreamingVoiceReplyTelemetry,
+} from "./consultation-chat-streaming-tts-integration";
 import { AUDIO_UNLOCK_DATA_URI, dataUriToBlob, resolveVoiceReplyEnableOutcome } from "./voice-reply-unlock-logic";
 import {
   buildChatLanguageFields,
@@ -281,6 +286,16 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
   // broadly WebKit-compatible way to keep relying on that unlock.
   // stopCloudAudio (below) never nulls this ref, for the same reason.
   const cloudAudioRef = useRef<HTMLAudioElement | null>(null);
+  // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF -- see
+  // isStreamingVoiceReplyEnabled): mirrors cloudAudioRef exactly in style
+  // and lifecycle -- created once (see getOrCreateStreamingAudioContext
+  // below) and reused for every streaming attempt in this session, never
+  // recreated per reply. The Web Audio API's AudioContext is a WHOLLY
+  // SEPARATE browser subsystem from HTMLMediaElement/<audio> (see
+  // unlockAudioPlayback's own "unlocking one does not unlock the other"
+  // note below) -- this needs its own persistent, iOS-Safari-unlockable
+  // instance, distinct from cloudAudioRef's <audio> element.
+  const streamingAudioContextRef = useRef<AudioContext | null>(null);
   // Voice reliability hardening (2026-08-18): a monotonic token,
   // incremented at the start of every speakMessage call AND by
   // handleStopSpeaking. A cloud TTS request/playback callback only ever
@@ -395,6 +410,20 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
     return cloudAudioRef.current;
   }
 
+  // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF): mirrors
+  // getOrCreateCloudAudioElement above exactly -- never recreated per
+  // reply, same persistent-across-the-session reasoning as that function's
+  // own doc comment. Only ever called when isStreamingVoiceReplyEnabled()
+  // is true (see unlockAudioPlayback and speakMessage below) -- constructing
+  // an AudioContext with no streaming attempt ever following it would be a
+  // pointless, if harmless, browser resource allocation.
+  function getOrCreateStreamingAudioContext(): AudioContext {
+    if (!streamingAudioContextRef.current) {
+      streamingAudioContextRef.current = new AudioContext();
+    }
+    return streamingAudioContextRef.current;
+  }
+
   // Best-effort priming of the OTHER audio pathway (the local Web Speech
   // fallback -- see speakMessageLocally): WebKit gates
   // speechSynthesis.speak() behind the same kind of user-gesture
@@ -442,7 +471,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
   // ordering is kept even though the CSP block alone was sufficient to
   // explain the full production symptom -- both are real, independent
   // correctness issues, not alternatives to each other.
-  function unlockAudioPlayback(): Promise<boolean> {
+  async function unlockAudioPlayback(): Promise<boolean> {
     const audio = getOrCreateCloudAudioElement();
     logVoiceReplyClientEvent("unlock_audio_element_ready", {
       readyState: audio.readyState,
@@ -453,27 +482,55 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
     audio.src = unlockUrl;
     logVoiceReplyClientEvent("unlock_start", { readyState: audio.readyState });
 
-    return audio
-      .play()
-      .then(() => {
-        logVoiceReplyClientEvent("unlock_succeeded", { readyState: audio.readyState });
-        return true;
-      })
-      .catch((error: unknown) => {
-        logVoiceReplyClientEvent("unlock_failed", {
+    let unlocked: boolean;
+    try {
+      await audio.play();
+      logVoiceReplyClientEvent("unlock_succeeded", { readyState: audio.readyState });
+      unlocked = true;
+    } catch (error: unknown) {
+      logVoiceReplyClientEvent("unlock_failed", {
+        errorName: error instanceof Error ? error.name : "unknown",
+        errorMessage: error instanceof Error ? error.message : String(error),
+        readyState: audio.readyState,
+        networkState: audio.networkState,
+        mediaErrorCode: audio.error?.code ?? null,
+        userAgent: typeof navigator !== "undefined" ? navigator.userAgent : null,
+      });
+      unlocked = false;
+    } finally {
+      URL.revokeObjectURL(unlockUrl);
+      primeSpeechSynthesis();
+    }
+
+    // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF -- see
+    // isStreamingVoiceReplyEnabled): the Web Audio API's AudioContext is a
+    // WHOLLY SEPARATE browser subsystem from HTMLMediaElement/<audio> --
+    // unlocking <audio> above does NOT unlock a later-created AudioContext
+    // on iOS Safari (see primeSpeechSynthesis's own "unlocking one does not
+    // unlock the other" note above), which would silently produce no sound
+    // for a later streaming attempt. This can NEVER change `unlocked` (the
+    // toggle's own On/Off outcome) or anything already logged above -- a
+    // failed AudioContext unlock only means a later streaming attempt will
+    // itself fail closed and fall back to full-WAV (see
+    // consultation-chat-streaming-tts-integration.ts's own
+    // onFallbackBeforePlaybackStarted contract), never that Voice Reply
+    // itself should report as off.
+    if (isStreamingVoiceReplyEnabled()) {
+      try {
+        const audioContext = getOrCreateStreamingAudioContext();
+        if (audioContext.state === "suspended") {
+          await audioContext.resume();
+        }
+        logVoiceReplyClientEvent("streaming_audiocontext_unlock_succeeded", { state: audioContext.state });
+      } catch (error) {
+        logVoiceReplyClientEvent("streaming_audiocontext_unlock_failed", {
           errorName: error instanceof Error ? error.name : "unknown",
           errorMessage: error instanceof Error ? error.message : String(error),
-          readyState: audio.readyState,
-          networkState: audio.networkState,
-          mediaErrorCode: audio.error?.code ?? null,
-          userAgent: typeof navigator !== "undefined" ? navigator.userAgent : null,
         });
-        return false;
-      })
-      .finally(() => {
-        URL.revokeObjectURL(unlockUrl);
-        primeSpeechSynthesis();
-      });
+      }
+    }
+
+    return unlocked;
   }
 
   useEffect(() => {
@@ -831,8 +888,18 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       // comment). undefined for every call site that has neither.
       ttsAttempt1?: { ms: number; outcome: string; httpStatus?: number },
       ttsAttempt2?: { ms: number; outcome: string; httpStatus?: number },
+      // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF --
+      // see isStreamingVoiceReplyEnabled): one new optional trailing
+      // param, extending this function the same additive way every other
+      // param above already was. Present only for a turn that actually
+      // used the streaming candidate path far enough to schedule real
+      // audio (see attemptStreamingVoiceReply's own onCompleted/
+      // onFailedAfterPlaybackStarted callbacks below) -- undefined for
+      // every full-WAV turn, exactly like every other optional param here.
+      streamingContext?: { streamingTelemetry?: StreamingVoiceReplyTelemetry },
     ) => {
       if (!voiceLatency) return;
+      const streamingTelemetry = streamingContext?.streamingTelemetry;
       const summary = computeVoiceLatencySummary(finalMarks, {
         sttProviderMs: voiceLatency.sttProviderMs ?? undefined,
         consultationProviderMs: voiceLatency.consultationProviderMs,
@@ -846,6 +913,22 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
         ttsUsageWriteMs: ttsTiming?.usageWriteMs ?? undefined,
         ttsAudioProcessingMs: ttsTiming?.audioProcessingMs ?? undefined,
         ttsServerTotalMs: ttsTiming?.serverTotalMs ?? undefined,
+        // Streaming Voice Reply candidate mode (2026-08-26): see
+        // voice-latency-logic.ts's own VoiceLatencyProviderTimings doc
+        // comment -- only present when this exact call actually carries
+        // real streaming telemetry, never fabricated for a full-WAV call.
+        ...(streamingTelemetry
+          ? {
+              ttsDeliveryMode: "streaming" as const,
+              ttsChunkCount: streamingTelemetry.chunkCount,
+              ttsFirstChunkProviderMs: streamingTelemetry.firstChunkProviderMs ?? undefined,
+              ttsFirstPlayableChunkMs: streamingTelemetry.firstPlayableChunkMs ?? undefined,
+              ttsFirstPlaybackStartedMs: streamingTelemetry.firstPlaybackStartedMs ?? undefined,
+              ttsPlaybackGapMaxMs: streamingTelemetry.playbackGapMaxMs ?? undefined,
+              ttsStreamingCompleted: streamingTelemetry.streamingCompleted,
+              ttsStreamingError: streamingTelemetry.streamingError ?? undefined,
+            }
+          : {}),
       });
       logVoiceLatencySummary(voiceLatency.attemptId, summary);
       reportVoiceLatencySummary(clientId, voiceLatency.attemptId, outcome, summary, { fetch: bindFetch(fetch) }, {
@@ -924,135 +1007,213 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       return;
     }
 
-    setVoiceGeneratingMessageId(message.id);
-    let ttsMarks: VoiceLatencyMarks = voiceLatency?.marks ?? {};
-    if (voiceLatency) ttsMarks = markVoiceLatencyStage(ttsMarks, "tts_request_started", performance.now());
-    void synthesizeCloudVoiceReply(
-      clientId,
-      message.content,
-      toCloudTtsLanguageCode(language) as LanguageCode,
-      // Regression: `{ fetch }` (object shorthand for `{ fetch: fetch }`)
-      // stores fetch's bare function reference as a plain object's
-      // property. A real browser's native fetch is a *branded* method --
-      // calling it as `deps.fetch(...)` invokes it with `this === deps`
-      // (plain method-call syntax always binds `this` to the object
-      // before the dot), which throws "TypeError: Failed to execute
-      // 'fetch' on 'Window': Illegal invocation" synchronously, before
-      // any network request is ever made. Exactly the same root cause
-      // teach-ai-panel-logic.ts's own bindFetch already exists to fix
-      // (see its own regression note) -- reused here rather than
-      // re-solving the same problem a second, differently-worded way.
-      { fetch: bindFetch(fetch), signal: abortController.signal },
-      {
-        onSuccess: (audioBlob, ttsTiming) => {
-          // Voice reliability hardening: a NEWER speakMessage call (a
-          // second message sent, or handleStopSpeaking) already
-          // superseded this one while its cloud TTS request was still in
-          // flight -- acting on it now would start audio for a reply
-          // that is no longer current, or resurrect audio after an
-          // explicit Stop. A safe, logged no-op.
-          if (voiceReplyAttemptRef.current !== myAttempt) {
-            logVoiceReplyClientEvent("cloud_response_superseded", { stage: "success" });
-            return;
-          }
-          setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
-          logVoiceReplyClientEvent("cloud_audio_element_created", { audioBytes: audioBlob.size, blobType: audioBlob.type });
-          if (voiceLatency) ttsMarks = markVoiceLatencyStage(ttsMarks, "tts_audio_received", performance.now());
-          // Reuses the SAME element the toggle's own click already
-          // unlocked (see getOrCreateCloudAudioElement/
-          // unlockAudioPlayback) -- never `new Audio(...)` here, which
-          // would be a fresh, un-unlocked element on iOS Safari.
-          const audio = getOrCreateCloudAudioElement();
-          audio.src = URL.createObjectURL(audioBlob);
-
-          // Regression: audio.onerror (a genuine media decode/load
-          // failure) and audio.play()'s own rejected promise are BOTH
-          // legitimate signals for the very same underlying failure in
-          // most browsers -- see callOnce's own doc comment
-          // (consultation-chat-logic.ts) for the exact live symptom this
-          // caused. callOnce guarantees the fallback fires exactly once
-          // per attempt, regardless of which signal (or both) actually
-          // fires -- generic for any language, not specific to this one
-          // failure.
-          const triggerLocalFallback = callOnce(() => {
-            setSpeakingMessageId((current) => (current === message.id ? null : current));
-            stopCloudAudio();
-            speakMessageLocally(message, language, true);
-            // Cloud audio never played -- the turn ends here (falling
-            // back to the local Web Speech path, which has no provider
-            // timing to report), with whatever real marks were reached.
-            concludeVoiceTurn(ttsMarks, "tts_fallback_local", ttsTiming, "tts_playback_error", ttsTiming.providerAttemptCount ?? undefined);
-          });
-
-          // Playback-stage diagnostics (requirement: audio received ->
-          // blob created -> decoder/load -> play requested -> playing ->
-          // ended / playback error) -- safe fields only (byte counts,
-          // durations, native error codes), never the conversation text.
-          // audio.error.code is a native MediaError code (1=ABORTED,
-          // 2=NETWORK, 3=DECODE, 4=SRC_NOT_SUPPORTED) -- exactly the
-          // detail needed to tell a malformed/unsupported audio format
-          // apart from an autoplay-policy rejection or a network hiccup,
-          // which nothing before this logged at all.
-          audio.onloadedmetadata = () => {
-            logVoiceReplyClientEvent("cloud_loadedmetadata", { durationSeconds: audio.duration });
-            if (voiceLatency) ttsMarks = markVoiceLatencyStage(ttsMarks, "audio_ready", performance.now());
-          };
-          audio.oncanplay = () => logVoiceReplyClientEvent("cloud_canplay");
-          audio.onplay = () => {
-            logVoiceReplyClientEvent("cloud_playing");
-            setSpeakingMessageId(message.id);
-            if (voiceLatency) ttsMarks = markVoiceLatencyStage(ttsMarks, "playback_started", performance.now());
-          };
-          audio.onended = () => {
-            logVoiceReplyClientEvent("cloud_ended");
-            setSpeakingMessageId((current) => (current === message.id ? null : current));
-            stopCloudAudio();
-            if (voiceLatency) {
-              ttsMarks = markVoiceLatencyStage(ttsMarks, "playback_ended", performance.now());
-              concludeVoiceTurn(ttsMarks, "tts_completed", ttsTiming, undefined, ttsTiming.providerAttemptCount ?? undefined);
+    // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF -- see
+    // isStreamingVoiceReplyEnabled): the existing full-WAV cloud path,
+    // extracted verbatim (zero logic changes) into its own local function
+    // so it can ALSO be called as the streaming candidate's own fallback
+    // (see attemptStreamingVoiceReply's onFallbackBeforePlaybackStarted
+    // callback below) -- one, single, unmodified full-WAV code path,
+    // reached from either the streaming-disabled default or a streaming
+    // attempt that never got to play anything. Every variable it
+    // references is still in scope via closure, exactly as before this
+    // extraction.
+    function attemptFullWavCloudVoiceReply(): void {
+      setVoiceGeneratingMessageId(message.id);
+      let ttsMarks: VoiceLatencyMarks = voiceLatency?.marks ?? {};
+      if (voiceLatency) ttsMarks = markVoiceLatencyStage(ttsMarks, "tts_request_started", performance.now());
+      void synthesizeCloudVoiceReply(
+        clientId,
+        message.content,
+        toCloudTtsLanguageCode(language) as LanguageCode,
+        // Regression: `{ fetch }` (object shorthand for `{ fetch: fetch }`)
+        // stores fetch's bare function reference as a plain object's
+        // property. A real browser's native fetch is a *branded* method --
+        // calling it as `deps.fetch(...)` invokes it with `this === deps`
+        // (plain method-call syntax always binds `this` to the object
+        // before the dot), which throws "TypeError: Failed to execute
+        // 'fetch' on 'Window': Illegal invocation" synchronously, before
+        // any network request is ever made. Exactly the same root cause
+        // teach-ai-panel-logic.ts's own bindFetch already exists to fix
+        // (see its own regression note) -- reused here rather than
+        // re-solving the same problem a second, differently-worded way.
+        { fetch: bindFetch(fetch), signal: abortController.signal },
+        {
+          onSuccess: (audioBlob, ttsTiming) => {
+            // Voice reliability hardening: a NEWER speakMessage call (a
+            // second message sent, or handleStopSpeaking) already
+            // superseded this one while its cloud TTS request was still in
+            // flight -- acting on it now would start audio for a reply
+            // that is no longer current, or resurrect audio after an
+            // explicit Stop. A safe, logged no-op.
+            if (voiceReplyAttemptRef.current !== myAttempt) {
+              logVoiceReplyClientEvent("cloud_response_superseded", { stage: "success" });
+              return;
             }
-          };
-          audio.onerror = () => {
-            logVoiceReplyClientEvent("cloud_playback_error", {
-              mediaErrorCode: audio.error?.code ?? null,
-              mediaErrorMessage: audio.error?.message ?? null,
-            });
-            triggerLocalFallback();
-          };
+            setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
+            logVoiceReplyClientEvent("cloud_audio_element_created", { audioBytes: audioBlob.size, blobType: audioBlob.type });
+            if (voiceLatency) ttsMarks = markVoiceLatencyStage(ttsMarks, "tts_audio_received", performance.now());
+            // Reuses the SAME element the toggle's own click already
+            // unlocked (see getOrCreateCloudAudioElement/
+            // unlockAudioPlayback) -- never `new Audio(...)` here, which
+            // would be a fresh, un-unlocked element on iOS Safari.
+            const audio = getOrCreateCloudAudioElement();
+            audio.src = URL.createObjectURL(audioBlob);
 
-          logVoiceReplyClientEvent("cloud_play_requested");
-          void audio.play().catch((error: unknown) => {
-            logVoiceReplyClientEvent("cloud_play_rejected", {
-              errorName: error instanceof Error ? error.name : "unknown",
-              errorMessage: error instanceof Error ? error.message : String(error),
+            // Regression: audio.onerror (a genuine media decode/load
+            // failure) and audio.play()'s own rejected promise are BOTH
+            // legitimate signals for the very same underlying failure in
+            // most browsers -- see callOnce's own doc comment
+            // (consultation-chat-logic.ts) for the exact live symptom this
+            // caused. callOnce guarantees the fallback fires exactly once
+            // per attempt, regardless of which signal (or both) actually
+            // fires -- generic for any language, not specific to this one
+            // failure.
+            const triggerLocalFallback = callOnce(() => {
+              setSpeakingMessageId((current) => (current === message.id ? null : current));
+              stopCloudAudio();
+              speakMessageLocally(message, language, true);
+              // Cloud audio never played -- the turn ends here (falling
+              // back to the local Web Speech path, which has no provider
+              // timing to report), with whatever real marks were reached.
+              concludeVoiceTurn(ttsMarks, "tts_fallback_local", ttsTiming, "tts_playback_error", ttsTiming.providerAttemptCount ?? undefined);
             });
-            triggerLocalFallback();
-          });
+
+            // Playback-stage diagnostics (requirement: audio received ->
+            // blob created -> decoder/load -> play requested -> playing ->
+            // ended / playback error) -- safe fields only (byte counts,
+            // durations, native error codes), never the conversation text.
+            // audio.error.code is a native MediaError code (1=ABORTED,
+            // 2=NETWORK, 3=DECODE, 4=SRC_NOT_SUPPORTED) -- exactly the
+            // detail needed to tell a malformed/unsupported audio format
+            // apart from an autoplay-policy rejection or a network hiccup,
+            // which nothing before this logged at all.
+            audio.onloadedmetadata = () => {
+              logVoiceReplyClientEvent("cloud_loadedmetadata", { durationSeconds: audio.duration });
+              if (voiceLatency) ttsMarks = markVoiceLatencyStage(ttsMarks, "audio_ready", performance.now());
+            };
+            audio.oncanplay = () => logVoiceReplyClientEvent("cloud_canplay");
+            audio.onplay = () => {
+              logVoiceReplyClientEvent("cloud_playing");
+              setSpeakingMessageId(message.id);
+              if (voiceLatency) ttsMarks = markVoiceLatencyStage(ttsMarks, "playback_started", performance.now());
+            };
+            audio.onended = () => {
+              logVoiceReplyClientEvent("cloud_ended");
+              setSpeakingMessageId((current) => (current === message.id ? null : current));
+              stopCloudAudio();
+              if (voiceLatency) {
+                ttsMarks = markVoiceLatencyStage(ttsMarks, "playback_ended", performance.now());
+                concludeVoiceTurn(ttsMarks, "tts_completed", ttsTiming, undefined, ttsTiming.providerAttemptCount ?? undefined);
+              }
+            };
+            audio.onerror = () => {
+              logVoiceReplyClientEvent("cloud_playback_error", {
+                mediaErrorCode: audio.error?.code ?? null,
+                mediaErrorMessage: audio.error?.message ?? null,
+              });
+              triggerLocalFallback();
+            };
+
+            logVoiceReplyClientEvent("cloud_play_requested");
+            void audio.play().catch((error: unknown) => {
+              logVoiceReplyClientEvent("cloud_play_rejected", {
+                errorName: error instanceof Error ? error.name : "unknown",
+                errorMessage: error instanceof Error ? error.message : String(error),
+              });
+              triggerLocalFallback();
+            });
+          },
+          onFailure: (reason, ttsErrorCode, ttsProviderAttemptCount, ttsAttempt1, ttsAttempt2) => {
+            // See the identical guard in onSuccess above.
+            if (voiceReplyAttemptRef.current !== myAttempt) {
+              logVoiceReplyClientEvent("cloud_response_superseded", { stage: "failure" });
+              return;
+            }
+            setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
+            speakMessageLocally(message, language, true);
+            // The cloud request never produced audio at all -- no
+            // tts_audio_received/audio_ready/playback marks, no
+            // ttsProviderMs (no response to read one from). Prefers the
+            // server's own specific error code (e.g. VOICE_REPLY_TIMEOUT,
+            // already reflecting its own retry being exhausted) over
+            // synthesizeCloudVoiceReply's coarse "network"/"unavailable"
+            // classification -- undefined only for a genuine network-level
+            // failure, where no server response body exists at all to read
+            // a code from. ttsAttempt1/ttsAttempt2 (VOICE NEXT LEVEL, Phase
+            // D): the real per-attempt breakdown, read from the failure
+            // JSON body -- undefined for the same "network" case.
+            concludeVoiceTurn(ttsMarks, "tts_failed", null, ttsErrorCode ?? reason, ttsProviderAttemptCount, ttsAttempt1, ttsAttempt2);
+          },
         },
-        onFailure: (reason, ttsErrorCode, ttsProviderAttemptCount, ttsAttempt1, ttsAttempt2) => {
-          // See the identical guard in onSuccess above.
-          if (voiceReplyAttemptRef.current !== myAttempt) {
-            logVoiceReplyClientEvent("cloud_response_superseded", { stage: "failure" });
-            return;
-          }
-          setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
-          speakMessageLocally(message, language, true);
-          // The cloud request never produced audio at all -- no
-          // tts_audio_received/audio_ready/playback marks, no
-          // ttsProviderMs (no response to read one from). Prefers the
-          // server's own specific error code (e.g. VOICE_REPLY_TIMEOUT,
-          // already reflecting its own retry being exhausted) over
-          // synthesizeCloudVoiceReply's coarse "network"/"unavailable"
-          // classification -- undefined only for a genuine network-level
-          // failure, where no server response body exists at all to read
-          // a code from. ttsAttempt1/ttsAttempt2 (VOICE NEXT LEVEL, Phase
-          // D): the real per-attempt breakdown, read from the failure
-          // JSON body -- undefined for the same "network" case.
-          concludeVoiceTurn(ttsMarks, "tts_failed", null, ttsErrorCode ?? reason, ttsProviderAttemptCount, ttsAttempt1, ttsAttempt2);
+        voiceLatency?.attemptId,
+      );
+    }
+
+    if (isStreamingVoiceReplyEnabled()) {
+      // Same "Generating voice..." UX as the full-WAV path -- see
+      // attemptFullWavCloudVoiceReply's own identical first line -- shown
+      // while the streaming request is in flight, cleared the moment the
+      // first chunk actually starts playing (onFirstPlaybackStarted below).
+      setVoiceGeneratingMessageId(message.id);
+      let streamingTtsMarks: VoiceLatencyMarks = voiceLatency?.marks ?? {};
+      if (voiceLatency) streamingTtsMarks = markVoiceLatencyStage(streamingTtsMarks, "tts_request_started", performance.now());
+      const streamingRequestStartedAt = performance.now();
+      attemptStreamingVoiceReply(
+        clientId,
+        message.content,
+        toCloudTtsLanguageCode(language) as string,
+        { fetch: bindFetch(fetch), audioContext: getOrCreateStreamingAudioContext(), signal: abortController.signal },
+        {
+          onFirstPlaybackStarted: () => {
+            if (voiceReplyAttemptRef.current !== myAttempt) return;
+            setSpeakingMessageId(message.id);
+            setVoiceGeneratingMessageId((current) => (current === message.id ? null : current));
+            if (voiceLatency) streamingTtsMarks = markVoiceLatencyStage(streamingTtsMarks, "playback_started", performance.now());
+          },
+          onCompleted: (telemetry) => {
+            if (voiceReplyAttemptRef.current !== myAttempt) return;
+            setSpeakingMessageId((current) => (current === message.id ? null : current));
+            if (voiceLatency) streamingTtsMarks = markVoiceLatencyStage(streamingTtsMarks, "playback_ended", performance.now());
+            concludeVoiceTurn(streamingTtsMarks, "tts_completed", null, undefined, undefined, undefined, undefined, {
+              streamingTelemetry: telemetry,
+            });
+          },
+          // CRITICAL (see attemptStreamingVoiceReply's own doc comment):
+          // fires ONLY before any chunk has played -- always safe to fall
+          // back here, nothing has been heard yet.
+          onFallbackBeforePlaybackStarted: (reason) => {
+            logVoiceReplyClientEvent("streaming_fallback_to_full_wav", { reason });
+            // Voice reliability hardening: this fires asynchronously,
+            // potentially after a NEWER speakMessage call (or Stop) already
+            // superseded this one -- same guard as onSuccess/onFailure
+            // above, needed here because attemptFullWavCloudVoiceReply's
+            // own first line (setVoiceGeneratingMessageId) is unconditional
+            // and would otherwise stamp a stale message id over whatever
+            // the current attempt has already set.
+            if (voiceReplyAttemptRef.current !== myAttempt) {
+              logVoiceReplyClientEvent("cloud_response_superseded", { stage: "streaming_fallback" });
+              return;
+            }
+            attemptFullWavCloudVoiceReply();
+          },
+          // CRITICAL: fires only AFTER at least one chunk already played --
+          // NEVER falls back to full-WAV here (that would replay the
+          // beginning of a reply the stylist already started hearing,
+          // producing audible double playback). Ends the turn honestly as
+          // a partial/interrupted playback instead.
+          onFailedAfterPlaybackStarted: (reason, telemetry) => {
+            if (voiceReplyAttemptRef.current !== myAttempt) return;
+            setSpeakingMessageId((current) => (current === message.id ? null : current));
+            concludeVoiceTurn(streamingTtsMarks, "tts_completed", null, reason, undefined, undefined, undefined, {
+              streamingTelemetry: telemetry,
+            });
+          },
         },
-      },
-      voiceLatency?.attemptId,
-    );
+        streamingRequestStartedAt,
+      );
+    } else {
+      attemptFullWavCloudVoiceReply();
+    }
   }
 
   // The local Web Speech fallback -- reached either because this

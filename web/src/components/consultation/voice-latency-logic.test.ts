@@ -96,6 +96,22 @@ describe("computeVoiceLatencySummary", () => {
       // 3000 (consultationTotalMs) + 1500 (ttsTotalMs) + 50 (audioPreparationMs)
       // = 5750; timeToFirstAudioMs is 5800 -- a genuine, if small, 50ms gap.
       voiceTurnUnattributedMs: 50,
+      // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF): no
+      // streaming input was provided (this is a full-WAV turn) -- every
+      // new field is null, except the one non-nullable boolean, which is
+      // false. This is the exact assertion the task requires: a full-WAV
+      // turn's summary is unaffected, IDENTICAL for every pre-existing
+      // field, with these 10 new fields defaulting honestly.
+      ttsDeliveryMode: null,
+      ttsChunkCount: null,
+      ttsFirstChunkProviderMs: null,
+      ttsFirstPlayableChunkMs: null,
+      ttsFirstPlaybackStartedMs: null,
+      ttsFallbackToFullUsed: false,
+      ttsFallbackReason: null,
+      ttsPlaybackGapMaxMs: null,
+      ttsStreamingCompleted: null,
+      ttsStreamingError: null,
     });
   });
 
@@ -295,7 +311,84 @@ describe("computeVoiceLatencySummary", () => {
   it("returns an all-null summary for an empty marks object -- no stage ever reached", () => {
     const summary = computeVoiceLatencySummary({});
 
-    expect(Object.values(summary).every((value) => value === null)).toBe(true);
+    // ttsFallbackToFullUsed is the one field on VoiceLatencySummary that is
+    // never null (false is the honest, non-fabricated default for "did
+    // this turn ever fall back from streaming to full-WAV" when it wasn't
+    // even a streaming turn) -- every other field is null.
+    for (const [key, value] of Object.entries(summary)) {
+      if (key === "ttsFallbackToFullUsed") {
+        expect(value).toBe(false);
+      } else {
+        expect(value).toBeNull();
+      }
+    }
+  });
+});
+
+// Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF -- see
+// consultation-chat-streaming-tts-integration.ts's own
+// isStreamingVoiceReplyEnabled): computeVoiceLatencySummary is the one
+// place that turns a streaming attempt's own StreamingVoiceReplyTelemetry
+// (threaded through via VoiceLatencyProviderTimings) into the same
+// VoiceLatencySummary shape every full-WAV turn already produces -- these
+// tests prove the new fields, and only the new fields, change when
+// streaming input is actually provided.
+describe("computeVoiceLatencySummary -- streaming Voice Reply fields", () => {
+  it("produces the correct new-field values, including ttsDeliveryMode: 'streaming', for a streaming turn's input", () => {
+    const marks: VoiceLatencyMarks = {
+      tts_request_started: 0,
+      playback_started: 180,
+    };
+
+    const summary = computeVoiceLatencySummary(marks, {
+      ttsDeliveryMode: "streaming",
+      ttsChunkCount: 7,
+      ttsFirstChunkProviderMs: 120,
+      ttsFirstPlayableChunkMs: 135,
+      ttsFirstPlaybackStartedMs: 150,
+      ttsPlaybackGapMaxMs: 25,
+      ttsStreamingCompleted: true,
+      // ttsStreamingError intentionally omitted (not passed as null): the
+      // input type (VoiceLatencyProviderTimings.ttsStreamingError) is
+      // `string | undefined`, matching every other optional field on that
+      // interface -- omitting it exercises the exact same "never reported"
+      // path and still produces a null output via computeVoiceLatencySummary's
+      // own `?? null` mapping, asserted below.
+    });
+
+    expect(summary.ttsDeliveryMode).toBe("streaming");
+    expect(summary.ttsChunkCount).toBe(7);
+    expect(summary.ttsFirstChunkProviderMs).toBe(120);
+    expect(summary.ttsFirstPlayableChunkMs).toBe(135);
+    expect(summary.ttsFirstPlaybackStartedMs).toBe(150);
+    expect(summary.ttsPlaybackGapMaxMs).toBe(25);
+    expect(summary.ttsStreamingCompleted).toBe(true);
+    expect(summary.ttsStreamingError).toBeNull();
+    // Never fabricated for a streaming turn either -- no fallback input
+    // was given, so this stays false/null exactly like a full-WAV turn.
+    expect(summary.ttsFallbackToFullUsed).toBe(false);
+    expect(summary.ttsFallbackReason).toBeNull();
+  });
+
+  it("produces ttsFallbackToFullUsed: true with a non-null ttsFallbackReason for a fallback-used turn", () => {
+    const summary = computeVoiceLatencySummary(
+      { tts_request_started: 0 },
+      { ttsFallbackToFullUsed: true, ttsFallbackReason: "not_configured" },
+    );
+
+    expect(summary.ttsFallbackToFullUsed).toBe(true);
+    expect(summary.ttsFallbackReason).toBe("not_configured");
+  });
+
+  it("returns ttsStreamingError as the real reported string, never fabricated, when a streaming attempt failed after playback started", () => {
+    const summary = computeVoiceLatencySummary(
+      {},
+      { ttsDeliveryMode: "streaming", ttsStreamingCompleted: false, ttsStreamingError: "stream_error" },
+    );
+
+    expect(summary.ttsDeliveryMode).toBe("streaming");
+    expect(summary.ttsStreamingCompleted).toBe(false);
+    expect(summary.ttsStreamingError).toBe("stream_error");
   });
 });
 
@@ -323,7 +416,10 @@ describe("logVoiceLatencySummary", () => {
     const parsed = JSON.parse(logged) as Record<string, unknown>;
     for (const [key, value] of Object.entries(parsed)) {
       if (key === "tag" || key === "attemptId") continue;
-      expect(typeof value === "number" || value === null).toBe(true);
+      // ttsFallbackToFullUsed (Streaming Voice Reply candidate mode,
+      // 2026-08-26) is the one legitimately boolean field -- still never
+      // audio bytes, transcript content, or the AI reply.
+      expect(typeof value === "number" || value === null || typeof value === "boolean").toBe(true);
     }
 
     logSpy.mockRestore();
