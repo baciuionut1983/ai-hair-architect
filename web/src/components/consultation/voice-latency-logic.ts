@@ -179,6 +179,17 @@ export interface VoiceLatencySummary {
   ttsFallbackToFullUsed: boolean;
   ttsFallbackReason: string | null;
   ttsPlaybackGapMaxMs: number | null;
+  // REAL AudioContext-timeline gap measurement (2026-08-26, ADDITIVE --
+  // kept side by side with ttsPlaybackGapMaxMs above, which stays exactly
+  // as-is: never removed, never renamed). Threaded through from
+  // consultation-chat-streaming-tts-integration.ts's own
+  // StreamingVoiceReplyTelemetry.audioTimelineGapMaxMs exactly like
+  // ttsPlaybackGapMaxMs already is -- the real measurement (read straight
+  // from createGaplessPcmStreamPlayer's own getAudioTimelineGapMaxMs) as
+  // opposed to ttsPlaybackGapMaxMs's honest network-timing proxy. Same
+  // honesty contract: null whenever this turn never used the streaming
+  // candidate path far enough to schedule a chunk, never fabricated.
+  ttsAudioTimelineGapMaxMs: number | null;
   ttsStreamingCompleted: boolean | null;
   ttsStreamingError: string | null;
 }
@@ -238,6 +249,9 @@ export interface VoiceLatencyProviderTimings {
   ttsFallbackToFullUsed?: boolean;
   ttsFallbackReason?: string;
   ttsPlaybackGapMaxMs?: number;
+  // REAL AudioContext-timeline gap measurement (2026-08-26, ADDITIVE): see
+  // VoiceLatencySummary's own doc comment on this same field name.
+  ttsAudioTimelineGapMaxMs?: number;
   ttsStreamingCompleted?: boolean;
   ttsStreamingError?: string;
 }
@@ -343,6 +357,8 @@ export function computeVoiceLatencySummary(
     ttsFallbackReason: providerTimings.ttsFallbackReason ?? null,
     ttsPlaybackGapMaxMs:
       typeof providerTimings.ttsPlaybackGapMaxMs === "number" ? Math.round(providerTimings.ttsPlaybackGapMaxMs) : null,
+    ttsAudioTimelineGapMaxMs:
+      typeof providerTimings.ttsAudioTimelineGapMaxMs === "number" ? Math.round(providerTimings.ttsAudioTimelineGapMaxMs) : null,
     ttsStreamingCompleted: typeof providerTimings.ttsStreamingCompleted === "boolean" ? providerTimings.ttsStreamingCompleted : null,
     ttsStreamingError: providerTimings.ttsStreamingError ?? null,
   };

@@ -38,6 +38,21 @@ export interface GaplessPcmStreamPlayer {
   // approaches 0 as playback catches up to the live edge of what has been
   // scheduled so far.
   getScheduledDurationMs(): number;
+  // REAL AudioContext-timeline gap measurement (2026-08-26, ADDITIVE --
+  // see this module's own doc comment on `Math.max(nextStartTime,
+  // audioContext.currentTime)` below for the exact condition this comes
+  // from): the maximum number of milliseconds, across every scheduleChunk
+  // call so far, that audioContext.currentTime had ALREADY passed
+  // nextStartTime at the moment a chunk was scheduled -- i.e. real,
+  // honest silence on the actual Web Audio playback timeline, computed
+  // from the exact same clock the audio itself plays on (audioContext.
+  // currentTime), not an approximation of it. This is a strictly more
+  // accurate signal than any network/JS-scheduling-side proxy a caller
+  // might separately track. Always a real, non-negative number (0, never
+  // null, mirroring getScheduledDurationMs's own "always a real number"
+  // style) -- 0 both before the first scheduleChunk call and for a stream
+  // that never actually underran playback.
+  getAudioTimelineGapMaxMs(): number;
 }
 
 // Gapless playback of a live PCM chunk stream via the Web Audio API: each
@@ -56,6 +71,12 @@ export interface GaplessPcmStreamPlayer {
 // audio.
 export function createGaplessPcmStreamPlayer(audioContext: AudioContext, sampleRateHz: number): GaplessPcmStreamPlayer {
   let nextStartTime = audioContext.currentTime;
+  // REAL AudioContext-timeline gap measurement (2026-08-26, ADDITIVE): see
+  // GaplessPcmStreamPlayer.getAudioTimelineGapMaxMs's own doc comment.
+  // Never read or written anywhere except the two spots below -- purely
+  // additive tracked state alongside nextStartTime, never changing what
+  // scheduleChunk/getScheduledDurationMs already did before this.
+  let audioTimelineGapMaxMs = 0;
 
   return {
     scheduleChunk(pcm: ArrayBuffer): void {
@@ -67,12 +88,31 @@ export function createGaplessPcmStreamPlayer(audioContext: AudioContext, sampleR
       source.buffer = audioBuffer;
       source.connect(audioContext.destination);
 
-      const startAt = Math.max(nextStartTime, audioContext.currentTime);
+      const currentTime = audioContext.currentTime;
+      // REAL AudioContext-timeline gap measurement (2026-08-26, ADDITIVE):
+      // this is exactly the condition this module's own doc comment above
+      // already describes for `Math.max(nextStartTime, audioContext.
+      // currentTime)` -- whenever currentTime has already passed
+      // nextStartTime, that gap is real, honestly-audible silence on the
+      // actual playback timeline, not merely inferred. Tracked here purely
+      // as a side observation -- startAt/nextStartTime/source.start below
+      // are computed exactly as before, byte-for-byte unchanged.
+      if (currentTime > nextStartTime) {
+        const gapMs = (currentTime - nextStartTime) * 1000;
+        if (gapMs > audioTimelineGapMaxMs) {
+          audioTimelineGapMaxMs = gapMs;
+        }
+      }
+
+      const startAt = Math.max(nextStartTime, currentTime);
       source.start(startAt);
       nextStartTime = startAt + audioBuffer.duration;
     },
     getScheduledDurationMs(): number {
       return (nextStartTime - audioContext.currentTime) * 1000;
+    },
+    getAudioTimelineGapMaxMs(): number {
+      return audioTimelineGapMaxMs;
     },
   };
 }

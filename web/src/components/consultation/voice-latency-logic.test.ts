@@ -110,6 +110,7 @@ describe("computeVoiceLatencySummary", () => {
       ttsFallbackToFullUsed: false,
       ttsFallbackReason: null,
       ttsPlaybackGapMaxMs: null,
+      ttsAudioTimelineGapMaxMs: null,
       ttsStreamingCompleted: null,
       ttsStreamingError: null,
     });
@@ -347,6 +348,10 @@ describe("computeVoiceLatencySummary -- streaming Voice Reply fields", () => {
       ttsFirstPlayableChunkMs: 135,
       ttsFirstPlaybackStartedMs: 150,
       ttsPlaybackGapMaxMs: 25,
+      // REAL AudioContext-timeline gap measurement (2026-08-26, ADDITIVE):
+      // a deliberately DIFFERENT value from ttsPlaybackGapMaxMs above,
+      // proving these two are independent fields, never conflated.
+      ttsAudioTimelineGapMaxMs: 40,
       ttsStreamingCompleted: true,
       // ttsStreamingError intentionally omitted (not passed as null): the
       // input type (VoiceLatencyProviderTimings.ttsStreamingError) is
@@ -362,6 +367,7 @@ describe("computeVoiceLatencySummary -- streaming Voice Reply fields", () => {
     expect(summary.ttsFirstPlayableChunkMs).toBe(135);
     expect(summary.ttsFirstPlaybackStartedMs).toBe(150);
     expect(summary.ttsPlaybackGapMaxMs).toBe(25);
+    expect(summary.ttsAudioTimelineGapMaxMs).toBe(40);
     expect(summary.ttsStreamingCompleted).toBe(true);
     expect(summary.ttsStreamingError).toBeNull();
     // Never fabricated for a streaming turn either -- no fallback input

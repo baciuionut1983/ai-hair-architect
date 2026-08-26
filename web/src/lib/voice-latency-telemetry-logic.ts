@@ -127,7 +127,7 @@ export type VoiceLatencySummaryField = (typeof VOICE_LATENCY_SUMMARY_FIELDS)[num
 // VoiceLatencySummary fields exactly. Kept as a separate, additive
 // intersection rather than folded into VOICE_LATENCY_SUMMARY_FIELDS above
 // -- that array (and the uniform number|null loop it drives, below) is
-// deliberately single-typed; these 10 fields are NOT all numbers (a
+// deliberately single-typed; these 11 fields are NOT all numbers (a
 // delivery-mode string, an error string, two booleans), so they get their
 // own individually-typed, individually-validated handling right after
 // that loop instead of forcing a mixed-type value through it.
@@ -140,6 +140,11 @@ export interface VoiceLatencyStreamingSummaryFields {
   ttsFallbackToFullUsed: boolean;
   ttsFallbackReason: string | null;
   ttsPlaybackGapMaxMs: number | null;
+  // REAL AudioContext-timeline gap measurement (2026-08-26, ADDITIVE): see
+  // voice-latency-logic.ts's own VoiceLatencySummary doc comment on this
+  // same field name -- mirrors ttsPlaybackGapMaxMs exactly, validated the
+  // same way (see parseNullableStreamingDurationField below).
+  ttsAudioTimelineGapMaxMs: number | null;
   ttsStreamingCompleted: boolean | null;
   ttsStreamingError: string | null;
 }
@@ -431,9 +436,9 @@ const TTS_DELIVERY_MODES = new Set(["full_wav", "streaming"]);
 // garbage value, never a real one.
 const MAX_PLAUSIBLE_CHUNK_COUNT = 100_000;
 
-// Shared by every one of the 4 new nullable streaming duration fields
+// Shared by every one of the 5 nullable streaming duration fields
 // (ttsFirstChunkProviderMs/ttsFirstPlayableChunkMs/ttsFirstPlaybackStartedMs/
-// ttsPlaybackGapMaxMs) -- unlike parseOptionalDurationField above, this
+// ttsPlaybackGapMaxMs/ttsAudioTimelineGapMaxMs) -- unlike parseOptionalDurationField above, this
 // treats an explicit `null` the same as `undefined` (both mean "not
 // measured for this turn"), matching how computeVoiceLatencySummary itself
 // already emits `null` for every one of these when the corresponding
@@ -604,8 +609,9 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
     summary[field] = Math.round(value);
   }
 
-  // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF): the 10
-  // new VoiceLatencySummary fields, individually typed/validated (see
+  // Streaming Voice Reply candidate mode (2026-08-26, DEFAULT OFF): 11
+  // VoiceLatencySummary fields (10 from the original round, plus the
+  // additive ttsAudioTimelineGapMaxMs), individually typed/validated (see
   // VoiceLatencyStreamingSummaryFields's own doc comment for why these
   // can't share the uniform number|null loop above). Still part of
   // `summary` on the wire (computeVoiceLatencySummary emits them as part
@@ -657,6 +663,13 @@ export function parseVoiceLatencyTelemetryPayload(body: unknown): VoiceLatencyTe
   const ttsPlaybackGapMaxMs = parseNullableStreamingDurationField(rawSummary, "ttsPlaybackGapMaxMs");
   if (!ttsPlaybackGapMaxMs.ok) return { ok: false, reason: "invalid_summary_field:ttsPlaybackGapMaxMs" };
   summary.ttsPlaybackGapMaxMs = ttsPlaybackGapMaxMs.value;
+
+  // REAL AudioContext-timeline gap measurement (2026-08-26, ADDITIVE): see
+  // VoiceLatencyStreamingSummaryFields's own doc comment on this same
+  // field name -- validated identically to ttsPlaybackGapMaxMs above.
+  const ttsAudioTimelineGapMaxMs = parseNullableStreamingDurationField(rawSummary, "ttsAudioTimelineGapMaxMs");
+  if (!ttsAudioTimelineGapMaxMs.ok) return { ok: false, reason: "invalid_summary_field:ttsAudioTimelineGapMaxMs" };
+  summary.ttsAudioTimelineGapMaxMs = ttsAudioTimelineGapMaxMs.value;
 
   let ttsStreamingCompleted: boolean | null = null;
   if (rawSummary.ttsStreamingCompleted !== undefined && rawSummary.ttsStreamingCompleted !== null) {

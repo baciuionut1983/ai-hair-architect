@@ -56,6 +56,17 @@ export interface StreamingVoiceReplyTelemetry {
   firstPlayableChunkMs: number | null;
   firstPlaybackStartedMs: number | null;
   playbackGapMaxMs: number | null;
+  // REAL AudioContext-timeline gap measurement (2026-08-26, ADDITIVE --
+  // kept side by side with playbackGapMaxMs above, which stays exactly
+  // as-is: never removed, never renamed). playbackGapMaxMs is an honest
+  // network-timing PROXY (see its own doc comment); this is the real
+  // measurement, read straight from createGaplessPcmStreamPlayer's own new
+  // getAudioTimelineGapMaxMs -- the actual amount of silence, in
+  // milliseconds, observed on the real Web Audio playback timeline itself.
+  // Same honesty contract as every other field here: null whenever no
+  // chunk was ever scheduled for this attempt (nothing to measure), a real
+  // number (0 included) otherwise -- never fabricated either way.
+  audioTimelineGapMaxMs: number | null;
   totalStreamMs: number;
   streamingCompleted: boolean;
   streamingError: string | null;
@@ -105,7 +116,61 @@ export interface AttemptStreamingVoiceReplyCallbacks {
 // that page's own comment: real streaming chunks were confirmed live at
 // ~1920 bytes each, so batching a few before each scheduleChunk call
 // avoids scheduling a large number of very tiny AudioBufferSourceNodes.
-const MIN_SCHEDULE_BYTES = 4096;
+//
+// Configurable buffer-size A/B infrastructure (2026-08-26): operator-
+// controlled via NEXT_PUBLIC_TEXT_TO_SPEECH_STREAMING_MIN_SCHEDULE_BYTES,
+// following this file's own existing TEXT_TO_SPEECH_STREAMING_* naming
+// convention (see isStreamingVoiceReplyEnabled's own doc comment above for
+// the two pre-existing examples) -- NEXT_PUBLIC_-prefixed for the exact
+// same reason NEXT_PUBLIC_VOICE_STREAMING_TTS_ENABLED already is: this
+// whole integration runs client-side (see this file's own module doc
+// comment), so only a NEXT_PUBLIC_-prefixed var is ever actually inlined
+// into the browser bundle by Next.js at build time -- anything else here
+// would silently read as undefined in the real, deployed app no matter
+// what an operator sets it to.
+//
+// DEFAULT_MIN_SCHEDULE_BYTES (4096) is the exact, unchanged value this
+// constant always held before this change -- resolveMinScheduleBytes
+// falls back to exactly this whenever the env var is unset OR fails
+// strict validation (must parse as a real positive integer -- no
+// leading zeros, no sign, no decimal point, no scientific notation, no
+// unsafe/overflowing magnitude; never throws, never silently accepts
+// NaN/0/negative/non-integer garbage as a real configured value), so
+// with zero configuration this is byte-for-byte identical to before this
+// change. Resolved fresh on every runStreamingAttempt call (never cached
+// at module load) rather than being a top-level const, purely so this
+// stays easy to exercise directly in tests; the real, built app inlines
+// NEXT_PUBLIC_ vars as literals at build time regardless, so there is no
+// runtime cost or behavior difference from this either way.
+//
+// This is PURELY infrastructure for a human-run, human-restarted local
+// A/B comparison -- see this module's own doc comment. Deliberately NO
+// automatic switching logic anywhere near this: nothing here ever picks a
+// value, compares outcomes, or changes behavior on its own.
+const DEFAULT_MIN_SCHEDULE_BYTES = 4096;
+// Positive integers only -- no leading zero (so "0", "007" are rejected),
+// no sign, no decimal point, no whitespace, no scientific notation.
+const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/;
+
+function resolveMinScheduleBytes(): number {
+  // Read as a literal `process.env.NEXT_PUBLIC_...` member access (never
+  // through a variable holding the name, never bracket notation) -- this
+  // exact literal syntactic shape is what lets Next.js's build-time
+  // DefinePlugin statically find and inline it into the client bundle
+  // (see this constant's own doc comment above); a computed/indirect
+  // lookup would not be recognized by that static analysis and would
+  // silently read as undefined in the real, deployed app.
+  const raw = process.env.NEXT_PUBLIC_TEXT_TO_SPEECH_STREAMING_MIN_SCHEDULE_BYTES;
+  if (raw === undefined || !POSITIVE_INTEGER_PATTERN.test(raw)) {
+    return DEFAULT_MIN_SCHEDULE_BYTES;
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed)) {
+    return DEFAULT_MIN_SCHEDULE_BYTES;
+  }
+  return parsed;
+}
+
 // Matches the X-Audio-Sample-Rate-Hz header voice-reply-stream/route.ts
 // always sends (24000) -- see tts-streaming-playback-logic.ts's own
 // createGaplessPcmStreamPlayer, which needs this to build correctly-sized
@@ -167,6 +232,9 @@ async function runStreamingAttempt(
   // never duplicated, never modified.
   const player = createGaplessPcmStreamPlayer(deps.audioContext, STREAMING_SAMPLE_RATE_HZ);
   const reader = response.body.getReader();
+  // Resolved once per attempt (see resolveMinScheduleBytes's own doc
+  // comment above for why this is call-time, not module-load-time).
+  const minScheduleBytes = resolveMinScheduleBytes();
 
   let pending: Uint8Array[] = [];
   let pendingBytes = 0;
@@ -194,6 +262,15 @@ async function runStreamingAttempt(
     firstPlayableChunkMs,
     firstPlaybackStartedMs,
     playbackGapMaxMs,
+    // REAL AudioContext-timeline gap measurement (2026-08-26, ADDITIVE):
+    // read fresh from the player at telemetry-build time (completion or
+    // failure-after-playback-started -- see this function's own call
+    // sites) rather than tracked separately in this closure, since the
+    // player itself already owns the one real, authoritative running max.
+    // null (never player.getAudioTimelineGapMaxMs's own default 0) when no
+    // chunk was ever scheduled -- honest "never measured", not a
+    // fabricated "measured zero".
+    audioTimelineGapMaxMs: chunkCount > 0 ? player.getAudioTimelineGapMaxMs() : null,
     totalStreamMs: Math.max(0, Math.round(performance.now() - requestStartedAtMs)),
     streamingCompleted,
     streamingError,
@@ -214,11 +291,11 @@ async function runStreamingAttempt(
 
   // Combines whatever raw bytes have accumulated so far into one chunk and
   // schedules it -- called either because enough bytes have accumulated
-  // (MIN_SCHEDULE_BYTES) or because the stream is done and whatever is
-  // left must be flushed regardless of size. `readAtMs` is the timestamp
-  // of the network read that triggered this flush -- the real, honest
-  // anchor for both firstChunkProviderMs (on the very first chunk) and
-  // playbackGapMaxMs (on every later one).
+  // (minScheduleBytes -- see resolveMinScheduleBytes above) or because the
+  // stream is done and whatever is left must be flushed regardless of
+  // size. `readAtMs` is the timestamp of the network read that triggered
+  // this flush -- the real, honest anchor for both firstChunkProviderMs
+  // (on the very first chunk) and playbackGapMaxMs (on every later one).
   const scheduleFromPending = (readAtMs: number): void => {
     const combined = new Uint8Array(pendingBytes);
     let offset = 0;
@@ -260,7 +337,7 @@ async function runStreamingAttempt(
 
   const flush = (flushRemaining: boolean, readAtMs: number): void => {
     if (pendingBytes === 0) return;
-    if (!flushRemaining && pendingBytes < MIN_SCHEDULE_BYTES) return;
+    if (!flushRemaining && pendingBytes < minScheduleBytes) return;
     scheduleFromPending(readAtMs);
   };
 

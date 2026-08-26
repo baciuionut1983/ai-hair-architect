@@ -925,6 +925,7 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
               ttsFirstPlayableChunkMs: streamingTelemetry.firstPlayableChunkMs ?? undefined,
               ttsFirstPlaybackStartedMs: streamingTelemetry.firstPlaybackStartedMs ?? undefined,
               ttsPlaybackGapMaxMs: streamingTelemetry.playbackGapMaxMs ?? undefined,
+              ttsAudioTimelineGapMaxMs: streamingTelemetry.audioTimelineGapMaxMs ?? undefined,
               ttsStreamingCompleted: streamingTelemetry.streamingCompleted,
               ttsStreamingError: streamingTelemetry.streamingError ?? undefined,
             }

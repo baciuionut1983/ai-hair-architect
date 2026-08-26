@@ -45,6 +45,7 @@ function validSummary() {
     ttsFallbackToFullUsed: false,
     ttsFallbackReason: null,
     ttsPlaybackGapMaxMs: null,
+    ttsAudioTimelineGapMaxMs: null,
     ttsStreamingCompleted: null,
     ttsStreamingError: null,
   };
@@ -115,6 +116,7 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
         ttsFallbackToFullUsed: false,
         ttsFallbackReason: null,
         ttsPlaybackGapMaxMs: null,
+        ttsAudioTimelineGapMaxMs: null,
         ttsStreamingCompleted: null,
         ttsStreamingError: null,
       },
@@ -158,6 +160,7 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
           ttsFallbackToFullUsed: false,
           ttsFallbackReason: null,
           ttsPlaybackGapMaxMs: null,
+          ttsAudioTimelineGapMaxMs: null,
           ttsStreamingCompleted: null,
           ttsStreamingError: null,
         },
@@ -184,6 +187,7 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
         ttsFallbackToFullUsed: false,
         ttsFallbackReason: null,
         ttsPlaybackGapMaxMs: 18,
+        ttsAudioTimelineGapMaxMs: 22,
         ttsStreamingCompleted: true,
         ttsStreamingError: null,
       },
@@ -204,6 +208,7 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
           ttsFallbackToFullUsed: false,
           ttsFallbackReason: null,
           ttsPlaybackGapMaxMs: 18,
+          ttsAudioTimelineGapMaxMs: 22,
           ttsStreamingCompleted: true,
           ttsStreamingError: null,
         },
@@ -251,6 +256,48 @@ describe("parseVoiceLatencyTelemetryPayload", () => {
       summary: { ...validSummary(), ttsChunkCount: 1_000_000 },
     });
     expect(result).toEqual({ ok: false, reason: "invalid_summary_field:ttsChunkCount" });
+  });
+
+  // REAL AudioContext-timeline gap measurement (2026-08-26, ADDITIVE): same
+  // validation family (parseNullableStreamingDurationField) as
+  // ttsFirstChunkProviderMs/ttsFirstPlayableChunkMs/ttsFirstPlaybackStartedMs/
+  // ttsPlaybackGapMaxMs -- these prove it's wired into the exact same
+  // strict validation, not merely passed through unchecked.
+  it("accepts a real, non-negative ttsAudioTimelineGapMaxMs and rounds a fractional value", () => {
+    const result = parseVoiceLatencyTelemetryPayload({
+      attemptId: "attempt-1",
+      outcome: "tts_completed",
+      summary: { ...validSummary(), ttsAudioTimelineGapMaxMs: 150.4 },
+    });
+    expect(result).toEqual({ ok: true, value: expect.objectContaining({ summary: expect.objectContaining({ ttsAudioTimelineGapMaxMs: 150 }) }) });
+  });
+
+  it("rejects a negative ttsAudioTimelineGapMaxMs", () => {
+    const result = parseVoiceLatencyTelemetryPayload({
+      attemptId: "attempt-1",
+      outcome: "tts_completed",
+      summary: { ...validSummary(), ttsAudioTimelineGapMaxMs: -1 },
+    });
+    expect(result).toEqual({ ok: false, reason: "invalid_summary_field:ttsAudioTimelineGapMaxMs" });
+  });
+
+  it("rejects a non-numeric ttsAudioTimelineGapMaxMs", () => {
+    const result = parseVoiceLatencyTelemetryPayload({
+      attemptId: "attempt-1",
+      outcome: "tts_completed",
+      summary: { ...validSummary(), ttsAudioTimelineGapMaxMs: "150" },
+    });
+    expect(result).toEqual({ ok: false, reason: "invalid_summary_field:ttsAudioTimelineGapMaxMs" });
+  });
+
+  it("treats a missing ttsAudioTimelineGapMaxMs the same as an explicit null (never fabricated)", () => {
+    const { ttsAudioTimelineGapMaxMs: _omit, ...rest } = validSummary();
+    void _omit;
+    const result = parseVoiceLatencyTelemetryPayload({ attemptId: "attempt-1", outcome: "tts_completed", summary: rest });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.summary.ttsAudioTimelineGapMaxMs).toBeNull();
+    }
   });
 
   it("treats a missing summary field the same as an explicit null", () => {

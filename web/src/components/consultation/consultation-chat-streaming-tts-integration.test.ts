@@ -53,7 +53,15 @@ function notOkResponse(status: number): Response {
 }
 
 function fakePlayer() {
-  return { scheduleChunk: vi.fn(), getScheduledDurationMs: vi.fn(() => 0) };
+  return {
+    scheduleChunk: vi.fn(),
+    getScheduledDurationMs: vi.fn(() => 0),
+    // REAL AudioContext-timeline gap measurement (2026-08-26, ADDITIVE):
+    // mirrors getScheduledDurationMs's own "always a real number" style --
+    // 0 is the real GaplessPcmStreamPlayer's own honest default too (see
+    // tts-streaming-playback-logic.ts), not a test-only stand-in value.
+    getAudioTimelineGapMaxMs: vi.fn(() => 0),
+  };
 }
 
 function noopCallbacks(overrides: Partial<AttemptStreamingVoiceReplyCallbacks> = {}): AttemptStreamingVoiceReplyCallbacks {
@@ -230,11 +238,93 @@ describe("attemptStreamingVoiceReply", () => {
       telemetry.firstPlayableChunkMs,
       telemetry.firstPlaybackStartedMs,
       telemetry.playbackGapMaxMs,
+      telemetry.audioTimelineGapMaxMs,
       telemetry.totalStreamMs,
     ]) {
       expect(typeof field).toBe("number");
       expect(field as number).toBeGreaterThanOrEqual(0);
     }
+  });
+
+  // REAL AudioContext-timeline gap measurement (2026-08-26, ADDITIVE): proves
+  // audioTimelineGapMaxMs is read from the player's own new
+  // getAudioTimelineGapMaxMs at telemetry-build time -- a real, non-zero
+  // value here (as opposed to fakePlayer()'s own default 0) can only reach
+  // the telemetry object if this integration actually calls that method.
+  it("populates audioTimelineGapMaxMs from the player's own getAudioTimelineGapMaxMs when the stream completes after playback started", async () => {
+    const chunkA = new Uint8Array(5000).fill(1);
+    const reader = fakeReader([{ value: chunkA }, { done: true }]);
+    const fetchMock = vi.fn().mockResolvedValue(streamResponse(reader));
+    const player = fakePlayer();
+    player.getAudioTimelineGapMaxMs.mockReturnValue(237);
+    vi.mocked(createGaplessPcmStreamPlayer).mockReturnValue(player);
+
+    const onCompleted = vi.fn();
+    attemptStreamingVoiceReply(
+      "client-1",
+      "text",
+      "en",
+      { fetch: fetchMock, audioContext: FAKE_AUDIO_CONTEXT },
+      noopCallbacks({ onCompleted }),
+      performance.now(),
+    );
+    await flushMicrotasks();
+
+    const telemetry = onCompleted.mock.calls[0][0] as StreamingVoiceReplyTelemetry;
+    expect(telemetry.audioTimelineGapMaxMs).toBe(237);
+    // playbackGapMaxMs (the pre-existing network-timing proxy) is
+    // completely independent -- kept exactly as before, never replaced by
+    // the new real measurement. It's null here (not a fabricated number)
+    // because this test schedules only a single chunk, and that proxy is
+    // only ever computed starting from a SECOND chunk onward (see
+    // scheduleFromPending's own `else if (lastScheduledAtMs !== null)`).
+    expect(telemetry.playbackGapMaxMs).toBeNull();
+  });
+
+  it("reports audioTimelineGapMaxMs as null (never the player's own 0 default) when no chunk was ever scheduled -- a genuinely empty stream", async () => {
+    const reader = fakeReader([{ done: true }]);
+    const fetchMock = vi.fn().mockResolvedValue(streamResponse(reader));
+    const player = fakePlayer();
+    vi.mocked(createGaplessPcmStreamPlayer).mockReturnValue(player);
+
+    const onCompleted = vi.fn();
+    attemptStreamingVoiceReply(
+      "client-1",
+      "text",
+      "en",
+      { fetch: fetchMock, audioContext: FAKE_AUDIO_CONTEXT },
+      noopCallbacks({ onCompleted }),
+      performance.now(),
+    );
+    await flushMicrotasks();
+
+    const telemetry = onCompleted.mock.calls[0][0] as StreamingVoiceReplyTelemetry;
+    expect(telemetry.chunkCount).toBe(0);
+    expect(telemetry.audioTimelineGapMaxMs).toBeNull();
+    expect(player.getAudioTimelineGapMaxMs).not.toHaveBeenCalled();
+  });
+
+  it("populates audioTimelineGapMaxMs on a failure AFTER playback started too, not only on a clean completion", async () => {
+    const chunkA = new Uint8Array(5000).fill(1);
+    const reader = fakeReader([{ value: chunkA }, { error: new Error("network dropped mid-stream") }]);
+    const fetchMock = vi.fn().mockResolvedValue(streamResponse(reader));
+    const player = fakePlayer();
+    player.getAudioTimelineGapMaxMs.mockReturnValue(412);
+    vi.mocked(createGaplessPcmStreamPlayer).mockReturnValue(player);
+
+    const onFailedAfterPlaybackStarted = vi.fn();
+    attemptStreamingVoiceReply(
+      "client-1",
+      "text",
+      "en",
+      { fetch: fetchMock, audioContext: FAKE_AUDIO_CONTEXT },
+      noopCallbacks({ onFailedAfterPlaybackStarted }),
+      performance.now(),
+    );
+    await flushMicrotasks();
+
+    const [, telemetry] = onFailedAfterPlaybackStarted.mock.calls[0] as [string, StreamingVoiceReplyTelemetry];
+    expect(telemetry.audioTimelineGapMaxMs).toBe(412);
   });
 
   it("never calls onFirstPlaybackStarted or onCompleted for a genuinely empty stream -- zero chunks, honest telemetry", async () => {
@@ -360,5 +450,103 @@ describe("attemptStreamingVoiceReply", () => {
     expect(onCompleted).toHaveBeenCalledTimes(1);
     expect(onFallbackBeforePlaybackStarted).not.toHaveBeenCalled();
     expect(onFailedAfterPlaybackStarted).not.toHaveBeenCalled();
+  });
+});
+
+// Configurable buffer-size A/B infrastructure (2026-08-26): proves
+// resolveMinScheduleBytes's own env-var resolution (unexported, exercised
+// only indirectly here through the real accumulate-then-flush behavior --
+// see this module's own doc comment on DEFAULT_MIN_SCHEDULE_BYTES) --
+// with zero configuration, behavior is byte-for-byte identical to before
+// this change, and a valid override actually takes effect.
+describe("MIN_SCHEDULE_BYTES resolution (NEXT_PUBLIC_TEXT_TO_SPEECH_STREAMING_MIN_SCHEDULE_BYTES)", () => {
+  const ENV_VAR = "NEXT_PUBLIC_TEXT_TO_SPEECH_STREAMING_MIN_SCHEDULE_BYTES";
+  const original = process.env[ENV_VAR];
+
+  beforeEach(() => {
+    vi.mocked(createGaplessPcmStreamPlayer).mockReset();
+  });
+
+  afterEach(() => {
+    if (original === undefined) {
+      delete process.env[ENV_VAR];
+    } else {
+      process.env[ENV_VAR] = original;
+    }
+  });
+
+  it("with the env var unset, batches below the real default of 4096 bytes -- flushing only once the stream ends, exactly as before this change", async () => {
+    delete process.env[ENV_VAR];
+    const chunk1 = new Uint8Array(2000).fill(1);
+    const chunk2 = new Uint8Array(1500).fill(2); // 3500 total, still < 4096
+    const reader = fakeReader([{ value: chunk1 }, { value: chunk2 }, { done: true }]);
+    const fetchMock = vi.fn().mockResolvedValue(streamResponse(reader));
+    const player = fakePlayer();
+    vi.mocked(createGaplessPcmStreamPlayer).mockReturnValue(player);
+
+    attemptStreamingVoiceReply(
+      "client-1",
+      "text",
+      "en",
+      { fetch: fetchMock, audioContext: FAKE_AUDIO_CONTEXT },
+      noopCallbacks(),
+      performance.now(),
+    );
+    await flushMicrotasks();
+
+    // Never flushed early on either read (both below 4096) -- only the
+    // final done-triggered flush schedules the one combined chunk.
+    expect(player.scheduleChunk).toHaveBeenCalledTimes(1);
+  });
+
+  it("with the env var set to a valid positive integer, flushes as soon as that many bytes accumulate, without waiting for stream end", async () => {
+    process.env[ENV_VAR] = "2000";
+    const chunk1 = new Uint8Array(2500).fill(1); // >= 2000 -- should flush immediately on this read
+    const reader = fakeReader([{ value: chunk1 }, { done: true }]);
+    const fetchMock = vi.fn().mockResolvedValue(streamResponse(reader));
+    const player = fakePlayer();
+    vi.mocked(createGaplessPcmStreamPlayer).mockReturnValue(player);
+
+    attemptStreamingVoiceReply(
+      "client-1",
+      "text",
+      "en",
+      { fetch: fetchMock, audioContext: FAKE_AUDIO_CONTEXT },
+      noopCallbacks(),
+      performance.now(),
+    );
+    await flushMicrotasks();
+
+    // Flushed once already on the first (2500-byte) read; the final
+    // `done` has nothing left over to flush a second time.
+    expect(player.scheduleChunk).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the default 4096-byte threshold for every invalid value -- non-numeric, zero, negative, decimal, leading-zero -- never throwing", async () => {
+    for (const invalid of ["abc", "0", "-100", "3.5", "007", "1e10", ""]) {
+      process.env[ENV_VAR] = invalid;
+      const chunk1 = new Uint8Array(3000).fill(1); // below the real 4096 default
+      const reader = fakeReader([{ value: chunk1 }, { done: true }]);
+      const fetchMock = vi.fn().mockResolvedValue(streamResponse(reader));
+      const player = fakePlayer();
+      vi.mocked(createGaplessPcmStreamPlayer).mockReturnValue(player);
+
+      expect(() =>
+        attemptStreamingVoiceReply(
+          "client-1",
+          "text",
+          "en",
+          { fetch: fetchMock, audioContext: FAKE_AUDIO_CONTEXT },
+          noopCallbacks(),
+          performance.now(),
+        ),
+      ).not.toThrow();
+      await flushMicrotasks();
+
+      // Never flushed on the first (3000-byte, below-4096) read -- only
+      // the final done-triggered flush -- proving the invalid value was
+      // rejected and the real 4096 default applied instead.
+      expect(player.scheduleChunk).toHaveBeenCalledTimes(1);
+    }
   });
 });
