@@ -162,6 +162,9 @@ model User {
   professionalMemoryAudits      ProfessionalMemoryAudit[]    @relation("MemoryAuditActor")
   voiceTranscripts              VoiceTranscript[]
   aiUsageEvents                 AiUsageEvent[]
+  // Phase 2 (AI Proposed Look). Virtual back-relation only -- produces no
+  // column or constraint on "User"; the FK lives on "AnalysisProposal".
+  analysisProposals             AnalysisProposal[]
 }
 
 model Session {
@@ -221,6 +224,9 @@ model Client {
   consultationMessages ConsultationMessage[]
   professionalMemories ProfessionalMemory[]
   voiceTranscripts     VoiceTranscript[]
+  // Phase 2 (AI Proposed Look). Virtual back-relation only -- produces no
+  // column or constraint on "Client"; the FK lives on "AnalysisProposal".
+  analysisProposals    AnalysisProposal[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -271,6 +277,11 @@ model Analysis {
   sourcedTreatments    ClientTreatment[]
   corrections          AnalysisCorrection[]
   consultationMessages ConsultationMessage[]
+  // Phase 2 (AI Proposed Look). Virtual back-relation only -- produces no
+  // column or constraint on "Analysis"; the composite FK
+  // (analysisId, ownerUserId, clientId) lives on "AnalysisProposal" and
+  // targets this model's existing @@unique([id, ownerUserId, clientId]).
+  analysisProposals    AnalysisProposal[]
 
   @@unique([id, ownerUserId, clientId])
   @@index([ownerUserId])
@@ -1313,4 +1324,139 @@ model AiUsageEvent {
   @@index([provider, model, createdAt])
   @@index([createdAt])
   @@index([correlationId])
+}
+
+// AI Proposed Look (Phase 2): the durable, frozen record of one
+// deterministic-engine proposal for a single Client in a single vertical,
+// moving through the lifecycle DRAFT | CONFIRMED | REJECTED | SUPERSEDED.
+// Written once at generation time; thereafter only transitioned by the
+// repository layer (Stage 2, authorized separately). evidenceSnapshot,
+// payload, edits, consideredMemory and promotedConsultationSources are all
+// frozen provenance -- never live-recomputed from the (possibly
+// since-changed) source Analysis or ProfessionalMemory rows.
+//
+// AUTHORITATIVE INVARIANT -- deliberately NOT expressed in this model block
+// because the Prisma schema language cannot represent it: at most one row
+// may have status = 'CONFIRMED' for a given (ownerUserId, clientId,
+// vertical). It is enforced by a hand-authored PARTIAL UNIQUE INDEX in the
+// migration SQL (migrations/20260827_analysis_proposal/migration.sql):
+//
+//   CREATE UNIQUE INDEX "AnalysisProposal_one_confirmed_per_owner_client_vertical"
+//     ON "AnalysisProposal" ("ownerUserId", "clientId", "vertical")
+//     WHERE "status" = 'CONFIRMED';
+//
+// Prisma has no native partial/filtered unique index, so a future
+// `prisma migrate dev` diff will NOT see this index and MUST NOT be told to
+// "fix" or drop it -- this is a known, documented Prisma limitation, not
+// drift. The same pattern is already used in this schema for
+// WebhookEndpointSecretVersion ("one current per endpoint") and WebhookEvent
+// (producer-idempotency), both partial unique indexes that live only in
+// migration SQL (see 20260720_m10a_delivery_contracts).
+model AnalysisProposal {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  // Plain string, NOT a Postgres enum -- deliberately mirrors how
+  // Analysis.phase is a plain string enforced only by application code
+  // (ANALYSIS_PHASES). Chosen specifically so that adding a new vertical
+  // later never requires a schema migration. Stage 2 validates the value.
+  vertical String
+
+  // Plain string, NOT a Postgres enum -- same reasoning as `vertical` above
+  // and Analysis.phase, to avoid a migration if the lifecycle changes.
+  // Application-validated (Stage 2) to exactly one of:
+  // DRAFT | CONFIRMED | REJECTED | SUPERSEDED.
+  status String
+
+  analysisId String
+
+  // The source Analysis.updatedAt value at the moment this proposal was
+  // created, frozen -- lets a later reader detect that the underlying
+  // Analysis has since changed without diffing full content.
+  analysisSnapshotAt DateTime @db.Timestamp(6)
+
+  // Nullable, NO enforced FK (soft pointers) -- populated from the source
+  // Analysis's own linked asset / image-analysis when available. Follows the
+  // established soft-ID-pointer precedent in this schema
+  // (AiUsageEvent.clientId / analysisId, AuditLog.resourceId): this frozen
+  // provenance must never block or complicate an unrelated ImageAsset /
+  // ImageAnalysis lifecycle operation just because an old proposal names it.
+  sourceImageAssetId    String?
+  sourceImageAnalysisId String?
+
+  // The deterministic engine's own version string at generation time -- the
+  // cutting engine's TechnicalCutPlan.version value verbatim
+  // (TECHNICAL_PLAN_VERSION in cutting-plan-engine.ts, e.g. "1.0.0-m8"), not
+  // a new versioning scheme.
+  engineVersion String
+
+  // Frozen INPUT evidence: the objective / category-A fields actually read
+  // from the source Analysis at creation time (contraindications, density,
+  // condition, structural-limitation-relevant fields). Distinct from the
+  // engine's OUTPUT (`payload`).
+  evidenceSnapshot Json
+
+  // Frozen engine-generated baseline / OUTPUT (the deterministic plan
+  // content) as of confirmation time -- the durable "what the proposal
+  // actually says", never live-recomputed from the (possibly since-changed)
+  // Analysis row.
+  payload Json
+
+  // Nullable. Populated only if the professional changed something in the
+  // DRAFT before confirming. Array; each entry mirrors AnalysisCorrection's
+  // existing vocabulary: { field, previousValue, newValue, source, reason }
+  // (reason optional). Provenance only, NOT a lifecycle state -- there is no
+  // "edited" status; "was this proposal edited?" is answered by whether this
+  // array is non-empty.
+  edits Json?
+
+  // Nullable array. For each ProfessionalMemory row actually used when
+  // resolving this proposal's aesthetic / category-B fields, both the id AND
+  // a minimal content snapshot at that time:
+  // { memoryId, content, kind, scope, confidence, snapshotAt }. IDs alone
+  // are insufficient -- the historical explanation must stay valid even if
+  // that memory is later revoked or edited.
+  consideredMemory Json?
+
+  // Nullable soft pointer (NO enforced FK) to the single most relevant
+  // promoted ConsultationMessage, if one exists. This schema has no existing
+  // relation to ConsultationMessage to mirror, and AiUsageEvent already
+  // treats ConsultationMessage ids as soft pointers; handled here the same
+  // way as sourceImageAssetId above.
+  primaryConsultationMessageId String?
+
+  // Nullable array. Frozen provenance for 0..N explicitly-promoted
+  // consultation insights (not only the single primary one):
+  // { consultationMessageId, snapshotContent, promotedAt }[]. Only ever
+  // contains entries a human explicitly chose to promote -- general,
+  // un-promoted chat content must never appear here.
+  promotedConsultationSources Json?
+
+  // Nullable pointer to the proposal that superseded this one. Plain nullable
+  // column, NOT an enforced self-relation FK: this schema has no existing
+  // self-referencing relation to mirror, Prisma self-relations with the
+  // tenant-composite key shape used here are awkward, and this is frozen
+  // provenance consistent with the other soft pointers on this model. Stage 2
+  // repository code guarantees it references a sibling proposal in the same
+  // (ownerUserId, clientId, vertical).
+  supersededByProposalId String?
+
+  // Set once at confirmation / rejection, never edited afterward (enforced at
+  // the repository layer in Stage 2). confirmedByUserId is a plain column
+  // with NO FK, mirroring ProfessionalMemory.createdByUserId.
+  confirmedByUserId String?
+  confirmedAt       DateTime? @db.Timestamp(6)
+  rejectedAt        DateTime? @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner    User     @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client   Client   @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  analysis Analysis @relation(fields: [analysisId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([clientId, ownerUserId, createdAt, id])
+  @@index([analysisId, ownerUserId, clientId])
+  @@index([ownerUserId, clientId, vertical])
 }
