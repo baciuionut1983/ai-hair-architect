@@ -15,6 +15,7 @@ import { ConsultationChat } from "@/components/consultation";
 import { Alert, Badge, Card, ErrorState, LoadingState } from "@/components/ui";
 
 import { formatOverallConfidenceLabel } from "./analysis-result-logic";
+import { ProposedLookSection } from "./proposed-look/proposed-look-section";
 import { useAnalysisResult } from "./use-analysis-result";
 
 export default function AnalysisResultPage() {
@@ -99,6 +100,13 @@ export default function AnalysisResultPage() {
       {result.technicalCutPlan ? <TechnicalCutPlanView plan={result.technicalCutPlan} /> : null}
       {result.colorPlan ? <ColorPlanView plan={result.colorPlan} /> : null}
       {result.treatmentPlan ? <TreatmentPlanView plan={result.treatmentPlan} /> : null}
+
+      <ProposedLookSection
+        clientId={clientId}
+        analysisId={analysisId}
+        technicalCutPlan={result.technicalCutPlan}
+        analysisUpdatedAt={result.updatedAt}
+      />
 
       <ConsultationChat clientId={clientId} analysisId={analysisId} onCorrectionApplied={reload} />
     </div>
