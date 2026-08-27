@@ -4,12 +4,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ImageProcessingError } from "@/lib/image-normalizer";
 
-const prismaMock = vi.hoisted(() => ({ sessionFindUnique: vi.fn() }));
+const prismaMock = vi.hoisted(() => ({ sessionFindUnique: vi.fn(), clientFindFirst: vi.fn() }));
 const serviceMock = vi.hoisted(() => ({ uploadAndAnalyzeImages: vi.fn() }));
 
 vi.mock("@/lib/prisma", () => ({
   isDatabaseConfigured: () => true,
-  prisma: { session: { findUnique: prismaMock.sessionFindUnique } },
+  prisma: {
+    session: { findUnique: prismaMock.sessionFindUnique },
+    client: { findFirst: prismaMock.clientFindFirst },
+  },
 }));
 
 const { ObjectStorageWriteModeRequiredError } = vi.hoisted(() => {
@@ -79,10 +82,47 @@ function fullUser(id: string, role: string) {
   };
 }
 
+type ClientFindFirstArgs = { where: { id?: string; ownerUserId?: string; deletedAt?: unknown } };
+
+function clientRow(id: string, ownerUserId: string) {
+  return {
+    id,
+    ownerUserId,
+    fullName: "Test Client",
+    email: null,
+    phone: null,
+    notes: null,
+    deletedAt: null,
+    createdAt: new Date("2026-08-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-08-01T00:00:00.000Z"),
+  };
+}
+
+// A minimal stand-in for the "Client" table: findFirst yields a row only when
+// both id and ownerUserId match, exactly like Postgres evaluating
+// findClientForOwner's owner-scoped WHERE clause. This is what makes the "no
+// existence leak" assertions real -- a cross-owner id and an unknown id both
+// genuinely fail the same predicate, rather than a mock hand-returning null.
+function useClientsTable(rows: ReadonlyArray<{ id: string; ownerUserId: string }>): void {
+  prismaMock.clientFindFirst.mockImplementation(async (args: ClientFindFirstArgs) => {
+    const where = args.where;
+    const match = rows.find((row) => row.id === where.id && row.ownerUserId === where.ownerUserId);
+    return match ? clientRow(match.id, match.ownerUserId) : null;
+  });
+}
+
 describe("POST /api/v1/uploads", () => {
   beforeEach(() => {
     prismaMock.sessionFindUnique.mockReset();
+    prismaMock.clientFindFirst.mockReset();
     serviceMock.uploadAndAnalyzeImages.mockReset();
+    // Permissive default: the authenticated user owns whatever client they
+    // name, so every pre-existing test keeps exercising the unchanged
+    // success/error paths. The ownership-enforcement suite below overrides
+    // this with useClientsTable() to drive the real check.
+    prismaMock.clientFindFirst.mockImplementation(async (args: ClientFindFirstArgs) =>
+      clientRow(String(args.where.id), String(args.where.ownerUserId)),
+    );
   });
 
   it("returns 401 without a bearer token, never touching the upload service", async () => {
@@ -250,5 +290,100 @@ describe("POST /api/v1/uploads", () => {
 
     expect(response.status).toBe(401);
     expect(serviceMock.uploadAndAnalyzeImages).not.toHaveBeenCalled();
+  });
+
+  // Phase 2 Stage 0 hardening: POST /api/v1/uploads used to pass the
+  // multipart `clientId` straight through to uploadAndAnalyzeImages, which
+  // creates an ImageAsset row with that clientId + the caller's own
+  // ownerUserId -- with no check that the clientId actually belongs to the
+  // caller. ImageAsset is the one client-scoped model with no database-level
+  // composite FK to Client, so nothing else caught it. The route now runs
+  // the same owner-scoped resolveOwnedClient() check every sibling
+  // client-scoped route uses, before any row is created.
+  describe("client ownership enforcement", () => {
+    it("never looks up a client for an unauthenticated upload, and never calls the upload service", async () => {
+      const response = await invoke(undefined, "client-1");
+
+      expect(response.status).toBe(401);
+      expect(prismaMock.clientFindFirst).not.toHaveBeenCalled();
+      expect(serviceMock.uploadAndAnalyzeImages).not.toHaveBeenCalled();
+    });
+
+    it("still uploads, unchanged, for a client the user genuinely owns", async () => {
+      const userId = randomUUID();
+      prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
+      useClientsTable([{ id: "owned-client", ownerUserId: userId }]);
+      serviceMock.uploadAndAnalyzeImages.mockResolvedValue([
+        { asset: { id: "asset-1", fileName: "photo-0.jpg" }, analysis: { id: "analysis-1", status: "draft" } },
+      ]);
+
+      const response = await invoke("token", "owned-client");
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        success: true,
+        assets: [{ assetId: "asset-1", analysisId: "analysis-1", fileName: "photo-0.jpg", status: "draft" }],
+      });
+      expect(serviceMock.uploadAndAnalyzeImages).toHaveBeenCalledWith(userId, "owned-client", expect.any(Array));
+    });
+
+    it("rejects an upload whose clientId belongs to a DIFFERENT owner, without leaking that the client exists", async () => {
+      const attacker = randomUUID();
+      const victimOwner = randomUUID();
+      prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: attacker, role: "professional" }));
+      useClientsTable([{ id: "victims-client", ownerUserId: victimOwner }]);
+
+      const response = await invoke("token", "victims-client");
+
+      expect(response.status).toBe(404);
+      const body = await response.json();
+      expect(body).toEqual({ error: "Client not found." });
+      const serialized = JSON.stringify(body);
+      expect(serialized).not.toContain(victimOwner);
+      expect(serialized).not.toContain("victims-client");
+      expect(serialized).not.toMatch(/forbidden|another|owner|permission|exists/i);
+      expect(serviceMock.uploadAndAnalyzeImages).not.toHaveBeenCalled();
+    });
+
+    it("rejects an upload for a clientId that exists nowhere", async () => {
+      const userId = randomUUID();
+      prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
+      useClientsTable([]);
+
+      const response = await invoke("token", "no-such-client");
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "Client not found." });
+      expect(serviceMock.uploadAndAnalyzeImages).not.toHaveBeenCalled();
+    });
+
+    it("returns an identical rejection (status + exact body bytes + content-type) for a cross-owner clientId and a nonexistent one", async () => {
+      prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: randomUUID(), role: "professional" }));
+
+      useClientsTable([{ id: "real-elsewhere", ownerUserId: randomUUID() }]);
+      const crossOwner = await invoke("token", "real-elsewhere");
+      const crossOwnerText = await crossOwner.text();
+
+      useClientsTable([]);
+      const nonexistent = await invoke("token", "ghost");
+      const nonexistentText = await nonexistent.text();
+
+      expect(crossOwner.status).toBe(404);
+      expect(nonexistent.status).toBe(crossOwner.status);
+      expect(crossOwnerText).toBe(nonexistentText);
+      expect(crossOwner.headers.get("content-type")).toBe(nonexistent.headers.get("content-type"));
+      expect(serviceMock.uploadAndAnalyzeImages).not.toHaveBeenCalled();
+    });
+
+    it("fails closed with 503 when client persistence is unavailable, never reaching the upload service", async () => {
+      const userId = randomUUID();
+      prismaMock.sessionFindUnique.mockResolvedValue(activeSession({ id: userId, role: "professional" }));
+      prismaMock.clientFindFirst.mockRejectedValue(new Error("connection terminated unexpectedly"));
+
+      const response = await invoke("token", "client-1");
+
+      expect(response.status).toBe(503);
+      expect(serviceMock.uploadAndAnalyzeImages).not.toHaveBeenCalled();
+    });
   });
 });

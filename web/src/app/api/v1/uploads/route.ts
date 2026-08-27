@@ -3,6 +3,7 @@ import { ObjectStorageWriteModeRequiredError, uploadAndAnalyzeImages } from '@/l
 import { ImageProcessingError } from '@/lib/image-normalizer';
 import { checkRateLimit, getRateLimitStatus } from '@/lib/rate-limiter';
 import { checkRole } from '@/lib/auth-role';
+import { resolveOwnedClient } from '@/lib/client-repository';
 import { resolvePipelineAuth } from '@/lib/image-pipeline-auth';
 
 export async function POST(req: NextRequest) {
@@ -48,7 +49,26 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const results = await uploadAndAnalyzeImages(user.id, clientId, filesFormData);
+    // The multipart `clientId` is attacker-controlled input. Before a single
+    // ImageAsset row is created, confirm it names a client this authenticated
+    // user actually owns (matching ownerUserId, not soft-deleted).
+    // `resolveOwnedClient` is the same owner-scoped lookup every sibling
+    // client-scoped route uses (clients/[id]/formulas, appointments,
+    // shortlists); ImageAsset is the one client-scoped model with no
+    // database-level composite FK to Client, so this check is the sole thing
+    // standing between a forged clientId and a cross-tenant row. A clientId
+    // that belongs to a DIFFERENT owner and a clientId that exists nowhere
+    // both resolve to null here and return the identical generic 404, so the
+    // response never reveals that another owner's client exists. A Response
+    // means client persistence is unavailable (fail closed, 503) -- returned
+    // as-is, exactly as the sibling routes do.
+    const client = await resolveOwnedClient(user.id, clientId);
+    if (client instanceof Response) return client;
+    if (!client) {
+      return NextResponse.json({ error: 'Client not found.' }, { status: 404 });
+    }
+
+    const results = await uploadAndAnalyzeImages(user.id, client.id, filesFormData);
 
     const status = getRateLimitStatus(user.id, 'UPLOAD');
     return NextResponse.json(
