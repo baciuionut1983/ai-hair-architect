@@ -149,3 +149,65 @@ export const TREATMENT_GOAL_DETAIL_OPTIONS: FieldOption<TreatmentGoalDetail>[] =
   { value: "bonding_repair", label: "Bonding repair" },
   { value: "post_color_recovery", label: "Post-color recovery" }
 ];
+
+// AI Proposed Look (Phase 2), Stage 4 -- hand-labeled option lists for the
+// TechnicalCutPlan enum fields a professional can edit on a DRAFT proposal.
+// Values match proposal-validators.ts's own STRUCTURAL_TECHNIQUES /
+// CUTTING_TECHNIQUES / TEXTURIZING_TECHNIQUES / SECTIONING_OPTIONS /
+// ELEVATION_OPTIONS / DISTRIBUTION_OPTIONS / GUIDELINE_OPTIONS exactly (that
+// file's arrays are private runtime validators, not exported for UI use --
+// these are the UI-facing, hand-labeled counterpart, same duplication-avoidance
+// reasoning as every other *_OPTIONS array in this file).
+export const STRUCTURAL_TECHNIQUE_OPTIONS: FieldOption<StructuralTechnique>[] = [
+  { value: "precision_layering", label: "Precision layering" },
+  { value: "graduation", label: "Graduation" },
+  { value: "one_length", label: "One length" },
+  { value: "internal_layering", label: "Internal layering" },
+  { value: "compact_graduation", label: "Compact graduation" }
+];
+
+export const CUTTING_TECHNIQUE_OPTIONS: FieldOption<CuttingTechnique>[] = [
+  { value: "blunt_line", label: "Blunt line" },
+  { value: "scissor_over_comb", label: "Scissor over comb" },
+  { value: "slice_cutting", label: "Slice cutting" },
+  { value: "elevation_cutting", label: "Elevation cutting" }
+];
+
+export const TEXTURIZING_TECHNIQUE_OPTIONS: FieldOption<TexturizingTechnique>[] = [
+  { value: "point_cutting", label: "Point cutting" },
+  { value: "slice_and_slide", label: "Slice and slide" },
+  { value: "razor_texturizing", label: "Razor texturizing" },
+  { value: "channel_cutting", label: "Channel cutting" },
+  { value: "debulking", label: "Debulking" }
+];
+
+export const CUT_SECTIONING_OPTIONS: FieldOption<TechnicalCutSectioning>[] = [
+  { value: "4_quadrant_profile_radial", label: "4-quadrant profile radial" },
+  { value: "horseshoe_crown", label: "Horseshoe crown" },
+  { value: "diagonal_back", label: "Diagonal back" },
+  { value: "pivot_radial", label: "Pivot radial" },
+  { value: "horseshoe_fringe", label: "Horseshoe fringe" }
+];
+
+export const CUT_ELEVATION_OPTIONS: FieldOption<TechnicalCutElevation>[] = [
+  { value: "0_deg_blunt", label: "0° blunt" },
+  { value: "45_deg_graduation", label: "45° graduation" },
+  { value: "90_deg_uniform_layer", label: "90° uniform layer" },
+  { value: "135_deg_long_layer", label: "135° long layer" },
+  { value: "180_deg_overdirection", label: "180° overdirection" }
+];
+
+export const CUT_DISTRIBUTION_OPTIONS: FieldOption<TechnicalCutDistribution>[] = [
+  { value: "natural_fall", label: "Natural fall" },
+  { value: "perpendicular", label: "Perpendicular" },
+  { value: "overdirected_back", label: "Overdirected back" },
+  { value: "overdirected_forward", label: "Overdirected forward" },
+  { value: "shifting_line", label: "Shifting line" }
+];
+
+export const CUT_GUIDELINE_OPTIONS: FieldOption<TechnicalCutGuideline>[] = [
+  { value: "stationary", label: "Stationary" },
+  { value: "traveling", label: "Traveling" },
+  { value: "visual_perimeter", label: "Visual perimeter" },
+  { value: "multiple_reference", label: "Multiple reference" }
+];
