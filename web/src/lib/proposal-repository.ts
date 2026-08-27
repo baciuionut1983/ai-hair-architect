@@ -441,32 +441,45 @@ export async function rejectProposal(
 // confirmProposal -- the one operation with a real concurrency requirement
 // ---------------------------------------------------------------------------
 
-// Legal only from DRAFT. Inside ONE serializable transaction (with the same
-// retry-on-conflict policy as analysis-repository.ts):
-//   (1) verify the target row is DRAFT and owned;
-//   (2) find any EXISTING CONFIRMED row for the SAME
-//       (ownerUserId, clientId, vertical) and, if one exists, set it to
-//       SUPERSEDED with supersededByProposalId = the target's id;
-//   (3) set the target row to CONFIRMED + confirmedByUserId + confirmedAt.
+// Legal only from DRAFT. Uses explicit optimistic concurrency control: the
+// caller MUST pass `expectedCurrentConfirmedProposalId` -- the id it most
+// recently observed to be the authoritative CONFIRMED proposal for this
+// proposal's (ownerUserId, clientId, vertical) triple (typically from a prior
+// findCurrentConfirmedProposal), or null if it observed none. The function
+// never infers or re-derives this on its own; it is a stated expected-version,
+// exactly like any other optimistic-concurrency check.
 //
-// The DB partial unique index is the real backstop against a race producing
-// two CONFIRMED rows. A write that trips it (P2002) -- or a serialization
-// failure (P2034) -- is retried within the documented policy; if the state
-// still shows another proposal won the race, a clear ProposalConcurrencyError
-// is surfaced. The race loser NEVER silently "wins" by superseding the
-// winner: the `baselineConfirmedId` captured before the retry loop is what
-// distinguishes "a CONFIRMED row that was already there" (legitimate
-// supersede target) from "a CONFIRMED row that only appeared after we began"
-// (a concurrent confirmation that beat us).
+// Inside ONE serializable transaction (with the same retry-on-conflict policy
+// as analysis-repository.ts):
+//   (1) verify the target row is DRAFT and owned;
+//   (2) read the REAL, current CONFIRMED row for the SAME
+//       (ownerUserId, clientId, vertical) triple -- fresh, from inside the
+//       transaction -- and compare `existingConfirmed?.id ?? null` against
+//       `expectedCurrentConfirmedProposalId`. On a mismatch the triple moved
+//       under the caller's feet (another confirmation committed since they
+//       last looked): throw ProposalConcurrencyError BEFORE any write -- the
+//       target row stays exactly DRAFT and no partial state is written;
+//   (3) on a match: if a CONFIRMED row exists, set it to SUPERSEDED with
+//       supersededByProposalId = the target's id (the intentional-replacement
+//       path), then set the target row to CONFIRMED + confirmedByUserId +
+//       confirmedAt.
+//
+// The DB partial unique index remains the hard backstop against a race
+// producing two CONFIRMED rows. A write that trips it (P2002) -- or a
+// serialization failure (P2034) -- is retried within the documented policy; on
+// the retry the fresh in-transaction read now sees the proposal that won the
+// race, the comparison in (2) mismatches, and the loser gets a clean
+// ProposalConcurrencyError instead of silently superseding the winner.
 export async function confirmProposal(
   ownerUserId: string,
   proposalId: string,
   confirmedByUserId: string,
+  expectedCurrentConfirmedProposalId: string | null,
 ): Promise<ProposalRecord | null> {
   return runProposalQuery(async () => {
     const preflight = await prisma.analysisProposal.findFirst({
       where: { id: proposalId, ownerUserId },
-      select: { id: true, clientId: true, vertical: true, status: true },
+      select: { id: true, status: true },
     });
     if (!preflight) return null;
     if (!isLegalProposalStatusTransition(preflight.status, "CONFIRMED")) {
@@ -476,17 +489,6 @@ export async function confirmProposal(
         `Proposal ${proposalId} is ${preflight.status}; only a DRAFT proposal can be confirmed.`,
       );
     }
-
-    const baseline = await prisma.analysisProposal.findFirst({
-      where: {
-        ownerUserId,
-        clientId: preflight.clientId,
-        vertical: preflight.vertical,
-        status: "CONFIRMED",
-      },
-      select: { id: true },
-    });
-    const baselineConfirmedId = baseline?.id ?? null;
 
     return runSerializableTransaction(async (tx) => {
       const target = await tx.analysisProposal.findFirst({ where: { id: proposalId, ownerUserId } });
@@ -500,6 +502,8 @@ export async function confirmProposal(
         );
       }
 
+      // The REAL, current CONFIRMED row for this triple, read fresh inside the
+      // serializable transaction.
       const existingConfirmed = await tx.analysisProposal.findFirst({
         where: {
           ownerUserId,
@@ -510,17 +514,21 @@ export async function confirmProposal(
         select: { id: true },
       });
 
-      if (existingConfirmed && existingConfirmed.id !== baselineConfirmedId) {
-        // A different proposal was confirmed for this triple after this
-        // confirmation began -- the DB partial unique index would reject our
-        // write anyway. Surface it as a clean, typed conflict; never silently
-        // supersede the proposal that won the race.
+      // Optimistic-concurrency check. The caller stated, via
+      // expectedCurrentConfirmedProposalId, what it last observed to be the
+      // authoritative CONFIRMED proposal for this triple (or null). If the
+      // freshly-read reality does not match, another confirmation committed
+      // since the caller last looked -- this attempt is racing. Reject it
+      // cleanly, before any write: the target row stays exactly DRAFT and
+      // nothing (not the target, not any sibling) is modified.
+      if ((existingConfirmed?.id ?? null) !== expectedCurrentConfirmedProposalId) {
         throw new ProposalConcurrencyError();
       }
 
       if (existingConfirmed) {
         // The one explicit CONFIRMED -> SUPERSEDED transition, in the SAME
-        // transaction as the new confirmation.
+        // transaction as the new confirmation. Reached only when the caller
+        // correctly expected THIS row to be the one it is replacing.
         await tx.analysisProposal.update({
           where: { id: existingConfirmed.id },
           data: { status: "SUPERSEDED", supersededByProposalId: target.id },

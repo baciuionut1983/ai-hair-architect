@@ -321,7 +321,9 @@ suite("proposal-repository (durable AnalysisProposal domain layer)", () => {
     const analysis = await createAnalysis(ownerUserId, clientId);
     const proposal = await draftProposal(ownerUserId, clientId, analysis.id);
 
-    const confirmed = await confirmProposal(ownerUserId, proposal.id, ownerUserId);
+    // Nothing is confirmed yet for this triple, so the caller's observed
+    // baseline is null.
+    const confirmed = await confirmProposal(ownerUserId, proposal.id, ownerUserId, null);
     expect(confirmed?.status).toBe("CONFIRMED");
     expect(confirmed?.confirmedByUserId).toBe(ownerUserId);
     expect(confirmed?.confirmedAt).not.toBeNull();
@@ -335,8 +337,12 @@ suite("proposal-repository (durable AnalysisProposal domain layer)", () => {
       }),
     ).resolves.toBe(1);
 
-    // CONFIRMED -> confirm again is illegal.
-    await expect(confirmProposal(ownerUserId, proposal.id, ownerUserId)).rejects.toBeInstanceOf(ProposalStateError);
+    // CONFIRMED -> confirm again is illegal. The caller now correctly observes
+    // this same proposal as the current confirmed one; the state guard rejects
+    // it regardless.
+    await expect(
+      confirmProposal(ownerUserId, proposal.id, ownerUserId, proposal.id),
+    ).rejects.toBeInstanceOf(ProposalStateError);
   });
 
   it("confirmProposal atomically supersedes the previously confirmed proposal for the same client and vertical", async () => {
@@ -344,10 +350,12 @@ suite("proposal-repository (durable AnalysisProposal domain layer)", () => {
     const analysis = await createAnalysis(ownerUserId, clientId);
 
     const first = await draftProposal(ownerUserId, clientId, analysis.id);
-    await confirmProposal(ownerUserId, first.id, ownerUserId);
+    await confirmProposal(ownerUserId, first.id, ownerUserId, null);
 
     const second = await draftProposal(ownerUserId, clientId, analysis.id);
-    const secondConfirmed = await confirmProposal(ownerUserId, second.id, ownerUserId);
+    // Intentional replacement: the caller correctly states that `first` is the
+    // proposal it is replacing.
+    const secondConfirmed = await confirmProposal(ownerUserId, second.id, ownerUserId, first.id);
     expect(secondConfirmed?.status).toBe("CONFIRMED");
 
     // Both transitions are visible in the very next read.
@@ -389,11 +397,11 @@ suite("proposal-repository (durable AnalysisProposal domain layer)", () => {
     };
 
     await assertAtMostOneConfirmed(null);
-    await confirmProposal(ownerUserId, p1.id, ownerUserId);
+    await confirmProposal(ownerUserId, p1.id, ownerUserId, null);
     await assertAtMostOneConfirmed(p1.id);
     await rejectProposal(ownerUserId, p2.id);
     await assertAtMostOneConfirmed(p1.id);
-    await confirmProposal(ownerUserId, p3.id, ownerUserId); // supersedes p1
+    await confirmProposal(ownerUserId, p3.id, ownerUserId, p1.id); // intentionally supersedes p1
     await assertAtMostOneConfirmed(p3.id);
 
     const finalRows = await prisma.analysisProposal.findMany({ where: { ownerUserId, clientId, vertical: "cutting" } });
@@ -405,7 +413,7 @@ suite("proposal-repository (durable AnalysisProposal domain layer)", () => {
     const analysis = await createAnalysis(ownerUserId, clientId);
     const p1 = await draftProposal(ownerUserId, clientId, analysis.id);
     const p2 = await draftProposal(ownerUserId, clientId, analysis.id);
-    await confirmProposal(ownerUserId, p1.id, ownerUserId);
+    await confirmProposal(ownerUserId, p1.id, ownerUserId, null);
 
     // Attempt the impossible state directly, bypassing the repository entirely.
     // The Stage 1 partial unique index must reject it at the database level.
@@ -426,36 +434,123 @@ suite("proposal-repository (durable AnalysisProposal domain layer)", () => {
     ).resolves.toBe(1);
   });
 
-  it("a real concurrent confirmation race leaves exactly one CONFIRMED row and the loser gets a typed conflict error", async () => {
+  it("a real concurrent confirmation race: exactly one wins, the loser gets ProposalConcurrencyError and is left an untouched DRAFT with no partial state anywhere", async () => {
     const { ownerUserId, clientId } = await createOwnerAndClient();
     const analysis = await createAnalysis(ownerUserId, clientId);
+
+    // Two DRAFT proposals for the SAME (client, vertical) triple, both racing
+    // to become the first confirmation. Nothing is confirmed yet, so BOTH
+    // callers start from the SAME observed state and pass the SAME
+    // expectedCurrentConfirmedProposalId -- null -- which is the real product
+    // scenario of two drafts racing to be the first confirmed proposal.
     const a = await draftProposal(ownerUserId, clientId, analysis.id);
     const b = await draftProposal(ownerUserId, clientId, analysis.id);
 
+    const rowsBefore = await prisma.analysisProposal.findMany({
+      where: { ownerUserId, clientId, vertical: "cutting" },
+      orderBy: { id: "asc" },
+    });
+    expect(rowsBefore.map((r) => r.status)).toEqual(["DRAFT", "DRAFT"]);
+    const snapshotBefore = new Map(rowsBefore.map((r) => [r.id, r] as const));
+
+    // (1) Two concurrent confirmation attempts, launched together, both passing
+    // the same prior observed state (null).
     const settled = await Promise.allSettled([
-      confirmProposal(ownerUserId, a.id, ownerUserId),
-      confirmProposal(ownerUserId, b.id, ownerUserId),
+      confirmProposal(ownerUserId, a.id, ownerUserId, null),
+      confirmProposal(ownerUserId, b.id, ownerUserId, null),
     ]);
 
     const fulfilled = settled.filter(
       (r): r is PromiseFulfilledResult<ProposalRecord | null> => r.status === "fulfilled",
     );
-    const rejectedResults = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    const rejected = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
 
+    // (2) Exactly one succeeds.
     expect(fulfilled).toHaveLength(1);
-    expect(rejectedResults).toHaveLength(1);
     expect(fulfilled[0].value?.status).toBe("CONFIRMED");
-    expect(rejectedResults[0].reason).toBeInstanceOf(ProposalConcurrencyError);
 
+    // (3) Exactly one fails, and specifically with ProposalConcurrencyError --
+    // not a generic Error, not a ProposalStateError, not a raw Prisma error.
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0].reason).toBeInstanceOf(ProposalConcurrencyError);
+    expect((rejected[0].reason as ProposalConcurrencyError).name).toBe("ProposalConcurrencyError");
+    expect((rejected[0].reason as ProposalConcurrencyError).code).toBe("PROPOSAL_CONCURRENCY_CONFLICT");
+
+    const winnerId = fulfilled[0].value?.id ?? "";
+    expect([a.id, b.id]).toContain(winnerId);
+    const loserId = winnerId === a.id ? b.id : a.id;
+
+    // (4) Exactly one proposal has status CONFIRMED afterward, read fresh from
+    // the database (not from the in-memory return value).
     const confirmedRows = await prisma.analysisProposal.findMany({
       where: { ownerUserId, clientId, vertical: "cutting", status: "CONFIRMED" },
     });
     expect(confirmedRows).toHaveLength(1);
+    expect(confirmedRows[0].id).toBe(winnerId);
 
-    // The loser wrote nothing at all -- it is still a clean DRAFT.
-    const allRows = await prisma.analysisProposal.findMany({ where: { ownerUserId, clientId, vertical: "cutting" } });
-    expect(allRows.map((r) => r.status).sort()).toEqual(["CONFIRMED", "DRAFT"]);
-    expect(await findCurrentConfirmedProposal(ownerUserId, clientId, "cutting")).not.toBeNull();
+    // (5) The loser's OWN row is still exactly a DRAFT -- byte-for-byte
+    // identical to its pre-race snapshot. Never silently promoted to
+    // CONFIRMED, never flipped to SUPERSEDED; no confirmedAt / confirmedByUserId
+    // / rejectedAt / supersededByProposalId / updatedAt was written.
+    const loserAfter = await prisma.analysisProposal.findUniqueOrThrow({ where: { id: loserId } });
+    expect(loserAfter.status).toBe("DRAFT");
+    expect(loserAfter).toEqual(snapshotBefore.get(loserId));
+
+    // (6) No partial / inconsistent state anywhere. Re-read every proposal row
+    // for the triple: the full multiset of statuses is exactly what a clean,
+    // non-racing confirm-then-reject sequence would have produced -- one
+    // CONFIRMED (the winner), every other row unchanged from before the race
+    // started (here: the loser, still an untouched DRAFT).
+    const rowsAfter = await prisma.analysisProposal.findMany({
+      where: { ownerUserId, clientId, vertical: "cutting" },
+      orderBy: { id: "asc" },
+    });
+    expect(rowsAfter.map((r) => r.status).sort()).toEqual(["CONFIRMED", "DRAFT"]);
+    for (const row of rowsAfter) {
+      if (row.id === winnerId) continue;
+      expect(row).toEqual(snapshotBefore.get(row.id));
+    }
+
+    // The authoritative read agrees and is unambiguous: exactly the winner.
+    const current = await findCurrentConfirmedProposal(ownerUserId, clientId, "cutting");
+    expect(current?.id).toBe(winnerId);
+  });
+
+  it("intentional replacement still works with the explicit expected-version argument: a successor confirmed with the incumbent's id supersedes it cleanly (not a race)", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    // A proposal is confirmed and becomes the current authoritative one.
+    const first = await draftProposal(ownerUserId, clientId, analysis.id);
+    const firstConfirmed = await confirmProposal(ownerUserId, first.id, ownerUserId, null);
+    expect(firstConfirmed?.status).toBe("CONFIRMED");
+
+    const observed = await findCurrentConfirmedProposal(ownerUserId, clientId, "cutting");
+    expect(observed?.id).toBe(first.id);
+
+    // A second proposal is created and confirmed with the FIRST one's id
+    // correctly passed as expectedCurrentConfirmedProposalId -- exactly what
+    // the caller just observed. This is normal, intended usage, not a race.
+    const second = await draftProposal(ownerUserId, clientId, analysis.id);
+    const secondConfirmed = await confirmProposal(ownerUserId, second.id, ownerUserId, observed?.id ?? null);
+    expect(secondConfirmed?.status).toBe("CONFIRMED");
+
+    // The second confirms successfully and the first becomes SUPERSEDED,
+    // pointing at the second -- exactly as before the signature change.
+    const firstAfter = await prisma.analysisProposal.findUniqueOrThrow({ where: { id: first.id } });
+    const secondAfter = await prisma.analysisProposal.findUniqueOrThrow({ where: { id: second.id } });
+    expect(firstAfter.status).toBe("SUPERSEDED");
+    expect(firstAfter.supersededByProposalId).toBe(second.id);
+    expect(secondAfter.status).toBe("CONFIRMED");
+    expect(secondAfter.supersededByProposalId).toBeNull();
+
+    await expect(
+      prisma.analysisProposal.count({
+        where: { ownerUserId, clientId, vertical: "cutting", status: "CONFIRMED" },
+      }),
+    ).resolves.toBe(1);
+    const current = await findCurrentConfirmedProposal(ownerUserId, clientId, "cutting");
+    expect(current?.id).toBe(second.id);
   });
 
   // -------------------------------------------------------------------------
@@ -665,12 +760,13 @@ async function makeProposalInState(
   }
 
   const draft = await draftProposal(ownerUserId, clientId, analysis.id);
-  const confirmed = await confirmProposal(ownerUserId, draft.id, ownerUserId);
+  const confirmed = await confirmProposal(ownerUserId, draft.id, ownerUserId, null);
   if (state === "CONFIRMED") return expectRecord(confirmed);
 
-  // SUPERSEDED: confirm a newer proposal on the same triple.
+  // SUPERSEDED: confirm a newer proposal on the same triple, correctly stating
+  // that `draft` is the confirmed proposal being replaced.
   const newer = await draftProposal(ownerUserId, clientId, analysis.id);
-  await confirmProposal(ownerUserId, newer.id, ownerUserId);
+  await confirmProposal(ownerUserId, newer.id, ownerUserId, draft.id);
   const superseded = await findProposalForOwner(ownerUserId, draft.id);
   return expectRecord(superseded);
 }
