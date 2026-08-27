@@ -78,6 +78,48 @@ export function computeEffectiveCuttingFields(
   });
 }
 
+// Builds a NEW, display-only TechnicalCutPlan-shaped object where the 7
+// editable fields carry their EFFECTIVE (baseline + latest edit) values, and
+// every other field (cuttingSteps, warnings, contraindications, rationale,
+// confidence, version, ...) is copied verbatim from the frozen `payload`.
+//
+// Why this exists: `payload` itself must never be mutated (the locked
+// architecture -- edits are layered provenance, not an overwrite), but a
+// read-only view of a CONFIRMED (or any) proposal that reuses
+// TechnicalCutPlanView directly on the raw `payload` would silently show
+// the pre-edit AI/engine baseline as if it were what was actually approved
+// -- wrong and misleading whenever the proposal was edited before
+// confirming. This function is the single place that performs that
+// display-time merge; it never writes back to any stored record.
+export function buildEffectivePlan(payload: TechnicalCutPlan, edits: ProposalEditEntry[]): TechnicalCutPlan {
+  const effective = computeEffectiveCuttingFields(payload, edits);
+  const overrides: Partial<Record<EditableCuttingField, string>> = {};
+  for (const entry of effective) {
+    overrides[entry.field] = entry.effectiveValue;
+  }
+
+  return {
+    ...payload,
+    structuralTechnique: overrides.structuralTechnique as TechnicalCutPlan["structuralTechnique"],
+    cuttingTechnique: overrides.cuttingTechnique as TechnicalCutPlan["cuttingTechnique"],
+    texturizingTechnique: overrides.texturizingTechnique
+      ? (overrides.texturizingTechnique as TechnicalCutPlan["texturizingTechnique"])
+      : undefined,
+    sectioning: overrides.sectioning as TechnicalCutPlan["sectioning"],
+    elevation: overrides.elevation as TechnicalCutPlan["elevation"],
+    distribution: overrides.distribution as TechnicalCutPlan["distribution"],
+    guideline: overrides.guideline as TechnicalCutPlan["guideline"],
+  };
+}
+
+// True when at least one of the 7 editable fields differs from its frozen
+// baseline -- i.e. whether buildEffectivePlan's result would differ from
+// `payload` itself. Used to decide whether to show an "includes professional
+// edits" indicator alongside a read-only effective-plan view.
+export function hasAnyCuttingEdit(payload: TechnicalCutPlan, edits: ProposalEditEntry[]): boolean {
+  return computeEffectiveCuttingFields(payload, edits).some((entry) => entry.wasEdited);
+}
+
 // Safe, honest staleness signal using ONLY the two timestamps already present
 // on the current page (the viewed Analysis's own `updatedAt`, already
 // fetched by useAnalysisResult) and on the current-confirmed ProposalRecord

@@ -4,6 +4,7 @@ import { Card } from "@/components/ui";
 import { humanizeEnumValue } from "@/lib/humanize-enum-value";
 import type { ProposalRecord } from "@/lib/proposal-repository";
 
+import { buildEffectivePlan } from "./proposed-look-logic";
 import { ProposalStatusBadge } from "./proposed-look-status-badge";
 
 export interface ProposalHistoryListProps {
@@ -34,6 +35,11 @@ export function ProposalHistoryList({ history, currentConfirmedId }: ProposalHis
     <div className="flex flex-col gap-2">
       {history.map((item) => {
         const isAuthoritative = item.id === currentConfirmedId;
+        // The effective plan (baseline + any edits merged, display-only) --
+        // never the raw frozen payload alone -- so a row for a proposal that
+        // was edited before confirming/rejecting summarizes what was
+        // actually decided, not the pre-edit AI/engine suggestion.
+        const effectivePlan = buildEffectivePlan(item.payload, item.edits);
         return (
           <Card key={item.id} className="flex flex-col gap-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -47,9 +53,9 @@ export function ProposalHistoryList({ history, currentConfirmedId }: ProposalHis
               <span className="text-xs text-muted">{historyRowDate(item)}</span>
             </div>
             <p className="text-sm text-foreground">
-              {humanizeEnumValue(item.payload.structuralTechnique)}
+              {humanizeEnumValue(effectivePlan.structuralTechnique)}
               {" · "}
-              {humanizeEnumValue(item.payload.cuttingTechnique)}
+              {humanizeEnumValue(effectivePlan.cuttingTechnique)}
             </p>
           </Card>
         );

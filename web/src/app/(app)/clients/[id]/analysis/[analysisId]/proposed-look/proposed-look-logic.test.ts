@@ -5,9 +5,11 @@ import type { ProposalEditEntry } from "@/lib/proposal-validators";
 import type { ProposalRecord } from "@/lib/proposal-repository";
 
 import {
+  buildEffectivePlan,
   computeEffectiveCuttingFields,
   EDITABLE_CUTTING_FIELDS,
   findExistingDraft,
+  hasAnyCuttingEdit,
   isConfirmedProposalPotentiallyStale,
   mapProposedLookApiError,
   resolveProposedLookLoadStatus,
@@ -160,6 +162,74 @@ describe("computeEffectiveCuttingFields", () => {
 
     expect(JSON.stringify(plan)).toBe(planBefore);
     expect(JSON.stringify(edits)).toBe(editsBefore);
+  });
+});
+
+describe("buildEffectivePlan", () => {
+  it("with no edits, returns a plan deep-equal to the baseline payload", () => {
+    const plan = cuttingPlan();
+    const result = buildEffectivePlan(plan, []);
+    expect(result).toEqual(plan);
+  });
+
+  it("with an edit on one field, the returned plan reflects the effective value for that field only", () => {
+    const plan = cuttingPlan();
+    const edits = [edit({ field: "elevation", newValue: "90_deg_uniform_layer" })];
+
+    const result = buildEffectivePlan(plan, edits);
+
+    expect(result.elevation).toBe("90_deg_uniform_layer");
+    expect(result.structuralTechnique).toBe(plan.structuralTechnique);
+    expect(result.cuttingTechnique).toBe(plan.cuttingTechnique);
+  });
+
+  it("does not mutate the original payload", () => {
+    const plan = cuttingPlan();
+    const before = JSON.stringify(plan);
+    buildEffectivePlan(plan, [edit({ field: "elevation", newValue: "90_deg_uniform_layer" })]);
+    expect(JSON.stringify(plan)).toBe(before);
+  });
+
+  it("every non-editable field (cuttingSteps, warnings, contraindications, confidence, version, ...) is copied verbatim from payload", () => {
+    const plan = cuttingPlan();
+    const result = buildEffectivePlan(plan, [edit({ field: "elevation", newValue: "90_deg_uniform_layer" })]);
+
+    expect(result.cuttingSteps).toEqual(plan.cuttingSteps);
+    expect(result.warnings).toEqual(plan.warnings);
+    expect(result.contraindications).toEqual(plan.contraindications);
+    expect(result.confidence).toBe(plan.confidence);
+    expect(result.version).toBe(plan.version);
+    expect(result.stylistExplanation).toBe(plan.stylistExplanation);
+  });
+
+  it("when an edit clears texturizingTechnique to empty, the effective plan has it undefined, not an empty string", () => {
+    const plan = cuttingPlan();
+    const edits = [edit({ field: "texturizingTechnique", newValue: "" })];
+
+    const result = buildEffectivePlan(plan, edits);
+
+    expect(result.texturizingTechnique).toBeUndefined();
+  });
+});
+
+describe("hasAnyCuttingEdit", () => {
+  it("returns false when there are no edits", () => {
+    expect(hasAnyCuttingEdit(cuttingPlan(), [])).toBe(false);
+  });
+
+  it("returns true when at least one field was edited", () => {
+    const edits = [edit({ field: "elevation", newValue: "90_deg_uniform_layer" })];
+    expect(hasAnyCuttingEdit(cuttingPlan(), edits)).toBe(true);
+  });
+
+  it("returns true even when an edit entry's newValue happens to equal the baseline (provenance, not a value diff)", () => {
+    const plan = cuttingPlan();
+    const edits = [edit({ field: "elevation", newValue: plan.elevation })];
+    // An edit ENTRY existing means wasEdited is true regardless of whether the
+    // new value happens to equal the baseline -- computeEffectiveCuttingFields
+    // does not special-case a no-op edit, it reports provenance honestly (a
+    // professional decision was recorded, even if it reaffirmed the baseline).
+    expect(hasAnyCuttingEdit(plan, edits)).toBe(true);
   });
 });
 
