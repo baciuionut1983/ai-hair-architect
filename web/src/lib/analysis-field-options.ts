@@ -1,5 +1,6 @@
 import type {
   AnalysisGoal,
+  CuttingTechnique,
   DensityLevel,
   DesiredColorResult,
   FaceShape,
@@ -12,7 +13,13 @@ import type {
   HeadShape,
   PorosityLevel,
   ScalpCondition,
+  StructuralTechnique,
   TargetShape,
+  TechnicalCutDistribution,
+  TechnicalCutElevation,
+  TechnicalCutGuideline,
+  TechnicalCutSectioning,
+  TexturizingTechnique,
   TreatmentGoalDetail
 } from "@/lib/contracts";
 
