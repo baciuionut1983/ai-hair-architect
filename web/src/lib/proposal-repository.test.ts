@@ -17,6 +17,7 @@ import {
   findCurrentConfirmedProposal,
   findProposalForOwner,
   listProposalsForOwner,
+  promoteConsultationSourceToDraft,
   rejectProposal,
   type ProposalRecord,
 } from "@/lib/proposal-repository";
@@ -310,6 +311,119 @@ suite("proposal-repository (durable AnalysisProposal domain layer)", () => {
     await expect(rejectProposal(ownerUserId, superseded.id)).rejects.toBeInstanceOf(ProposalStateError);
 
     await expect(rejectProposal(ownerUserId, randomUUID())).resolves.toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // promoteConsultationSourceToDraft
+  // -------------------------------------------------------------------------
+
+  it("promoteConsultationSourceToDraft appends a new promoted source to a DRAFT", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+    const proposal = await draftProposal(ownerUserId, clientId, analysis.id);
+
+    const updated = await promoteConsultationSourceToDraft(ownerUserId, proposal.id, {
+      consultationMessageId: "msg-1",
+      snapshotContent: "Client prefers a softer, rounder shape.",
+      promotedAt: "2026-08-28T00:00:00.000Z",
+    });
+
+    expect(updated?.promotedConsultationSources).toEqual([
+      {
+        consultationMessageId: "msg-1",
+        snapshotContent: "Client prefers a softer, rounder shape.",
+        promotedAt: "2026-08-28T00:00:00.000Z",
+      },
+    ]);
+  });
+
+  it("promoting the SAME consultationMessageId a second time is a true no-op -- no duplicate, no write at all", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+    const proposal = await draftProposal(ownerUserId, clientId, analysis.id);
+
+    const first = await promoteConsultationSourceToDraft(ownerUserId, proposal.id, {
+      consultationMessageId: "msg-1",
+      snapshotContent: "Original snapshot.",
+      promotedAt: "2026-08-28T00:00:00.000Z",
+    });
+
+    // A DIFFERENT snapshot/timestamp for the SAME message id -- must be
+    // ignored entirely; the original snapshot stays authoritative.
+    const second = await promoteConsultationSourceToDraft(ownerUserId, proposal.id, {
+      consultationMessageId: "msg-1",
+      snapshotContent: "A different snapshot that must never overwrite the first.",
+      promotedAt: "2026-08-29T00:00:00.000Z",
+    });
+
+    expect(second).toEqual(first);
+    expect(second?.promotedConsultationSources).toHaveLength(1);
+    expect(second?.promotedConsultationSources[0].snapshotContent).toBe("Original snapshot.");
+
+    // No write occurred on the repeat -- updatedAt is unchanged from the
+    // first (real) promotion.
+    const rawRow = await prisma.analysisProposal.findUniqueOrThrow({ where: { id: proposal.id } });
+    expect(rawRow.updatedAt.toISOString()).toBe(first?.updatedAt);
+  });
+
+  it("promoting a DIFFERENT consultationMessageId onto the same DRAFT appends a second entry, leaving the first untouched", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+    const proposal = await draftProposal(ownerUserId, clientId, analysis.id);
+
+    await promoteConsultationSourceToDraft(ownerUserId, proposal.id, {
+      consultationMessageId: "msg-1",
+      snapshotContent: "First insight.",
+      promotedAt: "2026-08-28T00:00:00.000Z",
+    });
+    const updated = await promoteConsultationSourceToDraft(ownerUserId, proposal.id, {
+      consultationMessageId: "msg-2",
+      snapshotContent: "Second insight.",
+      promotedAt: "2026-08-28T00:05:00.000Z",
+    });
+
+    expect(updated?.promotedConsultationSources).toEqual([
+      { consultationMessageId: "msg-1", snapshotContent: "First insight.", promotedAt: "2026-08-28T00:00:00.000Z" },
+      { consultationMessageId: "msg-2", snapshotContent: "Second insight.", promotedAt: "2026-08-28T00:05:00.000Z" },
+    ]);
+  });
+
+  it("promoteConsultationSourceToDraft refuses CONFIRMED, REJECTED, and SUPERSEDED proposals, and writes nothing", async () => {
+    const { ownerUserId } = await createOwnerAndClient();
+    const source = { consultationMessageId: "msg-1", snapshotContent: "x", promotedAt: "2026-08-28T00:00:00.000Z" };
+
+    const confirmed = await makeProposalInState(ownerUserId, "CONFIRMED");
+    const confirmedError = await promoteConsultationSourceToDraft(ownerUserId, confirmed.id, source).catch((e) => e);
+    expect(confirmedError).toBeInstanceOf(ProposalStateError);
+    expect((confirmedError as InstanceType<typeof ProposalStateError>).attempted).toBe("promote");
+    await expect(
+      prisma.analysisProposal.findUniqueOrThrow({ where: { id: confirmed.id } }),
+    ).resolves.toMatchObject({ status: "CONFIRMED", promotedConsultationSources: null });
+
+    const rejected = await makeProposalInState(ownerUserId, "REJECTED");
+    await expect(promoteConsultationSourceToDraft(ownerUserId, rejected.id, source)).rejects.toBeInstanceOf(
+      ProposalStateError,
+    );
+
+    const superseded = await makeProposalInState(ownerUserId, "SUPERSEDED");
+    await expect(promoteConsultationSourceToDraft(ownerUserId, superseded.id, source)).rejects.toBeInstanceOf(
+      ProposalStateError,
+    );
+  });
+
+  it("rejects an invalid source shape with ProposalValidationError PROPOSAL_INVALID_PROVENANCE, before any write", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+    const proposal = await draftProposal(ownerUserId, clientId, analysis.id);
+
+    const invalidSource = { consultationMessageId: "msg-1", promotedAt: "2026-08-28T00:00:00.000Z" } as never;
+    const error = await promoteConsultationSourceToDraft(ownerUserId, proposal.id, invalidSource).catch((e) => e);
+
+    expect(error).toBeInstanceOf(ProposalValidationError);
+    expect((error as InstanceType<typeof ProposalValidationError>).code).toBe("PROPOSAL_INVALID_PROVENANCE");
+    await expect(
+      prisma.analysisProposal.findUniqueOrThrow({ where: { id: proposal.id } }),
+    ).resolves.toMatchObject({ promotedConsultationSources: null });
   });
 
   // -------------------------------------------------------------------------

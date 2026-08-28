@@ -133,6 +133,26 @@ export async function markConsultationMessageMemoryDecision(
   });
 }
 
+// AI Proposed Look (Phase 2), Stage 5 -- the single owner+client scoped
+// lookup "Use in Proposed Look" needs to independently verify a
+// client-supplied consultationMessageId before ever trusting anything about
+// it. Same ownership-check shape as markConsultationMessageMemoryDecision's
+// own read above -- one identical `null` result for a nonexistent id, a
+// foreign owner, or a foreign client, so a message id can never be used as
+// a cross-client discovery oracle.
+export async function findConsultationMessageForOwner(
+  ownerUserId: string,
+  clientId: string,
+  messageId: string,
+): Promise<ConsultationMessageRow | null> {
+  return runQuery(async () => {
+    const row = await prisma.consultationMessage.findFirst({
+      where: { id: messageId, ownerUserId, clientId },
+    });
+    return row ? toRow(row) : null;
+  });
+}
+
 function toRow(row: {
   id: string;
   role: ConsultationMessageRole;

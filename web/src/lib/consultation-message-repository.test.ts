@@ -22,6 +22,7 @@ vi.mock("@/lib/prisma", () => ({
 
 import {
   ConsultationMessagePersistenceError,
+  findConsultationMessageForOwner,
   isConsultationMessagePersistenceError,
   listRecentConsultationMessages,
   markConsultationMessageMemoryDecision,
@@ -186,6 +187,38 @@ describe("markConsultationMessageMemoryDecision", () => {
   it("fails closed when the database is unavailable", async () => {
     prismaMocks.configured = false;
     await expect(markConsultationMessageMemoryDecision("owner-1", "client-1", "msg-1", "confirmed")).rejects.toBeInstanceOf(
+      ConsultationMessagePersistenceError,
+    );
+    expect(prismaMocks.findFirst).not.toHaveBeenCalled();
+  });
+});
+
+// AI Proposed Look (Phase 2), Stage 5 -- "Use in Proposed Look" must
+// independently verify a client-supplied consultationMessageId before ever
+// trusting anything about it.
+describe("findConsultationMessageForOwner", () => {
+  it("returns the mapped row when found and owned, scoped to the exact owner + client", async () => {
+    prismaMocks.findFirst.mockResolvedValue(row({ proposedMemory: { action: "mark_preference", content: "x", reason: "y" } }));
+
+    const result = await findConsultationMessageForOwner("owner-1", "client-1", "msg-1");
+
+    expect(result?.id).toBe("msg-1");
+    expect(prismaMocks.findFirst).toHaveBeenCalledWith({
+      where: { id: "msg-1", ownerUserId: "owner-1", clientId: "client-1" },
+    });
+  });
+
+  it("returns null for a nonexistent id, a foreign owner, or a foreign client -- one identical result for all three", async () => {
+    prismaMocks.findFirst.mockResolvedValue(null);
+
+    const result = await findConsultationMessageForOwner("owner-1", "client-1", "missing-or-foreign");
+
+    expect(result).toBeNull();
+  });
+
+  it("fails closed when the database is unavailable", async () => {
+    prismaMocks.configured = false;
+    await expect(findConsultationMessageForOwner("owner-1", "client-1", "msg-1")).rejects.toBeInstanceOf(
       ConsultationMessagePersistenceError,
     );
     expect(prismaMocks.findFirst).not.toHaveBeenCalled();

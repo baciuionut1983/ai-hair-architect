@@ -98,7 +98,7 @@ export class ProposalStateError extends Error {
 
   constructor(
     readonly fromStatus: string,
-    readonly attempted: "edit" | "reject" | "confirm",
+    readonly attempted: "edit" | "reject" | "confirm" | "promote",
     message: string,
   ) {
     super(message);
@@ -431,6 +431,59 @@ export async function rejectProposal(
       const updated = await tx.analysisProposal.update({
         where: { id: row.id },
         data: { status: "REJECTED", rejectedAt: new Date() },
+      });
+      return toProposalRecord(updated);
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// promoteConsultationSourceToDraft
+// ---------------------------------------------------------------------------
+
+// AI Proposed Look (Phase 2), Stage 5 -- attaches one explicitly-promoted
+// Consult AI source to a DRAFT's provenance. Legal only on DRAFT (same
+// lifecycle guard as every other mutation here). Idempotent on
+// `consultationMessageId`: re-promoting the same source is a true no-op --
+// no duplicate entry, no update to the existing entry's snapshot/timestamp,
+// and no write at all (so `updatedAt` does not change), because the
+// original snapshot is what stays authoritative. Every other column
+// (edits, payload, evidenceSnapshot, status, ...) is left untouched.
+export async function promoteConsultationSourceToDraft(
+  ownerUserId: string,
+  proposalId: string,
+  source: PromotedConsultationSourceEntry,
+): Promise<ProposalRecord | null> {
+  if (!isPromotedConsultationSourceEntry(source)) {
+    throw new ProposalValidationError(
+      "PROPOSAL_INVALID_PROVENANCE",
+      "source must be { consultationMessageId, snapshotContent, promotedAt }.",
+    );
+  }
+
+  return runProposalQuery(() =>
+    runSerializableTransaction(async (tx) => {
+      const row = await tx.analysisProposal.findFirst({ where: { id: proposalId, ownerUserId } });
+      if (!row) return null;
+
+      if (row.status !== "DRAFT") {
+        throw new ProposalStateError(
+          row.status,
+          "promote",
+          `Proposal ${proposalId} is ${row.status}; only a DRAFT proposal can have a consultation source promoted onto it.`,
+        );
+      }
+
+      const existing = parsePromotedConsultationSources(row.promotedConsultationSources);
+      const alreadyPromoted = existing.some((entry) => entry.consultationMessageId === source.consultationMessageId);
+      if (alreadyPromoted) {
+        return toProposalRecord(row);
+      }
+
+      const nextSources = [...existing, source];
+      const updated = await tx.analysisProposal.update({
+        where: { id: row.id },
+        data: { promotedConsultationSources: nextSources as unknown as Prisma.InputJsonValue },
       });
       return toProposalRecord(updated);
     }),
