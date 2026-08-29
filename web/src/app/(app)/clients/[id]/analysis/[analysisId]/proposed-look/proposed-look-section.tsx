@@ -10,6 +10,7 @@ import { ProposedLookDraftEditor } from "./proposed-look-draft-editor";
 import { ProposalHistoryList } from "./proposed-look-history";
 import { findExistingDraft, isConfirmedProposalPotentiallyStale } from "./proposed-look-logic";
 import { shouldShowConfirmConflictMessage } from "./proposed-look-section-logic";
+import { TechnicalVisualMapSection } from "./technical-visual-map-section";
 import { useProposedLook, type ProposedLookActionOutcome } from "./use-proposed-look";
 
 export interface ProposedLookSectionProps {
@@ -106,6 +107,14 @@ export function ProposedLookSection({
           isStale={isConfirmedProposalPotentiallyStale(analysisUpdatedAt, current.analysisSnapshotAt)}
         />
       ) : null}
+
+      {/* Technical Visual Map, Stage 4 -- rendered ONLY when a CONFIRMED
+          proposal exists (test #1/#2: no confirmed proposal means no map
+          creation is offered at all). Keyed on `current.id` so switching to a
+          newly-confirmed proposal fully remounts this section against its own
+          fresh, unrelated scope rather than reusing any stale local state
+          from the previous proposal's map. */}
+      {current ? <TechnicalVisualMapSection key={current.id} clientId={clientId} proposalId={current.id} /> : null}
 
       {history.length > 0 ? (
         <div className="flex flex-col gap-2">
