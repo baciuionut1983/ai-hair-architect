@@ -119,13 +119,19 @@ function logImageProcessingFailure(stage: 'metadata_read' | 're_encode', bufferS
 export async function processImageForStorage(
   buffer: Buffer,
   mimeType: string
-): Promise<{ buffer: Buffer; orientation: number; exifStripped: boolean }> {
+): Promise<{ buffer: Buffer; orientation: number; exifStripped: boolean; width: number; height: number }> {
   const noExifBuffer = await stripExif(buffer);
   const normalized = await normalizeImage(noExifBuffer, mimeType);
 
+  // Technical Visual Map, Stage 5B -- width/height of the FINAL
+  // normalized/re-encoded bytes (the same ones actually persisted and later
+  // served) were already computed by normalizeImage() above; threading them
+  // through here is the only change needed -- never recomputed independently.
   return {
     buffer: normalized.buffer,
     orientation: normalized.orientation,
     exifStripped: true,
+    width: normalized.width,
+    height: normalized.height,
   };
 }

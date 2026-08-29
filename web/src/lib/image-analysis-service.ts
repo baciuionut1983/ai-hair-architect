@@ -173,6 +173,12 @@ export async function uploadAndAnalyzeImages(
         storagePath: `pending`,
         exifStripped: processed.exifStripped,
         normalizedOrientation: processed.orientation,
+        // Technical Visual Map, Stage 5B -- dimensions of the normalized/
+        // stored bytes this row actually persists, already computed by
+        // processImageForStorage() above (image-normalizer.ts). Legacy rows
+        // created before this change simply stay null; no backfill.
+        width: processed.width,
+        height: processed.height,
       },
     });
 

@@ -33,6 +33,8 @@ vi.mock('@/lib/image-normalizer', () => ({
     buffer,
     exifStripped: true,
     orientation: 1,
+    width: 1080,
+    height: 1440,
   })),
 }));
 
@@ -121,6 +123,8 @@ describe('uploadAndAnalyzeImages', () => {
       lastStorageErrorCode: null,
       exifStripped: data.exifStripped,
       normalizedOrientation: data.normalizedOrientation,
+      width: data.width,
+      height: data.height,
       deletedAt: null,
       retentionDeletesAt: null,
     }));
@@ -272,6 +276,32 @@ describe('uploadAndAnalyzeImages', () => {
 
     expect(storage.put).toHaveBeenCalledTimes(2);
     expect(saveImageFile).not.toHaveBeenCalled();
+  });
+
+  it('15. persists the normalized width/height returned by processImageForStorage, never recomputing them', async () => {
+    await uploadAndAnalyzeImages(OWNER_ID, CLIENT_ID, [fakeFile('photo.jpg', 'image/jpeg', 'hello')]);
+
+    expect(PRISMA_MOCK.imageAsset.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ width: 1080, height: 1440 }) }),
+    );
+  });
+
+  it('16. a processing layer that cannot determine dimensions (0x0) still persists a legacy-compatible row rather than failing the upload', async () => {
+    const { processImageForStorage } = await import('@/lib/image-normalizer');
+    vi.mocked(processImageForStorage).mockResolvedValueOnce({
+      buffer: Buffer.from('hello'),
+      exifStripped: true,
+      orientation: 1,
+      width: 0,
+      height: 0,
+    });
+
+    const result = await uploadAndAnalyzeImages(OWNER_ID, CLIENT_ID, [fakeFile('photo.jpg', 'image/jpeg', 'hello')]);
+
+    expect(result).toHaveLength(1);
+    expect(PRISMA_MOCK.imageAsset.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ width: 0, height: 0 }) }),
+    );
   });
 
   it('9. computed contentSha256 matches the actual processed bytes', async () => {
