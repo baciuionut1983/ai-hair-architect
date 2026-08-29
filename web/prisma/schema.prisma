@@ -168,6 +168,10 @@ model User {
   // Technical Visual Map, Stage 1. Virtual back-relation only -- produces no
   // column or constraint on "User"; the FK lives on "TechnicalVisualMap".
   technicalVisualMaps           TechnicalVisualMap[]
+  // Technical Visual Map, Stage 5A. Virtual back-relation only -- produces
+  // no column or constraint on "User"; the FK lives on
+  // "TechnicalVisualMapSpatialBinding".
+  technicalVisualMapSpatialBindings TechnicalVisualMapSpatialBinding[]
 }
 
 model Session {
@@ -233,6 +237,10 @@ model Client {
   // Technical Visual Map, Stage 1. Virtual back-relation only -- produces no
   // column or constraint on "Client"; the FK lives on "TechnicalVisualMap".
   technicalVisualMaps  TechnicalVisualMap[]
+  // Technical Visual Map, Stage 5A. Virtual back-relation only -- produces
+  // no column or constraint on "Client"; the FK lives on
+  // "TechnicalVisualMapSpatialBinding".
+  technicalVisualMapSpatialBindings TechnicalVisualMapSpatialBinding[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -623,13 +631,33 @@ model ImageAsset {
   lastStorageErrorCode  String?                 @db.VarChar(80)
   exifStripped          Boolean                 @default(false)
   normalizedOrientation Int                     @default(0)
-  uploadedAt            DateTime                @default(now())
-  deletedAt             DateTime?
-  retentionDeletesAt    DateTime?
-  createdAt             DateTime                @default(now())
-  updatedAt             DateTime                @updatedAt
-  analyses              ImageAnalysis[]
-  analysisResults       Analysis[]
+
+  // Technical Visual Map, Stage 5A -- dimensions of the NORMALIZED/STORED
+  // bytes this asset actually persists and /content serves (post-EXIF-
+  // orientation-correction, post-re-encode), never pre-normalization EXIF
+  // dimensions and never a separate "display" size. normalizeImage() in
+  // image-normalizer.ts already computes both values at upload time;
+  // processImageForStorage() currently discards them before they reach the
+  // caller -- threading them through to persistence is Stage 5B's job, not
+  // this one (see this migration's own commit message). Nullable, with no
+  // mandatory legacy backfill: an existing row with null width/height simply
+  // cannot support spatial binding creation later until dimensions exist by
+  // some means -- that is a safe, honest "unavailable" state, not an error.
+  width  Int?
+  height Int?
+
+  uploadedAt         DateTime  @default(now())
+  deletedAt          DateTime?
+  retentionDeletesAt DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  analyses           ImageAnalysis[]
+  analysisResults    Analysis[]
+  // Technical Visual Map, Stage 5A. Virtual back-relation only -- produces no
+  // column or constraint here; the (validated, non-FK) pointer lives on
+  // TechnicalVisualMapSpatialBinding.sourceImageAssetId, per the Decision
+  // Lock's explicit choice to keep this a server-validated pointer rather
+  // than a database-enforced relation (see that model's own doc comment).
 
   @@unique([storageBucketAlias, storageKey])
   @@index([ownerUserId])
@@ -1580,8 +1608,167 @@ model TechnicalVisualMap {
   client   Client           @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
   proposal AnalysisProposal @relation(fields: [analysisProposalId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
 
+  // Technical Visual Map, Stage 5A. Virtual back-relation only -- produces no
+  // column or constraint on "TechnicalVisualMap"; the composite FK
+  // (technicalVisualMapId, ownerUserId, clientId) lives on
+  // "TechnicalVisualMapSpatialBinding" and targets the new
+  // @@unique([id, ownerUserId, clientId]) added below -- the exact same
+  // prerequisite-fix pattern this migration's own predecessor (Stage 1)
+  // already applied to AnalysisProposal before this model could reference
+  // *it* compositely.
+  spatialBindings TechnicalVisualMapSpatialBinding[]
+
   @@unique([analysisProposalId, ownerUserId, clientId, vertical, mapVersion])
+  // Stage 5A prerequisite: TechnicalVisualMapSpatialBinding needs a real
+  // composite FK to this exact map (Decision Lock 16/17) -- structurally
+  // safe to add regardless of existing data, since `id` is already this
+  // model's own primary key (globally unique on its own); this only ever
+  // adds a redundant-but-harmless second uniqueness guarantee over columns
+  // that already co-occur uniquely per row. Verified against the real
+  // database before migration: 0 existing TechnicalVisualMap rows.
+  @@unique([id, ownerUserId, clientId])
   @@index([clientId, ownerUserId, createdAt, id])
   @@index([analysisProposalId, ownerUserId, clientId])
   @@index([ownerUserId, clientId, analysisProposalId, vertical])
+}
+
+// Technical Visual Map, Stage 5A -- schema/migration only (see
+// prisma/migrations/<this migration>/migration.sql for the hand-authored
+// partial unique index this model alone cannot express). Locked at the
+// Stage 5 Decision Lock: geometry for ONE exact CONFIRMED TechnicalVisualMap
+// + ONE exact source image + ONE professional-declared view. It is NOT
+// another TechnicalVisualMap, NOT embedded into TechnicalVisualMap.payload,
+// and NOT a Photo/Video artifact -- a separate child with its own
+// independent lifecycle/versioning, so a geometry change never forces a new
+// semantic mapVersion or reopens semantic confirmation. No validators,
+// assembler, repository, or API exist yet -- Stage 5B's job.
+model TechnicalVisualMapSpatialBinding {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  // Composite-FK'd to TechnicalVisualMap[id, ownerUserId, clientId] below --
+  // never trusted as a bare, unscoped id (Decision Lock 8/16/17: the parent
+  // relationship is strongly bound, unlike the image pointer below).
+  technicalVisualMapId String
+
+  // Validated pointer, deliberately NOT a database FK -- Decision Lock 10/16:
+  // the real integrity guarantee for pixel-content correctness comes from
+  // the frozen snapshot fields below (copied at creation time, Stage 5B),
+  // not from a live relation to a row whose bytes are never rewritten in
+  // place anyway. Mirrors the exact existing
+  // AnalysisProposal/TechnicalVisualMap.sourceImageAssetId precedent.
+  // Required (not nullable) -- unlike the semantic map's own optional
+  // pointer, a spatial binding is by definition bound to a real image.
+  sourceImageAssetId String
+
+  // Nullable soft pointer, provenance-only -- same precedent as
+  // TechnicalVisualMap.sourceImageAnalysisId. Deliberately excluded from the
+  // authority/uniqueness scope below (Decision Lock 12): which AI analysis
+  // record, if any, touched this image has no bearing on which geometry is
+  // current for it.
+  sourceImageAnalysisId String?
+
+  // Plain string, NOT a Postgres enum -- same reasoning as every other
+  // lifecycle/vocabulary string in this domain (vertical, status, zone,
+  // viewLabel): a new value must never require a migration. Stage 5B will
+  // application-validate this to a closed set (front | left_profile |
+  // right_profile | back | other) -- professional-declared metadata only;
+  // nothing in this pipeline can verify a photo actually shows what its
+  // label claims (Decision Lock 10).
+  viewLabel String
+
+  // Plain string, NOT a Postgres enum. Application-validated (Stage 5B) to
+  // exactly one of: DRAFT | CONFIRMED | SUPERSEDED. Deliberately no REJECTED
+  // state -- same reasoning as TechnicalVisualMap's own lifecycle: a derived
+  // artifact of an already-confirmed parent, not an independently-evaluated
+  // option with its own accept/decline decision.
+  status String
+
+  // Identifies spatial revisions within the locked authority scope
+  // (ownerUserId, clientId, technicalVisualMapId, sourceImageAssetId,
+  // viewLabel) -- an INDEPENDENT counter from TechnicalVisualMap.mapVersion
+  // (Decision Lock 13/14): geometry can be revised without the haircut
+  // intent changing at all, and vice versa. Historical rows are never
+  // overwritten.
+  spatialVersion Int
+
+  // The frozen PAYLOAD SHAPE's own version, distinct from spatialVersion (a
+  // revision counter) -- same "freeze what was actually used, even if the
+  // shape evolves later" reasoning as TechnicalVisualMap.schemaVersion.
+  geometrySchemaVersion String
+
+  // Frozen JSON. Stage 5A deliberately stores no Prisma-level structure for
+  // this beyond "it is JSON" -- the locked semantic shape (six zone anchors
+  // with not_placed/placed/not_visible state, normalized 0..1 coordinates,
+  // and one perimeter boundary polyline with the same state model) is Stage
+  // 5B's application-level validator/assembler work, not a schema concern.
+  // No x/y columns per zone -- decomposing normalized geometry into SQL
+  // columns would fight the same "shape can evolve, rows shouldn't need a
+  // migration for it" reasoning TechnicalVisualMap.payload already settled.
+  payload Json
+
+  // Frozen source-image snapshot (Decision Lock 15/16) -- copied from the
+  // real ImageAsset row AT BINDING-CREATION TIME (Stage 5B), never derived
+  // dynamically and never re-read live thereafter. This is what makes the
+  // validated pointer above safe without a database FK: even if the live
+  // ImageAsset row's own width/height/orientation were ever wrong or
+  // unavailable, this binding's own frozen copy is authoritative for
+  // interpreting its own payload's coordinates.
+  //
+  // frozenWidth/frozenHeight/frozenOrientation are REQUIRED (never null) on
+  // the binding itself -- a spatial binding cannot exist without them, which
+  // is exactly why ImageAsset.width/height being nullable (Stage 5A, above)
+  // does not weaken this guarantee: an asset with null dimensions simply
+  // cannot have a spatial binding created for it yet (fails safely at the
+  // Stage 5B repository layer, not modeled here as a schema-level
+  // possibility).
+  frozenWidth       Int
+  frozenHeight      Int
+  frozenOrientation Int
+
+  // Nullable -- ImageAsset.contentSha256 is confirmed (Decision Lock 4) to
+  // exist ONLY for S3-backed uploads, never local-backed ones, so this can
+  // never be assumed universally present. When available it is the
+  // strongest immutability anchor; when absent, the required frozen
+  // dimensions above remain the safe floor.
+  frozenContentSha256 String? @db.Char(64)
+
+  // Nullable, S3-only extra defense-in-depth -- mirrors
+  // ImageAsset.storageVersionId's own type exactly (same VarChar length),
+  // frozen at creation time rather than re-resolved from a possibly-rotated
+  // live pointer.
+  frozenStorageVersionId String? @db.VarChar(1024)
+
+  // Nullable pointer to the spatial binding that superseded this one --
+  // mirrors TechnicalVisualMap.supersededByMapId exactly, including its own
+  // reasoning: a plain nullable column, NOT an enforced self-relation FK.
+  // Evaluated per Decision Lock 14 and rejected for the same reason the
+  // precedent already gives -- no existing self-referencing relation to
+  // mirror in this schema, and a composite-key self-relation would add real
+  // complexity for a pointer Stage 5B's repository layer already guarantees
+  // references a sibling row in the exact same (ownerUserId, clientId,
+  // technicalVisualMapId, sourceImageAssetId, viewLabel) scope. No
+  // supersession behavior is performed in Stage 5A; Stage 5B repository
+  // logic owns that behavior.
+  supersededBySpatialBindingId String?
+
+  // Set once, on confirm -- never edited afterward (enforced at the
+  // repository layer in Stage 5B, mirroring confirmedAt/supersededAt on
+  // TechnicalVisualMap).
+  confirmedAt  DateTime? @db.Timestamp(6)
+  supersededAt DateTime? @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner              User               @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client             Client             @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  technicalVisualMap TechnicalVisualMap @relation(fields: [technicalVisualMapId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+
+  // Version uniqueness within the locked authority scope (Decision Lock 12).
+  @@unique([technicalVisualMapId, ownerUserId, clientId, sourceImageAssetId, viewLabel, spatialVersion])
+  @@index([clientId, ownerUserId, technicalVisualMapId])
+  @@index([technicalVisualMapId, ownerUserId, clientId, sourceImageAssetId, viewLabel, spatialVersion])
+  @@index([ownerUserId, clientId, technicalVisualMapId, sourceImageAssetId, viewLabel, status])
 }
