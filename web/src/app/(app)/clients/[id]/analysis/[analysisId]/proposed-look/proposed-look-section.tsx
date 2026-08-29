@@ -79,7 +79,7 @@ export function ProposedLookSection({
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div id="proposed-look-section" className="flex flex-col gap-4">
       <h2 className="text-xl font-semibold text-foreground">Proposed Look</h2>
 
       {draft ? (

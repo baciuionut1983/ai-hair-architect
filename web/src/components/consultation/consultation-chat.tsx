@@ -32,7 +32,9 @@ import {
   describeApplyCorrectionFailure,
   describeSendFailure,
   extractMemoryDecisionIds,
+  extractPromotedMessageIds,
   formatMessageTime,
+  isEligibleForProposedLookPromotion,
   isSendableMessage,
   isVoiceInputBusy,
   LANGUAGE_SELECTION_STORAGE_KEY,
@@ -40,6 +42,7 @@ import {
   resolveConsultationHistoryLoadStatus,
   resolveNoAnalysisGuidanceActionMode,
   resolveProposedDirectionPresentation,
+  resolveProposedLookPromotionPresentation,
   resolveSttLanguageHint,
   type LanguageSelection
 } from "./consultation-chat-logic";
@@ -218,6 +221,21 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
   const [confirmingMemoryId, setConfirmingMemoryId] = useState<string | null>(null);
   const [rejectingMemoryId, setRejectingMemoryId] = useState<string | null>(null);
   const [memoryError, setMemoryError] = useState<string | null>(null);
+  // AI Proposed Look (Phase 2), Stage 5 -- "Use in Proposed Look". Separate
+  // from the memory-review state above: confirming a proposedMemory and
+  // promoting it into a DRAFT AnalysisProposal's provenance are different
+  // actions (see promote-consultation-source's own doc comment) that can
+  // both apply to the same message independently. draftProposalId/
+  // promotedMessageIds are both reconstructed from the server on load (via
+  // the effect below), never invented client-side -- this is what makes the
+  // promoted state durable across reload. null draftProposalId means "no
+  // DRAFT exists yet for this client+vertical" -- promotion is never used to
+  // auto-create one; the professional creates/opens it through the existing
+  // Stage 4 Proposed Look UI first.
+  const [draftProposalId, setDraftProposalId] = useState<string | null>(null);
+  const [promotedMessageIds, setPromotedMessageIds] = useState<Set<string>>(new Set());
+  const [promotingMessageId, setPromotingMessageId] = useState<string | null>(null);
+  const [promoteErrors, setPromoteErrors] = useState<Record<string, string>>({});
   // AI Voice Reply (optional, OFF by default): reads the AI's own text
   // reply aloud, cloud TTS first, the browser's native speech synthesis as
   // fallback (see speakMessage below) -- never a second, separately-
@@ -564,6 +582,57 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
       cancelled = true;
     };
   }, [clientId]);
+
+  // AI Proposed Look (Phase 2), Stage 5 -- discovers whether a DRAFT
+  // AnalysisProposal (vertical=cutting) already exists for this client, and
+  // which consultation sources are already promoted onto it, using the SAME
+  // real Stage 3 API the Proposed Look UI itself uses (GET .../analysis-
+  // proposals?vertical=cutting) -- no new read endpoint, no direct
+  // repository access from a client component. Only runs when analysisId is
+  // present: general client-context chat (no analysisId) has no concrete
+  // cutting proposal to target, matching the existing analysis-context vs
+  // general-context distinction ProposedDirectionCard's own no-analysisId
+  // guidance already relies on. Runs once per clientId/analysisId change --
+  // if a DRAFT is created or edited elsewhere on the SAME page while this
+  // chat stays mounted, this state can go stale until the next reload; that
+  // is an accepted, documented limitation, not a silent bug, since the real
+  // durable state always wins again on reload.
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      if (!analysisId) {
+        if (!cancelled) {
+          setDraftProposalId(null);
+          setPromotedMessageIds(new Set());
+        }
+        return;
+      }
+
+      try {
+        const response = await fetch(`/api/v1/clients/${clientId}/analysis-proposals?vertical=cutting`, {
+          method: "GET"
+        });
+        if (cancelled || !response.ok) return;
+
+        const payload = (await response.json()) as {
+          proposals: { id: string; status: string; promotedConsultationSources: { consultationMessageId: string }[] }[];
+        };
+        const draft = payload.proposals.find((proposal) => proposal.status === "DRAFT");
+        if (cancelled) return;
+
+        setDraftProposalId(draft?.id ?? null);
+        setPromotedMessageIds(draft ? extractPromotedMessageIds(draft.promotedConsultationSources) : new Set());
+      } catch {
+        // A failed lookup just means the promotion action stays disabled
+        // (no draft known) -- never a hard error for the whole chat.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId, analysisId]);
 
   useEffect(() => {
     scrollAnchorRef.current?.scrollIntoView({ block: "end" });
@@ -1465,6 +1534,57 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
     }
   }
 
+  // AI Proposed Look (Phase 2), Stage 5 -- "Use in Proposed Look". Calls the
+  // real POST .../analysis-proposals/{draftProposalId}/promote-consultation-source
+  // endpoint, which independently re-verifies eligibility and ownership
+  // server-side -- this handler never decides promotion succeeded on its
+  // own. Only ever targets the already-known draftProposalId (never creates
+  // one). On success, promotedMessageIds is updated from the server's own
+  // returned promotedConsultationSources (the durable, reconstructable
+  // state), never optimistically -- so a failed/rejected/lost response can
+  // never make the UI claim a promotion that did not actually happen.
+  async function handlePromote(message: ConsultationMessageRecord) {
+    if (!draftProposalId || promotingMessageId) {
+      return;
+    }
+
+    setPromotingMessageId(message.id);
+    setPromoteErrors((prev) => {
+      const next = { ...prev };
+      delete next[message.id];
+      return next;
+    });
+    try {
+      const response = await fetch(
+        `/api/v1/clients/${clientId}/analysis-proposals/${draftProposalId}/promote-consultation-source`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ consultationMessageId: message.id })
+        }
+      );
+
+      if (response.ok) {
+        const payload = (await response.json()) as {
+          proposal: { promotedConsultationSources: { consultationMessageId: string }[] };
+        };
+        setPromotedMessageIds(extractPromotedMessageIds(payload.proposal.promotedConsultationSources));
+      } else {
+        setPromoteErrors((prev) => ({
+          ...prev,
+          [message.id]: "This could not be added to the Proposed Look. Please try again."
+        }));
+      }
+    } catch {
+      setPromoteErrors((prev) => ({
+        ...prev,
+        [message.id]: "This could not be added to the Proposed Look. Please try again."
+      }));
+    } finally {
+      setPromotingMessageId(null);
+    }
+  }
+
   // A single combined status line for the whole voice conversation loop,
   // so the flow reads clearly (Listening... -> Processing... -> AI
   // responding... -> Speaking...) instead of several separate, silent
@@ -1564,6 +1684,11 @@ export function ConsultationChat({ clientId, analysisId, onCorrectionApplied, on
                 onDraftMemoryChange={(value) => setMemoryDrafts((prev) => ({ ...prev, [message.id]: value }))}
                 onConfirmMemory={() => handleConfirmMemory(message)}
                 onRejectMemory={() => handleRejectMemory(message)}
+                hasDraftProposal={draftProposalId !== null}
+                promotedToProposedLook={promotedMessageIds.has(message.id)}
+                promoting={promotingMessageId === message.id}
+                promoteError={promoteErrors[message.id]}
+                onPromote={() => handlePromote(message)}
               />
             ))
           )}
@@ -1645,7 +1770,12 @@ function ChatBubble({
   onEditMemory,
   onDraftMemoryChange,
   onConfirmMemory,
-  onRejectMemory
+  onRejectMemory,
+  hasDraftProposal,
+  promotedToProposedLook,
+  promoting,
+  promoteError,
+  onPromote
 }: {
   message: ConsultationMessageRecord;
   clientId: string;
@@ -1665,9 +1795,21 @@ function ChatBubble({
   onDraftMemoryChange: (value: string) => void;
   onConfirmMemory: () => void;
   onRejectMemory: () => void;
+  hasDraftProposal: boolean;
+  promotedToProposedLook: boolean;
+  promoting: boolean;
+  promoteError: string | undefined;
+  onPromote: () => void;
 }) {
   const { t } = useUiLanguage();
   const isStylist = message.role === "stylist";
+  const promotionPresentation = resolveProposedLookPromotionPresentation({
+    hasAnalysisId: Boolean(analysisId),
+    eligible: isEligibleForProposedLookPromotion(message),
+    hasDraft: hasDraftProposal,
+    alreadyPromoted: promotedToProposedLook,
+    promoting
+  });
 
   return (
     <div className={`flex flex-col gap-1 ${isStylist ? "items-end" : "items-start"}`}>
@@ -1718,6 +1860,45 @@ function ChatBubble({
             </p>
           )}
           <p className="mt-1 text-xs text-muted">{message.proposedMemory.reason}</p>
+
+          {promotionPresentation.showAction ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-border pt-2">
+              {promotionPresentation.alreadyPromoted ? (
+                <>
+                  <Badge variant="success">Added to Proposed Look</Badge>
+                  <a href="#proposed-look-section" className="text-xs text-accent hover:underline">
+                    View Proposed Look
+                  </a>
+                </>
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    loading={promoting}
+                    disabled={promotionPresentation.buttonDisabled}
+                    onClick={onPromote}
+                  >
+                    Use in Proposed Look
+                  </Button>
+                  {!hasDraftProposal ? (
+                    <span className="text-xs text-muted">
+                      Open or create a Proposed Look first.{" "}
+                      <a href="#proposed-look-section" className="text-accent hover:underline">
+                        Go there
+                      </a>
+                      .
+                    </span>
+                  ) : null}
+                </>
+              )}
+            </div>
+          ) : null}
+          {promoteError ? (
+            <Alert variant="error" className="mt-2">
+              {promoteError}
+            </Alert>
+          ) : null}
 
           {memoryConfirmed ? (
             <Badge variant="success" className="mt-2">

@@ -129,6 +129,62 @@ export function extractMemoryDecisionIds(
   return { confirmed, rejected };
 }
 
+// AI Proposed Look (Phase 2), Stage 5 -- "Use in Proposed Look". A message is
+// eligible ONLY when it carries a real, structurally valid proposedMemory
+// (content present and non-empty) -- never a bare proposedCorrection (an
+// Analysis EVIDENCE correction, exclusively on the existing Apply path, see
+// the route's own doc comment for why), never plain prose. This is the
+// SAME rule the server independently re-enforces (never trust the client
+// alone) -- this copy only decides whether to SHOW the action, it grants
+// nothing on its own.
+export function isEligibleForProposedLookPromotion(message: {
+  proposedMemory?: { content: string } | null;
+}): boolean {
+  return typeof message.proposedMemory?.content === "string" && message.proposedMemory.content.trim().length > 0;
+}
+
+// Reconstructs "which messages are already promoted" from the DRAFT's own
+// persisted promotedConsultationSources -- never from transient React state,
+// so a promotion made in an earlier session (or by reloading after a
+// successful promotion) is never forgotten or re-offered as available.
+export function extractPromotedMessageIds(
+  promotedConsultationSources: { consultationMessageId: string }[],
+): Set<string> {
+  return new Set(promotedConsultationSources.map((entry) => entry.consultationMessageId));
+}
+
+export interface ProposedLookPromotionPresentation {
+  // Whether the "Use in Proposed Look" action area should render at all --
+  // false when there is no analysisId (general client-context chat has no
+  // concrete cutting proposal to target) or the message is not eligible.
+  showAction: boolean;
+  // True once a DRAFT exists to promote onto. When false, showAction may
+  // still be true (the content IS eligible) but the actual button is
+  // disabled and a hint explains why -- promoting never auto-creates a
+  // DRAFT just because a chat message was generated.
+  hasDraft: boolean;
+  alreadyPromoted: boolean;
+  showButton: boolean;
+  buttonDisabled: boolean;
+}
+
+export function resolveProposedLookPromotionPresentation(input: {
+  hasAnalysisId: boolean;
+  eligible: boolean;
+  hasDraft: boolean;
+  alreadyPromoted: boolean;
+  promoting: boolean;
+}): ProposedLookPromotionPresentation {
+  const showAction = input.hasAnalysisId && input.eligible;
+  return {
+    showAction,
+    hasDraft: input.hasDraft,
+    alreadyPromoted: input.alreadyPromoted,
+    showButton: showAction && !input.alreadyPromoted,
+    buttonDisabled: !input.hasDraft || input.promoting,
+  };
+}
+
 // Maps a failed send's HTTP status to a short, honest explanation -- never
 // implies the AI understood and silently failed; always states plainly what
 // happened so the stylist knows whether to retry, wait, or that nothing was

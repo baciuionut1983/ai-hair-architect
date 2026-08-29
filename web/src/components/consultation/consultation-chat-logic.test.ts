@@ -7,12 +7,15 @@ import {
   describeApplyCorrectionFailure,
   describeSendFailure,
   extractMemoryDecisionIds,
+  extractPromotedMessageIds,
+  isEligibleForProposedLookPromotion,
   isSendableMessage,
   isVoiceInputBusy,
   parseStoredLanguageSelection,
   resolveConsultationHistoryLoadStatus,
   resolveNoAnalysisGuidanceActionMode,
   resolveProposedDirectionPresentation,
+  resolveProposedLookPromotionPresentation,
   resolveSttLanguageHint
 } from "./consultation-chat-logic";
 
@@ -151,6 +154,113 @@ describe("extractMemoryDecisionIds", () => {
     const { confirmed, rejected } = extractMemoryDecisionIds([]);
     expect(confirmed.size).toBe(0);
     expect(rejected.size).toBe(0);
+  });
+});
+
+describe("isEligibleForProposedLookPromotion", () => {
+  it("is eligible when proposedMemory carries real, non-empty content", () => {
+    expect(isEligibleForProposedLookPromotion({ proposedMemory: { content: "Client prefers softer shapes." } })).toBe(
+      true,
+    );
+  });
+
+  it("is NOT eligible when proposedMemory is absent -- including a message carrying only a proposedCorrection", () => {
+    expect(isEligibleForProposedLookPromotion({ proposedMemory: null })).toBe(false);
+    expect(isEligibleForProposedLookPromotion({})).toBe(false);
+  });
+
+  it("is NOT eligible when proposedMemory.content is empty/whitespace-only", () => {
+    expect(isEligibleForProposedLookPromotion({ proposedMemory: { content: "" } })).toBe(false);
+    expect(isEligibleForProposedLookPromotion({ proposedMemory: { content: "   " } })).toBe(false);
+  });
+});
+
+describe("extractPromotedMessageIds", () => {
+  it("returns the set of consultationMessageIds already promoted", () => {
+    const result = extractPromotedMessageIds([
+      { consultationMessageId: "msg-1" },
+      { consultationMessageId: "msg-2" },
+    ]);
+    expect(result.has("msg-1")).toBe(true);
+    expect(result.has("msg-2")).toBe(true);
+    expect(result.has("msg-3")).toBe(false);
+  });
+
+  it("returns an empty set for an empty array", () => {
+    expect(extractPromotedMessageIds([]).size).toBe(0);
+  });
+});
+
+describe("resolveProposedLookPromotionPresentation", () => {
+  it("shows nothing in general client-context chat (no analysisId), even for eligible content", () => {
+    const result = resolveProposedLookPromotionPresentation({
+      hasAnalysisId: false,
+      eligible: true,
+      hasDraft: true,
+      alreadyPromoted: false,
+      promoting: false,
+    });
+    expect(result.showAction).toBe(false);
+    expect(result.showButton).toBe(false);
+  });
+
+  it("shows nothing for ineligible content, even with an analysisId and a draft", () => {
+    const result = resolveProposedLookPromotionPresentation({
+      hasAnalysisId: true,
+      eligible: false,
+      hasDraft: true,
+      alreadyPromoted: false,
+      promoting: false,
+    });
+    expect(result.showAction).toBe(false);
+  });
+
+  it("shows the action but disables the button when no DRAFT exists yet -- never auto-creates one", () => {
+    const result = resolveProposedLookPromotionPresentation({
+      hasAnalysisId: true,
+      eligible: true,
+      hasDraft: false,
+      alreadyPromoted: false,
+      promoting: false,
+    });
+    expect(result.showAction).toBe(true);
+    expect(result.showButton).toBe(true);
+    expect(result.buttonDisabled).toBe(true);
+  });
+
+  it("shows an enabled button when eligible and a DRAFT exists", () => {
+    const result = resolveProposedLookPromotionPresentation({
+      hasAnalysisId: true,
+      eligible: true,
+      hasDraft: true,
+      alreadyPromoted: false,
+      promoting: false,
+    });
+    expect(result.showButton).toBe(true);
+    expect(result.buttonDisabled).toBe(false);
+  });
+
+  it("disables the button while a promotion is in flight", () => {
+    const result = resolveProposedLookPromotionPresentation({
+      hasAnalysisId: true,
+      eligible: true,
+      hasDraft: true,
+      alreadyPromoted: false,
+      promoting: true,
+    });
+    expect(result.buttonDisabled).toBe(true);
+  });
+
+  it("hides the button (shows the promoted badge instead) once already promoted, and never re-disables into a button", () => {
+    const result = resolveProposedLookPromotionPresentation({
+      hasAnalysisId: true,
+      eligible: true,
+      hasDraft: true,
+      alreadyPromoted: true,
+      promoting: false,
+    });
+    expect(result.showButton).toBe(false);
+    expect(result.alreadyPromoted).toBe(true);
   });
 });
 
