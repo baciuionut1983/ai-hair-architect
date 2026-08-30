@@ -6,6 +6,7 @@ import { Alert, Button } from "@/components/ui";
 import type { TechnicalVisualMapSpatialBindingRecord } from "@/lib/technical-visual-map-spatial-binding-repository";
 import type { SpatialBindingEditOperation } from "@/lib/technical-visual-map-spatial-validators";
 
+import { PhotoPreviewSection } from "./photo-preview-section";
 import { CurrentSpatialBinding } from "./spatial-binding-current";
 import { SpatialBindingDraftEditor } from "./spatial-binding-draft-editor";
 import { SpatialBindingHistoryList } from "./spatial-binding-history";
@@ -85,6 +86,9 @@ export function SpatialBindingSection({ clientId, proposalId, technicalVisualMap
         <Alert variant="error">Couldn&apos;t load the spatial map. Please try refreshing the page.</Alert>
       ) : (
         <SpatialBindingSectionReady
+          clientId={clientId}
+          proposalId={proposalId}
+          technicalVisualMapId={technicalVisualMapId}
           selectedImageId={selectedImageId as string}
           selectedViewLabel={selectedViewLabel as string}
           current={state.current}
@@ -102,6 +106,9 @@ export function SpatialBindingSection({ clientId, proposalId, technicalVisualMap
 }
 
 interface SpatialBindingSectionReadyProps {
+  clientId: string;
+  proposalId: string;
+  technicalVisualMapId: string;
   selectedImageId: string;
   selectedViewLabel: string;
   current: TechnicalVisualMapSpatialBindingRecord | null;
@@ -118,6 +125,9 @@ interface SpatialBindingSectionReadyProps {
 // computed once selection AND data are both ready -- keeps the parent above
 // simple to read.
 function SpatialBindingSectionReady({
+  clientId,
+  proposalId,
+  technicalVisualMapId,
   selectedImageId,
   selectedViewLabel,
   current,
@@ -155,6 +165,17 @@ function SpatialBindingSectionReady({
       )}
 
       {current ? <CurrentSpatialBinding binding={current} imageUrl={contentUrl(current.sourceImageAssetId)} imageAlt="Confirmed spatial map source photo" /> : null}
+
+      {/* AI Photo Preview, Stage 3 -- available ONLY when a CONFIRMED spatial
+          binding exists (task #1/#2's own locked hierarchy: Analysis ->
+          Current Approved Look -> Technical Visual Map -> Spatial Mapping ->
+          AI Photo Preview). Keyed on `current.id` for the exact same reason
+          this whole section is keyed on the confirmed map's id one level up
+          -- a different confirmed binding is a genuinely different scope,
+          never a continuation of the previous one's local state. */}
+      {current ? (
+        <PhotoPreviewSection key={current.id} clientId={clientId} proposalId={proposalId} technicalVisualMapId={technicalVisualMapId} binding={current} />
+      ) : null}
 
       {scoped.length > 0 ? (
         <div className="flex flex-col gap-2">
