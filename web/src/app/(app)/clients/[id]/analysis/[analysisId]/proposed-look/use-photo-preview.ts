@@ -50,6 +50,7 @@ export interface UsePhotoPreviewResult {
   reload: () => void;
   generate: () => Promise<PhotoPreviewActionOutcome>;
   generateVariation: () => Promise<PhotoPreviewActionOutcome>;
+  retry: (generationId: string) => Promise<PhotoPreviewActionOutcome>;
 }
 
 interface ParsedErrorBody {
@@ -168,5 +169,29 @@ export function usePhotoPreview(
   const generate = useCallback(() => submit({}), [submit]);
   const generateVariation = useCallback(() => submit({ variation: true }), [submit]);
 
-  return { state, reload, generate, generateVariation };
+  // Stage 5 (task #16) -- explicit recovery for a specific stuck REQUESTED/
+  // stale-PROCESSING row, via the existing, already-secured `/execute`
+  // endpoint (no new backend surface). Deliberately targets the EXACT row
+  // id rather than going through create/variation: this resumes the SAME
+  // generation (same sealed request, same idempotency scope) instead of
+  // spending a new attempt on a fresh one.
+  const retry = useCallback(
+    async (generationId: string): Promise<PhotoPreviewActionOutcome> => {
+      submittingRef.current = true;
+      try {
+        const response = await fetch(`${scopedBaseUrl}/${generationId}/execute`, { method: "POST" });
+        const outcome = await toActionOutcome(response);
+        reload();
+        return outcome;
+      } catch {
+        reload();
+        return { ok: false, status: 0, message: mapPhotoPreviewApiError(0) };
+      } finally {
+        submittingRef.current = false;
+      }
+    },
+    [scopedBaseUrl, reload],
+  );
+
+  return { state, reload, generate, generateVariation, retry };
 }

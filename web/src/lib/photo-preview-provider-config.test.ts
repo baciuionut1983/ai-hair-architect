@@ -58,6 +58,34 @@ describe("resolvePhotoPreviewProviderConfig", () => {
       expect(result.status).toBe("enabled");
     }
   });
+
+  // Stage 5 (task #14) -- PHOTO_PREVIEW_TIMEOUT_MS is an optional operator
+  // dial on the provider timeout, independent of API key/model validity: a
+  // malformed value must never turn an otherwise-valid configuration
+  // "invalid" -- it just falls back to the provider's own documented default.
+  describe("PHOTO_PREVIEW_TIMEOUT_MS (task #14)", () => {
+    const base = { PHOTO_PREVIEW_PROVIDER: "gemini", PHOTO_PREVIEW_API_KEY: "key-123", PHOTO_PREVIEW_MODEL: "gemini-3.1-flash-image" };
+
+    it("is undefined (provider's own default applies) when unset", () => {
+      const result = resolvePhotoPreviewProviderConfig(base);
+      expect(result.status).toBe("enabled");
+      if (result.status === "enabled") expect(result.timeoutMs).toBeUndefined();
+    });
+
+    it("parses a real positive integer value", () => {
+      const result = resolvePhotoPreviewProviderConfig({ ...base, PHOTO_PREVIEW_TIMEOUT_MS: "60000" });
+      expect(result.status).toBe("enabled");
+      if (result.status === "enabled") expect(result.timeoutMs).toBe(60000);
+    });
+
+    it("an invalid value (non-numeric, zero, negative) is safely ignored -- never invalidates the whole configuration", () => {
+      for (const invalid of ["not-a-number", "0", "-500", ""]) {
+        const result = resolvePhotoPreviewProviderConfig({ ...base, PHOTO_PREVIEW_TIMEOUT_MS: invalid });
+        expect(result.status).toBe("enabled");
+        if (result.status === "enabled") expect(result.timeoutMs).toBeUndefined();
+      }
+    });
+  });
 });
 
 describe("isPhotoPreviewGeminiModel / isPhotoPreviewProviderName", () => {

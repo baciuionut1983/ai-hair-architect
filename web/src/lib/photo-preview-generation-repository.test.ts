@@ -322,6 +322,80 @@ suite("photo-preview-generation-repository (real AI Photo Preview, Stage 1 domai
   });
 
   // -------------------------------------------------------------------------
+  // Stage 5 -- real, two-real-owner IDOR proof (task #18/#32): the pre-
+  // existing "foreign owner" read test above only ever probed a random,
+  // never-created id, which proves the WHERE clause shape but never proves
+  // a REAL row belonging to a genuinely different, real owner is actually
+  // unreachable. These tests create two entirely separate real owners, each
+  // with their own real confirmed authority chain and generation, and
+  // assert cross-owner access fails at every read/write surface this
+  // repository exposes.
+  // -------------------------------------------------------------------------
+
+  it("a real generation belonging to a different real owner is unreachable via findPhotoPreviewGenerationForOwner", async () => {
+    const ownerA = await createOwnerAndClient();
+    const ownerB = await createOwnerAndClient();
+    const { binding: bindingB } = await createConfirmedChain(ownerB.ownerUserId, ownerB.clientId);
+    const generationB = await createPhotoPreviewGeneration(ownerB.ownerUserId, ownerB.clientId, bindingB.id, "gemini", "gemini-3.1-flash-image");
+
+    await expect(findPhotoPreviewGenerationForOwner(ownerA.ownerUserId, generationB.record.id)).resolves.toBeNull();
+    // Sanity: the row genuinely exists -- this is a real cross-owner denial, not a coincidental not-found.
+    await expect(findPhotoPreviewGenerationForOwner(ownerB.ownerUserId, generationB.record.id)).resolves.not.toBeNull();
+  });
+
+  it("listPhotoPreviewGenerationsForBinding never returns another real owner's generations, even when queried with their own real binding id", async () => {
+    const ownerA = await createOwnerAndClient();
+    const ownerB = await createOwnerAndClient();
+    const { binding: bindingB } = await createConfirmedChain(ownerB.ownerUserId, ownerB.clientId);
+    await createPhotoPreviewGeneration(ownerB.ownerUserId, ownerB.clientId, bindingB.id, "gemini", "gemini-3.1-flash-image");
+
+    // Owner A queries using Owner B's own real clientId/bindingId -- still
+    // scoped by Owner A's ownerUserId, so nothing is returned.
+    const listAsA = await listPhotoPreviewGenerationsForBinding(ownerA.ownerUserId, ownerB.clientId, bindingB.id);
+    expect(listAsA).toEqual([]);
+
+    // Sanity: Owner B genuinely sees their own real generation.
+    const listAsB = await listPhotoPreviewGenerationsForBinding(ownerB.ownerUserId, ownerB.clientId, bindingB.id);
+    expect(listAsB).toHaveLength(1);
+  });
+
+  it("a real generation's authority chain (proposal/map/binding) belonging to a different real owner cannot be used to create a new generation", async () => {
+    const ownerA = await createOwnerAndClient();
+    const ownerB = await createOwnerAndClient();
+    const { binding: bindingB } = await createConfirmedChain(ownerB.ownerUserId, ownerB.clientId);
+
+    // Owner A attempts to create a generation against Owner B's real
+    // confirmed binding, even supplying Owner B's own real clientId -- the
+    // FIRST hop of resolveAuthorityChain (client.findFirst scoped by
+    // ownerUserId) already rejects this as CLIENT_NOT_FOUND, before the
+    // binding is ever consulted -- real, observed defense-in-depth: Owner A
+    // is denied at the very first ownership check, not merely by a later
+    // binding-specific one.
+    await expect(
+      createPhotoPreviewGeneration(ownerA.ownerUserId, ownerB.clientId, bindingB.id, "gemini", "gemini-3.1-flash-image"),
+    ).rejects.toMatchObject({ code: "PHOTO_PREVIEW_GENERATION_CLIENT_NOT_FOUND" });
+
+    // No generation was created under either owner as a side effect.
+    await expect(prisma.photoPreviewGeneration.count({ where: { ownerUserId: ownerA.ownerUserId } })).resolves.toBe(0);
+  });
+
+  it("the binding-level ownership check independently rejects Owner B's real binding id even when Owner A supplies their OWN real, owned client", async () => {
+    const ownerA = await createOwnerAndClient();
+    const ownerB = await createOwnerAndClient();
+    const { binding: bindingB } = await createConfirmedChain(ownerB.ownerUserId, ownerB.clientId);
+
+    // A more realistic IDOR attempt than the client-mismatch case above:
+    // Owner A's OWN real, owned clientId passes the first (client) check,
+    // so this specifically exercises the SECOND, binding-level ownership
+    // check (technicalVisualMapSpatialBinding.findFirst scoped by
+    // ownerUserId) in isolation.
+    await expect(
+      createPhotoPreviewGeneration(ownerA.ownerUserId, ownerA.clientId, bindingB.id, "gemini", "gemini-3.1-flash-image"),
+    ).rejects.toMatchObject({ code: "PHOTO_PREVIEW_GENERATION_BINDING_NOT_FOUND" });
+    await expect(prisma.photoPreviewGeneration.count({ where: { ownerUserId: ownerA.ownerUserId } })).resolves.toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
   // Fail-closed
   // -------------------------------------------------------------------------
 

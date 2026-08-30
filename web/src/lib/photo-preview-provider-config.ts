@@ -54,6 +54,15 @@ export interface GeminiPhotoPreviewProviderConfig {
   provider: "gemini";
   apiKey: string;
   model: PhotoPreviewGeminiModel;
+  // Stage 5 hardening (task §14) -- an operator dial on the real Gemini
+  // provider timeout (GEMINI_PHOTO_PREVIEW_DEFAULT_TIMEOUT_MS's own doc
+  // comment already promised this override; it was never actually wired
+  // through until now). Undefined (unset, or not a positive finite number)
+  // means "use the provider's own documented default" -- an invalid value
+  // here is deliberately never treated as a config error: a malformed
+  // tuning knob must never block the whole feature the way a missing API
+  // key correctly does.
+  timeoutMs: number | undefined;
 }
 
 export type PhotoPreviewProviderConfigResult =
@@ -110,7 +119,14 @@ export function resolvePhotoPreviewProviderConfig(env: EnvironmentSource): Photo
     return { status: "invalid", issues };
   }
 
-  return { status: "enabled", provider: "gemini", apiKey, model: model as PhotoPreviewGeminiModel };
+  return { status: "enabled", provider: "gemini", apiKey, model: model as PhotoPreviewGeminiModel, timeoutMs: parseTimeoutMs(env.PHOTO_PREVIEW_TIMEOUT_MS) };
+}
+
+function parseTimeoutMs(raw: string | undefined): number | undefined {
+  const trimmed = value(raw);
+  if (!trimmed) return undefined;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function isAllowedProvider(value: string): value is PhotoPreviewProviderName {

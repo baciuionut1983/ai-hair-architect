@@ -329,6 +329,112 @@ suite("photo-preview-execution-service (real AI Photo Preview, Stage 2 orchestra
   });
 
   // -------------------------------------------------------------------------
+  // Stage 5 -- observability (task §17): every real execution attempt must
+  // be reconstructable from Railway logs by generation id, without needing
+  // a raw API key, prompt, or image byte to leak into that log line.
+  // -------------------------------------------------------------------------
+
+  describe("observability (Stage 5, task #17)", () => {
+    it("logs a PHOTO_PREVIEW_EXECUTION line on success with the generation id, owner id, outcome, and a real latency -- no secret/prompt/image data", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const generation = await createGeneration(ownerUserId, clientId);
+      const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+      try {
+        await executePhotoPreviewGeneration(generation.id, ownerUserId, {
+          env: enabledEnv,
+          createProvider: () => fakeSuccessProvider(),
+          recordAiUsageEvent: async () => undefined,
+        });
+
+        const executionLines = consoleLogSpy.mock.calls
+          .map((call) => call[0] as string)
+          .filter((line) => typeof line === "string" && line.includes("PHOTO_PREVIEW_EXECUTION"));
+        expect(executionLines).toHaveLength(1);
+
+        const logged = JSON.parse(executionLines[0]);
+        expect(logged).toMatchObject({ gate: "PHOTO_PREVIEW_EXECUTION", generationId: generation.id, ownerUserId, outcome: "completed" });
+        expect(typeof logged.totalLatencyMs).toBe("number");
+        expect(logged.totalLatencyMs).toBeGreaterThanOrEqual(0);
+
+        // Never a raw secret, prompt, or image byte in this log line.
+        expect(executionLines[0]).not.toContain(enabledEnv.PHOTO_PREVIEW_API_KEY);
+        expect(logged.instruction).toBeUndefined();
+        expect(logged.imageBuffer).toBeUndefined();
+        expect(logged.sealedRequest).toBeUndefined();
+      } finally {
+        consoleLogSpy.mockRestore();
+      }
+    });
+
+    it("logs a PHOTO_PREVIEW_EXECUTION line via console.error on a terminal failure, including the safe failure code", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const generation = await createGeneration(ownerUserId, clientId);
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      try {
+        // MODERATION_REFUSED is non-retryable -- guarantees a terminal
+        // "failed" outcome (not "requeued_for_retry") in a single call.
+        await executePhotoPreviewGeneration(generation.id, ownerUserId, {
+          env: enabledEnv,
+          createProvider: () => fakeFailingProvider("MODERATION_REFUSED", false),
+          recordAiUsageEvent: async () => undefined,
+        });
+
+        const executionLines = consoleErrorSpy.mock.calls
+          .map((call) => call[0] as string)
+          .filter((line) => typeof line === "string" && line.includes("PHOTO_PREVIEW_EXECUTION"));
+        expect(executionLines).toHaveLength(1);
+
+        const logged = JSON.parse(executionLines[0]);
+        expect(logged).toMatchObject({ gate: "PHOTO_PREVIEW_EXECUTION", generationId: generation.id, ownerUserId, outcome: "failed", code: "PROVIDER_REFUSED" });
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Stage 5 -- real, two-real-owner cross-owner execution proof (task
+  // #18/#32). A DIFFERENT real owner's id can never execute (or spend a
+  // real provider call against) a generation it does not own.
+  // -------------------------------------------------------------------------
+
+  it("Stage 5: a real generation cannot be executed by a different real owner -- no provider call, no row mutation, no metering", async () => {
+    const { ownerUserId: ownerA } = await createOwnerAndClient();
+    const { ownerUserId: ownerB, clientId: clientB } = await createOwnerAndClient();
+    const generationB = await createGeneration(ownerB, clientB);
+
+    const provider = fakeSuccessProvider();
+    const usageEvents: unknown[] = [];
+
+    const result = await executePhotoPreviewGeneration(generationB.id, ownerA, {
+      env: enabledEnv,
+      createProvider: () => provider,
+      recordAiUsageEvent: async (input) => {
+        usageEvents.push(input);
+      },
+    });
+
+    expect(result).toEqual({ outcome: "failed", code: "GENERATION_NOT_FOUND" });
+    expect(provider.generate).not.toHaveBeenCalled();
+    expect(usageEvents).toHaveLength(0);
+
+    // The real row, still owned by Owner B, was never touched.
+    const row = await prisma.photoPreviewGeneration.findUniqueOrThrow({ where: { id: generationB.id } });
+    expect(row.status).toBe("REQUESTED");
+    expect(row.ownerUserId).toBe(ownerB);
+
+    // Sanity: Owner B can genuinely execute their own real generation.
+    const ownedResult = await executePhotoPreviewGeneration(generationB.id, ownerB, {
+      env: enabledEnv,
+      createProvider: () => fakeSuccessProvider(),
+      recordAiUsageEvent: async () => undefined,
+    });
+    expect(ownedResult.outcome).toBe("completed");
+  });
+
+  // -------------------------------------------------------------------------
   // 30/38. Network safety -- a hard acceptance condition (task §38): every
   // test above already injects a fake provider; this block additionally
   // proves the DEFAULT construction path fails closed rather than reaching

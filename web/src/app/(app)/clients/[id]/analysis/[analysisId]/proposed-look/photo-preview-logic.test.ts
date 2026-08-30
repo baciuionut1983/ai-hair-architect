@@ -11,9 +11,12 @@ import {
   getPhotoPreviewStatusLabel,
   getPhotoPreviewVariationLabel,
   getPhotoPreviewViewLabel,
+  isPhotoPreviewGenerationActivelyInFlight,
   isPhotoPreviewGenerationInFlight,
+  isPhotoPreviewGenerationRecoverable,
   mapPhotoPreviewApiError,
   mapPhotoPreviewFailureCodeToMessage,
+  PHOTO_PREVIEW_CLIENT_STALE_PROCESSING_TIMEOUT_MS,
   resolvePhotoPreviewLoadStatus,
   summarizePhotoPreviewTarget,
 } from "./photo-preview-logic";
@@ -126,6 +129,51 @@ describe("canRequestPhotoPreviewVariation (task #18)", () => {
   it("is true once at least one generation exists, regardless of its outcome", () => {
     expect(canRequestPhotoPreviewVariation([makeGeneration({ status: "FAILED" })])).toBe(true);
     expect(canRequestPhotoPreviewVariation([makeGeneration({ status: "COMPLETED" })])).toBe(true);
+  });
+});
+
+describe("stuck-generation recovery (task #16)", () => {
+  const NOW = new Date("2026-01-01T01:00:00.000Z");
+  const RECENT_START = new Date(NOW.getTime() - 60_000).toISOString(); // 1 minute ago
+  const STALE_START = new Date(NOW.getTime() - (PHOTO_PREVIEW_CLIENT_STALE_PROCESSING_TIMEOUT_MS + 1)).toISOString(); // just past the threshold
+
+  describe("isPhotoPreviewGenerationActivelyInFlight", () => {
+    it("is true for a PROCESSING row that started recently", () => {
+      expect(isPhotoPreviewGenerationActivelyInFlight({ status: "PROCESSING", startedAt: RECENT_START }, NOW)).toBe(true);
+    });
+
+    it("is false for a PROCESSING row started longer ago than the stale threshold", () => {
+      expect(isPhotoPreviewGenerationActivelyInFlight({ status: "PROCESSING", startedAt: STALE_START }, NOW)).toBe(false);
+    });
+
+    it("is true for a PROCESSING row with no startedAt yet (freshly claimed, never treated as stale)", () => {
+      expect(isPhotoPreviewGenerationActivelyInFlight({ status: "PROCESSING", startedAt: null }, NOW)).toBe(true);
+    });
+
+    it("is false for REQUESTED, COMPLETED, and FAILED -- only PROCESSING can be 'actively' in flight", () => {
+      expect(isPhotoPreviewGenerationActivelyInFlight({ status: "REQUESTED", startedAt: null }, NOW)).toBe(false);
+      expect(isPhotoPreviewGenerationActivelyInFlight({ status: "COMPLETED", startedAt: RECENT_START }, NOW)).toBe(false);
+      expect(isPhotoPreviewGenerationActivelyInFlight({ status: "FAILED", startedAt: RECENT_START }, NOW)).toBe(false);
+    });
+  });
+
+  describe("isPhotoPreviewGenerationRecoverable", () => {
+    it("a REQUESTED row is always recoverable, regardless of age -- the backend accepts a claim immediately", () => {
+      expect(isPhotoPreviewGenerationRecoverable({ status: "REQUESTED", startedAt: null }, NOW)).toBe(true);
+    });
+
+    it("a recently-started PROCESSING row is NOT recoverable -- it may genuinely still be running", () => {
+      expect(isPhotoPreviewGenerationRecoverable({ status: "PROCESSING", startedAt: RECENT_START }, NOW)).toBe(false);
+    });
+
+    it("a stale PROCESSING row IS recoverable, matching the backend's own stale-reclaim eligibility", () => {
+      expect(isPhotoPreviewGenerationRecoverable({ status: "PROCESSING", startedAt: STALE_START }, NOW)).toBe(true);
+    });
+
+    it("terminal states (COMPLETED/FAILED) are never 'recoverable' -- there is nothing to resume", () => {
+      expect(isPhotoPreviewGenerationRecoverable({ status: "COMPLETED", startedAt: STALE_START }, NOW)).toBe(false);
+      expect(isPhotoPreviewGenerationRecoverable({ status: "FAILED", startedAt: STALE_START }, NOW)).toBe(false);
+    });
   });
 });
 

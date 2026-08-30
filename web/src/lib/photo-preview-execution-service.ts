@@ -70,7 +70,7 @@ export type PhotoPreviewExecutionResult =
 export interface ExecutePhotoPreviewGenerationDependencies {
   now?: Date;
   env?: Readonly<Record<string, string | undefined>>;
-  createProvider?: (config: { apiKey: string; model: string }) => PhotoPreviewProvider;
+  createProvider?: (config: { apiKey: string; model: string; timeoutMs?: number }) => PhotoPreviewProvider;
   resolveObjectStorage?: (bucketAlias: string) => ObjectStorage | null | Promise<ObjectStorage | null>;
   recordAiUsageEvent?: typeof recordAiUsageEvent;
   persistGeneratedImage?: typeof persistGeneratedPhotoPreviewImage;
@@ -80,10 +80,56 @@ export interface ExecutePhotoPreviewGenerationDependencies {
   beforePersist?: () => Promise<void>;
 }
 
+// Stage 5 -- observability wrapper (task §17): every call is logged exactly
+// once on the way out, generation id + owner id + attempt outcome + total
+// wall-clock latency of THIS call, safe-fields-only (same convention
+// ai-usage-repository.ts's own logAiUsageMetering already uses elsewhere in
+// this codebase -- never a raw API key, prompt, or image byte). This is
+// intentionally a SEPARATE, Photo-Preview-scoped log line from the shared
+// AI_USAGE_METERING gate (which already logs feature/provider/model/outcome/
+// costBasis, but never a generation id or per-attempt latency) -- kept
+// separate so this addition can never affect the shared metering path every
+// other AI feature in this app also logs through. The full audit trail
+// (authority chain, attempt number, provider latency, usage, cost) already
+// lives durably in the PhotoPreviewGeneration/AiUsageEvent rows themselves;
+// this log line is what makes a Railway log search by generation id
+// possible without first knowing which DB row to look at.
 export async function executePhotoPreviewGeneration(
   generationId: string,
   ownerUserId: string,
   dependencies: ExecutePhotoPreviewGenerationDependencies = {},
+): Promise<PhotoPreviewExecutionResult> {
+  const executionStartedAt = Date.now();
+  const result = await runPhotoPreviewExecution(generationId, ownerUserId, dependencies);
+  logPhotoPreviewExecution(generationId, ownerUserId, result, Date.now() - executionStartedAt);
+  return result;
+}
+
+function logPhotoPreviewExecution(
+  generationId: string,
+  ownerUserId: string,
+  result: PhotoPreviewExecutionResult,
+  totalLatencyMs: number,
+): void {
+  const line = JSON.stringify({
+    gate: "PHOTO_PREVIEW_EXECUTION",
+    generationId,
+    ownerUserId,
+    outcome: result.outcome,
+    ...(result.outcome !== "completed" ? { code: result.code } : {}),
+    totalLatencyMs,
+  });
+  if (result.outcome === "failed") {
+    console.error(line);
+  } else {
+    console.log(line);
+  }
+}
+
+async function runPhotoPreviewExecution(
+  generationId: string,
+  ownerUserId: string,
+  dependencies: ExecutePhotoPreviewGenerationDependencies,
 ): Promise<PhotoPreviewExecutionResult> {
   try {
     const now = dependencies.now ?? new Date();
@@ -132,7 +178,7 @@ export async function executePhotoPreviewGeneration(
       return finalizeFailure({ generationId, ownerUserId, now, dependencies, code: "PHOTO_PREVIEW_SOURCE_UNAVAILABLE", retryable: false, resultCode: "SOURCE_UNAVAILABLE" });
     }
 
-    const provider = createProvider({ apiKey: config.apiKey, model: generation.model });
+    const provider = createProvider({ apiKey: config.apiKey, model: generation.model, timeoutMs: config.timeoutMs });
 
     let generated: Awaited<ReturnType<PhotoPreviewProvider["generate"]>>;
     const providerCallStartedAt = Date.now();
@@ -276,7 +322,7 @@ async function loadSourceImageBuffer(
   return { buffer, mimeType: asset.mimeType };
 }
 
-function defaultCreateProvider(config: { apiKey: string; model: string }): PhotoPreviewProvider {
+function defaultCreateProvider(config: { apiKey: string; model: string; timeoutMs?: number }): PhotoPreviewProvider {
   return new GeminiPhotoPreviewProvider(config);
 }
 

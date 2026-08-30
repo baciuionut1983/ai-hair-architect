@@ -70,6 +70,59 @@ export function canRequestPhotoPreviewVariation(history: readonly PhotoPreviewGe
 }
 
 // ---------------------------------------------------------------------------
+// Stage 5 -- stuck-generation recovery (task §16: "if stale recovery
+// requires manual/explicit execution, make that clear... if not acceptable,
+// implement the smallest durable execution mechanism justified by
+// evidence"). Deliberately mirrors PHOTO_PREVIEW_STALE_PROCESSING_TIMEOUT_MS
+// (photo-preview-execution-repository.ts, server-only -- never imported into
+// client code) rather than exposing a new value over the API: the backend's
+// claim logic is the sole authority on when a PROCESSING row genuinely
+// becomes reclaimable, and this constant exists purely so the UI can stop
+// showing "blocking" for a row the backend would already accept a retry on,
+// never the reverse. If the backend's own value ever changes, this constant
+// must be updated to match -- it is not read from a shared module because
+// the server-only repository file is not a valid import target from a
+// "use client" component tree.
+export const PHOTO_PREVIEW_CLIENT_STALE_PROCESSING_TIMEOUT_MS = 15 * 60 * 1000;
+
+// A currently-PROCESSING row genuinely blocks new actions only while it is
+// plausibly still actively running -- once its own startedAt is old enough
+// that the backend's claim logic would itself accept a stale-reclaim, the UI
+// must stop pretending it is still in progress forever with no way out.
+// REQUESTED rows are NEVER blocking in this sense: claimPhotoPreviewGeneration
+// ForExecution already accepts ANY REQUESTED row immediately, at any age (a
+// row can legitimately sit REQUESTED indefinitely if, for example, an
+// operator's Photo Preview configuration was temporarily invalid at the
+// moment `create` synchronously attempted execution) -- see
+// isPhotoPreviewGenerationRecoverable below for the action this state should
+// actually offer.
+export function isPhotoPreviewGenerationActivelyInFlight(
+  generation: Pick<PhotoPreviewGenerationRecord, "status" | "startedAt">,
+  now: Date = new Date(),
+): boolean {
+  if (generation.status !== "PROCESSING") return false;
+  if (!generation.startedAt) return true; // no startedAt recorded yet -- treat as freshly claimed, not stale
+  return now.getTime() - new Date(generation.startedAt).getTime() < PHOTO_PREVIEW_CLIENT_STALE_PROCESSING_TIMEOUT_MS;
+}
+
+// A row the professional can explicitly nudge forward via the existing,
+// already-secured `/execute` endpoint (task §16's "smallest durable
+// mechanism" -- reusing the endpoint Stage 2 already built for exactly this
+// case, never a new queue/worker): either a REQUESTED row (always -- no
+// automatic trigger exists, so without this the professional would have no
+// way to resume it once the ordinary "Generate" button is hidden behind
+// existing history), or a PROCESSING row old enough that the backend's own
+// claim logic would accept reclaiming it as stale.
+export function isPhotoPreviewGenerationRecoverable(
+  generation: Pick<PhotoPreviewGenerationRecord, "status" | "startedAt">,
+  now: Date = new Date(),
+): boolean {
+  if (generation.status === "REQUESTED") return true;
+  if (generation.status !== "PROCESSING") return false;
+  return !isPhotoPreviewGenerationActivelyInFlight(generation, now);
+}
+
+// ---------------------------------------------------------------------------
 // Safe error mapping (task §20) -- a single table shared by the two distinct
 // vocabularies this feature ever surfaces: the PERSISTED row's own
 // `errorCode` (a PhotoPreviewApplicationErrorCode, always prefixed
