@@ -126,52 +126,56 @@ enum BillingWebhookEventStatus {
 }
 
 model User {
-  id                            String                         @id @default(uuid())
-  email                         String                         @unique
-  passwordHash                  String
-  role                          String
-  locale                        String
+  id                                String                             @id @default(uuid())
+  email                             String                             @unique
+  passwordHash                      String
+  role                              String
+  locale                            String
   // M26: null means unverified. No @default here on purpose -- every row
   // that exists before the M26 migration is explicitly backfilled to a
   // real, non-null timestamp by that migration itself; every row created
   // afterward starts genuinely null until the owner completes email
   // verification. A column default would blur that distinction.
-  emailVerifiedAt               DateTime?
-  createdAt                     DateTime                       @default(now())
-  sessions                      Session[]
-  clients                       Client[]
-  analyses                      Analysis[]
-  consultations                 Consultation[]
-  appointments                  Appointment[]
-  notifications                 Notification[]
-  webhooks                      WebhookEndpoint[]
-  billingCustomers              BillingCustomer[]
-  billingSubscriptions          BillingSubscription[]
-  billingPayments               BillingPayment[]
-  billingCheckoutLocks          BillingCheckoutLock[]
-  imageAnalysisProviderAttempts ImageAnalysisProviderAttempt[]
-  videoLessons                  VideoLesson[]
-  emailNotifications            EmailNotification[]
-  authTokens                    AuthToken[]
-  clientPhotos                  ClientPhoto[]
-  clientFormulas                ClientFormula[]
-  clientTreatments              ClientTreatment[]
-  analysisCorrections           AnalysisCorrection[]
-  consultationMessages          ConsultationMessage[]
-  professionalMemories          ProfessionalMemory[]         @relation("MemoryOwner")
-  professionalMemoryAudits      ProfessionalMemoryAudit[]    @relation("MemoryAuditActor")
-  voiceTranscripts              VoiceTranscript[]
-  aiUsageEvents                 AiUsageEvent[]
+  emailVerifiedAt                   DateTime?
+  createdAt                         DateTime                           @default(now())
+  sessions                          Session[]
+  clients                           Client[]
+  analyses                          Analysis[]
+  consultations                     Consultation[]
+  appointments                      Appointment[]
+  notifications                     Notification[]
+  webhooks                          WebhookEndpoint[]
+  billingCustomers                  BillingCustomer[]
+  billingSubscriptions              BillingSubscription[]
+  billingPayments                   BillingPayment[]
+  billingCheckoutLocks              BillingCheckoutLock[]
+  imageAnalysisProviderAttempts     ImageAnalysisProviderAttempt[]
+  videoLessons                      VideoLesson[]
+  emailNotifications                EmailNotification[]
+  authTokens                        AuthToken[]
+  clientPhotos                      ClientPhoto[]
+  clientFormulas                    ClientFormula[]
+  clientTreatments                  ClientTreatment[]
+  analysisCorrections               AnalysisCorrection[]
+  consultationMessages              ConsultationMessage[]
+  professionalMemories              ProfessionalMemory[]               @relation("MemoryOwner")
+  professionalMemoryAudits          ProfessionalMemoryAudit[]          @relation("MemoryAuditActor")
+  voiceTranscripts                  VoiceTranscript[]
+  aiUsageEvents                     AiUsageEvent[]
   // Phase 2 (AI Proposed Look). Virtual back-relation only -- produces no
   // column or constraint on "User"; the FK lives on "AnalysisProposal".
-  analysisProposals             AnalysisProposal[]
+  analysisProposals                 AnalysisProposal[]
   // Technical Visual Map, Stage 1. Virtual back-relation only -- produces no
   // column or constraint on "User"; the FK lives on "TechnicalVisualMap".
-  technicalVisualMaps           TechnicalVisualMap[]
+  technicalVisualMaps               TechnicalVisualMap[]
   // Technical Visual Map, Stage 5A. Virtual back-relation only -- produces
   // no column or constraint on "User"; the FK lives on
   // "TechnicalVisualMapSpatialBinding".
   technicalVisualMapSpatialBindings TechnicalVisualMapSpatialBinding[]
+  // Real AI Photo Preview, Stage 1. Virtual back-relation only -- produces
+  // no column or constraint on "User"; the FK lives on
+  // "PhotoPreviewGeneration".
+  photoPreviewGenerations           PhotoPreviewGeneration[]
 }
 
 model Session {
@@ -211,36 +215,40 @@ model AuthToken {
 }
 
 model Client {
-  id                   String                @id @default(uuid())
-  ownerUserId          String
-  fullName             String                @db.VarChar(200)
-  email                String?               @db.VarChar(320)
-  phone                String?               @db.VarChar(40)
-  notes                String?               @db.VarChar(4000)
-  deletedAt            DateTime?             @db.Timestamp(6)
-  createdAt            DateTime              @default(now()) @db.Timestamp(6)
-  updatedAt            DateTime              @updatedAt @db.Timestamp(6)
-  owner                User                  @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
-  analyses             Analysis[]
-  consultations        Consultation[]
-  appointments         Appointment[]
-  clientPhotos         ClientPhoto[]
-  clientFormulas       ClientFormula[]
-  clientTreatments     ClientTreatment[]
-  analysisCorrections  AnalysisCorrection[]
-  consultationMessages ConsultationMessage[]
-  professionalMemories ProfessionalMemory[]
-  voiceTranscripts     VoiceTranscript[]
+  id                                String                             @id @default(uuid())
+  ownerUserId                       String
+  fullName                          String                             @db.VarChar(200)
+  email                             String?                            @db.VarChar(320)
+  phone                             String?                            @db.VarChar(40)
+  notes                             String?                            @db.VarChar(4000)
+  deletedAt                         DateTime?                          @db.Timestamp(6)
+  createdAt                         DateTime                           @default(now()) @db.Timestamp(6)
+  updatedAt                         DateTime                           @updatedAt @db.Timestamp(6)
+  owner                             User                               @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  analyses                          Analysis[]
+  consultations                     Consultation[]
+  appointments                      Appointment[]
+  clientPhotos                      ClientPhoto[]
+  clientFormulas                    ClientFormula[]
+  clientTreatments                  ClientTreatment[]
+  analysisCorrections               AnalysisCorrection[]
+  consultationMessages              ConsultationMessage[]
+  professionalMemories              ProfessionalMemory[]
+  voiceTranscripts                  VoiceTranscript[]
   // Phase 2 (AI Proposed Look). Virtual back-relation only -- produces no
   // column or constraint on "Client"; the FK lives on "AnalysisProposal".
-  analysisProposals    AnalysisProposal[]
+  analysisProposals                 AnalysisProposal[]
   // Technical Visual Map, Stage 1. Virtual back-relation only -- produces no
   // column or constraint on "Client"; the FK lives on "TechnicalVisualMap".
-  technicalVisualMaps  TechnicalVisualMap[]
+  technicalVisualMaps               TechnicalVisualMap[]
   // Technical Visual Map, Stage 5A. Virtual back-relation only -- produces
   // no column or constraint on "Client"; the FK lives on
   // "TechnicalVisualMapSpatialBinding".
   technicalVisualMapSpatialBindings TechnicalVisualMapSpatialBinding[]
+  // Real AI Photo Preview, Stage 1. Virtual back-relation only -- produces
+  // no column or constraint on "Client"; the FK lives on
+  // "PhotoPreviewGeneration".
+  photoPreviewGenerations           PhotoPreviewGeneration[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -428,19 +436,19 @@ enum ConsultationMessageRole {
 // call to POST /api/v1/analysis/{id}/correct (creating a real
 // AnalysisCorrection row) ever changes professional data.
 model ConsultationMessage {
-  id                 String                  @id @default(uuid())
-  ownerUserId        String
-  clientId           String
-  analysisId         String?
-  role               ConsultationMessageRole
-  content            String                  @db.VarChar(4000)
-  proposedCorrection Json?
+  id                     String                  @id @default(uuid())
+  ownerUserId            String
+  clientId               String
+  analysisId             String?
+  role                   ConsultationMessageRole
+  content                String                  @db.VarChar(4000)
+  proposedCorrection     Json?
   // A suggested ProfessionalMemory candidate, exactly as returned by the AI
   // provider -- like proposedCorrection, this is ALWAYS only a suggestion.
   // Nothing here ever creates a ProfessionalMemory row automatically; only
   // an explicit, separate call to POST /api/v1/clients/{id}/memories (with
   // confirmed: true) does that.
-  proposedMemory     Json?
+  proposedMemory         Json?
   // Regression: Confirm/Edit/Reject reappeared as active buttons on
   // already-decided proposedMemory cards after every reload, because the
   // decision (confirmedMemoryIds/rejectedMemoryIds in consultation-chat.tsx)
@@ -454,7 +462,7 @@ model ConsultationMessage {
   // WHERE proposedMemoryDecision IS NULL, so a decision can never be
   // silently overwritten by a later, unrelated call).
   proposedMemoryDecision String?
-  createdAt          DateTime                @default(now()) @db.Timestamp(6)
+  createdAt              DateTime                @default(now()) @db.Timestamp(6)
 
   owner    User      @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   client   Client    @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
@@ -514,8 +522,8 @@ model ProfessionalMemory {
   createdAt       DateTime                 @default(now()) @db.Timestamp(6)
   updatedAt       DateTime                 @updatedAt @db.Timestamp(6)
 
-  owner  User    @relation("MemoryOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
-  client Client? @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict)
+  owner  User                      @relation("MemoryOwner", fields: [ownerUserId], references: [id], onDelete: Restrict)
+  client Client?                   @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict)
   audits ProfessionalMemoryAudit[]
 
   @@index([ownerUserId, status, scope, updatedAt])
@@ -646,11 +654,11 @@ model ImageAsset {
   width  Int?
   height Int?
 
-  uploadedAt         DateTime  @default(now())
+  uploadedAt         DateTime        @default(now())
   deletedAt          DateTime?
   retentionDeletesAt DateTime?
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
   analyses           ImageAnalysis[]
   analysisResults    Analysis[]
   // Technical Visual Map, Stage 5A. Virtual back-relation only -- produces no
@@ -1319,16 +1327,16 @@ model AiUsageEvent {
   clientId    String?
   analysisId  String?
 
-  feature       String          @db.VarChar(64)
-  modality      AiUsageModality
-  correlationId String          @db.VarChar(64)
-  attemptNumber Int             @default(1)
+  feature        String          @db.VarChar(64)
+  modality       AiUsageModality
+  correlationId  String          @db.VarChar(64)
+  attemptNumber  Int             @default(1)
   // Deterministically derived from (correlationId, attemptNumber) by the
   // one recording entry point (recordAiUsageEvent) when a caller does not
   // supply its own -- see Step 4's duplicate-submission requirement. A
   // unique-constraint violation on write is treated as "already recorded",
   // never as an error the caller sees.
-  idempotencyKey String @db.VarChar(160)
+  idempotencyKey String          @db.VarChar(160)
 
   provider          String  @db.VarChar(32)
   model             String  @db.VarChar(64)
@@ -1486,9 +1494,9 @@ model AnalysisProposal {
   createdAt DateTime @default(now()) @db.Timestamp(6)
   updatedAt DateTime @updatedAt @db.Timestamp(6)
 
-  owner    User     @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  client   Client   @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
-  analysis Analysis @relation(fields: [analysisId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+  owner               User                 @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client              Client               @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  analysis            Analysis             @relation(fields: [analysisId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
   // Technical Visual Map, Stage 1. Virtual back-relation only -- produces no
   // column or constraint here; the FK lives on "TechnicalVisualMap".
   technicalVisualMaps TechnicalVisualMap[]
@@ -1598,8 +1606,8 @@ model TechnicalVisualMap {
   // Set once, on confirm -- never edited afterward (enforced at the
   // repository layer in Stage 2, mirroring confirmedAt/rejectedAt on
   // AnalysisProposal).
-  confirmedAt   DateTime? @db.Timestamp(6)
-  supersededAt  DateTime? @db.Timestamp(6)
+  confirmedAt  DateTime? @db.Timestamp(6)
+  supersededAt DateTime? @db.Timestamp(6)
 
   createdAt DateTime @default(now()) @db.Timestamp(6)
   updatedAt DateTime @updatedAt @db.Timestamp(6)
@@ -1771,4 +1779,130 @@ model TechnicalVisualMapSpatialBinding {
   @@index([clientId, ownerUserId, technicalVisualMapId])
   @@index([technicalVisualMapId, ownerUserId, clientId, sourceImageAssetId, viewLabel, spatialVersion])
   @@index([ownerUserId, clientId, technicalVisualMapId, sourceImageAssetId, viewLabel, status])
+}
+
+// Real AI Photo Preview, Stage 1 -- the durable, auditable generation
+// artifact. This is NOT a professional authority object (unlike
+// AnalysisProposal/TechnicalVisualMap/TechnicalVisualMapSpatialBinding) --
+// it is a derived, disposable generation job/artifact, hence a distinct
+// REQUESTED | PROCESSING | COMPLETED | FAILED lifecycle rather than a
+// reused DRAFT | CONFIRMED | SUPERSEDED (task §5). No CANCELLED state is
+// added now: nothing in this codebase runs genuine cancellable worker
+// infrastructure yet (task §21/§22), so a CANCELLED value would be dead,
+// unreachable vocabulary.
+//
+// analysisProposalId / technicalVisualMapId (+ their own frozen version
+// anchors) and sourceImageAssetId / sourceImageAnalysisId are all
+// deliberately VALIDATED POINTERS, NOT enforced database foreign keys --
+// same established precedent as every other sourceImageAssetId in this
+// schema. Two reasons, not one: (1) TechnicalVisualMapSpatialBinding itself
+// has no `@@unique([id, ownerUserId, clientId])` today, so a real composite
+// FK to it would require ALSO migrating that already-shipped Stage 5C
+// table -- explicitly out of scope for this stage; (2) the real integrity
+// guarantee this row needs is "what was true at generation-request time,
+// forever", which frozen snapshot fields provide directly, exactly the same
+// reasoning TechnicalVisualMapSpatialBinding's own frozenWidth/frozenHeight
+// doc comment already gives for not leaning on a live relation for that
+// purpose. spatialBindingId is the one id this row's own lifecycle actually
+// depends on operationally (it is what request creation re-validates), but
+// even it stays a validated pointer here for the same reason.
+model PhotoPreviewGeneration {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  // Frozen pointer + version anchor. AnalysisProposal has no revision
+  // counter of its own (a replacement is a whole new row, never a revision
+  // in place) -- confirmedAt is therefore the correct "was this the exact
+  // confirmed proposal at generation-request time" anchor, mirroring how
+  // every other frozen-version field in this schema anchors to whatever
+  // that specific parent actually versions by.
+  analysisProposalId          String
+  analysisProposalConfirmedAt DateTime @db.Timestamp(6)
+
+  technicalVisualMapId String
+  mapVersion           Int
+
+  spatialBindingId String
+  spatialVersion   Int
+
+  // Required (not nullable) -- a generation request is by definition bound
+  // to a real image, same reasoning as
+  // TechnicalVisualMapSpatialBinding.sourceImageAssetId.
+  sourceImageAssetId    String
+  sourceImageAnalysisId String?
+
+  viewLabel String
+
+  // Frozen source-image identity snapshot -- same precedent as
+  // TechnicalVisualMapSpatialBinding.frozenWidth/frozenHeight/
+  // frozenOrientation/frozenContentSha256/frozenStorageVersionId, copied at
+  // creation time, never re-read live afterward.
+  frozenSourceWidth            Int
+  frozenSourceHeight           Int
+  frozenSourceOrientation      Int
+  frozenSourceContentSha256    String? @db.Char(64)
+  frozenSourceStorageVersionId String? @db.VarChar(1024)
+
+  // Plain strings, NOT Postgres enums -- same reasoning as every other
+  // provider/vertical/status field in this schema: a new candidate model or
+  // a future non-Gemini provider must never require a migration.
+  // Application-validated against a fixed allowlist
+  // (photo-preview-provider-config.ts) before this row is ever created.
+  provider String
+  model    String
+
+  generationSchemaVersion String
+
+  // The frozen SealedPhotoPreviewRequest (photo-preview-contracts.ts) --
+  // the one and only authoritative generation intent. Never the browser's
+  // own prompt; never provider-specific instruction prose (task §3/§12).
+  sealedRequest Json
+
+  // DB-level idempotency backstop (task §18/§20 -- "no application-only
+  // race protection"). Deterministically derived from the exact frozen
+  // scope + provider/model + variationIndex
+  // (computePhotoPreviewRequestFingerprint). The @@unique below is what
+  // makes two concurrent identical "Generate" submissions resolve to the
+  // SAME row rather than two billable jobs -- mirrors AiUsageEvent's own
+  // idempotencyKey precedent exactly, including its own documented
+  // "a unique-constraint violation on write means already recorded, never
+  // an error the caller sees" handling.
+  requestFingerprint String @db.VarChar(64)
+
+  // 0 for an ordinary "Generate" action; explicitly incremented only by a
+  // deliberate "Generate another variation" action (task §18/§29) -- never
+  // inferred, never auto-incremented by a retry.
+  variationIndex Int @default(0)
+
+  // REQUESTED -> PROCESSING -> COMPLETED | FAILED. Plain string, not an
+  // enum -- see this model's own header comment for why CANCELLED is
+  // deliberately absent for now.
+  status String
+
+  providerRequestId     String?
+  generatedImageAssetId String?
+
+  // Safe, closed-vocabulary failure codes only (task §31) -- never a raw
+  // provider stack trace or secret. errorMetadata is additional safe,
+  // structured context (e.g. a provider's own public error code), never
+  // free-form provider response dumps.
+  errorCode     String?
+  errorMetadata Json?
+
+  requestedAt DateTime  @default(now()) @db.Timestamp(6)
+  startedAt   DateTime? @db.Timestamp(6)
+  completedAt DateTime? @db.Timestamp(6)
+  failedAt    DateTime? @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner  User   @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client Client @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([requestFingerprint])
+  @@index([ownerUserId, clientId])
+  @@index([spatialBindingId, ownerUserId, clientId])
+  @@index([status])
 }
