@@ -47,14 +47,19 @@ export class ObjectStorageWriteModeRequiredError extends Error {
 // own real return type exactly.
 type ObjectStorageResolver = (bucketAlias: string) => ObjectStorage | null | Promise<ObjectStorage | null>;
 
-interface ObjectStorageWriteTarget {
+// Exported (unchanged, unbehaviored) -- Real AI Photo Preview, Stage 2 reuses
+// this exact write-target resolution + write function so a generated
+// preview's bytes go through the SAME durable S3/local storage decision an
+// uploaded photo does (photo-preview-output-storage.ts), rather than a
+// second, competing storage code path.
+export interface ObjectStorageWriteTarget {
   bucketAlias: string;
   resolve: ObjectStorageResolver;
 }
 
 // Resolved once per upload batch (not per-file), so every file in the same
 // request is classified identically -- deterministic, no per-file coin-flip.
-function resolveObjectStorageWriteTarget(): ObjectStorageWriteTarget | null {
+export function resolveObjectStorageWriteTarget(): ObjectStorageWriteTarget | null {
   const { mode } = validateObjectStorageWriteMode(process.env);
   if (mode !== 'enabled') {
     return null;
@@ -70,14 +75,18 @@ function resolveObjectStorageWriteTarget(): ObjectStorageWriteTarget | null {
   return { bucketAlias: config.bucketAlias, resolve: createObjectStorageAliasResolver() };
 }
 
-function resolveRuntimeMode(nodeEnv: string | undefined): ObjectStorageMode {
+// Exported alongside resolveObjectStorageWriteTarget above -- Real AI Photo
+// Preview, Stage 2 reuses this to apply the exact same production
+// enforcement ("never silently fall back to Railway's ephemeral local
+// disk") to generated preview output that already protects uploads.
+export function resolveRuntimeMode(nodeEnv: string | undefined): ObjectStorageMode {
   if (nodeEnv === 'production' || nodeEnv === 'development' || nodeEnv === 'test') {
     return nodeEnv;
   }
   return 'unknown';
 }
 
-async function writeImageToObjectStorage(
+export async function writeImageToObjectStorage(
   asset: ImageAsset,
   body: Buffer,
   contentType: string,

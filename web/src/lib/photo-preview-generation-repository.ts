@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 
 import { Prisma, type PhotoPreviewGeneration as PrismaPhotoPreviewGenerationRow } from "@prisma/client";
 
+import type { AiUsageQuantities } from "@/lib/ai-usage-contracts";
 import type { TechnicalCutPlan } from "@/lib/contracts";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 import {
@@ -310,22 +311,22 @@ export async function listPhotoPreviewGenerationsForBinding(
 }
 
 // ---------------------------------------------------------------------------
-// AiUsageEvent integration boundary (task §23) -- a PURE mapping function
-// only. Stage 1 makes zero real provider calls, so nothing in this module
-// ever calls recordAiUsageEvent (ai-usage-repository.ts) -- that would mean
-// fabricating usage for a call that never happened. This function exists so
-// a real Stage 2 provider adapter has an exact, already-agreed shape to
-// build a RecordAiUsageEventInput from once a real generation actually
-// completes or fails, without re-deriving the field mapping from scratch.
-// `usage` is deliberately omitted whenever the caller has none to report --
-// never coerced to a fabricated object of zeros (ai-usage-contracts.ts's
-// own "never fabricate" convention).
+// AiUsageEvent integration boundary (task §23, widened in Stage 2 now that
+// real usage data exists) -- a PURE mapping function only; it never itself
+// calls recordAiUsageEvent (ai-usage-repository.ts). `usage` is deliberately
+// omitted whenever the caller has none to report -- never coerced to a
+// fabricated object of zeros (ai-usage-contracts.ts's own "never fabricate"
+// convention). `attemptNumber` threads through the exact attempt number
+// claimPhotoPreviewGenerationForExecution returned, so a retried generation
+// meters each real attempt distinctly (task §22/§41) rather than
+// conflating them under attempt 1.
 // ---------------------------------------------------------------------------
 
 export interface PhotoPreviewUsageEventBoundaryInput {
   outcome: "SUCCEEDED" | "FAILED";
   providerRequestId?: string | null;
-  imageCount?: number;
+  usage?: AiUsageQuantities;
+  attemptNumber?: number;
   errorCategory?: string | null;
   latencyMs?: number;
 }
@@ -336,10 +337,11 @@ export interface PhotoPreviewUsageEventBoundaryOutput {
   feature: "photo_preview";
   modality: "IMAGE_GENERATION";
   correlationId: string;
+  attemptNumber?: number;
   provider: string;
   model: string;
   providerRequestId?: string;
-  usage?: { imageCount: number };
+  usage?: AiUsageQuantities;
   outcome: "SUCCEEDED" | "FAILED";
   errorCategory?: string;
   latencyMs?: number;
@@ -358,10 +360,11 @@ export function buildPhotoPreviewUsageEventInput(
     // provider attempt for this exact request (first try, any retry) shares
     // it, mirroring AiUsageEvent's own correlationId/attemptNumber contract.
     correlationId: generation.id,
+    ...(outcome.attemptNumber !== undefined ? { attemptNumber: outcome.attemptNumber } : {}),
     provider: generation.provider,
     model: generation.model,
     ...(outcome.providerRequestId ? { providerRequestId: outcome.providerRequestId } : {}),
-    ...(outcome.imageCount !== undefined ? { usage: { imageCount: outcome.imageCount } } : {}),
+    ...(outcome.usage ? { usage: outcome.usage } : {}),
     outcome: outcome.outcome,
     ...(outcome.errorCategory ? { errorCategory: outcome.errorCategory } : {}),
     ...(outcome.latencyMs !== undefined ? { latencyMs: outcome.latencyMs } : {}),

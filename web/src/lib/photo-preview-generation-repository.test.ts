@@ -344,17 +344,23 @@ suite("photo-preview-generation-repository (real AI Photo Preview, Stage 1 domai
     const { binding } = await createConfirmedChain(ownerUserId, clientId);
     const outcome = await createPhotoPreviewGeneration(ownerUserId, clientId, binding.id, "gemini", "gemini-3.1-flash-image");
 
-    const succeeded = buildPhotoPreviewUsageEventInput(outcome.record, { outcome: "SUCCEEDED", providerRequestId: "req-123", imageCount: 1 });
+    const succeeded = buildPhotoPreviewUsageEventInput(outcome.record, {
+      outcome: "SUCCEEDED",
+      providerRequestId: "req-123",
+      usage: { imageCount: 1, inputTokens: 500, outputTokens: 1290 },
+      attemptNumber: 1,
+    });
     expect(succeeded).toMatchObject({
       ownerUserId,
       clientId,
       feature: "photo_preview",
       modality: "IMAGE_GENERATION",
       correlationId: outcome.record.id,
+      attemptNumber: 1,
       provider: "gemini",
       model: "gemini-3.1-flash-image",
       providerRequestId: "req-123",
-      usage: { imageCount: 1 },
+      usage: { imageCount: 1, inputTokens: 500, outputTokens: 1290 },
       outcome: "SUCCEEDED",
     });
 

@@ -324,7 +324,11 @@ export async function processImageAnalysis(
   }
 }
 
-class ProcessingPreClaimError extends Error {
+// Exported alongside loadValidatedImageBuffer above -- a caller reusing that
+// function needs to be able to recognize (via instanceof) and map its one
+// thrown error type, since its `code` is drawn from this module's own
+// ProcessingResultCode vocabulary.
+export class ProcessingPreClaimError extends Error {
   constructor(readonly code: ProcessingResultCode) {
     super(code);
     this.name = "ProcessingPreClaimError";
@@ -333,7 +337,12 @@ class ProcessingPreClaimError extends Error {
 
 class OversizedStreamError extends Error {}
 
-interface AssetStorageRow {
+// Exported (unchanged, unbehaviored) -- Real AI Photo Preview, Stage 2's own
+// executor reuses this exact dual-backend (S3 / legacy-local) read +
+// integrity-verification logic to load a generation's frozen source image,
+// rather than a second, competing implementation of the same S3 get()/
+// head()/hash-verification dance (photo-preview-execution-service.ts).
+export interface AssetStorageRow {
   id: string;
   ownerUserId: string;
   clientId: string;
@@ -344,7 +353,7 @@ interface AssetStorageRow {
   contentSha256: string | null;
 }
 
-async function loadValidatedImageBuffer(
+export async function loadValidatedImageBuffer(
   asset: AssetStorageRow,
   resolveObjectStorage: (bucketAlias: string) => ObjectStorage | null | Promise<ObjectStorage | null>,
 ): Promise<Buffer> {

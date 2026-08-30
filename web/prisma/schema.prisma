@@ -640,6 +640,20 @@ model ImageAsset {
   exifStripped          Boolean                 @default(false)
   normalizedOrientation Int                     @default(0)
 
+  // Real AI Photo Preview, Stage 2 -- the provenance/trust-boundary
+  // discriminator Stage 0's own audit identified as a real gap: every row
+  // before this stage is implicitly "a client upload", and the default
+  // ("upload") keeps that true for all of them with no backfill needed.
+  // "ai_generated" is set ONLY by photo-preview-output-storage.ts, for a
+  // Photo Preview provider's own output -- never by the ordinary upload
+  // path. Plain string, not an enum -- same reasoning as every other
+  // lifecycle/category field in this schema (a future third origin must
+  // never require a migration). This is what makes it structurally
+  // possible to tell a generated preview apart from a real client photo
+  // (e.g. so it can never silently become new Analysis evidence) without
+  // a second, parallel asset table.
+  origin String @default("upload")
+
   // Technical Visual Map, Stage 5A -- dimensions of the NORMALIZED/STORED
   // bytes this asset actually persists and /content serves (post-EXIF-
   // orientation-correction, post-re-encode), never pre-normalization EXIF
@@ -1894,6 +1908,19 @@ model PhotoPreviewGeneration {
   startedAt   DateTime? @db.Timestamp(6)
   completedAt DateTime? @db.Timestamp(6)
   failedAt    DateTime? @db.Timestamp(6)
+
+  // Real AI Photo Preview, Stage 2 -- how many times a real provider
+  // attempt has been claimed for THIS ONE generation row (never reset).
+  // Distinct from variationIndex, which distinguishes separate generation
+  // ARTIFACTS -- this counts retries of the SAME artifact's own provider
+  // call, bounded by MAX_PROVIDER_ATTEMPTS_PER_GENERATION
+  // (photo-preview-execution-repository.ts), mirroring the exact existing
+  // attemptCount precedent used elsewhere in this schema (e.g.
+  // WebhookDelivery, BackupRestoreRun). The full per-attempt audit trail
+  // (provider/model/usage/cost per attempt) lives in AiUsageEvent, keyed by
+  // correlationId = this row's own id -- a separate attempt-log table would
+  // duplicate what AiUsageEvent already records.
+  attemptCount Int @default(0)
 
   createdAt DateTime @default(now()) @db.Timestamp(6)
   updatedAt DateTime @updatedAt @db.Timestamp(6)

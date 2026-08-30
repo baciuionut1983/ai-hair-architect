@@ -1,3 +1,4 @@
+import type { AiUsageQuantities } from '@/lib/ai-usage-contracts';
 import type { SealedPhotoPreviewRequest } from '@/lib/photo-preview-contracts';
 
 // Real AI Photo Preview, Stage 1 -- the provider boundary. Mirrors
@@ -17,7 +18,21 @@ export interface PhotoPreviewSourceImageBytes {
 }
 
 export interface PhotoPreviewProviderError extends Error {
-  code: 'TIMEOUT' | 'MODERATION_REFUSED' | 'RATE_LIMITED' | 'INVALID_SOURCE_IMAGE' | 'PROVIDER_ERROR' | 'NOT_CONFIGURED' | 'NOT_IMPLEMENTED';
+  code:
+    | 'TIMEOUT'
+    | 'MODERATION_REFUSED'
+    | 'RATE_LIMITED'
+    | 'INVALID_SOURCE_IMAGE'
+    // Real AI Photo Preview, Stage 2 -- a well-formed response that never
+    // actually contained the requested image (no candidate, no inlineData
+    // part anywhere, or malformed content) -- distinct from PROVIDER_ERROR
+    // (a genuine transport/service failure) and from MODERATION_REFUSED (an
+    // explicit safety block) -- task §14/§31's own required "response with
+    // no image rejected" case.
+    | 'INVALID_RESPONSE'
+    | 'PROVIDER_ERROR'
+    | 'NOT_CONFIGURED'
+    | 'NOT_IMPLEMENTED';
   retryable: boolean;
 }
 
@@ -30,10 +45,11 @@ export interface PhotoPreviewGenerationOutcome {
   providerRequestId?: string;
   // Absent whenever the provider call never exposed real usage metadata --
   // mirrors AiUsageQuantities's own "never fabricate a zero" convention
-  // (ai-usage-contracts.ts) exactly. Kept optional and untyped-to-a-fixed-
-  // shape here on purpose: Stage 1 defines the BOUNDARY only (task §23),
-  // the real quantities a generation call exposes are a Stage 2 concern.
-  usage?: { imageCount?: number };
+  // (ai-usage-contracts.ts) exactly. The real, provider-neutral shape
+  // (Real AI Photo Preview, Stage 2's Gemini adapter populates real token
+  // counts here via gemini-usage-mapper.ts, plus imageCount when an image
+  // was actually produced -- never a fabricated count).
+  usage?: AiUsageQuantities;
 }
 
 export abstract class PhotoPreviewProvider {
