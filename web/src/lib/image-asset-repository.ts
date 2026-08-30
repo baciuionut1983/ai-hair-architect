@@ -1,6 +1,55 @@
 import type { ClientPhotoRecord } from "@/lib/contracts";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 
+// Technical Visual Map, Stage 5C -- a source image is "eligible" for spatial
+// binding creation only when its normalized dimensions are known (Stage 5B's
+// own createDraftSpatialBinding already enforces this server-side; this is
+// purely a UI-facing "which images can I even offer" list, computed the same
+// way). Deliberately a NEW, separate read -- not an extension of
+// listImageAssetPhotosForClient/ClientPhotoRecord above, which back the
+// protected client History tab and carry no width/height field; adding one
+// there would risk that unrelated, already-shipped feature for no benefit.
+export interface EligibleSpatialSourceImage {
+  id: string;
+  fileName: string;
+  width: number;
+  height: number;
+  uploadedAt: string;
+  imageUrl: string;
+}
+
+export async function listEligibleSpatialSourceImagesForClient(
+  ownerUserId: string,
+  clientId: string,
+): Promise<EligibleSpatialSourceImage[]> {
+  if (!isDatabaseConfigured()) {
+    throw new ImageAssetPersistenceError();
+  }
+
+  try {
+    const rows = await prisma.imageAsset.findMany({
+      where: { ownerUserId, clientId, deletedAt: null, width: { not: null }, height: { not: null } },
+      orderBy: [{ uploadedAt: "desc" }, { id: "desc" }],
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      fileName: row.fileName,
+      // The `where` clause above already guarantees these are non-null;
+      // Prisma's own generated type still reports `number | null` for a
+      // nullable column regardless of the filter, hence the assertion here
+      // rather than a redundant runtime re-check.
+      width: row.width as number,
+      height: row.height as number,
+      uploadedAt: row.uploadedAt.toISOString(),
+      imageUrl: `/api/v1/image-assets/${row.id}/content`,
+    }));
+  } catch (error) {
+    if (error instanceof ImageAssetPersistenceError) throw error;
+    throw new ImageAssetPersistenceError();
+  }
+}
+
 export const IMAGE_ASSET_PERSISTENCE_ERROR_CODE = "IMAGE_ASSET_PERSISTENCE_UNAVAILABLE";
 
 export class ImageAssetPersistenceError extends Error {

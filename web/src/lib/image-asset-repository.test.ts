@@ -16,6 +16,7 @@ import {
   ImageAssetPersistenceError,
   imageAssetPersistenceUnavailableResponse,
   isImageAssetPersistenceError,
+  listEligibleSpatialSourceImagesForClient,
   listImageAssetPhotosForClient,
 } from "@/lib/image-asset-repository";
 
@@ -123,5 +124,55 @@ describe("listImageAssetPhotosForClient", () => {
     const response = imageAssetPersistenceUnavailableResponse();
     expect(response.status).toBe(503);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
+  });
+});
+
+describe("listEligibleSpatialSourceImagesForClient", () => {
+  it("returns only assets with known width/height, mapped to the eligible-image shape", async () => {
+    prismaMocks.imageAssetFindMany.mockResolvedValue([assetRow({ width: 1080, height: 1440 })]);
+
+    const result = await listEligibleSpatialSourceImagesForClient("owner-1", "client-1");
+
+    expect(result).toEqual([
+      {
+        id: "asset-1",
+        fileName: "before.jpg",
+        width: 1080,
+        height: 1440,
+        uploadedAt: "2026-08-10T10:00:00.000Z",
+        imageUrl: "/api/v1/image-assets/asset-1/content",
+      },
+    ]);
+  });
+
+  it("filters out assets with null width/height at the query level, not client-side", async () => {
+    prismaMocks.imageAssetFindMany.mockResolvedValue([]);
+
+    await listEligibleSpatialSourceImagesForClient("owner-1", "client-1");
+
+    expect(prismaMocks.imageAssetFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ width: { not: null }, height: { not: null } }),
+      }),
+    );
+  });
+
+  it("scopes strictly by owner and client, and excludes soft-deleted assets", async () => {
+    prismaMocks.imageAssetFindMany.mockResolvedValue([]);
+    await listEligibleSpatialSourceImagesForClient("owner-1", "client-1");
+    expect(prismaMocks.imageAssetFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ ownerUserId: "owner-1", clientId: "client-1", deletedAt: null }) }),
+    );
+  });
+
+  it("never includes a storage key, bucket, or storage path", async () => {
+    prismaMocks.imageAssetFindMany.mockResolvedValue([assetRow({ width: 640, height: 480, storagePath: "s3://secret-bucket/key" })]);
+    const [image] = await listEligibleSpatialSourceImagesForClient("owner-1", "client-1");
+    expect(image.imageUrl).not.toContain("s3://");
+  });
+
+  it("fails closed when the database is not configured", async () => {
+    prismaMocks.configured = false;
+    await expect(listEligibleSpatialSourceImagesForClient("owner-1", "client-1")).rejects.toBeInstanceOf(ImageAssetPersistenceError);
   });
 });

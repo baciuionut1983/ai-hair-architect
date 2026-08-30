@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Alert, Button, ErrorState, LoadingState } from "@/components/ui";
 import type { MapAdjustmentEntry } from "@/lib/technical-visual-map-validators";
 
+import { SpatialBindingSection } from "./spatial-binding-section";
 import { CurrentTechnicalVisualMap } from "./technical-visual-map-current";
 import { TechnicalVisualMapDraftEditor } from "./technical-visual-map-draft-editor";
 import { TechnicalVisualMapHistoryList } from "./technical-visual-map-history";
@@ -113,6 +114,15 @@ export function TechnicalVisualMapSection({ clientId, proposalId }: TechnicalVis
       )}
 
       {current && currentEffective ? <CurrentTechnicalVisualMap map={current} effectiveMap={currentEffective} /> : null}
+
+      {/* Technical Visual Map, Stage 5C -- Spatial Mapping is available ONLY
+          when a CONFIRMED semantic map exists (eligibility requirement #2):
+          a spatial binding can only ever be created from a CONFIRMED
+          TechnicalVisualMap, so there is nothing legitimate to offer before
+          that point. Keyed on `current.id` for the exact same reason the
+          confirmed map card itself needs no key here -- this whole section
+          only ever renders for one exact, stable CONFIRMED map at a time. */}
+      {current ? <SpatialBindingSection key={current.id} clientId={clientId} proposalId={proposalId} technicalVisualMapId={current.id} /> : null}
 
       {history.length > 0 ? (
         <div className="flex flex-col gap-2">
