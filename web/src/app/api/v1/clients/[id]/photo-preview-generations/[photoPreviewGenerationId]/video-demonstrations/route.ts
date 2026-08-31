@@ -15,6 +15,7 @@ import {
 } from "@/lib/video-generation-repository";
 import { executeVideoDemonstrationGeneration } from "@/lib/video-generation-execution-service";
 import { VIDEO_DEMONSTRATION_ALLOWED_VEO_MODELS, resolveVideoDemonstrationProviderConfig } from "@/lib/video-generation-provider-config";
+import { toVideoDemonstrationStatusView } from "@/lib/video-demonstration-status-view";
 import { isRecord } from "@/lib/technical-visual-map-validators";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
@@ -89,7 +90,7 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
 
   try {
     const generations = await listVideoDemonstrationGenerationsForPhotoPreview(sessionUser.id, id, photoPreviewGenerationId);
-    return NextResponse.json({ generations }, { status: 200 });
+    return NextResponse.json({ generations: generations.map(toVideoDemonstrationStatusView) }, { status: 200 });
   } catch (error) {
     return mapDomainError(error);
   }
@@ -161,11 +162,11 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     // to an already-PROCESSING/COMPLETED/FAILED row): claim/poll both
     // no-op correctly for a row that is not currently eligible for their
     // respective phase.
-    const executed = await executeVideoDemonstrationGeneration(outcome.record.id, sessionUser.id);
+    await executeVideoDemonstrationGeneration(outcome.record.id, sessionUser.id);
     const latest = await findVideoDemonstrationGenerationForOwner(sessionUser.id, outcome.record.id);
 
     const status = outcome.created ? 201 : 200;
-    return NextResponse.json({ generation: latest ?? outcome.record, executionOutcome: executed }, { status });
+    return NextResponse.json({ generation: toVideoDemonstrationStatusView(latest ?? outcome.record) }, { status });
   } catch (error) {
     return mapDomainError(error);
   }

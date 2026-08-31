@@ -11,6 +11,7 @@ import {
   markVideoDemonstrationGenerationCompleted,
   markVideoDemonstrationGenerationFailed,
   markVideoDemonstrationGenerationSubmitted,
+  scheduleVideoDemonstrationNextPoll,
 } from "@/lib/video-generation-execution-repository";
 import { resolveVideoDemonstrationProviderConfig } from "@/lib/video-generation-provider-config";
 import { VeoVideoDemonstrationProvider } from "@/lib/video-provider-veo";
@@ -19,6 +20,7 @@ import { persistGeneratedVideoDemonstrationAsset, VideoAssetStorageError } from 
 import { ProcessingPreClaimError, loadValidatedImageBuffer, type AssetStorageRow } from "@/lib/image-analysis-processing-service";
 import { createObjectStorageAliasResolver } from "@/lib/object-storage-alias-resolver";
 import type { ObjectStorage } from "@/lib/object-storage";
+import { computeVideoDemonstrationNextPollDelayMs, isVideoDemonstrationProcessingStale } from "@/lib/video-worker-policy";
 import { prisma } from "@/lib/prisma";
 
 // Real AI Video Demonstration, Stage 1 -- the execution orchestrator.
@@ -55,6 +57,7 @@ export type VideoDemonstrationExecutionResultCode =
   | "PROVIDER_INVALID_RESPONSE"
   | "OPERATION_NOT_FOUND"
   | "STORAGE_FAILED"
+  | "PROCESSING_TIMEOUT"
   | "PERSISTENCE_FAILURE"
   | "INTERNAL_EXECUTION_FAILURE";
 
@@ -69,7 +72,8 @@ export type VideoDemonstrationApplicationErrorCode =
   | "VIDEO_DEMONSTRATION_OPERATION_NOT_FOUND"
   | "VIDEO_DEMONSTRATION_STORAGE_FAILED"
   | "VIDEO_DEMONSTRATION_SOURCE_UNAVAILABLE"
-  | "VIDEO_DEMONSTRATION_CONFIGURATION_ERROR";
+  | "VIDEO_DEMONSTRATION_CONFIGURATION_ERROR"
+  | "VIDEO_DEMONSTRATION_PROCESSING_TIMEOUT";
 
 export type VideoDemonstrationExecutionResult =
   | { outcome: "submitted"; generation: VideoDemonstrationGenerationRecord }
@@ -247,23 +251,59 @@ interface PollExistingOperationInput {
 
 async function pollExistingOperation(input: PollExistingOperationInput): Promise<VideoDemonstrationExecutionResult> {
   const { generation, config, createProvider, recordUsage, persistVideo, now, dependencies } = input;
-  const provider = createProvider({ apiKey: config.apiKey, model: generation.model, timeoutMs: config.timeoutMs });
   const usageCorrelationBase = { ownerUserId: generation.ownerUserId, clientId: generation.clientId, provider: generation.provider, model: generation.model, id: generation.id };
+
+  // Stage 3, task §7 -- checked BEFORE spending a real poll call: a job
+  // PROCESSING far longer than Veo's own documented maximum is treated as
+  // unrecoverable under this row (see video-worker-policy.ts's own doc
+  // comment for the exact reasoning and threshold). submittedAt is always
+  // set by this point (only reachable once providerOperationId is set).
+  if (generation.submittedAt && isVideoDemonstrationProcessingStale(new Date(generation.submittedAt), now)) {
+    return finalizeFailure({
+      generationId: generation.id,
+      ownerUserId: generation.ownerUserId,
+      now,
+      dependencies,
+      code: "VIDEO_DEMONSTRATION_PROCESSING_TIMEOUT",
+      retryable: false,
+      resultCode: "PROCESSING_TIMEOUT",
+    });
+  }
+
+  const provider = createProvider({ apiKey: config.apiKey, model: generation.model, timeoutMs: config.timeoutMs });
   const pollStartedAt = Date.now();
+  const elapsedSinceSubmittedMs = generation.submittedAt ? now.getTime() - new Date(generation.submittedAt).getTime() : 0;
 
   let pollResult: Awaited<ReturnType<VideoDemonstrationProvider["poll"]>>;
   try {
     pollResult = await provider.poll(generation.providerOperationId as string);
   } catch (error) {
     const { code, resultCode, retryable } = classifyProviderFailure(error);
-    // A poll-detected terminal failure (e.g. a moderation block discovered
-    // only once the provider finished evaluating the job) is metered here,
-    // under the SAME attemptCount the submit that started this exact
-    // operation was recorded under -- this is the one place a submit's
-    // eventual real-world outcome is knowable, and per Veo's own billing
-    // policy (this function's sibling comment in the submit branch above),
-    // a failed/blocked generation was never charged, so FAILED here
-    // correctly represents zero real cost, not a double-counted attempt.
+
+    if (retryable) {
+      // Stage 3 correctness fix (see markVideoDemonstrationGenerationFailed's
+      // own extensive comment): a RETRYABLE poll failure tells us nothing
+      // about whether the underlying operation succeeded or is still
+      // genuinely running -- it must NEVER route through finalizeFailure
+      // (which could requeue to REQUESTED and risk a real resubmission of
+      // an operation that might still be alive). Never metered either --
+      // no outcome is known yet. Just reschedule the next poll attempt.
+      const nextPollAt = new Date(now.getTime() + computeVideoDemonstrationNextPollDelayMs(elapsedSinceSubmittedMs));
+      try {
+        await scheduleVideoDemonstrationNextPoll(generation.id, generation.ownerUserId, nextPollAt);
+      } catch {
+        return failure("PERSISTENCE_FAILURE");
+      }
+      return { outcome: "requeued_for_retry", code: resultCode };
+    }
+
+    // Non-retryable -- a genuine, provider-confirmed terminal outcome
+    // (e.g. a moderation block discovered only once the provider finished
+    // evaluating the job). Metered here, under the SAME attemptCount the
+    // submit that started this exact operation was recorded under -- per
+    // Veo's own billing policy (this function's sibling comment in the
+    // submit branch above), a failed/blocked generation was never
+    // charged, so FAILED here correctly represents zero real cost.
     try {
       await recordUsage(buildVideoDemonstrationUsageEventInput(usageCorrelationBase, { outcome: "FAILED", attemptNumber: generation.attemptCount, errorCategory: resultCode, latencyMs: Date.now() - pollStartedAt }));
     } catch {
@@ -274,6 +314,13 @@ async function pollExistingOperation(input: PollExistingOperationInput): Promise
   }
 
   if (!pollResult.done) {
+    // Genuinely still processing, no error -- reschedule the next sweep
+    // poll (task §6: bounded backoff, never a tight loop). Failure to
+    // persist this is non-fatal to THIS response (the caller still
+    // correctly learns "still processing"); it only means the sweep might
+    // poll again sooner than ideal next time, never a correctness issue.
+    const nextPollAt = new Date(now.getTime() + computeVideoDemonstrationNextPollDelayMs(elapsedSinceSubmittedMs));
+    await scheduleVideoDemonstrationNextPoll(generation.id, generation.ownerUserId, nextPollAt).catch(() => undefined);
     return { outcome: "still_processing", generation };
   }
 

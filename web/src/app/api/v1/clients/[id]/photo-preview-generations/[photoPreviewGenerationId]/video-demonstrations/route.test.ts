@@ -78,8 +78,21 @@ import { GET, POST } from "./route";
 const OWNER = { id: "owner-1", email: "owner@example.com", role: "professional", locale: "en" };
 const CLIENT = { id: "client-1", ownerUserId: "owner-1" };
 const PHOTO_PREVIEW = { id: "pp-1", clientId: "client-1", status: "COMPLETED" };
-const GENERATION_REQUESTED = { id: "gen-1", ownerUserId: "owner-1", clientId: "client-1", photoPreviewGenerationId: "pp-1", status: "REQUESTED" };
-const GENERATION_PROCESSING = { ...GENERATION_REQUESTED, status: "PROCESSING", providerOperationId: "op-1" };
+const GENERATION_REQUESTED = {
+  id: "gen-1",
+  ownerUserId: "owner-1",
+  clientId: "client-1",
+  photoPreviewGenerationId: "pp-1",
+  status: "REQUESTED",
+  variationIndex: 0,
+  requestedAt: "2026-08-29T10:00:00.000Z",
+  startedAt: null,
+  completedAt: null,
+  failedAt: null,
+  errorCode: null,
+  generatedVideoAssetId: null,
+};
+const GENERATION_PROCESSING = { ...GENERATION_REQUESTED, status: "PROCESSING", providerOperationId: "op-1", startedAt: "2026-08-29T10:00:01.000Z" };
 
 function ctx(id = "client-1", photoPreviewGenerationId = "pp-1") {
   return { params: Promise.resolve({ id, photoPreviewGenerationId }) };
@@ -107,7 +120,10 @@ describe("POST /clients/[id]/photo-preview-generations/[photoPreviewGenerationId
     expect(response.status).toBe(201);
     const body = await response.json();
     expect(body.generation.status).toBe("PROCESSING");
-    expect(body.executionOutcome.outcome).toBe("submitted");
+    // Stage 3: the safe status view only -- no raw execution-outcome
+    // object, no providerOperationId ever exposed.
+    expect(body.executionOutcome).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain("providerOperationId");
     expect(generationRepositoryMock.createVideoDemonstrationGeneration).toHaveBeenCalledWith("owner-1", "client-1", "pp-1", "google", "veo-3.1-lite-generate-preview");
   });
 
@@ -181,12 +197,27 @@ describe("POST /clients/[id]/photo-preview-generations/[photoPreviewGenerationId
 });
 
 describe("GET /clients/[id]/photo-preview-generations/[photoPreviewGenerationId]/video-demonstrations", () => {
-  it("lists every generation for this exact (client, Photo Preview) scope", async () => {
+  it("lists every generation for this exact (client, Photo Preview) scope, through the safe status view", async () => {
     generationRepositoryMock.listVideoDemonstrationGenerationsForPhotoPreview.mockResolvedValue([GENERATION_REQUESTED]);
     const response = await GET(new Request("http://localhost/api"), ctx());
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.generations).toEqual([GENERATION_REQUESTED]);
+    expect(body.generations).toEqual([
+      {
+        id: "gen-1",
+        photoPreviewGenerationId: "pp-1",
+        clientId: "client-1",
+        status: "REQUESTED",
+        variationIndex: 0,
+        createdAt: "2026-08-29T10:00:00.000Z",
+        processingStartedAt: null,
+        completedAt: null,
+        failedAt: null,
+        failureMessage: null,
+        resultAsset: null,
+        retryEligible: false,
+      },
+    ]);
   });
 
   it("a nonexistent/foreign Photo Preview id resolves to a generic 404, never an empty list", async () => {

@@ -14,8 +14,22 @@ import { POST } from "./route";
 
 const OWNER = { id: "owner-1", email: "owner@example.com", role: "professional", locale: "en" };
 const CLIENT = { id: "client-1", ownerUserId: "owner-1" };
-const GENERATION_PROCESSING = { id: "gen-1", ownerUserId: "owner-1", clientId: "client-1", status: "PROCESSING", providerOperationId: "op-1" };
-const GENERATION_COMPLETED = { ...GENERATION_PROCESSING, status: "COMPLETED", generatedVideoAssetId: "asset-1" };
+const GENERATION_PROCESSING = {
+  id: "gen-1",
+  ownerUserId: "owner-1",
+  clientId: "client-1",
+  photoPreviewGenerationId: "pp-1",
+  status: "PROCESSING",
+  variationIndex: 0,
+  providerOperationId: "op-1",
+  requestedAt: "2026-08-29T10:00:00.000Z",
+  startedAt: "2026-08-29T10:00:05.000Z",
+  completedAt: null,
+  failedAt: null,
+  errorCode: null,
+  generatedVideoAssetId: null,
+};
+const GENERATION_COMPLETED = { ...GENERATION_PROCESSING, status: "COMPLETED", completedAt: "2026-08-29T10:01:00.000Z", generatedVideoAssetId: "asset-1" };
 
 function ctx(id = "client-1", generationId = "gen-1") {
   return { params: Promise.resolve({ id, generationId }) };
@@ -39,7 +53,11 @@ describe("POST /clients/[id]/video-demonstrations/[generationId]/execute", () =>
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.generation.status).toBe("COMPLETED");
-    expect(body.executionOutcome.outcome).toBe("completed");
+    expect(body.generation.resultAsset).toEqual({ assetId: "asset-1" });
+    // Stage 3: the response is the safe status view only -- no raw
+    // execution-outcome object, no providerOperationId.
+    expect(body.executionOutcome).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain("providerOperationId");
     expect(executionServiceMock.executeVideoDemonstrationGeneration).toHaveBeenCalledWith("gen-1", "owner-1");
   });
 

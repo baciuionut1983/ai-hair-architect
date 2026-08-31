@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
+import { computeVideoDemonstrationNextPollDelayMs } from "@/lib/video-worker-policy";
 
 // Real AI Video Demonstration, Stage 1 -- durable claim/submitted/
 // completion/failure semantics. Mirrors photo-preview-execution-repository.ts's
@@ -166,8 +167,12 @@ export async function markVideoDemonstrationGenerationSubmitted(
           // completionClaimedAt is reset here too -- a stale value from an
           // earlier, already-failed/requeued attempt on this same row must
           // never suppress the completion claim for THIS fresh operation
-          // (see the schema's own field comment).
-          data: { providerOperationId, submittedAt: now, completionClaimedAt: null },
+          // (see the schema's own field comment). nextPollAt is seeded to
+          // the first backoff tier (Stage 3, task §6) -- Veo's own
+          // documented floor is 11 seconds, so an immediate sweep poll
+          // right after submit would almost always just observe
+          // done:false; seeding it avoids that one predictable wasted call.
+          data: { providerOperationId, submittedAt: now, completionClaimedAt: null, nextPollAt: new Date(now.getTime() + computeVideoDemonstrationNextPollDelayMs(0)) },
         });
         if (claimed.count !== 1) {
           throw new VideoDemonstrationExecutionStateError();
@@ -289,17 +294,37 @@ export interface MarkVideoDemonstrationGenerationFailedResult {
 }
 
 /**
- * Legal only while the row is currently PROCESSING. If `retryable` and the
- * submit-attempt cap has not been reached, the row returns to REQUESTED --
- * eligible for a LATER claim, never an immediate in-process retry. This is
- * safe regardless of whether providerOperationId was already set: Veo's own
- * documented billing policy is "you are only charged if your video is
- * successfully generated" (Video Stage 0, task §7, cited from
- * ai.google.dev/gemini-api/docs/veo), so a failed/blocked operation was
- * never billed, and letting it be retried is not a double-spend risk. The
- * providerOperationId field is intentionally left untouched on failure --
- * it remains as a permanent audit trail of the attempt, even after the row
- * moves back to REQUESTED for a fresh one.
+ * Legal only while the row is currently PROCESSING. Requeues to REQUESTED
+ * (eligible for a LATER claim, never an immediate in-process retry) ONLY
+ * when `retryable` AND the submit-attempt cap has not been reached AND --
+ * critically -- providerOperationId is still null.
+ *
+ * Stage 3 correctness fix: Stage 1/2's own version of this function
+ * requeued to REQUESTED whenever `retryable` was true, REGARDLESS of
+ * whether providerOperationId was already set, reasoning that Veo's "only
+ * charged if successfully generated" policy made this safe. That reasoning
+ * is correct for a SUBMIT-phase failure (no operation was ever created --
+ * nothing to duplicate) but WRONG for a POLL-phase failure: a retryable
+ * poll error (a network hiccup, a transient 5xx checking status) tells us
+ * NOTHING about whether the underlying operation succeeded or is still
+ * genuinely running -- it is a failure to CHECK, not evidence the
+ * generation failed. Requeuing such a row to REQUESTED would make it
+ * eligible for claimVideoDemonstrationGenerationForSubmit again (which
+ * only checks `status === REQUESTED`, never providerOperationId), and the
+ * next execution would call provider.submit() a SECOND time while the
+ * FIRST real operation might still be alive -- exactly the duplicate-paid-
+ * generation risk this whole file exists to prevent.
+ *
+ * This function is therefore now the correct, safe choice ONLY for (a) any
+ * non-retryable failure (always terminal FAILED, any phase) and (b) a
+ * SUBMIT-phase retryable failure (providerOperationId still null -- safe
+ * to requeue, nothing to duplicate). A RETRYABLE POLL-PHASE failure must
+ * use markVideoDemonstrationGenerationForPollRetry instead (below), which
+ * keeps the row PROCESSING and never makes it submit-claimable again. The
+ * `providerOperationId === null` guard below makes this function safe by
+ * construction even if a future caller mistakenly reaches it for a
+ * retryable poll-phase failure -- it degrades to a safe terminal FAILED
+ * rather than a resubmission risk.
  */
 export async function markVideoDemonstrationGenerationFailed(
   generationId: string,
@@ -308,12 +333,15 @@ export async function markVideoDemonstrationGenerationFailed(
   now: Date = new Date(),
 ): Promise<MarkVideoDemonstrationGenerationFailedResult> {
   return runExecutionQuery(async () => {
-    const row = await prisma.videoDemonstrationGeneration.findFirst({ where: { id: generationId, ownerUserId }, select: { attemptCount: true } });
+    const row = await prisma.videoDemonstrationGeneration.findFirst({
+      where: { id: generationId, ownerUserId },
+      select: { attemptCount: true, providerOperationId: true },
+    });
     if (!row) {
       throw new VideoDemonstrationExecutionStateError();
     }
 
-    const canRetry = input.retryable && row.attemptCount < MAX_PROVIDER_SUBMIT_ATTEMPTS_PER_GENERATION;
+    const canRetry = input.retryable && row.attemptCount < MAX_PROVIDER_SUBMIT_ATTEMPTS_PER_GENERATION && row.providerOperationId === null;
     const nextStatus: MarkVideoDemonstrationGenerationFailedResult["status"] = canRetry ? "REQUESTED" : "FAILED";
 
     const claimed = await prisma.videoDemonstrationGeneration.updateMany({
@@ -333,6 +361,82 @@ export async function markVideoDemonstrationGenerationFailed(
   });
 }
 
+/**
+ * Stage 3: reschedules the next poll attempt for a row that is genuinely
+ * still active -- used for BOTH (a) an ordinary "still processing, no
+ * error" poll result and (b) a RETRYABLE poll-phase failure (see the
+ * extensive comment on markVideoDemonstrationGenerationFailed above for
+ * why the latter must never route through that function instead). Never
+ * touches status or attemptCount -- the row stays PROCESSING with its
+ * existing providerOperationId untouched, so it remains permanently
+ * ineligible for claimVideoDemonstrationGenerationForSubmit (which
+ * requires providerOperationId to be null). completionClaimedAt is
+ * defensively cleared too, even though this path should never be reached
+ * after a completion claim was actually taken (done:true was never
+ * observed here) -- cheap insurance against a future refactor.
+ */
+export async function scheduleVideoDemonstrationNextPoll(generationId: string, ownerUserId: string, nextPollAt: Date): Promise<void> {
+  return runExecutionQuery(async () => {
+    const claimed = await prisma.videoDemonstrationGeneration.updateMany({
+      where: { id: generationId, ownerUserId, status: "PROCESSING", providerOperationId: { not: null } },
+      data: { nextPollAt, completionClaimedAt: null },
+    });
+    if (claimed.count !== 1) {
+      throw new VideoDemonstrationExecutionStateError();
+    }
+  });
+}
+
+export interface DueVideoDemonstrationGeneration {
+  id: string;
+  ownerUserId: string;
+}
+
+/**
+ * Stage 3 -- the recovery worker's own "which rows need work right now"
+ * query (task §4). A row is due when it is genuinely actionable by
+ * executeVideoDemonstrationGeneration's own existing branching, in exactly
+ * the three shapes that function already recognizes:
+ *
+ * 1. REQUESTED -- always due (a fresh submit attempt is always legal).
+ * 2. PROCESSING with providerOperationId set, and either never polled
+ *    before (nextPollAt null) or its scheduled backoff has elapsed.
+ * 3. PROCESSING with NO providerOperationId, stale past
+ *    VIDEO_DEMONSTRATION_STALE_CLAIM_TIMEOUT_MS -- a crashed claim,
+ *    recoverable exactly like claimVideoDemonstrationGenerationForSubmit's
+ *    own stale-claim branch already handles.
+ *
+ * Deliberately excludes COMPLETED/FAILED (terminal, never due) and a
+ * fresh (non-stale) PROCESSING-without-operationId row (someone else is
+ * actively mid-submit right now). Ordered oldest-request-first so the
+ * sweep's own bounded `limit` never starves an old job behind a stream of
+ * newer ones.
+ */
+export async function findDueVideoDemonstrationGenerationsForRecovery(now: Date, limit: number): Promise<DueVideoDemonstrationGeneration[]> {
+  return runExecutionQuery(async () => {
+    const staleClaimThreshold = new Date(now.getTime() - VIDEO_DEMONSTRATION_STALE_CLAIM_TIMEOUT_MS);
+    const rows = await prisma.videoDemonstrationGeneration.findMany({
+      where: {
+        OR: [
+          { status: "REQUESTED" },
+          {
+            AND: [
+              { status: "PROCESSING" },
+              { providerOperationId: { not: null } },
+              { OR: [{ nextPollAt: null }, { nextPollAt: { lte: now } }] },
+            ],
+          },
+          { AND: [{ status: "PROCESSING" }, { providerOperationId: null }, { startedAt: { lte: staleClaimThreshold } }] },
+        ],
+      },
+      select: { id: true, ownerUserId: true },
+      orderBy: [{ requestedAt: "asc" }],
+      take: limit,
+    });
+    return rows;
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Retry policy (mirrors isPhotoPreviewFailureRetryable's own single-source-
 // of-truth discipline exactly).
@@ -346,6 +450,13 @@ const NON_RETRYABLE_FAILURE_CODES = new Set([
   "VIDEO_DEMONSTRATION_SOURCE_UNAVAILABLE",
   "VIDEO_DEMONSTRATION_CONFIGURATION_ERROR",
   "VIDEO_DEMONSTRATION_OPERATION_NOT_FOUND",
+  // Stage 3 (task §7): a job PROCESSING far longer than Veo's own
+  // documented maximum is treated as unrecoverable under THIS row --
+  // never auto-resubmitted (see markVideoDemonstrationGenerationFailed's
+  // own extensive comment on why providerOperationId must never be
+  // silently reused). The user's/caller's retry path is creating a fresh
+  // variation, never resurrecting this exact row.
+  "VIDEO_DEMONSTRATION_PROCESSING_TIMEOUT",
 ]);
 
 export function isVideoDemonstrationFailureRetryable(errorCode: string, providerErrorRetryable?: boolean): boolean {

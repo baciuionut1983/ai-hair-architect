@@ -17,11 +17,13 @@ import { createVideoDemonstrationGeneration } from "@/lib/video-generation-repos
 import {
   claimVideoDemonstrationGenerationForCompletionProcessing,
   claimVideoDemonstrationGenerationForSubmit,
+  findDueVideoDemonstrationGenerationsForRecovery,
   isVideoDemonstrationFailureRetryable,
   markVideoDemonstrationGenerationCompleted,
   markVideoDemonstrationGenerationFailed,
   markVideoDemonstrationGenerationSubmitted,
   MAX_PROVIDER_SUBMIT_ATTEMPTS_PER_GENERATION,
+  scheduleVideoDemonstrationNextPoll,
   VIDEO_DEMONSTRATION_STALE_CLAIM_TIMEOUT_MS,
   VideoDemonstrationExecutionStateError,
 } from "@/lib/video-generation-execution-repository";
@@ -222,19 +224,33 @@ suite("video-generation-execution-repository (real AI Video Demonstration, Stage
     expect(result).toEqual({ status: "FAILED" });
   });
 
-  it("providerOperationId is left untouched on failure -- a permanent audit trail even after requeue", async () => {
+  it("providerOperationId is left untouched on a SUBMIT-phase requeue -- a permanent audit trail is never needed here since providerOperationId was never set for a submit-phase failure in the first place", async () => {
+    const { ownerUserId, generationId } = await createGeneration();
+    await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId); // claimed, but never submitted -- providerOperationId still null
+
+    await markVideoDemonstrationGenerationFailed(generationId, ownerUserId, { errorCode: "VIDEO_DEMONSTRATION_PROVIDER_ERROR", retryable: true });
+    const row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } });
+    expect(row.status).toBe("REQUESTED"); // safe to requeue -- no operation was ever created
+    expect(row.providerOperationId).toBeNull();
+  });
+
+  it("Stage 3 correctness fix: a RETRYABLE failure reported for a row that already has a providerOperationId is NEVER requeued to REQUESTED -- it goes terminal FAILED instead, since REQUESTED would make it wrongly submit-claimable again while the real operation might still be alive", async () => {
     const { ownerUserId, generationId } = await createGeneration();
     await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
     await markVideoDemonstrationGenerationSubmitted(generationId, ownerUserId, "op-audit-trail");
 
-    // A poll-time failure on an already-submitted operation, classified
-    // retryable (e.g. a transient invalid-response) -- still requeues, and
-    // Veo's own documented billing policy means this is not a double-spend
-    // risk (see this repository's own module-level comment).
-    await markVideoDemonstrationGenerationFailed(generationId, ownerUserId, { errorCode: "VIDEO_DEMONSTRATION_PROVIDER_INVALID_RESPONSE", retryable: true });
+    // A poll-time failure classified retryable (e.g. a transient
+    // invalid-response) MUST NOT route through this function at all in
+    // real code (video-generation-execution-service.ts now uses
+    // scheduleVideoDemonstrationNextPoll for that case instead) -- this
+    // test proves the function is safe BY CONSTRUCTION even if it were
+    // called here by mistake: it degrades to terminal FAILED, never a
+    // resubmission risk.
+    const result = await markVideoDemonstrationGenerationFailed(generationId, ownerUserId, { errorCode: "VIDEO_DEMONSTRATION_PROVIDER_INVALID_RESPONSE", retryable: true });
+    expect(result).toEqual({ status: "FAILED" });
     const row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } });
-    expect(row.status).toBe("REQUESTED");
-    expect(row.providerOperationId).toBe("op-audit-trail");
+    expect(row.status).toBe("FAILED");
+    expect(row.providerOperationId).toBe("op-audit-trail"); // still a permanent audit trail
   });
 
   it("markVideoDemonstrationGenerationFailed throws for a nonexistent/foreign-owner row", async () => {
@@ -374,6 +390,106 @@ suite("video-generation-execution-repository (real AI Video Demonstration, Stage
 
     it("an unrecognized code fails closed to non-retryable", () => {
       expect(isVideoDemonstrationFailureRetryable("SOME_UNKNOWN_CODE")).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // findDueVideoDemonstrationGenerationsForRecovery -- Stage 3, task §4
+  // -------------------------------------------------------------------------
+
+  describe("findDueVideoDemonstrationGenerationsForRecovery", () => {
+    it("a REQUESTED row is always due", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      const due = await findDueVideoDemonstrationGenerationsForRecovery(new Date(), 10);
+      expect(due.some((d) => d.id === generationId && d.ownerUserId === ownerUserId)).toBe(true);
+    });
+
+    it("a PROCESSING row with a providerOperationId and no nextPollAt yet is due (never polled before)", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+      await prisma.videoDemonstrationGeneration.update({ where: { id: generationId }, data: { providerOperationId: "op-1", nextPollAt: null } });
+
+      const due = await findDueVideoDemonstrationGenerationsForRecovery(new Date(), 10);
+      expect(due.some((d) => d.id === generationId)).toBe(true);
+    });
+
+    it("a PROCESSING row with a FUTURE nextPollAt is NOT due yet", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+      const now = new Date();
+      await prisma.videoDemonstrationGeneration.update({ where: { id: generationId }, data: { providerOperationId: "op-1", nextPollAt: new Date(now.getTime() + 60_000) } });
+
+      const due = await findDueVideoDemonstrationGenerationsForRecovery(now, 10);
+      expect(due.some((d) => d.id === generationId)).toBe(false);
+    });
+
+    it("a PROCESSING row whose nextPollAt has elapsed IS due", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+      const now = new Date();
+      await prisma.videoDemonstrationGeneration.update({ where: { id: generationId }, data: { providerOperationId: "op-1", nextPollAt: new Date(now.getTime() - 1000) } });
+
+      const due = await findDueVideoDemonstrationGenerationsForRecovery(now, 10);
+      expect(due.some((d) => d.id === generationId)).toBe(true);
+    });
+
+    it("a fresh (non-stale) PROCESSING row with no providerOperationId is NOT due -- someone else may be actively mid-submit", async () => {
+      const { generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, (await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } })).ownerUserId);
+
+      const due = await findDueVideoDemonstrationGenerationsForRecovery(new Date(), 10);
+      expect(due.some((d) => d.id === generationId)).toBe(false);
+    });
+
+    it("a STALE PROCESSING row with no providerOperationId IS due -- a crashed claim, recoverable", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+      await prisma.videoDemonstrationGeneration.update({ where: { id: generationId }, data: { startedAt: new Date(Date.now() - VIDEO_DEMONSTRATION_STALE_CLAIM_TIMEOUT_MS - 1000) } });
+
+      const due = await findDueVideoDemonstrationGenerationsForRecovery(new Date(), 10);
+      expect(due.some((d) => d.id === generationId)).toBe(true);
+    });
+
+    it("COMPLETED and FAILED rows are never due", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+      await markVideoDemonstrationGenerationSubmitted(generationId, ownerUserId, "op-1");
+      const asset = await prisma.videoAsset.create({
+        data: { id: randomUUID(), ownerUserId, clientId: (await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } })).clientId, mimeType: "video/mp4", sizeBytes: 10, storagePath: "p" },
+      });
+      await markVideoDemonstrationGenerationCompleted(generationId, ownerUserId, { generatedVideoAssetId: asset.id });
+
+      const due = await findDueVideoDemonstrationGenerationsForRecovery(new Date(), 10);
+      expect(due.some((d) => d.id === generationId)).toBe(false);
+    });
+
+    it("respects the limit and orders oldest-requested-first", async () => {
+      const first = await createGeneration();
+      const second = await createGeneration();
+      const due = await findDueVideoDemonstrationGenerationsForRecovery(new Date(), 1);
+      expect(due).toHaveLength(1);
+      expect(due[0].id).toBe(first.generationId);
+      void second;
+    });
+  });
+
+  describe("scheduleVideoDemonstrationNextPoll", () => {
+    it("sets nextPollAt on a PROCESSING row with a providerOperationId", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+      await markVideoDemonstrationGenerationSubmitted(generationId, ownerUserId, "op-1");
+      const nextPollAt = new Date(Date.now() + 30_000);
+
+      await scheduleVideoDemonstrationNextPoll(generationId, ownerUserId, nextPollAt);
+      const row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } });
+      expect(row.nextPollAt?.getTime()).toBe(nextPollAt.getTime());
+      expect(row.status).toBe("PROCESSING"); // untouched
+    });
+
+    it("throws for a row with no providerOperationId (never legal to schedule a poll for something never submitted)", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+      await expect(scheduleVideoDemonstrationNextPoll(generationId, ownerUserId, new Date())).rejects.toThrow(VideoDemonstrationExecutionStateError);
     });
   });
 });

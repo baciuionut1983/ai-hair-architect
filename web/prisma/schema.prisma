@@ -2089,6 +2089,17 @@ model VideoDemonstrationGeneration {
   // same way a stale submit claim is.
   completionClaimedAt DateTime? @db.Timestamp(6)
 
+  // Stage 3: when the recovery worker's sweep should next consider this
+  // row due for a poll attempt -- bounded backoff
+  // (video-generation-execution-service.ts's own
+  // computeVideoDemonstrationNextPollDelayMs), never a tight loop. Purely
+  // advisory for the SWEEP's own "which rows are due" query -- an
+  // explicit, direct /execute call always polls immediately regardless of
+  // this value (task §6: this governs automated cadence, not a user's own
+  // explicit status check). Null while REQUESTED or PROCESSING-without-an-
+  // operation-id (not yet in the polling phase at all).
+  nextPollAt DateTime? @db.Timestamp(6)
+
   // Safe, closed-vocabulary failure codes only -- never a raw provider
   // stack trace or secret.
   errorCode     String?
