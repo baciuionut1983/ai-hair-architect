@@ -22,10 +22,28 @@ export const MAX_PROVIDER_SUBMIT_ATTEMPTS_PER_GENERATION = 2;
 // Mirrors PHOTO_PREVIEW_STALE_PROCESSING_TIMEOUT_MS's own exact value and
 // reasoning -- if a process crashes between claim and either submit or
 // markSubmitted, the row is recoverable by a LATER claim attempt once this
-// much time has passed, rather than being permanently stuck.
+// much time has passed, rather than being permanently stuck. Reused
+// (Stage 2) as the identical staleness window for a crashed COMPLETION
+// claim (see claimVideoDemonstrationGenerationForCompletionProcessing) --
+// both are "did the last process handling this die mid-flight" recovery
+// windows, and there is no reason for them to differ.
 export const VIDEO_DEMONSTRATION_STALE_CLAIM_TIMEOUT_MS = 15 * 60 * 1000;
 
+// Stage 2 hardening (task §3): the single highest-value retry in this file.
+// By the time markVideoDemonstrationGenerationSubmitted is called, the
+// provider has ALREADY accepted (and may already be billing for) the
+// generation -- a transient failure recording that fact locally must be
+// retried harder than an ordinary write, because giving up here risks the
+// exact "provider accepted it, we lost track, and a later recovery path
+// resubmits" scenario this whole file exists to prevent. Short, bounded
+// backoff -- this call sits in the synchronous request path.
+const MARK_SUBMITTED_RETRY_DELAYS_MS = [100, 300, 900];
+
 const MAX_TRANSACTION_ATTEMPTS = 3;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export class VideoDemonstrationExecutionPersistenceError extends Error {
   readonly code = "VIDEO_DEMONSTRATION_EXECUTION_PERSISTENCE_UNAVAILABLE";
@@ -109,6 +127,30 @@ export async function claimVideoDemonstrationGenerationForSubmit(
  * this a true "set exactly once" operation: a second call for the same row
  * (e.g. a retried/duplicated code path) safely no-ops into a state error
  * rather than silently overwriting a real operation id with a different one.
+ *
+ * Stage 2 hardening (task §3): two layers protect the window between "the
+ * provider accepted the generation" and "we durably recorded that fact".
+ *
+ * 1. A short, bounded retry (MARK_SUBMITTED_RETRY_DELAYS_MS) absorbs a
+ *    transient connectivity blip -- the write is naturally safe to retry
+ *    (the WHERE clause guard means a retry can never double-apply).
+ * 2. If a retry attempt itself throws the "already set" state error, that
+ *    is genuinely ambiguous -- it means EITHER a real conflict (a
+ *    different caller/attempt already owns this row), OR our own PRIOR
+ *    attempt in this exact retry loop actually landed at the database and
+ *    we simply never received the confirmation before the connection blip.
+ *    Re-reading the row and comparing providerOperationId resolves the
+ *    ambiguity: if it already equals the value we were trying to set, our
+ *    own earlier attempt already succeeded, and this is treated as
+ *    success, not an error -- never a resubmission, never a lost record.
+ *
+ * The one residual risk this cannot close (documented, not eliminated):
+ * total database unavailability spanning every retry AND the confirming
+ * re-read. Veo's API offers no client-supplied idempotency/request id
+ * (confirmed by inspecting GenerateVideosConfig's real type this stage),
+ * so there is no provider-side mechanism to reconcile "did I already
+ * submit this" after a total local persistence outage -- eliminating this
+ * fully would require such a provider capability, which does not exist.
  */
 export async function markVideoDemonstrationGenerationSubmitted(
   generationId: string,
@@ -116,14 +158,102 @@ export async function markVideoDemonstrationGenerationSubmitted(
   providerOperationId: string,
   now: Date = new Date(),
 ): Promise<void> {
+  for (let attempt = 0; attempt <= MARK_SUBMITTED_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await runExecutionQuery(async () => {
+        const claimed = await prisma.videoDemonstrationGeneration.updateMany({
+          where: { id: generationId, ownerUserId, status: "PROCESSING", providerOperationId: null },
+          // completionClaimedAt is reset here too -- a stale value from an
+          // earlier, already-failed/requeued attempt on this same row must
+          // never suppress the completion claim for THIS fresh operation
+          // (see the schema's own field comment).
+          data: { providerOperationId, submittedAt: now, completionClaimedAt: null },
+        });
+        if (claimed.count !== 1) {
+          throw new VideoDemonstrationExecutionStateError();
+        }
+      });
+      return;
+    } catch (error) {
+      if (error instanceof VideoDemonstrationExecutionStateError) {
+        const reread = await prisma.videoDemonstrationGeneration
+          .findFirst({ where: { id: generationId, ownerUserId }, select: { providerOperationId: true } })
+          .catch(() => null);
+        if (reread?.providerOperationId === providerOperationId) {
+          return; // our own earlier attempt in this loop already succeeded
+        }
+        throw error; // a real conflict -- never retried
+      }
+      if (attempt === MARK_SUBMITTED_RETRY_DELAYS_MS.length) throw error;
+      await delay(MARK_SUBMITTED_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+}
+
+export type VideoDemonstrationCompletionClaimRejectionCode = "NOT_FOUND" | "NOT_ELIGIBLE";
+
+export type VideoDemonstrationCompletionClaimResult =
+  | { outcome: "claimed" }
+  | { outcome: "rejected"; code: VideoDemonstrationCompletionClaimRejectionCode };
+
+/**
+ * Stage 2 hardening (task §4/§12): guards the "provider poll reported
+ * done:true -> download the video, meter it, persist a VideoAsset, mark
+ * COMPLETED" window against two callers racing the SAME already-submitted
+ * operation (e.g. two near-simultaneous /execute requests, or a route
+ * call overlapping a future scheduled poller). Without this, both callers
+ * would independently download the same video, create two VideoAsset rows
+ * (one silently orphaned, still costing real storage), and both attempt to
+ * meter -- the AiUsageEvent idempotency key happens to dedupe THAT part,
+ * but the duplicate download/storage/orphaned-row problem is real and is
+ * what this claim actually exists to prevent.
+ *
+ * Legal ONLY for a row that is PROCESSING and already has a
+ * providerOperationId (i.e. genuinely mid-poll, never mid-submit -- the
+ * submit claim above is a completely separate lock). Eligible when
+ * `completionClaimedAt` is null (never claimed) OR stale (the last claimant
+ * crashed before reaching a terminal outcome) -- mirrors
+ * claimVideoDemonstrationGenerationForSubmit's own stale-recovery shape,
+ * reusing the same timeout constant.
+ */
+export async function claimVideoDemonstrationGenerationForCompletionProcessing(
+  generationId: string,
+  ownerUserId: string,
+  now: Date = new Date(),
+): Promise<VideoDemonstrationCompletionClaimResult> {
   return runExecutionQuery(async () => {
+    const row = await prisma.videoDemonstrationGeneration.findFirst({
+      where: { id: generationId, ownerUserId },
+      select: { id: true, status: true, providerOperationId: true, completionClaimedAt: true },
+    });
+    if (!row) {
+      return { outcome: "rejected", code: "NOT_FOUND" };
+    }
+    if (row.status !== "PROCESSING" || !row.providerOperationId) {
+      return { outcome: "rejected", code: "NOT_ELIGIBLE" };
+    }
+
+    const eligible = row.completionClaimedAt === null || isStale(row.completionClaimedAt, now);
+    if (!eligible) {
+      return { outcome: "rejected", code: "NOT_ELIGIBLE" };
+    }
+
+    // Guarded by the EXACT previously-read value (null, or the specific
+    // stale timestamp) -- a genuine optimistic-concurrency check. Postgres's
+    // own row-level locking on this UPDATE is what makes this safe under a
+    // real concurrent race, without needing a serializable transaction
+    // wrapper (the WHERE clause itself is the atomicity boundary, same
+    // reasoning as markVideoDemonstrationGenerationSubmitted's single
+    // guarded update).
     const claimed = await prisma.videoDemonstrationGeneration.updateMany({
-      where: { id: generationId, ownerUserId, status: "PROCESSING", providerOperationId: null },
-      data: { providerOperationId, submittedAt: now },
+      where: { id: row.id, ownerUserId, status: "PROCESSING", completionClaimedAt: row.completionClaimedAt },
+      data: { completionClaimedAt: now },
     });
     if (claimed.count !== 1) {
-      throw new VideoDemonstrationExecutionStateError();
+      return { outcome: "rejected", code: "NOT_ELIGIBLE" };
     }
+
+    return { outcome: "claimed" };
   });
 }
 

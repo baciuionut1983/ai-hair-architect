@@ -15,6 +15,7 @@ import { confirmProposal, createProposalForOwner } from "@/lib/proposal-reposito
 import { confirmSpatialBinding, createDraftSpatialBinding } from "@/lib/technical-visual-map-spatial-binding-repository";
 import { createVideoDemonstrationGeneration } from "@/lib/video-generation-repository";
 import {
+  claimVideoDemonstrationGenerationForCompletionProcessing,
   claimVideoDemonstrationGenerationForSubmit,
   isVideoDemonstrationFailureRetryable,
   markVideoDemonstrationGenerationCompleted,
@@ -240,6 +241,110 @@ suite("video-generation-execution-repository (real AI Video Demonstration, Stage
     const { generationId } = await createGeneration();
     await expect(markVideoDemonstrationGenerationFailed(randomUUID(), randomUUID(), { errorCode: "X", retryable: false })).rejects.toThrow(VideoDemonstrationExecutionStateError);
     void generationId;
+  });
+
+  // -------------------------------------------------------------------------
+  // markVideoDemonstrationGenerationSubmitted -- Stage 2 self-healing retry
+  // -------------------------------------------------------------------------
+
+  it("Stage 2: markVideoDemonstrationGenerationSubmitted self-heals when the row ALREADY carries the exact operationId being set -- treated as success, not a conflict", async () => {
+    const { ownerUserId, generationId } = await createGeneration();
+    await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+    // Simulates "an earlier attempt in the same retry loop actually landed
+    // at the database, but the caller never received confirmation" --
+    // pre-set the row to exactly what a real prior success would look like.
+    await prisma.videoDemonstrationGeneration.update({ where: { id: generationId }, data: { providerOperationId: "op-already-recorded", submittedAt: new Date() } });
+
+    // Must NOT throw -- this is the self-healing path, not a real conflict.
+    await expect(markVideoDemonstrationGenerationSubmitted(generationId, ownerUserId, "op-already-recorded")).resolves.toBeUndefined();
+    const row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } });
+    expect(row.providerOperationId).toBe("op-already-recorded"); // unchanged, not corrupted
+  });
+
+  it("Stage 2: markVideoDemonstrationGenerationSubmitted still throws for a GENUINE conflict -- a different operationId already on file is never silently accepted", async () => {
+    const { ownerUserId, generationId } = await createGeneration();
+    await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+    await prisma.videoDemonstrationGeneration.update({ where: { id: generationId }, data: { providerOperationId: "op-different-real-operation", submittedAt: new Date() } });
+
+    await expect(markVideoDemonstrationGenerationSubmitted(generationId, ownerUserId, "op-new-attempt")).rejects.toThrow(VideoDemonstrationExecutionStateError);
+    const row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } });
+    expect(row.providerOperationId).toBe("op-different-real-operation"); // never overwritten
+  });
+
+  it("Stage 2: markVideoDemonstrationGenerationSubmitted resets a stale completionClaimedAt from an earlier attempt -- never suppresses the fresh attempt's own completion claim", async () => {
+    const { ownerUserId, generationId } = await createGeneration();
+    await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+    // Simulate a leftover completion-claim timestamp from a hypothetical
+    // earlier attempt on this same row.
+    await prisma.videoDemonstrationGeneration.update({ where: { id: generationId }, data: { completionClaimedAt: new Date() } });
+
+    await markVideoDemonstrationGenerationSubmitted(generationId, ownerUserId, "op-fresh-attempt");
+    const row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } });
+    expect(row.completionClaimedAt).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // claimVideoDemonstrationGenerationForCompletionProcessing -- Stage 2
+  // -------------------------------------------------------------------------
+
+  describe("claimVideoDemonstrationGenerationForCompletionProcessing", () => {
+    it("claims a PROCESSING row that already has a providerOperationId and no prior completion claim", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+      await markVideoDemonstrationGenerationSubmitted(generationId, ownerUserId, "op-1");
+
+      const claim = await claimVideoDemonstrationGenerationForCompletionProcessing(generationId, ownerUserId);
+      expect(claim).toEqual({ outcome: "claimed" });
+      const row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } });
+      expect(row.completionClaimedAt).not.toBeNull();
+    });
+
+    it("rejects NOT_ELIGIBLE for a row that has not been submitted yet (no providerOperationId) -- completion processing is never claimable before a real submit", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+
+      expect(await claimVideoDemonstrationGenerationForCompletionProcessing(generationId, ownerUserId)).toEqual({ outcome: "rejected", code: "NOT_ELIGIBLE" });
+    });
+
+    it("rejects NOT_ELIGIBLE for a REQUESTED row (not currently PROCESSING at all)", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      expect(await claimVideoDemonstrationGenerationForCompletionProcessing(generationId, ownerUserId)).toEqual({ outcome: "rejected", code: "NOT_ELIGIBLE" });
+    });
+
+    it("rejects NOT_ELIGIBLE for an already-claimed, non-stale completion in progress -- a concurrent caller must never also process the same completion", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+      await markVideoDemonstrationGenerationSubmitted(generationId, ownerUserId, "op-1");
+      await claimVideoDemonstrationGenerationForCompletionProcessing(generationId, ownerUserId);
+
+      expect(await claimVideoDemonstrationGenerationForCompletionProcessing(generationId, ownerUserId)).toEqual({ outcome: "rejected", code: "NOT_ELIGIBLE" });
+    });
+
+    it("accepts (re-claims) a STALE completion claim -- crash recovery for a process that died mid-download/persist", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+      await markVideoDemonstrationGenerationSubmitted(generationId, ownerUserId, "op-1");
+      await claimVideoDemonstrationGenerationForCompletionProcessing(generationId, ownerUserId);
+      await prisma.videoDemonstrationGeneration.update({ where: { id: generationId }, data: { completionClaimedAt: new Date(Date.now() - VIDEO_DEMONSTRATION_STALE_CLAIM_TIMEOUT_MS - 1000) } });
+
+      expect(await claimVideoDemonstrationGenerationForCompletionProcessing(generationId, ownerUserId)).toEqual({ outcome: "claimed" });
+    });
+
+    it("rejects NOT_FOUND for a nonexistent id or the wrong owner -- never leaks whether a foreign generation exists", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      expect(await claimVideoDemonstrationGenerationForCompletionProcessing(randomUUID(), ownerUserId)).toEqual({ outcome: "rejected", code: "NOT_FOUND" });
+      expect(await claimVideoDemonstrationGenerationForCompletionProcessing(generationId, randomUUID())).toEqual({ outcome: "rejected", code: "NOT_FOUND" });
+    });
+
+    it("under a real concurrent race, exactly one caller wins the completion claim", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+      await markVideoDemonstrationGenerationSubmitted(generationId, ownerUserId, "op-1");
+
+      const results = await Promise.all(Array.from({ length: 5 }, () => claimVideoDemonstrationGenerationForCompletionProcessing(generationId, ownerUserId)));
+      const claimed = results.filter((r) => r.outcome === "claimed");
+      expect(claimed.length).toBe(1);
+    });
   });
 
   // -------------------------------------------------------------------------

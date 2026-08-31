@@ -12,19 +12,40 @@ export type VideoDemonstrationProviderName = "google";
 
 const ALLOWED_PROVIDERS: readonly VideoDemonstrationProviderName[] = ["google"];
 
-// Video Stage 0's own research (cited, official-docs-sourced) found these
-// as the current Veo model catalog. Kept as an allowlist for the same
-// reason Photo Preview's own model allowlist exists (task §11 of the
-// Decision Lock: never accept an arbitrary caller-supplied model string) --
-// NOT as a claim that every one of these is the final V1 choice. The
-// server-configured default (VIDEO_DEMONSTRATION_MODEL) is what actually
-// picks the model; this list only bounds what a caller may request.
+// Verified Stage 2, section 1: fetched live against the CURRENT official
+// Gemini API docs (ai.google.dev/gemini-api/docs/models and
+// .../docs/pricing, both re-fetched this stage) -- these are the exact
+// three real, current, billable Veo model id strings, each confirmed
+// present on BOTH the models catalog page and the pricing page (which
+// separately confirms per-second USD pricing for each). All three are
+// status Preview (not GA) as of this verification.
+//
+// Stage 1's own allowlist additionally carried "veo-3-generate" and
+// "veo-2-generate" as unverified placeholders from the earlier Stage 0
+// research pass -- NEITHER appears on the current models page, the
+// current pricing page, nor anywhere else in official docs fetched this
+// stage. Removed: an allowlist containing an unconfirmed id defeats its
+// own purpose (task §11 of the Decision Lock: never accept an arbitrary
+// caller-supplied model string -- "arbitrary" includes one this codebase
+// itself never actually verified). If Google ships a real Veo 2 or plain
+// Veo 3 id later, add it here only once independently re-verified the
+// same way, never by inference from a naming pattern.
+//
+// This resolves Stage 1's own documented "known gap": the installed SDK's
+// doc-comment example uses the older `veo-2.0-generate-001` naming style,
+// which is confirmed here to be a stale example, not evidence against
+// veo-3.1-lite-generate-preview -- the current, real, and (per
+// video-generation-provider-config.ts's own resolveVideoDemonstrationProviderConfig)
+// still fully operator-configurable default.
+//
+// Kept as an allowlist for the same reason Photo Preview's own model
+// allowlist exists -- the server-configured default
+// (VIDEO_DEMONSTRATION_MODEL) is what actually picks the model; this list
+// only bounds what a caller may request.
 export const VIDEO_DEMONSTRATION_ALLOWED_VEO_MODELS = [
   "veo-3.1-generate-preview",
   "veo-3.1-fast-generate-preview",
   "veo-3.1-lite-generate-preview",
-  "veo-3-generate",
-  "veo-2-generate",
 ] as const;
 export type VideoDemonstrationVeoModel = (typeof VIDEO_DEMONSTRATION_ALLOWED_VEO_MODELS)[number];
 

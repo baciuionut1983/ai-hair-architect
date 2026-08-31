@@ -2077,6 +2077,18 @@ model VideoDemonstrationGeneration {
 
   generatedVideoAssetId String?
 
+  // Stage 2 hardening: a SEPARATE atomic claim from the submit claim above
+  // -- guards the "provider says done, now download/persist/complete"
+  // window against two concurrent pollers both observing done:true and
+  // both downloading the video / creating a VideoAsset / metering
+  // SUCCEEDED (video-generation-execution-repository.ts's own
+  // claimVideoDemonstrationGenerationForCompletionProcessing). Reset to
+  // null whenever a fresh submit attempt starts (markVideoDemonstrationGenerationSubmitted),
+  // so a stale value from an earlier attempt never blocks a later one.
+  // Stale (crashed mid-completion-processing) claims are recoverable the
+  // same way a stale submit claim is.
+  completionClaimedAt DateTime? @db.Timestamp(6)
+
   // Safe, closed-vocabulary failure codes only -- never a raw provider
   // stack trace or secret.
   errorCode     String?

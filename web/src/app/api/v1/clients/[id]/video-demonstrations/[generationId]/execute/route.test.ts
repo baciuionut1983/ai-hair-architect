@@ -63,4 +63,23 @@ describe("POST /clients/[id]/video-demonstrations/[generationId]/execute", () =>
     expect(response.status).toBe(404);
     expect(executionServiceMock.executeVideoDemonstrationGeneration).not.toHaveBeenCalled();
   });
+
+  it("Stage 2 security: a request body attempting to inject a providerOperationId / result URL / generatedVideoAssetId is completely ignored -- the server is the only authority", async () => {
+    executionServiceMock.executeVideoDemonstrationGeneration.mockResolvedValue({ outcome: "still_processing", generation: GENERATION_PROCESSING });
+
+    const maliciousBody = JSON.stringify({
+      providerOperationId: "attacker-controlled-operation-id",
+      generatedVideoAssetId: "attacker-controlled-asset-id",
+      resultUrl: "https://attacker.example/fake-video.mp4",
+      status: "COMPLETED",
+    });
+    const response = await POST(new Request("http://localhost/api", { method: "POST", body: maliciousBody }), ctx());
+
+    expect(response.status).toBe(200);
+    // The execution service is called with ONLY the URL-resolved
+    // generationId and the authenticated ownerUserId -- nothing from the
+    // request body is ever threaded through.
+    expect(executionServiceMock.executeVideoDemonstrationGeneration).toHaveBeenCalledWith("gen-1", "owner-1");
+    expect(executionServiceMock.executeVideoDemonstrationGeneration).toHaveBeenCalledTimes(1);
+  });
 });

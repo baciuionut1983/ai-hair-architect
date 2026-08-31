@@ -21,7 +21,9 @@ import {
   AlwaysFailingSubmitVideoDemonstrationProvider,
   AlwaysProcessingVideoDemonstrationProvider,
   FakeVideoDemonstrationProvider,
-  type VideoDemonstrationProvider,
+  VideoDemonstrationProvider,
+  type VideoDemonstrationPollOutcome,
+  type VideoDemonstrationSubmitOutcome,
 } from "@/lib/video-provider";
 
 // Real AI Video Demonstration, Stage 1 -- the FULL orchestrator, tested
@@ -230,6 +232,127 @@ suite("video-generation-execution-service (real AI Video Demonstration, Stage 1 
     expect(row.attemptCount).toBe(1); // never re-claimed/resubmitted
     expect(row.providerOperationId).toBe("fake-operation-id-processing");
     expect(usageEvents).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Stage 2 hardening -- a transient (retryable) poll failure requeues the
+  // row, and a LATER call (fresh provider instance, fresh dependencies
+  // object -- proving no reliance on process memory) submits again and
+  // completes normally.
+  // -------------------------------------------------------------------------
+
+  it("Stage 2: a retryable poll failure requeues to REQUESTED, and a fully independent later execution recovers and completes", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const generation = await createGeneration(ownerUserId, clientId);
+
+    class OnceFailingPollProvider extends VideoDemonstrationProvider {
+      readonly name = "fake-once-failing-poll";
+      readonly modelVersion = "fake-1.0";
+      async submit(): Promise<VideoDemonstrationSubmitOutcome> {
+        return { providerOperationId: "fake-operation-id" };
+      }
+      async poll(): Promise<VideoDemonstrationPollOutcome> {
+        throw this.createProviderError("TIMEOUT", "simulated transient poll timeout", true);
+      }
+    }
+
+    const submitted = await executeVideoDemonstrationGeneration(generation.id, ownerUserId, { env: enabledVideoEnv, createProvider: () => new OnceFailingPollProvider() });
+    expect(submitted.outcome).toBe("submitted");
+
+    const polled = await executeVideoDemonstrationGeneration(generation.id, ownerUserId, { env: enabledVideoEnv, createProvider: () => new OnceFailingPollProvider() });
+    expect(polled).toEqual({ outcome: "requeued_for_retry", code: "PROVIDER_TIMEOUT" });
+    const requeued = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generation.id } });
+    expect(requeued.status).toBe("REQUESTED"); // NOT stuck PROCESSING forever
+
+    // A fully independent "later execution" -- a brand-new provider
+    // instance and a brand-new dependencies object, simulating a genuinely
+    // separate process/request with zero shared in-memory state.
+    const recoveryProvider = new FakeVideoDemonstrationProvider();
+    const recoveredSubmit = await executeVideoDemonstrationGeneration(generation.id, ownerUserId, { env: enabledVideoEnv, createProvider: () => recoveryProvider });
+    expect(recoveredSubmit.outcome).toBe("submitted");
+    const recoveredComplete = await executeVideoDemonstrationGeneration(generation.id, ownerUserId, { env: enabledVideoEnv, createProvider: () => recoveryProvider });
+    expect(recoveredComplete.outcome).toBe("completed");
+
+    const finalRow = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generation.id } });
+    expect(finalRow.status).toBe("COMPLETED");
+    expect(finalRow.attemptCount).toBe(2); // the failed attempt + the recovered one
+  });
+
+  // -------------------------------------------------------------------------
+  // Stage 2 hardening -- restart recovery for the SUBMIT-succeeded-but-
+  // never-polled-to-completion case, driven entirely from durable DB state
+  // (no shared closure/provider instance across the two calls).
+  // -------------------------------------------------------------------------
+
+  it("Stage 2: a submitted-but-never-polled generation is found from DB alone and completes under a brand-new execution call with its own provider instance", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const generation = await createGeneration(ownerUserId, clientId);
+
+    await executeVideoDemonstrationGeneration(generation.id, ownerUserId, { env: enabledVideoEnv, createProvider: () => new FakeVideoDemonstrationProvider() });
+    const afterSubmit = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generation.id } });
+    expect(afterSubmit.status).toBe("PROCESSING");
+    expect(afterSubmit.providerOperationId).toBeTruthy();
+
+    // A "new execution instance" -- looked up by id alone, a fresh
+    // provider, no reference to anything from the call above.
+    const result = await executeVideoDemonstrationGeneration(generation.id, ownerUserId, { env: enabledVideoEnv, createProvider: () => new FakeVideoDemonstrationProvider() });
+    expect(result.outcome).toBe("completed");
+  });
+
+  // -------------------------------------------------------------------------
+  // Stage 2 hardening -- concurrent polling must never double-download,
+  // double-persist a VideoAsset, double-meter, or double-complete.
+  // -------------------------------------------------------------------------
+
+  it("Stage 2: concurrent polls of the same completed operation create exactly one VideoAsset, meter exactly once, and complete exactly once", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const generation = await createGeneration(ownerUserId, clientId);
+    let downloadCalls = 0;
+    class CountingCompletionProvider extends FakeVideoDemonstrationProvider {
+      async poll(...args: Parameters<VideoDemonstrationProvider["poll"]>) {
+        downloadCalls += 1;
+        return super.poll(...args);
+      }
+    }
+    const provider = new CountingCompletionProvider();
+    const usageEvents: unknown[] = [];
+    const recordAiUsageEvent = async (input: unknown) => {
+      usageEvents.push(input);
+    };
+
+    await executeVideoDemonstrationGeneration(generation.id, ownerUserId, { env: enabledVideoEnv, createProvider: () => provider, recordAiUsageEvent });
+
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => executeVideoDemonstrationGeneration(generation.id, ownerUserId, { env: enabledVideoEnv, createProvider: () => provider, recordAiUsageEvent })),
+    );
+
+    const completed = results.filter((r) => r.outcome === "completed");
+    expect(completed.length).toBe(1);
+    for (const result of results) {
+      // A losing caller sees "still_processing" (someone else is handling
+      // completion) -- OR, if it happened to be scheduled after the winner
+      // already fully finished, the already-proven-safe
+      // GENERATION_ALREADY_TERMINAL outcome (same as re-executing any
+      // COMPLETED generation). Never anything else.
+      const safe = result.outcome === "completed" || result.outcome === "still_processing" || (result.outcome === "failed" && result.code === "GENERATION_ALREADY_TERMINAL");
+      expect(safe).toBe(true);
+    }
+
+    const assets = await prisma.videoAsset.findMany({ where: { ownerUserId, clientId } });
+    expect(assets).toHaveLength(1); // never a duplicated/orphaned VideoAsset
+
+    const succeededEvents = usageEvents.filter((e) => (e as { outcome: string }).outcome === "SUCCEEDED");
+    expect(succeededEvents).toHaveLength(1); // never double-metered
+
+    const row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generation.id } });
+    expect(row.status).toBe("COMPLETED");
+    expect(row.generatedVideoAssetId).toBe(assets[0].id);
+
+    // downloadCalls may exceed 1 (every concurrent caller is entitled to
+    // poll the provider itself -- polling is free/idempotent-safe), but
+    // exactly one of them is entitled to WIN the completion-processing
+    // claim and actually persist/meter/complete -- already proven above.
+    expect(downloadCalls).toBeGreaterThanOrEqual(1);
   });
 
   // -------------------------------------------------------------------------

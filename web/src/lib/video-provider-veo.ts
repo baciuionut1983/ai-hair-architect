@@ -1,4 +1,9 @@
-import { GoogleGenAI } from "@google/genai";
+import { randomUUID } from "crypto";
+import { rm, readFile } from "fs/promises";
+import os from "os";
+import path from "path";
+
+import { GoogleGenAI, type Video } from "@google/genai";
 
 import { assembleVeoVideoDemonstrationInstruction } from "./video-generation-instruction-assembler";
 import {
@@ -10,31 +15,48 @@ import {
 } from "./video-provider";
 import type { SealedVideoDemonstrationRequest } from "./video-generation-contracts";
 
-// Real AI Video Demonstration, Stage 1 -- the real Veo adapter. Built and
-// SDK-verified during this stage (task §8: model IDs verified against the
-// currently-installed @google/genai package's own real .d.ts types, not
-// guessed -- ai.models.generateVideos / ai.operations.getVideosOperation
-// both genuinely exist in the installed 2.15.0 SDK, confirmed by direct
-// inspection of node_modules/@google/genai/dist/node/*.d.ts).
+// Real AI Video Demonstration -- the real Veo adapter. Built and
+// SDK-verified in Stage 1 against the currently-installed @google/genai
+// package's own real .d.ts types, not guessed -- ai.models.generateVideos /
+// ai.operations.getVideosOperation both genuinely exist in the installed
+// 2.15.0 SDK, confirmed by direct inspection of
+// node_modules/@google/genai/dist/genai.d.ts.
 //
-// This adapter is REAL and functionally complete, but this stage's own
-// tests NEVER exercise its default (real) client construction path -- see
-// video-generation-execution-service.ts's own "network safety" test, which
-// mirrors photo-preview-execution-service.test.ts's identical guarantee.
+// This adapter is REAL and functionally complete, but no test in this
+// codebase ever exercises its default (real) client construction path --
+// see video-generation-execution-service.ts's own "network safety" test,
+// which mirrors photo-preview-execution-service.test.ts's identical
+// guarantee.
 //
-// MODEL ID CAVEAT (task §8's own explicit instruction): the CURRENT official
-// Gemini API docs (fetched live during Video Stage 0) list
-// veo-3.1-lite-generate-preview as a real, current model id. The installed
-// SDK's OWN doc-comment example uses the older `veo-2.0-generate-001`
-// naming style -- this is very likely just a stale example in the SDK
-// package (the `model` parameter is a plain string, never validated against
-// a hardcoded allowlist by the SDK itself), not evidence that the newer id
-// is wrong. This was NOT independently re-verified with a real network call
-// (no paid call is authorized in this stage) -- if a real Stage 2+ call
-// ever reports an "unknown model" error, that is the discrepancy this
-// comment flags, and the fix is an environment variable change
-// (VIDEO_DEMONSTRATION_MODEL), never a code change, per this stage's own
-// "never hardcode the model" requirement.
+// MODEL ID -- RESOLVED, Stage 2 (was Stage 1's own documented "known gap"):
+// independently re-verified live this stage against the CURRENT official
+// docs, fetched fresh -- ai.google.dev/gemini-api/docs/models (model
+// catalog) AND ai.google.dev/gemini-api/docs/pricing (billing table,
+// independently listing the same three ids with real per-second USD
+// pricing). Both pages agree: the only real, current, billable Veo model
+// ids are veo-3.1-generate-preview, veo-3.1-fast-generate-preview, and
+// veo-3.1-lite-generate-preview (all status Preview, not GA) -- see
+// video-generation-provider-config.ts's own VIDEO_DEMONSTRATION_ALLOWED_VEO_MODELS
+// for the enforced allowlist. The installed SDK's own doc-comment example
+// (`veo-2.0-generate-001`) is confirmed to be a stale example, not evidence
+// against the newer ids -- the `model` parameter is a plain string, never
+// validated by the SDK itself. Still NOT independently confirmed with a
+// real network call (no paid call is authorized yet) -- this is the
+// strongest verification possible without one.
+//
+// OUTPUT RETRIEVAL -- RESOLVED, Stage 2: live doc research (task §1) found
+// that a real Veo response is URI-based by default (the SDK's own canonical
+// example logs `operation.response.generatedVideos[0].video.uri`, not
+// `.videoBytes`), and that "generated videos are stored on the server for
+// 2 days, after which they are removed" -- confirming Stage 1's own
+// "URI-based retrieval is not implemented by this adapter yet" path would
+// have been the COMMON case for a real call, not a rare edge case. Fixed
+// this stage: downloadGeneratedVeoVideo() below uses the SDK's own
+// authenticated ai.files.download() (confirmed real via direct .d.ts
+// inspection -- DownloadableFileUnion explicitly includes the SDK's own
+// Video type) to fetch the real bytes server-side into a durable-storage-
+// ready Buffer, never treating the temporary provider URI itself as
+// permanent storage (task §9's own explicit rule).
 
 export const VEO_VIDEO_DEMONSTRATION_PROVIDER_NAME = "google";
 // Video generation is documented (task §7 of Video Stage 0, fetched from
@@ -45,6 +67,22 @@ export const VEO_VIDEO_DEMONSTRATION_PROVIDER_NAME = "google";
 // separate, repeated, short-lived operation, not one long-held connection.
 export const VEO_VIDEO_DEMONSTRATION_SUBMIT_TIMEOUT_MS = 30_000;
 export const VEO_VIDEO_DEMONSTRATION_POLL_TIMEOUT_MS = 30_000;
+
+// Stage 2 metering fix (task §10): the real Veo `Video` response object
+// carries NO duration field at all (confirmed by direct .d.ts inspection --
+// {uri?, videoBytes?, mimeType?}, nothing else) -- there is no
+// provider-reported duration to read back after generation. Duration IS,
+// however, one of a small set of DISCRETE values the request itself
+// chooses (docs: 4s / 6s / 8s, not a range) -- so this adapter requests a
+// FIXED, explicit value here and reports that SAME value back as the
+// duration for metering, rather than either inventing a measured number or
+// leaving usage.videoSeconds silently empty for every real call. This is
+// explicitly a REQUESTED value, not an independently-verified
+// provider-confirmed one -- video-generation-execution-service.ts's own
+// metering call sources it from here, never from re-inspecting the
+// downloaded file (no video-parsing dependency exists in this codebase,
+// and adding one is out of this stage's scope).
+export const VEO_VIDEO_DEMONSTRATION_REQUESTED_DURATION_SECONDS = 6;
 
 export interface VeoVideoDemonstrationProviderOptions {
   apiKey: string;
@@ -153,23 +191,25 @@ export class VeoVideoDemonstrationProvider extends VideoDemonstrationProvider {
       }
 
       if (!result.videoBytesBase64) {
-        // The provider returned a download URI instead of inline bytes --
-        // fetching it is a real, separate network operation this adapter
-        // deliberately does not perform itself (task §6: storage is a
-        // domain-layer concern, not a provider-boundary one). Surfaced as a
-        // distinct, honest outcome rather than silently treated as success
-        // with no bytes.
-        throw this.createProviderError(
-          "INVALID_RESPONSE",
-          "Veo returned a video URI instead of inline bytes -- URI-based retrieval is not implemented by this adapter yet.",
-          false,
-        );
+        // Stage 2: the real client (createDefaultVeoClient below) now
+        // downloads a URI-based response's real bytes itself (task §9) and
+        // always returns videoBytesBase64 populated for a genuine
+        // done:true success -- so reaching this branch means the
+        // VeoVideoGenerationClient this provider was constructed with
+        // (real or a test double) reported completion without ever
+        // producing usable bytes, which is a distinct, honest
+        // INVALID_RESPONSE outcome, never silently treated as success with
+        // no video.
+        throw this.createProviderError("INVALID_RESPONSE", "Veo reported completion but no usable video bytes could be obtained.", false);
       }
 
       return {
         done: true,
         videoBuffer: Buffer.from(result.videoBytesBase64, "base64"),
         mimeType: result.videoMimeType ?? "video/mp4",
+        // Requested, not provider-confirmed -- see this constant's own
+        // doc comment for why no provider-reported alternative exists.
+        durationSeconds: VEO_VIDEO_DEMONSTRATION_REQUESTED_DURATION_SECONDS,
       };
     } catch (error) {
       throw this.classifyError(error, controller.signal);
@@ -219,7 +259,16 @@ function createDefaultVeoClient(apiKey: string): VeoVideoGenerationClient {
         config: {
           aspectRatio: "9:16",
           generateAudio: false,
+          // Confirmed this stage (live doc research, task §1): EU/UK/CH/MENA
+          // regions REQUIRE personGeneration: "allow_adult" -- hardcoded here
+          // deliberately, since it is the one value valid in every region,
+          // never a caller-configurable choice.
           personGeneration: "allow_adult",
+          // Explicit, not left to an undocumented provider default -- see
+          // VEO_VIDEO_DEMONSTRATION_REQUESTED_DURATION_SECONDS's own doc
+          // comment (Stage 2, task §10) for why this exact value is also
+          // what gets reported for metering.
+          durationSeconds: VEO_VIDEO_DEMONSTRATION_REQUESTED_DURATION_SECONDS,
         },
       });
       return { operationName: operation.name };
@@ -238,15 +287,44 @@ function createDefaultVeoClient(apiKey: string): VeoVideoGenerationClient {
       }
 
       const generated = operation.response?.generatedVideos?.[0]?.video;
-      return {
-        done: true,
-        errorMessage: undefined,
-        videoUri: generated?.uri,
-        videoBytesBase64: generated?.videoBytes,
-        videoMimeType: generated?.mimeType,
-      };
+      if (generated?.videoBytes) {
+        // Inline bytes -- not the common real-world case (see this file's
+        // own header comment), but handled directly when the provider does
+        // supply them, with no download round-trip needed.
+        return { done: true, errorMessage: undefined, videoUri: generated.uri, videoBytesBase64: generated.videoBytes, videoMimeType: generated.mimeType };
+      }
+      if (generated?.uri) {
+        // The real, common case: fetch the actual bytes server-side, now,
+        // while the provider's own 2-day retention window is fresh --
+        // never hand the temporary provider URI back as if it were
+        // permanent storage (task §9).
+        const videoBytesBase64 = (await downloadGeneratedVeoVideo(ai, generated)).toString("base64");
+        return { done: true, errorMessage: undefined, videoUri: generated.uri, videoBytesBase64, videoMimeType: generated.mimeType };
+      }
+      return { done: true, errorMessage: undefined, videoUri: undefined, videoBytesBase64: undefined, videoMimeType: undefined };
     },
   };
+}
+
+/**
+ * Downloads a completed Veo video's real bytes server-side, using the
+ * SDK's own authenticated ai.files.download() (never a raw unauthenticated
+ * fetch of the provider URI, and never the provider URI treated as
+ * permanent storage -- task §9). The SDK only offers a download-to-path
+ * method (no direct in-memory bytes method exists for a generated video --
+ * confirmed by inspecting the real DownloadableFileUnion/Files types this
+ * stage), so this writes to a per-call temp file under the OS temp
+ * directory and reads it back into a Buffer, always cleaning up the temp
+ * file in a `finally` -- even on a failed/partial download.
+ */
+async function downloadGeneratedVeoVideo(ai: GoogleGenAI, video: Video): Promise<Buffer> {
+  const tempPath = path.join(os.tmpdir(), `veo-video-download-${randomUUID()}.tmp`);
+  try {
+    await ai.files.download({ file: video, downloadPath: tempPath });
+    return await readFile(tempPath);
+  } finally {
+    await rm(tempPath, { force: true }).catch(() => undefined);
+  }
 }
 
 function isVideoDemonstrationProviderError(error: unknown): error is VideoDemonstrationProviderError {

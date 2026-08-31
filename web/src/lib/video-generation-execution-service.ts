@@ -5,6 +5,7 @@ import {
   type VideoDemonstrationGenerationRecord,
 } from "@/lib/video-generation-repository";
 import {
+  claimVideoDemonstrationGenerationForCompletionProcessing,
   claimVideoDemonstrationGenerationForSubmit,
   isVideoDemonstrationFailureRetryable,
   markVideoDemonstrationGenerationCompleted,
@@ -273,6 +274,21 @@ async function pollExistingOperation(input: PollExistingOperationInput): Promise
   }
 
   if (!pollResult.done) {
+    return { outcome: "still_processing", generation };
+  }
+
+  // Stage 2 hardening (task §4/§12): a SEPARATE atomic claim from the
+  // submit claim -- guards the window between "provider reports done" and
+  // "we finished downloading/metering/persisting/marking COMPLETED"
+  // against two concurrent callers (e.g. two overlapping /execute
+  // requests) both observing done:true for the same operation. A caller
+  // that loses this race takes the safe, already-existing "still
+  // processing" outcome -- from its own point of view, someone else is
+  // already handling the completion, which is exactly true.
+  if (dependencies.beforeClaim) await dependencies.beforeClaim();
+  const completionClaim = await claimVideoDemonstrationGenerationForCompletionProcessing(generation.id, generation.ownerUserId, now);
+  if (completionClaim.outcome === "rejected") {
+    if (completionClaim.code === "NOT_FOUND") return failure("GENERATION_NOT_FOUND");
     return { outcome: "still_processing", generation };
   }
 
