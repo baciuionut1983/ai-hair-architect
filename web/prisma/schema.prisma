@@ -176,6 +176,9 @@ model User {
   // no column or constraint on "User"; the FK lives on
   // "PhotoPreviewGeneration".
   photoPreviewGenerations           PhotoPreviewGeneration[]
+  // Real AI Video Demonstration, Stage 1. Virtual back-relation only.
+  videoDemonstrationGenerations     VideoDemonstrationGeneration[]
+  videoAssets                       VideoAsset[]
 }
 
 model Session {
@@ -249,6 +252,9 @@ model Client {
   // no column or constraint on "Client"; the FK lives on
   // "PhotoPreviewGeneration".
   photoPreviewGenerations           PhotoPreviewGeneration[]
+  // Real AI Video Demonstration, Stage 1. Virtual back-relation only.
+  videoDemonstrationGenerations     VideoDemonstrationGeneration[]
+  videoAssets                       VideoAsset[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -1931,5 +1937,165 @@ model PhotoPreviewGeneration {
   @@unique([requestFingerprint])
   @@index([ownerUserId, clientId])
   @@index([spatialBindingId, ownerUserId, clientId])
+  @@index([status])
+}
+
+// Real AI Video Demonstration, Stage 1 -- the durable video output an
+// otherwise-durable Photo Preview generation's bytes get persisted as.
+// Deliberately a SEPARATE table from ImageAsset (Video Stage 0 Decision
+// Lock, section 7/H): video has genuinely different metadata (duration,
+// no width/height-as-spatial-truth) and none of ImageAsset's image-specific
+// processing (EXIF, sharp normalization) applies -- generalizing ImageAsset
+// would have forced irrelevant fields onto every future image row. Mirrors
+// ImageAsset's own storage-column shape exactly (same object-storage.ts
+// abstraction, same backend/key/etag/version fields) so the existing S3
+// write/read primitives are reused verbatim, never reimplemented.
+model VideoAsset {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  mimeType  String
+  sizeBytes Int
+
+  durationSeconds Float?
+
+  storagePath        String
+  storageBackend     String?  @db.VarChar(16)
+  storageBucketAlias String?  @db.VarChar(64)
+  storageKey         String?  @db.VarChar(512)
+  storageVersionId   String?  @db.VarChar(1024)
+  storageEtag        String?  @db.VarChar(256)
+  contentSha256      String?  @db.Char(64)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+
+  owner  User   @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client Client @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([ownerUserId, clientId])
+}
+
+// Real AI Video Demonstration, Stage 1 -- the durable, auditable generation
+// job. Mirrors PhotoPreviewGeneration's own conventions deliberately
+// (Video Stage 0 Decision Lock): validated pointers (not FKs) to its
+// authority chain, a frozen sealedRequest, a DB-level idempotency
+// fingerprint, owner/client scoping identical to every other domain table.
+//
+// Two real differences from PhotoPreviewGeneration, both required by the
+// Decision Lock:
+//
+// 1. photoPreviewGenerationId is the ONLY authority Video ever consults --
+//    never AnalysisProposal/TechnicalVisualMap/TechnicalVisualMapSpatialBinding
+//    directly. The analysisProposalId/analysisProposalConfirmedAt/
+//    technicalVisualMapId/mapVersion/spatialBindingId/spatialVersion fields
+//    below are a SNAPSHOT COPIED FROM the source PhotoPreviewGeneration row
+//    at video-request-creation time (never re-derived from the live chain),
+//    so a video request permanently carries its own historical proof of
+//    "what authorized this" even if the source proposal/map/binding are
+//    later superseded (Decision Lock section 5 -- "historical provenance
+//    over current-state guessing"). PhotoPreviewGeneration itself has no
+//    @@unique([id, ownerUserId, clientId]) today (same reason its own
+//    parents are validated pointers, not FKs), so photoPreviewGenerationId
+//    cannot be a real composite FK either -- same precedent, not a new one.
+//
+// 2. status has a real SUBMITTED/PROCESSING distinction Photo Preview never
+//    needed (Photo Preview's provider call is synchronous -- claim IS the
+//    entire attempt). Video generation is a genuinely asynchronous
+//    provider-side job (Veo: 11s-6min): REQUESTED -> PROCESSING covers both
+//    "claimed, about to submit" and "submitted, provider is working" --
+//    the load-bearing distinction is NOT a separate status value but the
+//    providerOperationId field itself: once it is non-null, recovery must
+//    ALWAYS poll that exact operation, never submit a new one. See
+//    video-generation-execution-service.ts's own header comment for the
+//    full state-machine reasoning.
+model VideoDemonstrationGeneration {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  // The ONLY authority Video consults (Decision Lock section F/G).
+  // Validated pointer, not FK -- see model comment above.
+  photoPreviewGenerationId String
+
+  // Frozen authority-chain snapshot, copied from the source
+  // PhotoPreviewGeneration row at THIS row's creation time -- permanent,
+  // self-contained proof of "what was true then". Never re-read live from
+  // AnalysisProposal/TechnicalVisualMap/TechnicalVisualMapSpatialBinding
+  // afterward.
+  analysisProposalId          String
+  analysisProposalConfirmedAt DateTime @db.Timestamp(6)
+  technicalVisualMapId        String
+  mapVersion                  Int
+  spatialBindingId            String
+  spatialVersion               Int
+
+  // The Photo Preview's own generated image -- the actual image-to-video
+  // starting frame (Decision Lock section E: Video animates an
+  // already-confirmed RESULT image, never the raw "before" photo).
+  // Validated pointer, not FK -- ImageAsset rows are never rewritten in
+  // place; the frozen hash below is the real integrity guarantee, same
+  // precedent as every other frozen-source-identity field in this schema.
+  sourceGeneratedImageAssetId String
+  frozenSourceContentSha256   String? @db.Char(64)
+
+  // Plain strings, not Postgres enums -- same reasoning as every other
+  // provider/model field in this schema (task §8: never hardcoded, always
+  // operator-configurable without a migration).
+  provider String
+  model    String
+
+  generationSchemaVersion String
+
+  // The frozen VideoDemonstrationSealedRequest (video-generation-contracts.ts)
+  // -- the one and only authoritative generation intent. Never a browser
+  // prompt.
+  sealedRequest Json
+
+  // DB-level idempotency backstop, identical precedent to
+  // PhotoPreviewGeneration.requestFingerprint.
+  requestFingerprint String @db.VarChar(64)
+
+  variationIndex Int @default(0)
+
+  // REQUESTED -> PROCESSING -> COMPLETED | FAILED. See model header comment
+  // for why a separate SUBMITTED value was deliberately not added.
+  status String
+
+  // How many real provider SUBMIT attempts have been claimed for this row
+  // (never polling -- polling is free, submission is what can cost money).
+  // Bounded by MAX_PROVIDER_SUBMIT_ATTEMPTS_PER_GENERATION
+  // (video-generation-execution-repository.ts), same shape as Photo
+  // Preview's own attemptCount.
+  attemptCount Int @default(0)
+
+  // Set ATOMICALLY, immediately after a real provider submit() call
+  // succeeds -- this is the single most important field in this table
+  // (Decision Lock section 6/10, task §10/§12): once non-null, every
+  // recovery path must poll THIS operation, never submit a second one.
+  providerOperationId String?
+
+  generatedVideoAssetId String?
+
+  // Safe, closed-vocabulary failure codes only -- never a raw provider
+  // stack trace or secret.
+  errorCode     String?
+  errorMetadata Json?
+
+  requestedAt DateTime  @default(now()) @db.Timestamp(6)
+  submittedAt DateTime? @db.Timestamp(6)
+  startedAt   DateTime? @db.Timestamp(6)
+  completedAt DateTime? @db.Timestamp(6)
+  failedAt    DateTime? @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner  User   @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client Client @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([requestFingerprint])
+  @@index([ownerUserId, clientId])
+  @@index([photoPreviewGenerationId, ownerUserId, clientId])
   @@index([status])
 }
