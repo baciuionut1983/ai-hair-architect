@@ -438,6 +438,143 @@ export async function findDueVideoDemonstrationGenerationsForRecovery(now: Date,
 }
 
 // ---------------------------------------------------------------------------
+// Reconciliation -- recovering a real, provider-confirmed-successful
+// operation whose row was locally, terminally marked FAILED (Video/Veo
+// polling root-cause fixes, 2026-09-01: two real bugs, both now fixed in
+// video-provider-veo.ts, could each independently crash a poll AFTER
+// Google had already accepted and completed a real, billable generation).
+// This is the ONLY code path in this file that ever transitions a row from
+// FAILED to COMPLETED -- the ordinary state machine (markVideoDemonstrationGenerationFailed,
+// scheduleVideoDemonstrationNextPoll, markVideoDemonstrationGenerationCompleted
+// above) never allows it, by construction (every one of those functions'
+// own WHERE clause requires status PROCESSING). Reconciliation NEVER calls
+// provider.submit()/generateVideos() anywhere -- see
+// video-generation-reconciliation-service.ts's own header comment for the
+// full orchestration and its own structural, source-level regression lock
+// proving that.
+// ---------------------------------------------------------------------------
+
+export type VideoDemonstrationReconciliationClaimRejectionCode = "NOT_FOUND" | "NOT_ELIGIBLE";
+
+export type VideoDemonstrationReconciliationClaimResult =
+  | { outcome: "claimed" }
+  | { outcome: "rejected"; code: VideoDemonstrationReconciliationClaimRejectionCode };
+
+/**
+ * Atomically claims exactly one row for reconciliation processing. Eligible
+ * ONLY for a row that is: currently FAILED; has a real providerOperationId
+ * (nothing to reconcile against otherwise); has NO generatedVideoAssetId yet
+ * (already reconciled -- or already COMPLETED some other way, impossible
+ * today but checked anyway, defense in depth); and whose
+ * reconciliationClaimedAt is either null (never attempted) or stale (the
+ * last attempt crashed before reaching a terminal outcome) -- identical
+ * stale-recovery shape to claimVideoDemonstrationGenerationForCompletionProcessing
+ * above, reusing the same timeout constant.
+ *
+ * This is the ONLY safety boundary that actually matters for concurrency
+ * (request point 7): two concurrent reconciliation attempts both read a
+ * row with reconciliationClaimedAt=null, but the atomic guarded UPDATE
+ * below (WHERE ... reconciliationClaimedAt: <the exact value just read>)
+ * can only ever affect exactly one of them -- the loser gets `rejected`
+ * and must never proceed to poll/download/persist, so at most one
+ * VideoAsset can ever be created for this row.
+ */
+export async function claimVideoDemonstrationGenerationForReconciliation(
+  generationId: string,
+  ownerUserId: string,
+  now: Date = new Date(),
+): Promise<VideoDemonstrationReconciliationClaimResult> {
+  return runExecutionQuery(async () => {
+    const row = await prisma.videoDemonstrationGeneration.findFirst({
+      where: { id: generationId, ownerUserId },
+      select: { id: true, status: true, providerOperationId: true, generatedVideoAssetId: true, reconciliationClaimedAt: true },
+    });
+    if (!row) {
+      return { outcome: "rejected", code: "NOT_FOUND" };
+    }
+    if (row.status !== "FAILED" || !row.providerOperationId || row.generatedVideoAssetId) {
+      return { outcome: "rejected", code: "NOT_ELIGIBLE" };
+    }
+
+    const eligible = row.reconciliationClaimedAt === null || isStale(row.reconciliationClaimedAt, now);
+    if (!eligible) {
+      return { outcome: "rejected", code: "NOT_ELIGIBLE" };
+    }
+
+    // Guarded by the EXACT previously-read value -- same optimistic-
+    // concurrency reasoning as claimVideoDemonstrationGenerationForCompletionProcessing's
+    // own identical pattern above.
+    const claimed = await prisma.videoDemonstrationGeneration.updateMany({
+      where: { id: row.id, ownerUserId, status: "FAILED", providerOperationId: row.providerOperationId, generatedVideoAssetId: null, reconciliationClaimedAt: row.reconciliationClaimedAt },
+      data: { reconciliationClaimedAt: now },
+    });
+    if (claimed.count !== 1) {
+      return { outcome: "rejected", code: "NOT_ELIGIBLE" };
+    }
+
+    return { outcome: "claimed" };
+  });
+}
+
+/**
+ * Releases a reconciliation claim without changing anything else -- used
+ * when the provider's real answer turns out to be inconclusive (still
+ * pending, or the reconciliation poll itself failed to get a clear answer)
+ * so a human can retry reconciliation immediately, rather than having to
+ * wait out the full stale-claim window. Best-effort: a failure here just
+ * means the claim self-expires later via the normal staleness check above,
+ * never a correctness problem.
+ */
+export async function releaseVideoDemonstrationGenerationReconciliationClaim(generationId: string, ownerUserId: string): Promise<void> {
+  await runExecutionQuery(async () => {
+    await prisma.videoDemonstrationGeneration.updateMany({
+      where: { id: generationId, ownerUserId, status: "FAILED" },
+      data: { reconciliationClaimedAt: null },
+    });
+  }).catch(() => undefined);
+}
+
+export interface MarkVideoDemonstrationGenerationReconciledCompletedInput {
+  generatedVideoAssetId: string;
+}
+
+/**
+ * The one and only place in this codebase that writes status: COMPLETED
+ * while reading status: FAILED (request point 6). Legal ONLY for a row
+ * that is FAILED, still has NO generatedVideoAssetId (idempotency
+ * backstop, independent of the claim above), and still carries the exact
+ * providerOperationId this reconciliation attempt polled -- guards against
+ * a pathological race where the row was somehow reassigned a different
+ * operation between claim and this final write.
+ *
+ * Deliberately does NOT clear failedAt/errorCode/errorMetadata, and
+ * deliberately does NOT reset reconciliationClaimedAt back to null (see
+ * that field's own schema comment) -- request point 9's full audit trail
+ * lives directly on the row: a COMPLETED row with a non-null failedAt,
+ * errorCode, AND reconciliationClaimedAt unambiguously means "this was
+ * locally failed, then reconciled," never confusable with an ordinary
+ * first-time completion (which never touches reconciliationClaimedAt at
+ * all, so it stays null on every normal row forever).
+ */
+export async function markVideoDemonstrationGenerationReconciledCompleted(
+  generationId: string,
+  ownerUserId: string,
+  input: MarkVideoDemonstrationGenerationReconciledCompletedInput,
+  providerOperationId: string,
+  now: Date = new Date(),
+): Promise<void> {
+  return runExecutionQuery(async () => {
+    const claimed = await prisma.videoDemonstrationGeneration.updateMany({
+      where: { id: generationId, ownerUserId, status: "FAILED", generatedVideoAssetId: null, providerOperationId },
+      data: { status: "COMPLETED", completedAt: now, generatedVideoAssetId: input.generatedVideoAssetId },
+    });
+    if (claimed.count !== 1) {
+      throw new VideoDemonstrationExecutionStateError();
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Retry policy (mirrors isPhotoPreviewFailureRetryable's own single-source-
 // of-truth discipline exactly).
 // ---------------------------------------------------------------------------

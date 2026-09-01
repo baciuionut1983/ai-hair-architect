@@ -16,13 +16,16 @@ import { confirmSpatialBinding, createDraftSpatialBinding } from "@/lib/technica
 import { createVideoDemonstrationGeneration } from "@/lib/video-generation-repository";
 import {
   claimVideoDemonstrationGenerationForCompletionProcessing,
+  claimVideoDemonstrationGenerationForReconciliation,
   claimVideoDemonstrationGenerationForSubmit,
   findDueVideoDemonstrationGenerationsForRecovery,
   isVideoDemonstrationFailureRetryable,
   markVideoDemonstrationGenerationCompleted,
   markVideoDemonstrationGenerationFailed,
+  markVideoDemonstrationGenerationReconciledCompleted,
   markVideoDemonstrationGenerationSubmitted,
   MAX_PROVIDER_SUBMIT_ATTEMPTS_PER_GENERATION,
+  releaseVideoDemonstrationGenerationReconciliationClaim,
   scheduleVideoDemonstrationNextPoll,
   VIDEO_DEMONSTRATION_STALE_CLAIM_TIMEOUT_MS,
   VideoDemonstrationExecutionStateError,
@@ -360,6 +363,139 @@ suite("video-generation-execution-repository (real AI Video Demonstration, Stage
       const results = await Promise.all(Array.from({ length: 5 }, () => claimVideoDemonstrationGenerationForCompletionProcessing(generationId, ownerUserId)));
       const claimed = results.filter((r) => r.outcome === "claimed");
       expect(claimed.length).toBe(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Reconciliation claim/complete -- recovering a real, provider-confirmed-
+  // successful operation whose row is locally, terminally FAILED (see this
+  // file's own module header comment above these functions' definitions).
+  // -------------------------------------------------------------------------
+
+  describe("claimVideoDemonstrationGenerationForReconciliation / releaseVideoDemonstrationGenerationReconciliationClaim / markVideoDemonstrationGenerationReconciledCompleted", () => {
+    async function createFailedGenerationWithOperationId(ownerUserId: string, generationId: string, providerOperationId = "op-1") {
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+      await markVideoDemonstrationGenerationSubmitted(generationId, ownerUserId, providerOperationId);
+      await markVideoDemonstrationGenerationFailed(generationId, ownerUserId, { errorCode: "VIDEO_DEMONSTRATION_PROVIDER_ERROR", retryable: false });
+    }
+
+    it("claims a FAILED row with a real providerOperationId and no generatedVideoAssetId yet", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await createFailedGenerationWithOperationId(ownerUserId, generationId);
+
+      expect(await claimVideoDemonstrationGenerationForReconciliation(generationId, ownerUserId)).toEqual({ outcome: "claimed" });
+      const row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } });
+      expect(row.reconciliationClaimedAt).not.toBeNull();
+      expect(row.status).toBe("FAILED"); // the claim itself never changes status
+    });
+
+    it("rejects NOT_FOUND for a nonexistent id or the wrong owner", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await createFailedGenerationWithOperationId(ownerUserId, generationId);
+      expect(await claimVideoDemonstrationGenerationForReconciliation(randomUUID(), ownerUserId)).toEqual({ outcome: "rejected", code: "NOT_FOUND" });
+      expect(await claimVideoDemonstrationGenerationForReconciliation(generationId, randomUUID())).toEqual({ outcome: "rejected", code: "NOT_FOUND" });
+    });
+
+    it("rejects NOT_ELIGIBLE for a row that is not FAILED", async () => {
+      const { ownerUserId, generationId } = await createGeneration(); // still REQUESTED
+      expect(await claimVideoDemonstrationGenerationForReconciliation(generationId, ownerUserId)).toEqual({ outcome: "rejected", code: "NOT_ELIGIBLE" });
+    });
+
+    it("rejects NOT_ELIGIBLE for a FAILED row with no providerOperationId (a submit-phase failure -- nothing to reconcile)", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await claimVideoDemonstrationGenerationForSubmit(generationId, ownerUserId);
+      await markVideoDemonstrationGenerationFailed(generationId, ownerUserId, { errorCode: "VIDEO_DEMONSTRATION_SOURCE_UNAVAILABLE", retryable: false });
+
+      const row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } });
+      expect(row.providerOperationId).toBeNull();
+      expect(await claimVideoDemonstrationGenerationForReconciliation(generationId, ownerUserId)).toEqual({ outcome: "rejected", code: "NOT_ELIGIBLE" });
+    });
+
+    it("rejects NOT_ELIGIBLE for a row that already has a generatedVideoAssetId (already reconciled)", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await createFailedGenerationWithOperationId(ownerUserId, generationId);
+      await claimVideoDemonstrationGenerationForReconciliation(generationId, ownerUserId);
+      await markVideoDemonstrationGenerationReconciledCompleted(generationId, ownerUserId, { generatedVideoAssetId: randomUUID() }, "op-1");
+
+      expect(await claimVideoDemonstrationGenerationForReconciliation(generationId, ownerUserId)).toEqual({ outcome: "rejected", code: "NOT_ELIGIBLE" });
+    });
+
+    it("rejects NOT_ELIGIBLE for an already-claimed, non-stale reconciliation in progress -- a concurrent caller must never also process it", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await createFailedGenerationWithOperationId(ownerUserId, generationId);
+      await claimVideoDemonstrationGenerationForReconciliation(generationId, ownerUserId);
+
+      expect(await claimVideoDemonstrationGenerationForReconciliation(generationId, ownerUserId)).toEqual({ outcome: "rejected", code: "NOT_ELIGIBLE" });
+    });
+
+    it("accepts (re-claims) a STALE reconciliation claim -- crash recovery for a process that died mid-download/persist", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await createFailedGenerationWithOperationId(ownerUserId, generationId);
+      await claimVideoDemonstrationGenerationForReconciliation(generationId, ownerUserId);
+      await prisma.videoDemonstrationGeneration.update({ where: { id: generationId }, data: { reconciliationClaimedAt: new Date(Date.now() - VIDEO_DEMONSTRATION_STALE_CLAIM_TIMEOUT_MS - 1000) } });
+
+      expect(await claimVideoDemonstrationGenerationForReconciliation(generationId, ownerUserId)).toEqual({ outcome: "claimed" });
+    });
+
+    it("under a real concurrent race, exactly one caller wins the reconciliation claim", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await createFailedGenerationWithOperationId(ownerUserId, generationId);
+
+      const results = await Promise.all(Array.from({ length: 5 }, () => claimVideoDemonstrationGenerationForReconciliation(generationId, ownerUserId)));
+      const claimed = results.filter((r) => r.outcome === "claimed");
+      expect(claimed.length).toBe(1);
+    });
+
+    it("releaseVideoDemonstrationGenerationReconciliationClaim clears the claim without touching status, and is safe to call on a non-FAILED row (no-op)", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await createFailedGenerationWithOperationId(ownerUserId, generationId);
+      await claimVideoDemonstrationGenerationForReconciliation(generationId, ownerUserId);
+
+      await releaseVideoDemonstrationGenerationReconciliationClaim(generationId, ownerUserId);
+      const row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } });
+      expect(row.reconciliationClaimedAt).toBeNull();
+      expect(row.status).toBe("FAILED");
+
+      await expect(releaseVideoDemonstrationGenerationReconciliationClaim(randomUUID(), ownerUserId)).resolves.toBeUndefined();
+    });
+
+    it("markVideoDemonstrationGenerationReconciledCompleted is the ONLY function that transitions FAILED -> COMPLETED, and requires a matching providerOperationId", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await createFailedGenerationWithOperationId(ownerUserId, generationId, "op-1");
+      const assetId = randomUUID();
+
+      // Wrong providerOperationId -- guarded, rejected.
+      await expect(markVideoDemonstrationGenerationReconciledCompleted(generationId, ownerUserId, { generatedVideoAssetId: assetId }, "op-DIFFERENT")).rejects.toBeInstanceOf(
+        VideoDemonstrationExecutionStateError,
+      );
+      let row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } });
+      expect(row.status).toBe("FAILED");
+      expect(row.generatedVideoAssetId).toBeNull();
+
+      // Correct providerOperationId -- succeeds, preserves failedAt/errorCode
+      // as historical audit evidence (schema comment on reconciliationClaimedAt).
+      await markVideoDemonstrationGenerationReconciledCompleted(generationId, ownerUserId, { generatedVideoAssetId: assetId }, "op-1");
+      row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } });
+      expect(row.status).toBe("COMPLETED");
+      expect(row.generatedVideoAssetId).toBe(assetId);
+      expect(row.completedAt).not.toBeNull();
+      expect(row.failedAt).not.toBeNull();
+      expect(row.errorCode).not.toBeNull();
+
+      // Calling it again (already COMPLETED, generatedVideoAssetId no
+      // longer null) is correctly rejected, never a silent double-write.
+      await expect(markVideoDemonstrationGenerationReconciledCompleted(generationId, ownerUserId, { generatedVideoAssetId: randomUUID() }, "op-1")).rejects.toBeInstanceOf(
+        VideoDemonstrationExecutionStateError,
+      );
+    });
+
+    it("markVideoDemonstrationGenerationCompleted (the ordinary path) still refuses a FAILED row -- reconciliation's own function is the only legal FAILED -> COMPLETED writer", async () => {
+      const { ownerUserId, generationId } = await createGeneration();
+      await createFailedGenerationWithOperationId(ownerUserId, generationId);
+
+      await expect(markVideoDemonstrationGenerationCompleted(generationId, ownerUserId, { generatedVideoAssetId: randomUUID() })).rejects.toBeInstanceOf(VideoDemonstrationExecutionStateError);
+      const row = await prisma.videoDemonstrationGeneration.findUniqueOrThrow({ where: { id: generationId } });
+      expect(row.status).toBe("FAILED");
     });
   });
 
