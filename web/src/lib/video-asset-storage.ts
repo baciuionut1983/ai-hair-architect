@@ -132,7 +132,10 @@ function sha256(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
-function extensionForMimeType(mimeType: string): string {
+// Exported (unchanged, unbehaviored) -- Video UI's own content-serving
+// route (video-assets/[id]/content) reuses this exact mapping for its
+// Content-Disposition filename, rather than a second, duplicated table.
+export function extensionForMimeType(mimeType: string): string {
   if (mimeType === "video/webm") return "webm";
   if (mimeType === "video/quicktime") return "mov";
   return "mp4";

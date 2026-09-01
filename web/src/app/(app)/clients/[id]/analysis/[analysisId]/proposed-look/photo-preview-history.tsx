@@ -12,8 +12,10 @@ import {
   mapPhotoPreviewFailureCodeToMessage,
 } from "./photo-preview-logic";
 import { PhotoPreviewStatusBadge } from "./photo-preview-status-badge";
+import { VideoDemonstrationSection } from "./video-demonstration-section";
 
 export interface PhotoPreviewHistoryListProps {
+  clientId: string;
   history: PhotoPreviewGenerationRecord[];
 }
 
@@ -23,20 +25,20 @@ export interface PhotoPreviewHistoryListProps {
 // approved preview" authority concept (task #17): a COMPLETED row is shown
 // with its full comparison for as long as it exists, and multiple valid
 // previews (including different variations) simply coexist in this list.
-export function PhotoPreviewHistoryList({ history }: PhotoPreviewHistoryListProps) {
+export function PhotoPreviewHistoryList({ clientId, history }: PhotoPreviewHistoryListProps) {
   if (history.length === 0) return null;
 
   return (
     <div className="flex flex-col gap-4">
       <h4 className="text-sm font-semibold text-foreground">Preview history</h4>
       {history.map((generation) => (
-        <PhotoPreviewHistoryRow key={generation.id} generation={generation} />
+        <PhotoPreviewHistoryRow key={generation.id} clientId={clientId} generation={generation} />
       ))}
     </div>
   );
 }
 
-function PhotoPreviewHistoryRow({ generation }: { generation: PhotoPreviewGenerationRecord }) {
+function PhotoPreviewHistoryRow({ clientId, generation }: { clientId: string; generation: PhotoPreviewGenerationRecord }) {
   const variationLabel = getPhotoPreviewVariationLabel(generation);
 
   const meta = (
@@ -65,6 +67,14 @@ function PhotoPreviewHistoryRow({ generation }: { generation: PhotoPreviewGenera
         </div>
         {meta}
         <PhotoPreviewComparison generation={{ ...generation, generatedImageAssetId: generation.generatedImageAssetId }} />
+        {/* Video UI, Result Visualization -- available ONLY for a COMPLETED
+            Photo Preview (this exact branch's own condition), matching the
+            product principle: Video visualizes an already-confirmed result,
+            never a new AI recommendation. Keyed on the Photo Preview
+            generation's own id -- a different COMPLETED generation is a
+            genuinely different source result, never a continuation of a
+            previous one's Video state. */}
+        <VideoDemonstrationSection key={generation.id} clientId={clientId} photoPreviewGenerationId={generation.id} />
       </div>
     );
   }

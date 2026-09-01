@@ -159,7 +159,7 @@ export function PhotoPreviewSection({ clientId, proposalId, technicalVisualMapId
         </div>
       )}
 
-      <PhotoPreviewHistoryList history={history} />
+      <PhotoPreviewHistoryList clientId={clientId} history={history} />
     </div>
   );
 }
