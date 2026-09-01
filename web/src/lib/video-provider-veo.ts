@@ -3,7 +3,7 @@ import { rm, readFile } from "fs/promises";
 import os from "os";
 import path from "path";
 
-import { GoogleGenAI, type Video } from "@google/genai";
+import { GenerateVideosOperation, GoogleGenAI, type Video } from "@google/genai";
 
 import { assembleVeoVideoDemonstrationInstruction } from "./video-generation-instruction-assembler";
 import {
@@ -92,11 +92,6 @@ export interface VeoVideoDemonstrationProviderOptions {
   apiKey: string;
   model: string;
   timeoutMs?: number;
-}
-
-export interface VeoOperationHandle {
-  name: string;
-  done?: boolean;
 }
 
 export interface VeoSubmitResult {
@@ -309,8 +304,27 @@ function createDefaultVeoClient(apiKey: string): VeoVideoGenerationClient {
       return { operationName: operation.name };
     },
     async poll({ operationName }) {
-      const handle: VeoOperationHandle = { name: operationName, done: false };
-      const operation = await ai.operations.getVideosOperation({ operation: handle as unknown as Parameters<typeof ai.operations.getVideosOperation>[0]["operation"] });
+      // Real-test fix #3 (polling root-cause audit, 2026-09-01): the
+      // installed SDK's own getVideosOperation() (Gemini Developer API
+      // branch) calls `operation._fromAPIResponse(...)` -- a METHOD -- on
+      // whatever `operation` object is passed in, AFTER the real network
+      // status request already succeeded (confirmed directly in
+      // node_modules/@google/genai/dist/node/index.cjs, Operations.
+      // getVideosOperation). The SDK's own public Operation<T> interface
+      // (genai.d.ts) declares `_fromAPIResponse` as a REQUIRED member --
+      // a plain `{name, done}` data object never satisfies it. This
+      // codebase used to build exactly that plain object and force the
+      // type past the compiler with `as unknown as ...`, which produced a
+      // real runtime TypeError (`operation._fromAPIResponse is not a
+      // function`) on the FIRST real poll of the FIRST real submit that
+      // ever succeeded -- after Google had already answered successfully.
+      // Fix: construct a genuine GenerateVideosOperation instance (the
+      // SDK's own exported class, which carries `_fromAPIResponse` on its
+      // prototype) instead of a bare literal. No cast needed any more --
+      // this is a real type fix, not another compiler workaround.
+      const handle = new GenerateVideosOperation();
+      Object.assign(handle, { name: operationName, done: false });
+      const operation = await ai.operations.getVideosOperation({ operation: handle });
 
       if (!operation.done) {
         return { done: false, errorMessage: undefined, videoUri: undefined, videoBytesBase64: undefined, videoMimeType: undefined };

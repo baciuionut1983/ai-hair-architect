@@ -15,7 +15,13 @@ import { VEO_VIDEO_DEMONSTRATION_REQUESTED_DURATION_SECONDS, VeoVideoDemonstrati
 // video-generation-execution-service.test.ts's own "network safety" test).
 // Every test in this file injects an explicit fake client -- the
 // constructor's second, optional parameter -- so createDefaultVeoClient
-// (and therefore any real network call) is NEVER reached here either.
+// (and therefore any real network call) is NEVER reached here either --
+// EXCEPT the deliberate, explicitly-network-stubbed exception in this
+// file's own "real Veo polling operation handle" describe block below
+// (real-test fix #3), which stubs global fetch itself rather than
+// injecting a fake client, specifically to prove the fixed operation
+// handle satisfies the real, installed SDK's own _fromAPIResponse
+// contract -- still zero bytes ever leave this process.
 
 const SEALED_REQUEST: SealedVideoDemonstrationRequest = {
   schemaVersion: "1.0.0",
@@ -283,6 +289,131 @@ describe("real Veo request shape (source-level regression lock -- no network cal
       expect((caught as Error).message).not.toMatch(/generateAudio/);
     } finally {
       globalThis.fetch = realFetch;
+    }
+  });
+});
+
+// Real-test fix #3 (polling root-cause audit, 2026-09-01): the THIRD
+// authorized real Veo test's submit genuinely succeeded (a real
+// providerOperationId was issued by Google), but the very first poll of
+// that same operation crashed with a client-side TypeError, AFTER a real,
+// successful network round trip -- confirmed by direct inspection of the
+// installed SDK's own compiled source (node_modules/@google/genai/dist/
+// node/index.cjs, Operations.getVideosOperation): the non-Vertex branch
+// calls `operation._fromAPIResponse(...)` -- a METHOD, declared as a
+// REQUIRED member of the SDK's own public Operation<T> interface
+// (genai.d.ts) -- on whatever `operation` object this adapter passes in.
+// This codebase used to pass a bare `{name, done}` data literal (forced
+// past the compiler with `as unknown as ...`), which has no such method.
+// Fixed: poll() now constructs a genuine `new GenerateVideosOperation()`
+// instance (the SDK's own exported class) before calling
+// ai.operations.getVideosOperation().
+//
+// Unlike the fake-client tests above, these three tests deliberately DO
+// exercise the real, default createDefaultVeoClient() path (by
+// constructing VeoVideoDemonstrationProvider with NO second/fake-client
+// argument) -- the ONLY way to prove, against the SDK's own real,
+// unmodified _fromAPIResponse machinery, that the fixed handle no longer
+// throws. This is safe and reaches no real network: global fetch is
+// stubbed to return a locally-fabricated (but realistically-shaped, per
+// the SDK's own generateVideosOperationFromMldev$1/
+// generateVideosResponseFromMldev$1 parsing functions, read directly from
+// the installed SDK's source) Response, so nothing ever leaves this
+// process. Every OTHER test in this file still injects an explicit fake
+// client and never reaches createDefaultVeoClient at all.
+describe("real Veo polling operation handle (dynamic SDK proof -- no network call)", () => {
+  function stubFetchWithJsonResponse(body: unknown): { fetchMock: ReturnType<typeof vi.fn>; restore: () => void } {
+    const realFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return { fetchMock, restore: () => { globalThis.fetch = realFetch; } };
+  }
+
+  function realProvider(): VeoVideoDemonstrationProvider {
+    // No second (fake client) argument -- forces the real, installed SDK
+    // path (createDefaultVeoClient), the exact code this fix targets.
+    return new VeoVideoDemonstrationProvider({ apiKey: "not-a-real-key-never-sent", model: "veo-3.1-lite-generate-preview" });
+  }
+
+  it("readSourceFile() sanity: poll() no longer casts the operation handle with `as unknown as`", () => {
+    const source = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "video-provider-veo.ts"), "utf8");
+    expect(source).not.toMatch(/operation:\s*handle as unknown as/);
+    expect(source).toMatch(/new GenerateVideosOperation\(\)/);
+  });
+
+  it("A. pending operation (done:false): getVideosOperation does not throw, poll() reports done:false", async () => {
+    const { restore } = stubFetchWithJsonResponse({
+      name: "models/veo-3.1-lite-generate-preview/operations/test-op-pending",
+      done: false,
+    });
+    try {
+      const outcome = await realProvider().poll("models/veo-3.1-lite-generate-preview/operations/test-op-pending");
+      // VideoDemonstrationPollOutcome's done:false branch is exactly
+      // `{ done: false }` (video-provider.ts) -- no other fields exist on
+      // this union member.
+      expect(outcome).toEqual({ done: false });
+    } finally {
+      restore();
+    }
+  });
+
+  it("B. completed operation (done:true, response with inline video bytes): _fromAPIResponse parses correctly, poll() returns a usable result with zero TypeError", async () => {
+    const { restore } = stubFetchWithJsonResponse({
+      name: "models/veo-3.1-lite-generate-preview/operations/test-op-completed",
+      done: true,
+      response: {
+        generateVideoResponse: {
+          generatedSamples: [
+            { video: { uri: "https://example.invalid/fake-generated-video.mp4", encodedVideo: Buffer.from("fake-video-bytes").toString("base64"), encoding: "video/mp4" } },
+          ],
+        },
+      },
+    });
+    try {
+      const outcome = await realProvider().poll("models/veo-3.1-lite-generate-preview/operations/test-op-completed");
+      // VideoDemonstrationPollOutcome's done:true branch (video-provider.ts):
+      // { done, videoBuffer: Buffer, mimeType, durationSeconds }.
+      expect(outcome.done).toBe(true);
+      if (!outcome.done) throw new Error("unreachable -- asserted above");
+      expect(outcome.videoBuffer).toEqual(Buffer.from("fake-video-bytes"));
+      expect(outcome.mimeType).toBe("video/mp4");
+      expect(outcome.durationSeconds).toBe(VEO_VIDEO_DEMONSTRATION_REQUESTED_DURATION_SECONDS);
+    } finally {
+      restore();
+    }
+  });
+
+  it("C. failed operation (done:true, error): classified correctly (MODERATION_REFUSED), not swallowed as a generic crash", async () => {
+    const { restore } = stubFetchWithJsonResponse({
+      name: "models/veo-3.1-lite-generate-preview/operations/test-op-failed",
+      done: true,
+      error: { message: "Content violates the safety policy." },
+    });
+    try {
+      await expect(realProvider().poll("models/veo-3.1-lite-generate-preview/operations/test-op-failed")).rejects.toMatchObject({
+        code: "MODERATION_REFUSED",
+        retryable: false,
+        message: expect.stringContaining("Content violates the safety policy."),
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("exact-once submit is untouched by this fix: poll() never calls the client's submit(), only getVideosOperation", async () => {
+    const { fetchMock, restore } = stubFetchWithJsonResponse({
+      name: "models/veo-3.1-lite-generate-preview/operations/test-op-pending",
+      done: false,
+    });
+    try {
+      await realProvider().poll("models/veo-3.1-lite-generate-preview/operations/test-op-pending");
+      // Exactly one HTTP call for one poll -- a GET to the operation's own
+      // path, never a POST to generateVideos (no new submit).
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [, requestInit] = fetchMock.mock.calls[0] as [unknown, RequestInit | undefined];
+      expect((requestInit?.method ?? "GET")).toBe("GET");
+    } finally {
+      restore();
     }
   });
 });
