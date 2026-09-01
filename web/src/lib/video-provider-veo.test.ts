@@ -1,3 +1,7 @@
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { SealedVideoDemonstrationRequest } from "@/lib/video-generation-contracts";
@@ -159,5 +163,61 @@ describe("construction", () => {
   it("requires a non-empty apiKey and model -- fails closed rather than constructing a half-configured provider", () => {
     expect(() => new VeoVideoDemonstrationProvider({ apiKey: "", model: "veo-3.1-lite-generate-preview" }, fakeClient())).toThrow();
     expect(() => new VeoVideoDemonstrationProvider({ apiKey: "k", model: "" }, fakeClient())).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real-test fix (2026-09-01): the first (and only) authorized real Veo
+// submit failed in ~24ms, before any providerOperationId was ever
+// produced -- the server's own log showed the installed SDK's runtime
+// deprecation warning for the flat prompt/image call shape. Fixed by
+// nesting under `source`. createDefaultVeoClient (the real network glue)
+// is deliberately never exercised by any test in this file (see the
+// header comment) -- there is no injectable seam for it, and adding one
+// would be an architecture change this fix does not authorize. This is
+// therefore a source-level regression lock, mirroring the exact same
+// precedent already established in this codebase for another
+// untested-by-design network boundary
+// (image-assets/[id]/content/route.test.ts's own "does not implement
+// range/partial-content support (source-level check)" test).
+// ---------------------------------------------------------------------------
+
+describe("real Veo request shape (source-level regression lock -- no network call, no injectable seam exists for createDefaultVeoClient)", () => {
+  function readSourceFile(): string {
+    return fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "video-provider-veo.ts"), "utf8");
+  }
+
+  it("generateVideos() is called with the nested `source: { prompt, image }` shape, not the deprecated flat prompt/image arguments", () => {
+    const source = readSourceFile();
+    // The exact call shape: `model,` immediately followed by `source: {` --
+    // only matches the fixed form, never the old flat one.
+    expect(source).toMatch(/generateVideos\(\{\s*model,\s*source:\s*\{/);
+  });
+
+  it("the deprecated flat call shape (image/prompt as direct siblings of model) is never reintroduced", () => {
+    const source = readSourceFile();
+    // The old, broken shape had `model,` directly followed by `image: {`
+    // -- assert that exact sequence is absent.
+    expect(source).not.toMatch(/generateVideos\(\{\s*model,\s*image:\s*\{/);
+  });
+
+  it("source.prompt receives the assembled instruction, and source.image receives the base64 bytes + mimeType in the SDK's own Image shape", () => {
+    const source = readSourceFile();
+    expect(source).toMatch(/source:\s*\{\s*image:\s*\{\s*imageBytes:\s*imageBase64,\s*mimeType\s*\},\s*prompt:\s*instruction\s*\}/);
+  });
+
+  it("config (aspectRatio/generateAudio/personGeneration/durationSeconds) stays a top-level sibling of source, untouched by the shape fix", () => {
+    const source = readSourceFile();
+    // `source` (nested braces included) must appear, in file order, before
+    // `config:` -- a plain index comparison rather than a brace-counting
+    // regex, since source's own value is itself a nested object.
+    const sourceIndex = source.indexOf("source: { image:");
+    const configIndex = source.indexOf("config: {", sourceIndex);
+    expect(sourceIndex).toBeGreaterThan(-1);
+    expect(configIndex).toBeGreaterThan(sourceIndex);
+    expect(source).toContain('aspectRatio: "9:16"');
+    expect(source).toContain("generateAudio: false");
+    expect(source).toContain('personGeneration: "allow_adult"');
+    expect(source).toContain("durationSeconds: VEO_VIDEO_DEMONSTRATION_REQUESTED_DURATION_SECONDS");
   });
 });

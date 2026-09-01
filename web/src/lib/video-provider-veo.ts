@@ -28,9 +28,9 @@ import type { SealedVideoDemonstrationRequest } from "./video-generation-contrac
 // which mirrors photo-preview-execution-service.test.ts's identical
 // guarantee.
 //
-// MODEL ID -- RESOLVED, Stage 2 (was Stage 1's own documented "known gap"):
-// independently re-verified live this stage against the CURRENT official
-// docs, fetched fresh -- ai.google.dev/gemini-api/docs/models (model
+// MODEL ID -- RESOLVED, Stage 2, and the request SHAPE separately
+// RESOLVED after a real test: independently re-verified live against the
+// CURRENT official docs -- ai.google.dev/gemini-api/docs/models (model
 // catalog) AND ai.google.dev/gemini-api/docs/pricing (billing table,
 // independently listing the same three ids with real per-second USD
 // pricing). Both pages agree: the only real, current, billable Veo model
@@ -40,9 +40,13 @@ import type { SealedVideoDemonstrationRequest } from "./video-generation-contrac
 // for the enforced allowlist. The installed SDK's own doc-comment example
 // (`veo-2.0-generate-001`) is confirmed to be a stale example, not evidence
 // against the newer ids -- the `model` parameter is a plain string, never
-// validated by the SDK itself. Still NOT independently confirmed with a
-// real network call (no paid call is authorized yet) -- this is the
-// strongest verification possible without one.
+// validated by the SDK itself.
+//
+// The model id itself was CONFIRMED CORRECT by the first real, authorized
+// paid test (2026-09-01, one submit, model veo-3.1-lite-generate-preview):
+// the failure was traced to the request SHAPE (see the `source` fix at the
+// submit() call site below), never to the model id -- no "unknown model"
+// style error was ever reported.
 //
 // OUTPUT RETRIEVAL -- RESOLVED, Stage 2: live doc research (task §1) found
 // that a real Veo response is URI-based by default (the SDK's own canonical
@@ -252,10 +256,22 @@ function createDefaultVeoClient(apiKey: string): VeoVideoGenerationClient {
       // stage (no test constructs VeoVideoDemonstrationProvider without an
       // explicit fake client override).
       void signal; // the installed SDK's generateVideos() does not accept an abortSignal directly; the outer setTimeout-based abort still bounds this adapter's own await.
+      // Real-test fix: the FIRST (and only) authorized real Veo submit
+      // (2026-09-01) failed in ~24ms, before any providerOperationId was
+      // ever produced -- the server log showed the SDK's own runtime
+      // warning: "The generateVideos method with prompt/image/video
+      // arguments is deprecated and will be removed in a future major
+      // release... Please use the source argument instead." Both shapes
+      // are still present in the installed SDK's own GenerateVideosParameters
+      // type (re-confirmed directly from node_modules/@google/genai/dist/genai.d.ts
+      // before making this change -- GenerateVideosSource has the identical
+      // {prompt?, image?, video?} shape), so this was never a type error,
+      // only a runtime one. Nesting under `source` is a pure request-shape
+      // change -- nothing about model/config/duration/aspectRatio/
+      // personGeneration below is touched.
       const operation = await ai.models.generateVideos({
         model,
-        image: { imageBytes: imageBase64, mimeType },
-        prompt: instruction,
+        source: { image: { imageBytes: imageBase64, mimeType }, prompt: instruction },
         config: {
           aspectRatio: "9:16",
           generateAudio: false,
