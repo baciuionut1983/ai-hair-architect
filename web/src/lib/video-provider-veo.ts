@@ -256,25 +256,44 @@ function createDefaultVeoClient(apiKey: string): VeoVideoGenerationClient {
       // stage (no test constructs VeoVideoDemonstrationProvider without an
       // explicit fake client override).
       void signal; // the installed SDK's generateVideos() does not accept an abortSignal directly; the outer setTimeout-based abort still bounds this adapter's own await.
-      // Real-test fix: the FIRST (and only) authorized real Veo submit
-      // (2026-09-01) failed in ~24ms, before any providerOperationId was
-      // ever produced -- the server log showed the SDK's own runtime
-      // warning: "The generateVideos method with prompt/image/video
-      // arguments is deprecated and will be removed in a future major
-      // release... Please use the source argument instead." Both shapes
-      // are still present in the installed SDK's own GenerateVideosParameters
-      // type (re-confirmed directly from node_modules/@google/genai/dist/genai.d.ts
-      // before making this change -- GenerateVideosSource has the identical
+      // Real-test fix #1: the FIRST authorized real Veo submit (2026-09-01)
+      // failed in ~24ms, before any providerOperationId was ever produced --
+      // the server log showed the SDK's own runtime warning: "The
+      // generateVideos method with prompt/image/video arguments is
+      // deprecated and will be removed in a future major release... Please
+      // use the source argument instead." Both shapes are still present in
+      // the installed SDK's own GenerateVideosParameters type (re-confirmed
+      // directly from node_modules/@google/genai/dist/genai.d.ts before
+      // making this change -- GenerateVideosSource has the identical
       // {prompt?, image?, video?} shape), so this was never a type error,
       // only a runtime one. Nesting under `source` is a pure request-shape
       // change -- nothing about model/config/duration/aspectRatio/
-      // personGeneration below is touched.
+      // personGeneration below was touched by that fix.
+      //
+      // Real-test fix #2: the SECOND authorized real Veo submit (2026-09-01,
+      // after fix #1 was already live) still failed in ~39ms, again before
+      // any providerOperationId was produced. A read-only diagnostic pass
+      // traced this to a SEPARATE local (pre-network) throw, confirmed by
+      // direct inspection of the installed SDK's own compiled source
+      // (node_modules/@google/genai/dist/node/index.cjs,
+      // generateVideosConfigToMldev): in Gemini Developer API mode (this
+      // adapter never sets vertexai:true), the SDK unconditionally throws
+      // "generateAudio parameter is only supported in Gemini Enterprise
+      // Agent Platform mode, not in Gemini Developer API mode" the moment
+      // `generateAudio` is present in config at all -- true AND false both
+      // count as "present" (the check is `!== undefined`). This codebase
+      // used to hardcode `generateAudio: false` here; that field is now
+      // omitted entirely, which is the only change this fix makes. Because
+      // this throw happens purely client-side, before generateVideosInternal
+      // ever calls apiClient.request(), it is very likely the ACTUAL cause
+      // behind both real tests' fast, no-network failures -- the deprecation
+      // warning from fix #1 was real and that fix was still correct/required
+      // on its own terms, but was probably never sufficient by itself.
       const operation = await ai.models.generateVideos({
         model,
         source: { image: { imageBytes: imageBase64, mimeType }, prompt: instruction },
         config: {
           aspectRatio: "9:16",
-          generateAudio: false,
           // Confirmed this stage (live doc research, task §1): EU/UK/CH/MENA
           // regions REQUIRE personGeneration: "allow_adult" -- hardcoded here
           // deliberately, since it is the one value valid in every region,

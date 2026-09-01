@@ -206,7 +206,7 @@ describe("real Veo request shape (source-level regression lock -- no network cal
     expect(source).toMatch(/source:\s*\{\s*image:\s*\{\s*imageBytes:\s*imageBase64,\s*mimeType\s*\},\s*prompt:\s*instruction\s*\}/);
   });
 
-  it("config (aspectRatio/generateAudio/personGeneration/durationSeconds) stays a top-level sibling of source, untouched by the shape fix", () => {
+  it("config (aspectRatio/personGeneration/durationSeconds) stays a top-level sibling of source, untouched by the shape fix", () => {
     const source = readSourceFile();
     // `source` (nested braces included) must appear, in file order, before
     // `config:` -- a plain index comparison rather than a brace-counting
@@ -216,8 +216,73 @@ describe("real Veo request shape (source-level regression lock -- no network cal
     expect(sourceIndex).toBeGreaterThan(-1);
     expect(configIndex).toBeGreaterThan(sourceIndex);
     expect(source).toContain('aspectRatio: "9:16"');
-    expect(source).toContain("generateAudio: false");
     expect(source).toContain('personGeneration: "allow_adult"');
     expect(source).toContain("durationSeconds: VEO_VIDEO_DEMONSTRATION_REQUESTED_DURATION_SECONDS");
+  });
+
+  // Real-test fix #2 (root-cause diagnostic, 2026-09-01): the installed SDK
+  // (node_modules/@google/genai/dist/node/index.cjs,
+  // generateVideosConfigToMldev) throws LOCALLY, before any network request,
+  // the instant `generateAudio` is present in config at all (true OR false
+  // both count -- the check is `!== undefined`), because this adapter never
+  // sets vertexai:true and Gemini Developer API mode does not support that
+  // field. `generateAudio: false` used to be hardcoded here; this lock
+  // proves it can never silently come back.
+  it("config never includes `generateAudio` (Gemini Developer API mode rejects it locally, regardless of true/false)", () => {
+    const source = readSourceFile();
+    const sourceIndex = source.indexOf("source: { image:");
+    const configIndex = source.indexOf("config: {", sourceIndex);
+    const configEndIndex = source.indexOf("});", configIndex);
+    const configBlock = source.slice(configIndex, configEndIndex);
+    expect(configBlock).not.toMatch(/generateAudio/);
+  });
+
+  // Same fact, proven dynamically against the real, unmodified, installed
+  // SDK's own local validation logic -- not just a regex over our source.
+  // Network safety here does NOT rely on reasoning about the SDK's call
+  // order: global fetch (confirmed, by direct inspection of the installed
+  // SDK's own compiled source, to be exactly what its ApiClient.request()
+  // calls) is stubbed to immediately reject before this test ever runs the
+  // real generateVideos() -- so even if our fixed config passes the SDK's
+  // local generateAudio validation and execution proceeds toward building a
+  // real HTTP request, it can never leave this process; it will always hit
+  // the stub instead of a real socket, for any code path this fix could
+  // possibly touch.
+  it("dynamically: our exact config shape (without generateAudio) does not trigger the SDK's own 'generateAudio ... not in Gemini Developer API mode' throw", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => {
+      throw new Error("BLOCKED_FOR_TEST_NO_REAL_NETWORK_CALL_PERMITTED");
+    }) as typeof fetch;
+
+    try {
+      const { GoogleGenAI } = await import("@google/genai");
+      const ai = new GoogleGenAI({ apiKey: "not-a-real-key-never-sent" });
+      const ourConfig = {
+        aspectRatio: "9:16" as const,
+        personGeneration: "allow_adult" as const,
+        durationSeconds: VEO_VIDEO_DEMONSTRATION_REQUESTED_DURATION_SECONDS,
+      };
+
+      let caught: unknown;
+      try {
+        await ai.models.generateVideos({
+          model: "veo-3.1-lite-generate-preview",
+          source: { image: { imageBytes: "not-real-image-bytes", mimeType: "image/png" }, prompt: "test" },
+          config: ourConfig,
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      // The call must fail (fetch is stubbed to always reject) -- but via
+      // OUR stub's own error, never the SDK's local generateAudio message.
+      // Reaching the stub at all is itself proof execution got past the
+      // local config validation this fix targets.
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toBe("BLOCKED_FOR_TEST_NO_REAL_NETWORK_CALL_PERMITTED");
+      expect((caught as Error).message).not.toMatch(/generateAudio/);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
