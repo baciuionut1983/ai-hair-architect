@@ -1,9 +1,10 @@
 import type { ConciergePendingDecision, OrchestratorDecision } from "@/lib/orchestrator-contracts";
+import type { OrchestrationPlan, OrchestrationPlanGoal } from "@/lib/orchestrator-plan-contracts";
 
-// AI Concierge / Orchestrator, Stage 4 -- pure workflow-continuity logic,
-// no React, no fetch. Mirrors concierge-logic.ts's own established split
-// (pure logic file, fully unit-tested; use-concierge.ts, which owns this
-// state, is not).
+// AI Concierge / Orchestrator, Stage 4/5 -- pure workflow-continuity
+// logic, no React, no fetch. Mirrors concierge-logic.ts's own established
+// split (pure logic file, fully unit-tested; use-concierge.ts, which owns
+// this state, is not).
 //
 // PERSISTENCE STRATEGY (task section 14): plain in-memory React state in
 // use-concierge.ts -- NOT sessionStorage/localStorage, NOT a new DB model.
@@ -18,36 +19,59 @@ import type { ConciergePendingDecision, OrchestratorDecision } from "@/lib/orche
 // existing architecture"). The tradeoff (a same-tab reload also forgets
 // context) is exactly what task section 7 asks for, not a limitation to
 // work around.
+//
+// Stage 5 (task section 13): the SAME "no new persistence" decision
+// applies to plan tracking -- activePlanGoal/activePlanStepId below are
+// just two more fields on this SAME ephemeral memory object, never a
+// separately-persisted plan record. The plan itself is never stored here
+// either -- only its GOAL and current step id are remembered (as an echo
+// hint for the next request), never its full step list; the real plan is
+// always reconstructed fresh from DB state server-side (task section 14).
 export interface ConciergeWorkflowMemory {
   activeClientId: string | null;
   activeAnalysisId: string | null;
   pendingDecision: ConciergePendingDecision | null;
+  activePlanGoal: OrchestrationPlanGoal | null;
+  activePlanStepId: string | null;
 }
 
 export const INITIAL_WORKFLOW_MEMORY: ConciergeWorkflowMemory = {
   activeClientId: null,
   activeAnalysisId: null,
   pendingDecision: null,
+  activePlanGoal: null,
+  activePlanStepId: null,
 };
 
-// task section 16: the two workflow-continuity events that genuinely
-// require cross-turn memory (this file's own reason for existing) -- the
-// other four required events (pending_decision_created/accepted/declined/
-// invalidated) are all derivable from a SINGLE decision alone and are
-// logged server-side instead, in orchestrator-service.ts's own
-// deriveOrchestrationEvent -- see that function's header comment for why.
-export type ConciergeWorkflowEvent = "workflow_started" | "workflow_continued" | "context_switched";
+// task section 16 (Stage 4) + task section 17 (Stage 5): the workflow/plan
+// continuity events that genuinely require cross-turn memory (this file's
+// own reason for existing) -- every OTHER required event
+// (pending_decision_created/accepted/declined/invalidated,
+// plan_step_selected/waiting_for_user/waiting_for_approval/
+// waiting_for_engine/blocked/cancelled) is derivable from a SINGLE
+// decision/plan alone and is logged server-side instead, in
+// orchestrator-service.ts's own deriveOrchestrationEvent/derivePlanEvent
+// -- see those functions' own header comments for why.
+// plan_replanned is reserved but never actually emitted by this stage's
+// implementation: with exactly one registered, fixed-shape goal
+// ("visualize_result" -- see orchestrator-plan-service.ts), the step
+// SEQUENCE itself never restructures, only individual step statuses
+// change turn to turn -- there is honestly nothing to detect yet. Kept in
+// the type for fidelity to task section 17's own named list, exactly like
+// OrchestrationPlanStatus's own PLANNED value.
+export type ConciergeWorkflowEvent = "workflow_started" | "workflow_continued" | "context_switched" | "plan_created" | "plan_step_completed" | "plan_replanned";
 
 export interface UpdateWorkflowMemoryResult {
   memory: ConciergeWorkflowMemory;
   events: ConciergeWorkflowEvent[];
 }
 
-// Recomputes the FULL remembered workflow state from ONE real decision --
-// never merged/accumulated with anything older. This single rule is what
-// makes context invalidation and pending-decision clearing both correct
-// automatically (task section 7/8), with no separate "invalidate" branch
-// anywhere:
+// Recomputes the FULL remembered workflow state from ONE real decision
+// (+ its accompanying plan, if any) -- never merged/accumulated with
+// anything older. This single rule is what makes context invalidation,
+// pending-decision clearing, AND plan tracking all correct automatically
+// (task section 7/8 Stage 4, task section 5/7/8 Stage 5), with no
+// separate "invalidate" branch anywhere:
 //  - pendingDecision is ALWAYS replaced, never carried over -- accepting,
 //    declining, asking something unrelated, or switching client all
 //    naturally produce a decision that ISN'T OFFER_VIDEO, so the old
@@ -62,10 +86,22 @@ export interface UpdateWorkflowMemoryResult {
 //    back null (a deleted client, a revoked forged id, anything), memory
 //    resets to null right along with it -- DB truth always wins over
 //    whatever was previously remembered (task section 6).
-export function updateWorkflowMemory(previous: ConciergeWorkflowMemory, decision: OrchestratorDecision): UpdateWorkflowMemoryResult {
+//  - activePlanGoal/activePlanStepId are ALWAYS taken from `plan` (null
+//    whenever the server didn't return one this turn) -- a plan that
+//    completes, gets cancelled, or simply stops applying (e.g. the user
+//    asked about something else entirely) is never kept alive by stale
+//    client memory; the NEXT request will honestly stop echoing
+//    activePlanGoal, exactly mirroring pendingDecision's own rule.
+export function updateWorkflowMemory(
+  previous: ConciergeWorkflowMemory,
+  decision: OrchestratorDecision,
+  plan: OrchestrationPlan | null = null,
+): UpdateWorkflowMemoryResult {
   const nextActiveClientId = decision.currentContext.currentClientId;
   const nextActiveAnalysisId = decision.currentContext.currentAnalysisId;
   const nextPendingDecision: ConciergePendingDecision | null = decision.recommendedAction === "OFFER_VIDEO" ? "VIDEO_OFFER" : null;
+  const nextPlanGoal = plan?.goal ?? null;
+  const nextPlanStepId = plan?.currentStepId ?? null;
 
   const events: ConciergeWorkflowEvent[] = [];
   if (nextActiveClientId) {
@@ -82,8 +118,23 @@ export function updateWorkflowMemory(previous: ConciergeWorkflowMemory, decision
     }
   }
 
+  if (nextPlanGoal && !previous.activePlanGoal) {
+    events.push("plan_created");
+  } else if (previous.activePlanStepId !== null && previous.activePlanStepId !== nextPlanStepId) {
+    // The step that was active last turn is no longer the active one --
+    // it either finished (real progress) or the whole plan finished/was
+    // superseded. Either way, something concrete happened between turns.
+    events.push("plan_step_completed");
+  }
+
   return {
-    memory: { activeClientId: nextActiveClientId, activeAnalysisId: nextActiveAnalysisId, pendingDecision: nextPendingDecision },
+    memory: {
+      activeClientId: nextActiveClientId,
+      activeAnalysisId: nextActiveAnalysisId,
+      pendingDecision: nextPendingDecision,
+      activePlanGoal: nextPlanGoal,
+      activePlanStepId: nextPlanStepId,
+    },
     events,
   };
 }
@@ -99,6 +150,7 @@ export interface ConciergeEffectiveContext {
   currentAnalysisId: string | null;
   hasCompletedPhotoPreview: boolean;
   pendingDecision: ConciergePendingDecision | null;
+  activePlanGoal: OrchestrationPlanGoal | null;
 }
 
 // Merges the CALLER's own real page context (route params, e.g. a future
@@ -109,13 +161,15 @@ export interface ConciergeEffectiveContext {
 // what lets "Continuă de unde am rămas" resolve richly even from a
 // context-less page like the Dashboard, once a prior turn has already
 // established an active client/analysis (task section 5).
-// pendingDecision always comes from memory alone -- no page ever supplies
-// it directly, it only ever exists because a PRIOR decision set it.
+// pendingDecision/activePlanGoal always come from memory alone -- no page
+// ever supplies either directly, they only ever exist because a PRIOR
+// decision set them.
 export function resolveEffectiveContext(pageContext: ConciergePageContext, memory: ConciergeWorkflowMemory): ConciergeEffectiveContext {
   return {
     currentClientId: pageContext.currentClientId ?? memory.activeClientId,
     currentAnalysisId: pageContext.currentAnalysisId ?? memory.activeAnalysisId,
     hasCompletedPhotoPreview: pageContext.hasCompletedPhotoPreview === true,
     pendingDecision: memory.pendingDecision,
+    activePlanGoal: memory.activePlanGoal,
   };
 }

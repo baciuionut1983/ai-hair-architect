@@ -6,8 +6,15 @@ import {
   type HybridClassifierDependencies,
 } from "@/lib/orchestrator-hybrid-classifier";
 import { detectBareConfirmation } from "@/lib/orchestrator-confirmation-detector";
+import { detectCancellationRequest } from "@/lib/orchestrator-cancellation-detector";
 import { resolveWorkflowStage } from "@/lib/orchestrator-workflow-stage";
 import { isOrchestratorActionAllowedForRole, ORCHESTRATOR_ACTION_REGISTRY } from "@/lib/orchestrator-action-registry";
+import {
+  cancelPlan,
+  resolveVisualizeResultPlan,
+  type ResolveVisualizeResultPlanDependencies,
+} from "@/lib/orchestrator-plan-service";
+import { isOrchestrationPlanGoal, type OrchestrationPlan, type OrchestrationPlanGoal } from "@/lib/orchestrator-plan-contracts";
 import {
   isConciergePendingDecision,
   isOrchestratorDecision,
@@ -61,6 +68,16 @@ export interface ResolveOrchestratorDecisionInput {
   // header comment and orchestrator-contracts.ts's own doc comment on
   // ConciergePendingDecision.
   pendingDecision?: string | null;
+  // Stage 5 (task section 2/13): a client-remembered hint of which
+  // OrchestrationPlanGoal (if any) is still being tracked -- e.g. once a
+  // decision comes back with a non-null `plan`, the caller may remember
+  // `plan.goal` and echo it back so the SAME plan keeps being resolved
+  // (freshly, from real state -- see orchestrator-plan-service.ts) even
+  // on a turn whose own message doesn't itself re-trigger it. Raw/
+  // untrusted, validated by isOrchestrationPlanGoal inside buildDecision;
+  // never authority -- the plan it produces is recomputed from real DB
+  // state every time, never assumed to still be accurate.
+  activePlanGoal?: string | null;
 }
 
 export interface ResolveOrchestratorDecisionDependencies {
@@ -75,22 +92,48 @@ export interface ResolveOrchestratorDecisionDependencies {
   // network call.
   classifyIntentHybrid?: typeof classifyOrchestratorIntentHybrid;
   aiClassifierDependencies?: HybridClassifierDependencies;
+  // Stage 5: reaches resolveVisualizeResultPlan's own
+  // findCurrentConfirmedProposal injection, so a plan-triggering test can
+  // fake the Proposal read without needing a real Postgres fixture.
+  planDependencies?: ResolveVisualizeResultPlanDependencies;
 }
 
+// Stage 5: the plan-aware entry point (used by the HTTP route). Shares
+// buildDecision's own single evaluation with resolveOrchestratorDecision
+// below -- never a second, independently-computed path that could
+// disagree with it.
+export async function resolveOrchestratorDecisionAndPlan(
+  input: ResolveOrchestratorDecisionInput,
+  dependencies: ResolveOrchestratorDecisionDependencies = {},
+): Promise<{ decision: OrchestratorDecision; plan: OrchestrationPlan | null }> {
+  const startedAt = Date.now();
+  const { decision, plan, pendingDecision, classifierSource } = await buildDecision(input, dependencies);
+  logOrchestratorDecision(input, decision, plan, pendingDecision, classifierSource, Date.now() - startedAt);
+  return { decision, plan };
+}
+
+// Stage 1-4's own entry point, UNCHANGED in signature and observable
+// decision output -- every existing caller/test keeps working exactly as
+// before. Internally now also resolves the Stage 5 plan (for logging/
+// consistency -- see resolveOrchestratorDecisionAndPlan above), but never
+// returns it here.
 export async function resolveOrchestratorDecision(
   input: ResolveOrchestratorDecisionInput,
   dependencies: ResolveOrchestratorDecisionDependencies = {},
 ): Promise<OrchestratorDecision> {
-  const startedAt = Date.now();
-  const { decision, pendingDecision, classifierSource } = await buildDecision(input, dependencies);
-  logOrchestratorDecision(input, decision, pendingDecision, classifierSource, Date.now() - startedAt);
+  const { decision } = await resolveOrchestratorDecisionAndPlan(input, dependencies);
   return decision;
 }
 
 async function buildDecision(
   input: ResolveOrchestratorDecisionInput,
   dependencies: ResolveOrchestratorDecisionDependencies,
-): Promise<{ decision: OrchestratorDecision; pendingDecision: ConciergePendingDecision | null; classifierSource: ConciergeClassifierSource | null }> {
+): Promise<{
+  decision: OrchestratorDecision;
+  plan: OrchestrationPlan | null;
+  pendingDecision: ConciergePendingDecision | null;
+  classifierSource: ConciergeClassifierSource | null;
+}> {
   const resolveClient = dependencies.findClientForOwner ?? findClientForOwner;
   const resolveAnalysis = dependencies.findAnalysisForOwner ?? findAnalysisForOwner;
   const classifyHybrid = dependencies.classifyIntentHybrid ?? classifyOrchestratorIntentHybrid;
@@ -130,11 +173,24 @@ async function buildDecision(
   // message, or with no pending decision at all, this is always null and
   // every existing Stage 1-3 code path below runs completely unaffected.
   const confirmation = pendingDecision === "VIDEO_OFFER" ? detectBareConfirmation(input.message ?? "") : null;
+  // Stage 5 (task section 11): checked before EVERYTHING else below --
+  // "Stop."/"Anulează." always takes priority over a pending-decision
+  // answer or normal classification. Never reaches into Video/Photo
+  // Preview provider code (see orchestrator-cancellation-detector.ts's
+  // own header comment) -- this can only ever mean "stop suggesting
+  // future Concierge steps," never a real engine cancel.
+  const cancellationRequested = detectCancellationRequest(input.message ?? "");
+  // Stage 5 (task section 2/13): same fail-closed validation pattern as
+  // pendingDecision above.
+  const activePlanGoal: OrchestrationPlanGoal | null = isOrchestrationPlanGoal(input.activePlanGoal) ? input.activePlanGoal : null;
 
   let decision: OrchestratorDecision;
   let classifierSource: ConciergeClassifierSource | null;
 
-  if (confirmation === "yes") {
+  if (cancellationRequested) {
+    decision = planCancelledDecision(context);
+    classifierSource = "cancellation";
+  } else if (confirmation === "yes") {
     // Answering "yes" to a REMEMBERED offer is treated as EXACTLY the
     // same request_video intent a fresh "vreau un video" message already
     // produces (task section 4: "still only means open existing Video
@@ -194,10 +250,52 @@ async function buildDecision(
     // return types, but this is the exact seam an AI-influenced decision
     // must also pass through, so it is exercised for real here, not
     // assumed.
-    return { decision: unsupportedDecision(context), pendingDecision, classifierSource };
+    decision = unsupportedDecision(context);
   }
 
-  return { decision, pendingDecision, classifierSource };
+  // Stage 5 (task section 2/6): a plan is built whenever THIS turn's own
+  // resolved DECISION already points at one of the "visualize_result"
+  // journey's own real steps, OR the caller is still tracking an existing
+  // plan (task section 5: "continue" must be able to resume it) -- either
+  // way, ALWAYS freshly recomputed from real, already-verified state
+  // (never the caller's own remembered plan shape). Never attempted for a
+  // non-professional role (task section 3: every action this plan can
+  // ever use is professional-only in today's registry -- see
+  // orchestrator-plan-service.ts's own defense-in-depth check too).
+  const planGoal: OrchestrationPlanGoal | null = resolvePlanGoalForDecision(decision) ?? activePlanGoal;
+  let plan: OrchestrationPlan | null = null;
+  if (planGoal && context.roleClass === "professional") {
+    plan = await resolveVisualizeResultPlan(
+      { ownerUserId: input.ownerUserId, context, pendingDecision, confirmation },
+      dependencies.planDependencies,
+    );
+    if (cancellationRequested) {
+      // Task section 11: stop future orchestration, but never erase or
+      // fabricate real progress -- see cancelPlan's own doc comment.
+      plan = cancelPlan(plan);
+    }
+  }
+
+  return { decision, plan, pendingDecision, classifierSource };
+}
+
+// Stage 5 (task section 6): every recommendedAction the "visualize_result"
+// journey's own steps can ever produce (orchestrator-plan-service.ts's
+// own fixed step sequence) -- checked on the FINAL decision's
+// recommendedAction, not the pre-classification intent, so this correctly
+// also covers the Stage 2 video-offer PRIORITY branch (whose own decision
+// hardcodes intent to "request_video" but recommendedAction to
+// "OFFER_VIDEO" -- that branch never goes through decideFromIntent at
+// all, so deriving this from `intent` alone would silently miss it). No
+// new intent value was added for this (task section 5: "the exact intent
+// taxonomy should remain small") -- OPEN_CLIENTS/OPEN_CLIENT deliberately
+// stay OUTSIDE this set: a bare "find my client" ask doesn't necessarily
+// mean the user wants the full multi-step journey, only Stage 5's own
+// example goals (which are all clearly about analysis/result/video) do.
+const PLAN_TRIGGERING_ACTIONS: ReadonlySet<OrchestratorActionId> = new Set(["START_ANALYSIS", "OPEN_ANALYSIS", "OFFER_VIDEO", "REQUEST_VIDEO"]);
+
+function resolvePlanGoalForDecision(decision: OrchestratorDecision): OrchestrationPlanGoal | null {
+  return decision.recommendedAction && PLAN_TRIGGERING_ACTIONS.has(decision.recommendedAction) ? "visualize_result" : null;
 }
 
 function videoOfferApplies(context: OrchestratorContext): boolean {
@@ -327,6 +425,13 @@ function videoOfferDeclinedDecision(context: OrchestratorContext): OrchestratorD
   return honestNoActionDecision(context, "video_offer_declined");
 }
 
+// Stage 5 (task section 11): a recognized "Stop."/"Anulează." -- an
+// honest acknowledgment that future orchestration steps have stopped.
+// Never implies a real provider operation was cancelled.
+function planCancelledDecision(context: OrchestratorContext): OrchestratorDecision {
+  return honestNoActionDecision(context, "plan_cancelled");
+}
+
 function composeDecision(
   intent: OrchestratorIntent,
   targetVertical: OrchestratorDecision["targetVertical"],
@@ -390,9 +495,61 @@ function deriveOrchestrationEvent(
   return null;
 }
 
+// Stage 5 (task section 17): a SEPARATE field from `event` above --
+// deliberately not folded into the same union, since a single turn can
+// legitimately have BOTH a pending-decision event (accepting the video
+// offer) AND a plan-status event (the plan moving to
+// WAITING_FOR_COST_CONFIRMATION) at once. Only the four of task section
+// 17's own named events that are honestly derivable from THIS ONE plan
+// object alone -- plan_created/plan_step_completed/plan_replanned
+// genuinely need cross-turn memory (was there a plan before? which step
+// was active last turn?) that only the caller's own browser session has,
+// and are logged client-side instead, in
+// concierge-workflow-memory-logic.ts -- exactly mirroring Stage 4's own
+// workflow_started/workflow_continued/context_switched split.
+// WAITING_FOR_COST_CONFIRMATION maps to plan_waiting_for_user (task
+// section 17's own list has no dedicated event for it, and "the user
+// needs to interact with something" is accurate either way -- it is the
+// EXISTING Video dialog, not a Concierge question, that they interact
+// with next). PLANNED/COMPLETED produce no event -- COMPLETED has
+// nothing left to wait for, and PLANNED is never externally observed
+// (see orchestrator-plan-contracts.ts's own doc comment).
+type PlanEvent =
+  | "plan_step_selected"
+  | "plan_waiting_for_user"
+  | "plan_waiting_for_approval"
+  | "plan_waiting_for_engine"
+  | "plan_blocked"
+  | "plan_cancelled"
+  | null;
+
+function derivePlanEvent(plan: OrchestrationPlan | null): PlanEvent {
+  if (!plan) return null;
+  switch (plan.status) {
+    case "ACTIVE":
+      return "plan_step_selected";
+    case "WAITING_FOR_USER":
+    case "WAITING_FOR_COST_CONFIRMATION":
+      return "plan_waiting_for_user";
+    case "WAITING_FOR_APPROVAL":
+      return "plan_waiting_for_approval";
+    case "WAITING_FOR_ENGINE":
+      return "plan_waiting_for_engine";
+    case "BLOCKED":
+      return "plan_blocked";
+    case "CANCELLED":
+      return "plan_cancelled";
+    case "COMPLETED":
+    case "PLANNED":
+    default:
+      return null;
+  }
+}
+
 function logOrchestratorDecision(
   input: ResolveOrchestratorDecisionInput,
   decision: OrchestratorDecision,
+  plan: OrchestrationPlan | null,
   pendingDecision: ConciergePendingDecision | null,
   classifierSource: ConciergeClassifierSource | null,
   totalLatencyMs: number,
@@ -419,6 +576,11 @@ function logOrchestratorDecision(
     intent: decision.intent,
     recommendedAction: decision.recommendedAction,
     event: deriveOrchestrationEvent(decision, pendingDecision, classifierSource),
+    // Stage 5: null whenever no plan applies this turn.
+    planGoal: plan?.goal ?? null,
+    planStatus: plan?.status ?? null,
+    planCurrentStepId: plan?.currentStepId ?? null,
+    planEvent: derivePlanEvent(plan),
     requiresUserConsent: decision.requiresUserConsent,
     costClass: decision.costClass,
     totalLatencyMs,

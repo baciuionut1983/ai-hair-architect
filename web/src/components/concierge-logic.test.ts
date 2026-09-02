@@ -20,6 +20,7 @@ const ALL_REASON_CODES: OrchestratorReasonCode[] = [
   "intent_not_understood",
   "ambiguous_intent_needs_clarification",
   "video_offer_declined",
+  "plan_cancelled",
 ];
 
 const ALL_ACTION_IDS: OrchestratorActionId[] = ["OPEN_CLIENTS", "OPEN_CLIENT", "START_ANALYSIS", "OPEN_ANALYSIS", "OFFER_VIDEO", "REQUEST_VIDEO"];
@@ -68,12 +69,27 @@ describe("reasonCodeToTranslationKey / actionIdToTranslationKey -- the ONLY plac
     expect(key).not.toBe(reasonCodeToTranslationKey("intent_not_understood"));
     expect(key).not.toBe(reasonCodeToTranslationKey("ambiguous_intent_needs_clarification"));
   });
+
+  // Stage 5: same distinctness proof for the cancellation reason code.
+  it("the plan-cancelled reason code maps to its own distinct, non-generic key", () => {
+    const key = reasonCodeToTranslationKey("plan_cancelled");
+    expect(key).toBe("concierge.info.planCancelled");
+    expect(key).not.toBe(reasonCodeToTranslationKey("intent_not_understood"));
+    expect(key).not.toBe(reasonCodeToTranslationKey("video_offer_declined"));
+  });
 });
 
 describe("buildOrchestrateRequestBody", () => {
   it("trims the message and carries context through", () => {
     const body = buildOrchestrateRequestBody("  show me the result  ", { currentClientId: "c1", currentAnalysisId: "a1", hasCompletedPhotoPreview: true });
-    expect(body).toEqual({ message: "show me the result", currentClientId: "c1", currentAnalysisId: "a1", hasCompletedPhotoPreview: true, pendingDecision: null });
+    expect(body).toEqual({
+      message: "show me the result",
+      currentClientId: "c1",
+      currentAnalysisId: "a1",
+      hasCompletedPhotoPreview: true,
+      pendingDecision: null,
+      activePlanGoal: null,
+    });
   });
 
   it("returns null for an empty/whitespace-only message", () => {
@@ -92,6 +108,7 @@ describe("buildOrchestrateRequestBody", () => {
       currentAnalysisId: null,
       hasCompletedPhotoPreview: false,
       pendingDecision: null,
+      activePlanGoal: null,
     });
   });
 
@@ -99,6 +116,12 @@ describe("buildOrchestrateRequestBody", () => {
   it("carries pendingDecision through when supplied", () => {
     const body = buildOrchestrateRequestBody("Da", { pendingDecision: "VIDEO_OFFER" });
     expect(body?.pendingDecision).toBe("VIDEO_OFFER");
+  });
+
+  // Stage 5.
+  it("carries activePlanGoal through when supplied", () => {
+    const body = buildOrchestrateRequestBody("continue", { activePlanGoal: "visualize_result" });
+    expect(body?.activePlanGoal).toBe("visualize_result");
   });
 });
 

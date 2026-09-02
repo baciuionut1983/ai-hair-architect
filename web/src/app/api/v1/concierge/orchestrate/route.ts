@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
-import { resolveOrchestratorDecision } from "@/lib/orchestrator-service";
+import { resolveOrchestratorDecisionAndPlan } from "@/lib/orchestrator-service";
 import { resolveOrchestratorRoleClass } from "@/lib/orchestrator-contracts";
 import { isRecord } from "@/lib/technical-visual-map-validators";
 
@@ -64,12 +64,14 @@ export async function POST(request: Request) {
 
   const currentClientId = typeof body.currentClientId === "string" ? body.currentClientId : null;
   const currentAnalysisId = typeof body.currentAnalysisId === "string" ? body.currentAnalysisId : null;
-  // Stage 4: forwarded raw -- resolveOrchestratorDecision itself validates
-  // this against the closed ConciergePendingDecision vocabulary (see its
-  // own header comment); this route never needs to know that vocabulary.
+  // Stage 4/5: forwarded raw -- resolveOrchestratorDecisionAndPlan itself
+  // validates both against their own closed vocabularies (see that
+  // function's own header comment); this route never needs to know
+  // either one.
   const pendingDecision = typeof body.pendingDecision === "string" ? body.pendingDecision : null;
+  const activePlanGoal = typeof body.activePlanGoal === "string" ? body.activePlanGoal : null;
 
-  const decision = await resolveOrchestratorDecision({
+  const { decision, plan } = await resolveOrchestratorDecisionAndPlan({
     message,
     roleClass: resolveOrchestratorRoleClass(sessionUser.role),
     ownerUserId: sessionUser.id,
@@ -77,7 +79,12 @@ export async function POST(request: Request) {
     currentAnalysisId,
     hasCompletedPhotoPreview,
     pendingDecision,
+    activePlanGoal,
   });
 
-  return NextResponse.json({ decision }, { status: 200, headers: NO_STORE_HEADERS });
+  // Stage 5: `plan` is additive -- null whenever no registered goal
+  // applies this turn, never present at the expense of `decision`'s own
+  // unchanged shape (see orchestrator-plan-contracts.ts's own header
+  // comment on why this is a separate, parallel field).
+  return NextResponse.json({ decision, plan }, { status: 200, headers: NO_STORE_HEADERS });
 }

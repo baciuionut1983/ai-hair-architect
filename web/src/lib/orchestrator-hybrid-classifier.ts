@@ -46,8 +46,11 @@ export const CONCIERGE_INTENT_CLASSIFICATION_FEATURE = "concierge_intent_classif
 // orchestrator-confirmation-detector.ts against a real pending decision,
 // never reaching this hybrid classifier at all (see
 // orchestrator-service.ts's own buildDecision for exactly where that
-// branch sits, ahead of everything in this file).
-export type ConciergeClassifierSource = "deterministic" | "ai" | "fallback" | "clarification" | "pending_decision";
+// branch sits, ahead of everything in this file). Stage 5 adds
+// "cancellation" -- a recognized "Stop."/"Anulează." reply, resolved by
+// orchestrator-cancellation-detector.ts, checked even earlier than
+// pending_decision -- also never reaching this file.
+export type ConciergeClassifierSource = "deterministic" | "ai" | "fallback" | "clarification" | "pending_decision" | "cancellation";
 
 export interface HybridClassificationOutcome {
   intent: OrchestratorIntent;

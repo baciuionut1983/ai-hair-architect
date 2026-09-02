@@ -86,7 +86,13 @@ export type OrchestratorReasonCode =
   // distinct from intent_not_understood. Produces zero Video call and
   // clears the pending decision (see orchestrator-service.ts's own
   // videoOfferDeclinedDecision).
-  | "video_offer_declined";
+  | "video_offer_declined"
+  // Stage 5 (task section 11): "Stop."/"Anulează." while a plan/pending
+  // decision was in progress -- an honest acknowledgment that future
+  // orchestration steps have stopped. Never implies any real provider
+  // operation was cancelled (see orchestrator-plan-service.ts's own
+  // cancelPlan and this file's own header comment).
+  | "plan_cancelled";
 
 const ORCHESTRATOR_REASON_CODES: readonly OrchestratorReasonCode[] = [
   "client_and_analysis_identified",
@@ -97,6 +103,7 @@ const ORCHESTRATOR_REASON_CODES: readonly OrchestratorReasonCode[] = [
   "intent_not_understood",
   "ambiguous_intent_needs_clarification",
   "video_offer_declined",
+  "plan_cancelled",
 ];
 
 // AI Concierge / Orchestrator, Stage 4 (task section 3): "pending decisions

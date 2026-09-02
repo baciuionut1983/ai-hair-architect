@@ -1,5 +1,6 @@
 import type { TranslationKey } from "@/lib/translations";
 import type { ConciergePendingDecision, OrchestratorActionId, OrchestratorDecision, OrchestratorReasonCode } from "@/lib/orchestrator-contracts";
+import type { OrchestrationPlanGoal } from "@/lib/orchestrator-plan-contracts";
 
 // AI Concierge / Orchestrator, Stage 1 -- pure UI-facing logic, no React,
 // no fetch. Mirrors video-demonstration-logic.ts's own established split
@@ -26,6 +27,9 @@ const REASON_CODE_TO_KEY: Record<OrchestratorReasonCode, TranslationKey> = {
   // Stage 4: a bare "no" reply to a pending video offer -- a clean,
   // honest acknowledgment, never conflated with "I didn't understand."
   video_offer_declined: "concierge.info.videoOfferDeclined",
+  // Stage 5: a recognized "Stop."/"Anulează." -- future orchestration
+  // steps stop; never implies a real provider operation was cancelled.
+  plan_cancelled: "concierge.info.planCancelled",
 };
 
 export function reasonCodeToTranslationKey(code: OrchestratorReasonCode): TranslationKey {
@@ -61,6 +65,10 @@ export interface OrchestrateRequestBody {
   // orchestrator-service.ts's own header comment on why this is never
   // trusted as authority server-side.
   pendingDecision?: ConciergePendingDecision | null;
+  // Stage 5: the SAME echo pattern, for whichever OrchestrationPlanGoal
+  // (if any) the caller is still tracking -- see orchestrator-service.ts's
+  // own header comment on ResolveOrchestratorDecisionInput.activePlanGoal.
+  activePlanGoal?: OrchestrationPlanGoal | null;
 }
 
 // Trims and validates a raw message before it is ever sent -- the same
@@ -77,6 +85,7 @@ export function buildOrchestrateRequestBody(
     currentAnalysisId?: string | null;
     hasCompletedPhotoPreview?: boolean;
     pendingDecision?: ConciergePendingDecision | null;
+    activePlanGoal?: OrchestrationPlanGoal | null;
   },
 ): OrchestrateRequestBody | null {
   const message = rawMessage.trim();
@@ -88,6 +97,7 @@ export function buildOrchestrateRequestBody(
     currentAnalysisId: context.currentAnalysisId ?? null,
     hasCompletedPhotoPreview: context.hasCompletedPhotoPreview === true,
     pendingDecision: context.pendingDecision ?? null,
+    activePlanGoal: context.activePlanGoal ?? null,
   };
 }
 

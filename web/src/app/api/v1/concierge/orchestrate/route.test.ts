@@ -4,7 +4,7 @@ const authMock = vi.hoisted(() => ({ authenticateSessionRequest: vi.fn() }));
 const { RESOLVE_DECISION_MOCK } = vi.hoisted(() => ({ RESOLVE_DECISION_MOCK: vi.fn() }));
 
 vi.mock("@/lib/session-request-auth", () => authMock);
-vi.mock("@/lib/orchestrator-service", () => ({ resolveOrchestratorDecision: RESOLVE_DECISION_MOCK }));
+vi.mock("@/lib/orchestrator-service", () => ({ resolveOrchestratorDecisionAndPlan: RESOLVE_DECISION_MOCK }));
 
 import { POST } from "./route";
 
@@ -39,11 +39,16 @@ function request(body: unknown) {
 // responsibilities: session auth, input validation, and that it passes
 // the authenticated user's own id/role through -- never anything the
 // client could substitute.
+//
+// Stage 5: mocks resolveOrchestratorDecisionAndPlan (the plan-aware entry
+// point the route now calls) -- see orchestrator-service.ts's own header
+// comment on why resolveOrchestratorDecision itself is a separate,
+// unaffected wrapper never touched by this route.
 describe("POST /api/v1/concierge/orchestrate", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     authMock.authenticateSessionRequest.mockResolvedValue(OWNER);
-    RESOLVE_DECISION_MOCK.mockResolvedValue(FAKE_DECISION);
+    RESOLVE_DECISION_MOCK.mockResolvedValue({ decision: FAKE_DECISION, plan: null });
   });
 
   it("returns 401 when unauthenticated, never reaching the orchestrator", async () => {
@@ -103,9 +108,10 @@ describe("POST /api/v1/concierge/orchestrate", () => {
     );
   });
 
-  // Stage 4: forwarded raw (validated downstream by resolveOrchestratorDecision
-  // itself -- see that function's own header comment on why this route
-  // never needs to know the ConciergePendingDecision vocabulary).
+  // Stage 4: forwarded raw (validated downstream by
+  // resolveOrchestratorDecisionAndPlan itself -- see that function's own
+  // header comment on why this route never needs to know the
+  // ConciergePendingDecision vocabulary).
   it("Stage 4: forwards pendingDecision from the body", async () => {
     await POST(request({ message: "Da", pendingDecision: "VIDEO_OFFER" }));
 
@@ -118,11 +124,41 @@ describe("POST /api/v1/concierge/orchestrate", () => {
     expect(RESOLVE_DECISION_MOCK).toHaveBeenCalledWith(expect.objectContaining({ pendingDecision: null }));
   });
 
+  // Stage 5: same raw-forwarding pattern as pendingDecision, for the
+  // OrchestrationPlanGoal vocabulary.
+  it("Stage 5: forwards activePlanGoal from the body", async () => {
+    await POST(request({ message: "continue", activePlanGoal: "visualize_result" }));
+
+    expect(RESOLVE_DECISION_MOCK).toHaveBeenCalledWith(expect.objectContaining({ activePlanGoal: "visualize_result" }));
+  });
+
+  it("Stage 5: activePlanGoal defaults to null when the body omits it entirely", async () => {
+    await POST(request({ message: "show me the result" }));
+
+    expect(RESOLVE_DECISION_MOCK).toHaveBeenCalledWith(expect.objectContaining({ activePlanGoal: null }));
+  });
+
   it("returns the decision wrapped in { decision }, unmodified", async () => {
     const response = await POST(request({ message: "show me the result" }));
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body).toEqual({ decision: FAKE_DECISION });
+    expect(body).toEqual({ decision: FAKE_DECISION, plan: null });
+  });
+
+  // Stage 5: `plan` is additive -- present, unmodified, alongside `decision`.
+  it("Stage 5: returns a real plan alongside the decision when one applies", async () => {
+    const fakePlan = {
+      planId: "visualize_result:client-1",
+      goal: "visualize_result",
+      status: "WAITING_FOR_APPROVAL",
+      currentStepId: "review_proposed_look",
+      steps: [],
+    };
+    RESOLVE_DECISION_MOCK.mockResolvedValue({ decision: FAKE_DECISION, plan: fakePlan });
+
+    const response = await POST(request({ message: "continue" }));
+    const body = await response.json();
+    expect(body).toEqual({ decision: FAKE_DECISION, plan: fakePlan });
   });
 
   it("never exposes Cache-Control caching for a personalized decision", async () => {

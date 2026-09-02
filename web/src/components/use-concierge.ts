@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 
 import type { OrchestratorDecision } from "@/lib/orchestrator-contracts";
+import type { OrchestrationPlan } from "@/lib/orchestrator-plan-contracts";
 import { buildOrchestrateRequestBody } from "./concierge-logic";
 import {
   INITIAL_WORKFLOW_MEMORY,
@@ -26,12 +27,18 @@ import {
 // page context, when supplied, always wins over remembered memory), and
 // every response updates that memory in one atomic recompute, never a
 // merge with anything older.
+//
+// Stage 5: `plan` (additive, may be null) is carried alongside `decision`
+// exactly the same way -- nothing here ever acts on the plan itself
+// (there is no "auto-run the whole plan" code path anywhere in this
+// hook); it is surfaced purely for a caller that wants to render richer
+// progress than the single recommendedAction already drives.
 
 export type ConciergeState =
   | { status: "idle" }
   | { status: "loading" }
   | { status: "error" }
-  | { status: "ready"; decision: OrchestratorDecision };
+  | { status: "ready"; decision: OrchestratorDecision; plan: OrchestrationPlan | null };
 
 export type UseConciergeContext = ConciergePageContext;
 
@@ -56,17 +63,18 @@ export function useConcierge(context: UseConciergeContext = {}) {
           setState({ status: "error" });
           return;
         }
-        const payload = (await response.json()) as { decision: OrchestratorDecision };
-        setState({ status: "ready", decision: payload.decision });
+        const payload = (await response.json()) as { decision: OrchestratorDecision; plan: OrchestrationPlan | null };
+        setState({ status: "ready", decision: payload.decision, plan: payload.plan });
 
-        const { memory: nextMemory, events } = updateWorkflowMemory(memory, payload.decision);
+        const { memory: nextMemory, events } = updateWorkflowMemory(memory, payload.decision, payload.plan);
         setMemory(nextMemory);
-        // task section 16: client-side-only, matching this codebase's own
-        // established VOICE_REPLY_CLIENT/CONCIERGE_ORCHESTRATION client-
-        // side logging convention (e.g. use-concierge-video-offer.ts) --
-        // these two events genuinely need cross-turn memory the server
-        // itself never has (see concierge-workflow-memory-logic.ts's own
-        // header comment on the other four, which ARE logged server-side).
+        // task section 16 (Stage 4) / task section 17 (Stage 5):
+        // client-side-only, matching this codebase's own established
+        // VOICE_REPLY_CLIENT/CONCIERGE_ORCHESTRATION client-side logging
+        // convention (e.g. use-concierge-video-offer.ts) -- these events
+        // genuinely need cross-turn memory the server itself never has
+        // (see concierge-workflow-memory-logic.ts's own header comment on
+        // every other required event, which IS logged server-side).
         for (const event of events) {
           console.log(JSON.stringify({ gate: "CONCIERGE_ORCHESTRATION", event }));
         }
@@ -79,5 +87,5 @@ export function useConcierge(context: UseConciergeContext = {}) {
 
   const reset = useCallback(() => setState({ status: "idle" }), []);
 
-  return { state, ask, reset, pendingDecision: memory.pendingDecision };
+  return { state, ask, reset, pendingDecision: memory.pendingDecision, activePlanGoal: memory.activePlanGoal };
 }
