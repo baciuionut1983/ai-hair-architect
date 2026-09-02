@@ -1,5 +1,5 @@
 import type { TranslationKey } from "@/lib/translations";
-import type { OrchestratorActionId, OrchestratorDecision, OrchestratorReasonCode } from "@/lib/orchestrator-contracts";
+import type { ConciergePendingDecision, OrchestratorActionId, OrchestratorDecision, OrchestratorReasonCode } from "@/lib/orchestrator-contracts";
 
 // AI Concierge / Orchestrator, Stage 1 -- pure UI-facing logic, no React,
 // no fetch. Mirrors video-demonstration-logic.ts's own established split
@@ -23,6 +23,9 @@ const REASON_CODE_TO_KEY: Record<OrchestratorReasonCode, TranslationKey> = {
   // one specific option (orchestrator-hybrid-classifier.ts's own
   // "clarification" source).
   ambiguous_intent_needs_clarification: "concierge.info.ambiguousIntentNeedsClarification",
+  // Stage 4: a bare "no" reply to a pending video offer -- a clean,
+  // honest acknowledgment, never conflated with "I didn't understand."
+  video_offer_declined: "concierge.info.videoOfferDeclined",
 };
 
 export function reasonCodeToTranslationKey(code: OrchestratorReasonCode): TranslationKey {
@@ -52,6 +55,12 @@ export interface OrchestrateRequestBody {
   currentClientId?: string | null;
   currentAnalysisId?: string | null;
   hasCompletedPhotoPreview?: boolean;
+  // Stage 4: echoes whatever the caller's own remembered workflow memory
+  // (concierge-workflow-memory-logic.ts) currently believes is pending --
+  // null/undefined whenever nothing is. Purely a hint; see
+  // orchestrator-service.ts's own header comment on why this is never
+  // trusted as authority server-side.
+  pendingDecision?: ConciergePendingDecision | null;
 }
 
 // Trims and validates a raw message before it is ever sent -- the same
@@ -63,7 +72,12 @@ export const CONCIERGE_MESSAGE_MAX_LENGTH = 2000;
 
 export function buildOrchestrateRequestBody(
   rawMessage: string,
-  context: { currentClientId?: string | null; currentAnalysisId?: string | null; hasCompletedPhotoPreview?: boolean },
+  context: {
+    currentClientId?: string | null;
+    currentAnalysisId?: string | null;
+    hasCompletedPhotoPreview?: boolean;
+    pendingDecision?: ConciergePendingDecision | null;
+  },
 ): OrchestrateRequestBody | null {
   const message = rawMessage.trim();
   if (!message || message.length > CONCIERGE_MESSAGE_MAX_LENGTH) return null;
@@ -73,6 +87,7 @@ export function buildOrchestrateRequestBody(
     currentClientId: context.currentClientId ?? null,
     currentAnalysisId: context.currentAnalysisId ?? null,
     hasCompletedPhotoPreview: context.hasCompletedPhotoPreview === true,
+    pendingDecision: context.pendingDecision ?? null,
   };
 }
 

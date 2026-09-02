@@ -64,6 +64,10 @@ export async function POST(request: Request) {
 
   const currentClientId = typeof body.currentClientId === "string" ? body.currentClientId : null;
   const currentAnalysisId = typeof body.currentAnalysisId === "string" ? body.currentAnalysisId : null;
+  // Stage 4: forwarded raw -- resolveOrchestratorDecision itself validates
+  // this against the closed ConciergePendingDecision vocabulary (see its
+  // own header comment); this route never needs to know that vocabulary.
+  const pendingDecision = typeof body.pendingDecision === "string" ? body.pendingDecision : null;
 
   const decision = await resolveOrchestratorDecision({
     message,
@@ -72,6 +76,7 @@ export async function POST(request: Request) {
     currentClientId,
     currentAnalysisId,
     hasCompletedPhotoPreview,
+    pendingDecision,
   });
 
   return NextResponse.json({ decision }, { status: 200, headers: NO_STORE_HEADERS });

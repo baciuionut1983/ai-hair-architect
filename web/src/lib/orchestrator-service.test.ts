@@ -441,6 +441,269 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
   });
 
   // -------------------------------------------------------------------------
+  // Stage 4: conversation continuity + workflow state (task section 17,
+  // tests A-M). FLOW A/B/C/D from the task's own examples are each
+  // exercised directly below.
+  // -------------------------------------------------------------------------
+
+  // task section 17, test A / FLOW A's own "Nu." step.
+  it("Stage 4, test A: a bare 'Da' with NO pending decision cannot trigger a Video handoff", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    const decision = await resolveOrchestratorDecision({
+      message: "Da",
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: clientId,
+      currentAnalysisId: analysis.id,
+      // pendingDecision deliberately omitted.
+    });
+
+    expect(decision.recommendedAction).not.toBe("REQUEST_VIDEO");
+    expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
+  });
+
+  // task section 17, test B / FLOW B.
+  it("Stage 4, test B: 'Da' with a pending VIDEO_OFFER opens ONLY the existing REQUEST_VIDEO navigation -- never submits anything", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    const decision = await resolveOrchestratorDecision({
+      message: "Da",
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: clientId,
+      currentAnalysisId: analysis.id,
+      pendingDecision: "VIDEO_OFFER",
+    });
+
+    expect(decision.recommendedAction).toBe("REQUEST_VIDEO");
+    expect(decision.targetClientId).toBe(clientId);
+    expect(decision.targetAnalysisId).toBe(analysis.id);
+    // task section 17, test K: cost consent is never manufactured by the
+    // conversation -- the SAME MEANINGFUL_COST/requiresUserConsent the
+    // registry already declares for REQUEST_VIDEO still applies, exactly
+    // as if the user had typed "vreau un video" outright. The EXISTING
+    // Video UI's own dialog is what actually asks for and records
+    // consent -- this decision is still only ever a navigation.
+    expect(decision.requiresUserConsent).toBe(true);
+    expect(decision.costClass).toBe("MEANINGFUL_COST");
+  });
+
+  // task section 17, test C / FLOW A.
+  it("Stage 4, test C: 'Nu' with a pending VIDEO_OFFER produces zero Video calls and an honest decline decision", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    const decision = await resolveOrchestratorDecision({
+      message: "Nu",
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: clientId,
+      currentAnalysisId: analysis.id,
+      pendingDecision: "VIDEO_OFFER",
+    });
+
+    expect(decision.recommendedAction).toBeNull();
+    expect(decision.reasonCode).toBe("video_offer_declined");
+    expect(decision.costClass).toBe("NO_INCREMENTAL_COST");
+    expect(decision.requiresUserConsent).toBe(false);
+  });
+
+  // task section 17, test D / FLOW D.
+  it("Stage 4, test D: a pending decision echoed alongside a DIFFERENT (switched-to) client only ever affects THAT client, never the original one", async () => {
+    const { ownerUserId, clientId: clientA } = await createOwnerAndClient();
+    const { clientId: clientB } = await createOwnerAndClient(ownerUserId);
+    const analysisB = await createAnalysis(ownerUserId, clientB);
+
+    const decision = await resolveOrchestratorDecision({
+      message: "Da",
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: clientB,
+      currentAnalysisId: analysisB.id,
+      // A stale/leftover pendingDecision that conceptually belonged to
+      // client A's earlier offer -- the real workflow-memory hook always
+      // clears this on a genuine switch (concierge-workflow-memory-
+      // logic.test.ts), but this proves the SERVER is safe even if it
+      // somehow arrived anyway: it can only ever act on THIS turn's own,
+      // freshly-verified client, never reference client A at all.
+      pendingDecision: "VIDEO_OFFER",
+    });
+
+    expect(decision.targetClientId).toBe(clientB);
+    expect(decision.targetClientId).not.toBe(clientA);
+    expect(decision.currentContext.currentClientId).toBe(clientB);
+  });
+
+  // task section 17, test E.
+  it("Stage 4, test E: 'Da' with a pending VIDEO_OFFER but a forged/nonexistent clientId is rejected -- never REQUEST_VIDEO", async () => {
+    const { ownerUserId } = await createOwnerAndClient();
+
+    const decision = await resolveOrchestratorDecision({
+      message: "Da",
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: randomUUID(),
+      currentAnalysisId: randomUUID(),
+      pendingDecision: "VIDEO_OFFER",
+    });
+
+    expect(decision.recommendedAction).not.toBe("REQUEST_VIDEO");
+    expect(decision.currentContext.currentClientId).toBeNull();
+  });
+
+  // task section 17, test F.
+  it("Stage 4, test F: a stale pendingDecision cannot fabricate a video offer this turn without THIS turn's own hasCompletedPhotoPreview being true", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    // A real message (not a bare yes/no) arrives alongside a claimed
+    // pending decision, but hasCompletedPhotoPreview is NOT reasserted
+    // this turn -- the offer must not be silently re-presented from
+    // stale memory; the DB-fresh context (no completed preview asserted)
+    // wins, and this simply resolves through normal classification.
+    const decision = await resolveOrchestratorDecision({
+      message: "show me the expected result",
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: clientId,
+      currentAnalysisId: analysis.id,
+      pendingDecision: "VIDEO_OFFER",
+      // hasCompletedPhotoPreview deliberately omitted/false.
+    });
+
+    expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
+    expect(decision.reasonCode).not.toBe("video_offer_after_completed_preview");
+  });
+
+  // task section 17, test G / FLOW C.
+  it("Stage 4, test G: 'Continuă de unde am rămas.' resumes the correct workflow when a real active analysis exists", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    const decision = await resolveOrchestratorDecision(
+      {
+        message: "Continuă de unde am rămas.",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      },
+      {
+        aiClassifierDependencies: {
+          env: GEMINI_ENV,
+          createAiProvider: () => new FakeAiProvider({ semanticIntent: "start_or_continue_analysis", confidence: "high" }),
+          recordAiUsageEvent: NO_OP_USAGE_RECORDER,
+        },
+      },
+    );
+
+    expect(decision.recommendedAction).toBe("OPEN_ANALYSIS");
+    expect(decision.targetClientId).toBe(clientId);
+    expect(decision.targetAnalysisId).toBe(analysis.id);
+  });
+
+  // task section 17, test H.
+  it("Stage 4, test H: 'Continuă de unde am rămas.' asks for a client rather than guessing, when there's nothing to resume", async () => {
+    const { ownerUserId } = await createOwnerAndClient();
+
+    const decision = await resolveOrchestratorDecision(
+      {
+        message: "Continuă de unde am rămas.",
+        roleClass: "professional",
+        ownerUserId,
+        // No currentClientId/currentAnalysisId, and nothing remembered --
+        // a genuinely fresh session (e.g. the Dashboard, first turn).
+      },
+      {
+        aiClassifierDependencies: {
+          env: GEMINI_ENV,
+          createAiProvider: () => new FakeAiProvider({ semanticIntent: "start_or_continue_analysis", confidence: "high" }),
+          recordAiUsageEvent: NO_OP_USAGE_RECORDER,
+        },
+      },
+    );
+
+    // An honest, actionable fallback -- never a guessed client/analysis,
+    // never a fabricated workflow state (task section 5's own "do NOT
+    // invent missing workflow state").
+    expect(decision.recommendedAction).toBe("OPEN_CLIENTS");
+    expect(decision.reasonCode).toBe("no_client_selected");
+    expect(decision.targetClientId).toBeNull();
+  });
+
+  // task section 17, test I.
+  it("Stage 4, test I: context expiry -- a pending decision aimed at a client that no longer resolves is rejected, not honored", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+    // Simulate the client having been deleted since the offer was made --
+    // ownership no longer resolves this id at all.
+    await prisma.analysis.delete({ where: { id: analysis.id } });
+    await prisma.client.delete({ where: { id: clientId } });
+
+    const decision = await resolveOrchestratorDecision({
+      message: "Da",
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: clientId,
+      currentAnalysisId: analysis.id,
+      pendingDecision: "VIDEO_OFFER",
+    });
+
+    expect(decision.recommendedAction).not.toBe("REQUEST_VIDEO");
+    expect(decision.currentContext.currentClientId).toBeNull();
+  });
+
+  // task section 17, test J.
+  it("Stage 4, test J: a casual 'Da, e bun.' with no pending decision never manufactures professional approval", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    const decision = await resolveOrchestratorDecision({
+      message: "Da, e bun.",
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: clientId,
+      currentAnalysisId: analysis.id,
+      // No pendingDecision at all -- and even if there were one, no
+      // action in this registry (Stage 1-4) has ever set
+      // requiresProfessionalApproval to true (see orchestrator-action-
+      // registry.ts) -- this app has no implicit approval channel to
+      // manufacture in the first place.
+    });
+
+    expect(decision.requiresProfessionalApproval).toBe(false);
+  });
+
+  // task section 17, test M.
+  it("Stage 4, test M: multi-language bare yes/no with a pending VIDEO_OFFER resolves safely", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    const yesDecision = await resolveOrchestratorDecision({
+      message: "はい",
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: clientId,
+      currentAnalysisId: analysis.id,
+      pendingDecision: "VIDEO_OFFER",
+    });
+    expect(yesDecision.recommendedAction).toBe("REQUEST_VIDEO");
+
+    const noDecision = await resolveOrchestratorDecision({
+      message: "Nein",
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: clientId,
+      currentAnalysisId: analysis.id,
+      pendingDecision: "VIDEO_OFFER",
+    });
+    expect(noDecision.reasonCode).toBe("video_offer_declined");
+  });
+
+  // -------------------------------------------------------------------------
   // Test G (task section 13): orchestration result is schema/type validated.
   // -------------------------------------------------------------------------
 

@@ -4,6 +4,13 @@ import { useCallback, useState } from "react";
 
 import type { OrchestratorDecision } from "@/lib/orchestrator-contracts";
 import { buildOrchestrateRequestBody } from "./concierge-logic";
+import {
+  INITIAL_WORKFLOW_MEMORY,
+  resolveEffectiveContext,
+  updateWorkflowMemory,
+  type ConciergePageContext,
+  type ConciergeWorkflowMemory,
+} from "./concierge-workflow-memory-logic";
 
 // AI Concierge / Orchestrator, Stage 1 -- the data-fetching hook. Plain
 // fetch + useState, mirroring use-video-demonstration.ts's own style, but
@@ -11,6 +18,14 @@ import { buildOrchestrateRequestBody } from "./concierge-logic";
 // to poll -- there is nothing here that can ever call Video/Photo Preview's
 // own create/execute endpoints (see orchestrator-action-registry.ts's own
 // header comment: every action is navigation-only).
+//
+// Stage 4: also owns this session's remembered ConciergeWorkflowMemory
+// (concierge-workflow-memory-logic.ts) -- purely in-memory React state,
+// see that file's own header comment for exactly why. Every request this
+// hook sends is built from resolveEffectiveContext (the caller's own real
+// page context, when supplied, always wins over remembered memory), and
+// every response updates that memory in one atomic recompute, never a
+// merge with anything older.
 
 export type ConciergeState =
   | { status: "idle" }
@@ -18,18 +33,16 @@ export type ConciergeState =
   | { status: "error" }
   | { status: "ready"; decision: OrchestratorDecision };
 
-export interface UseConciergeContext {
-  currentClientId?: string | null;
-  currentAnalysisId?: string | null;
-  hasCompletedPhotoPreview?: boolean;
-}
+export type UseConciergeContext = ConciergePageContext;
 
 export function useConcierge(context: UseConciergeContext = {}) {
   const [state, setState] = useState<ConciergeState>({ status: "idle" });
+  const [memory, setMemory] = useState<ConciergeWorkflowMemory>(INITIAL_WORKFLOW_MEMORY);
 
   const ask = useCallback(
     async (rawMessage: string) => {
-      const body = buildOrchestrateRequestBody(rawMessage, context);
+      const effectiveContext = resolveEffectiveContext(context, memory);
+      const body = buildOrchestrateRequestBody(rawMessage, effectiveContext);
       if (!body) return;
 
       setState({ status: "loading" });
@@ -45,14 +58,26 @@ export function useConcierge(context: UseConciergeContext = {}) {
         }
         const payload = (await response.json()) as { decision: OrchestratorDecision };
         setState({ status: "ready", decision: payload.decision });
+
+        const { memory: nextMemory, events } = updateWorkflowMemory(memory, payload.decision);
+        setMemory(nextMemory);
+        // task section 16: client-side-only, matching this codebase's own
+        // established VOICE_REPLY_CLIENT/CONCIERGE_ORCHESTRATION client-
+        // side logging convention (e.g. use-concierge-video-offer.ts) --
+        // these two events genuinely need cross-turn memory the server
+        // itself never has (see concierge-workflow-memory-logic.ts's own
+        // header comment on the other four, which ARE logged server-side).
+        for (const event of events) {
+          console.log(JSON.stringify({ gate: "CONCIERGE_ORCHESTRATION", event }));
+        }
       } catch {
         setState({ status: "error" });
       }
     },
-    [context],
+    [context, memory],
   );
 
   const reset = useCallback(() => setState({ status: "idle" }), []);
 
-  return { state, ask, reset };
+  return { state, ask, reset, pendingDecision: memory.pendingDecision };
 }

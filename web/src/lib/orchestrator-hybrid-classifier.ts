@@ -5,6 +5,7 @@ import { recordAiUsageEvent } from "@/lib/ai-usage-repository";
 import { resolveImageAnalysisProviderConfig } from "@/lib/image-analysis-provider-config";
 import type { OrchestratorIntent, OrchestratorRoleClass } from "@/lib/orchestrator-contracts";
 import { classifyOrchestratorIntent } from "@/lib/orchestrator-intent-classifier";
+import type { ConciergeWorkflowStage } from "@/lib/orchestrator-workflow-stage";
 import {
   isAiIntentClassificationResult,
   mapSemanticIntentToOrchestratorIntent,
@@ -41,7 +42,12 @@ export const CONCIERGE_INTENT_CLASSIFICATION_FEATURE = "concierge_intent_classif
 // (orchestrator-service.ts) -- never persisted, never part of the public
 // OrchestratorDecision contract itself (see that file's own header
 // comment on why classifierSource stays a service-internal concept).
-export type ConciergeClassifierSource = "deterministic" | "ai" | "fallback" | "clarification";
+// Stage 4 adds "pending_decision" -- a bare yes/no reply resolved by
+// orchestrator-confirmation-detector.ts against a real pending decision,
+// never reaching this hybrid classifier at all (see
+// orchestrator-service.ts's own buildDecision for exactly where that
+// branch sits, ahead of everything in this file).
+export type ConciergeClassifierSource = "deterministic" | "ai" | "fallback" | "clarification" | "pending_decision";
 
 export interface HybridClassificationOutcome {
   intent: OrchestratorIntent;
@@ -53,6 +59,15 @@ export interface HybridClassifierContext {
   roleClass: OrchestratorRoleClass;
   clientId: string | null;
   analysisId: string | null;
+  // Stage 4 (task section 10): passed straight through to the AI provider
+  // as its own minimal AiClassifierContext, unchanged -- see that type's
+  // own doc comment (orchestrator-ai-intent-provider.ts) for exactly why
+  // these two fields and nothing else. Both are always supplied by
+  // orchestrator-service.ts, derived fresh from the SAME already-verified
+  // OrchestratorContext this turn's decision is built from -- never a
+  // remembered/stale value.
+  workflowStage: ConciergeWorkflowStage;
+  hasPendingDecision: boolean;
 }
 
 export interface HybridClassifierDependencies {
@@ -133,7 +148,10 @@ export async function classifyOrchestratorIntentHybrid(
 
   let raw: OrchestratorIntentAiResult;
   try {
-    raw = await provider.classify(trimmed, controller.signal);
+    raw = await provider.classify(trimmed, controller.signal, {
+      workflowStage: context.workflowStage,
+      hasPendingDecision: context.hasPendingDecision,
+    });
   } catch (error) {
     const latencyMs = Date.now() - startedAt;
     const providerError = error as Partial<OrchestratorIntentProviderError> | undefined;

@@ -1,5 +1,6 @@
 import type { AiUsageQuantities } from "@/lib/ai-usage-contracts";
 import type { AiIntentClassificationResult } from "@/lib/orchestrator-ai-intent-schema";
+import type { ConciergeWorkflowStage } from "@/lib/orchestrator-workflow-stage";
 
 // AI Concierge / Orchestrator, Stage 3 -- minimal, provider-agnostic
 // contract for the intent classifier's AI layer. Mirrors
@@ -18,6 +19,27 @@ import type { AiIntentClassificationResult } from "@/lib/orchestrator-ai-intent-
 export interface OrchestratorIntentAiResult extends AiIntentClassificationResult {
   usage?: AiUsageQuantities;
   providerRequestId?: string;
+}
+
+// AI Concierge / Orchestrator, Stage 4 (task section 10): the ONLY
+// contextual metadata the AI classifier may ever receive beyond the raw
+// message itself -- deliberately just these two small, already-server-
+// verified, non-identifying signals (never a client name, never message
+// history, never any id). workflowStage comes from
+// orchestrator-workflow-stage.ts's own resolveWorkflowStage (derived from
+// the SAME already-authority-checked OrchestratorContext every other
+// decision in this turn is built from -- never a remembered/stale value).
+// hasPendingDecision is true only when the caller's own pendingDecision
+// hint survived this turn's context re-verification (see
+// orchestrator-service.ts's own buildDecision) -- it tells the model
+// "a yes/no reply right now would mean something," never WHAT that
+// pending decision concerns (the model never needs, and never receives,
+// the pending decision's own identity -- that stays entirely
+// deterministic, resolved by orchestrator-confirmation-detector.ts before
+// the AI is ever consulted).
+export interface AiClassifierContext {
+  workflowStage: ConciergeWorkflowStage;
+  hasPendingDecision: boolean;
 }
 
 export interface OrchestratorIntentProviderError extends Error {
@@ -42,7 +64,11 @@ export abstract class OrchestratorIntentAiProvider {
   abstract readonly name: string;
   abstract readonly modelVersion: string;
 
-  abstract classify(message: string, signal: AbortSignal): Promise<OrchestratorIntentAiResult>;
+  // `context` is optional (undefined) purely so an existing/hand-built
+  // fake provider from an earlier stage's test doesn't need to change --
+  // every REAL call site (orchestrator-hybrid-classifier.ts) always
+  // supplies one.
+  abstract classify(message: string, signal: AbortSignal, context?: AiClassifierContext): Promise<OrchestratorIntentAiResult>;
 
   protected createProviderError(
     code: OrchestratorIntentProviderError["code"],

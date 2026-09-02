@@ -91,6 +91,33 @@ describe("GeminiOrchestratorIntentProvider", () => {
     expect(sink.input?.model).toBe("gemini-2.5-flash");
   });
 
+  // task section 10, test L: the AI classifier receives ONLY the message
+  // plus (optionally) workflowStage/hasPendingDecision -- nothing else.
+  it("Stage 4: omits any context block from the prompt when no context is supplied (byte-for-byte the Stage 3 prompt)", async () => {
+    const sink: { input?: GeminiIntentGenerateInput } = {};
+    const provider = new GeminiOrchestratorIntentProvider(
+      { apiKey: "key", model: "gemini-2.5-flash" },
+      recordingClient(sink, '{"semanticIntent":"unknown","confidence":"high"}'),
+    );
+    await provider.classify("hello", new AbortController().signal);
+    expect(sink.input?.prompt).not.toContain("Current workflow stage:");
+    expect(sink.input?.prompt).not.toContain("A pending decision exists:");
+  });
+
+  it("Stage 4: includes ONLY workflowStage/hasPendingDecision when context IS supplied -- never a client id, name, or history", async () => {
+    const sink: { input?: GeminiIntentGenerateInput } = {};
+    const provider = new GeminiOrchestratorIntentProvider(
+      { apiKey: "key", model: "gemini-2.5-flash" },
+      recordingClient(sink, '{"semanticIntent":"unknown","confidence":"high"}'),
+    );
+    await provider.classify("continue", new AbortController().signal, { workflowStage: "result_available", hasPendingDecision: true });
+    expect(sink.input?.prompt).toContain("Current workflow stage: result_available");
+    expect(sink.input?.prompt).toContain("A pending decision exists: true");
+    // Never a real client identifier, name, or PII -- the context object
+    // passed here has literally no field capable of carrying one.
+    expect(sink.input?.prompt).not.toMatch(/client-[a-z0-9-]+/i);
+  });
+
   it("the response schema restricts semanticIntent/confidence to the closed vocabulary only", () => {
     const semanticIntentProp = (INTENT_RESPONSE_SCHEMA.properties as Record<string, { enum?: string[] }>).semanticIntent;
     const confidenceProp = (INTENT_RESPONSE_SCHEMA.properties as Record<string, { enum?: string[] }>).confidence;

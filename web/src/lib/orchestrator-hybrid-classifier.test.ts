@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { classifyOrchestratorIntentHybrid, CONCIERGE_INTENT_CLASSIFICATION_FEATURE, type HybridClassifierContext } from "./orchestrator-hybrid-classifier";
-import { OrchestratorIntentAiProvider, type OrchestratorIntentAiResult } from "./orchestrator-ai-intent-provider";
+import { OrchestratorIntentAiProvider, type AiClassifierContext, type OrchestratorIntentAiResult } from "./orchestrator-ai-intent-provider";
 import type { RecordAiUsageEventInput } from "./ai-usage-contracts";
 
 // AI Concierge / Orchestrator, Stage 3 -- proves the HYBRID classification
@@ -18,19 +18,27 @@ import type { RecordAiUsageEventInput } from "./ai-usage-contracts";
 const GEMINI_ENV = { AI_ANALYSIS_PROVIDER: "gemini", AI_ANALYSIS_API_KEY: "key", AI_ANALYSIS_MODEL: "gemini-2.5-flash" };
 
 function context(overrides: Partial<HybridClassifierContext> = {}): HybridClassifierContext {
-  return { ownerUserId: "owner-1", roleClass: "professional", clientId: null, analysisId: null, ...overrides };
+  return {
+    ownerUserId: "owner-1",
+    roleClass: "professional",
+    clientId: null,
+    analysisId: null,
+    workflowStage: "no_client",
+    hasPendingDecision: false,
+    ...overrides,
+  };
 }
 
 class FakeAiProvider extends OrchestratorIntentAiProvider {
   readonly name = "fake-provider";
   readonly modelVersion = "fake-model";
 
-  constructor(private readonly impl: (message: string, signal: AbortSignal) => Promise<OrchestratorIntentAiResult>) {
+  constructor(private readonly impl: (message: string, signal: AbortSignal, context?: AiClassifierContext) => Promise<OrchestratorIntentAiResult>) {
     super();
   }
 
-  classify(message: string, signal: AbortSignal): Promise<OrchestratorIntentAiResult> {
-    return this.impl(message, signal);
+  classify(message: string, signal: AbortSignal, context?: AiClassifierContext): Promise<OrchestratorIntentAiResult> {
+    return this.impl(message, signal, context);
   }
 }
 
@@ -284,6 +292,23 @@ describe("classifyOrchestratorIntentHybrid", () => {
     expect(call.feature).not.toBe("video_demonstration");
     expect(call.feature).not.toBe("photo_preview");
     expect(call.feature).not.toBe("consultation_chat");
+  });
+
+  // task section 10/18, test L: the AI provider receives ONLY
+  // workflowStage/hasPendingDecision -- never an id, a name, or history.
+  it("L: the AI provider's classify() is called with EXACTLY {workflowStage, hasPendingDecision} -- no client id, owner id, or message history", async () => {
+    let capturedContext: AiClassifierContext | undefined;
+    const provider = new FakeAiProvider(async (_message, _signal, aiContext) => {
+      capturedContext = aiContext;
+      return { semanticIntent: "unknown", confidence: "high" };
+    });
+    await classifyOrchestratorIntentHybrid(
+      "something ambiguous entirely",
+      context({ workflowStage: "result_available", hasPendingDecision: true, clientId: "client-should-never-leak", ownerUserId: "owner-should-never-leak" }),
+      { env: GEMINI_ENV, createAiProvider: () => provider, recordAiUsageEvent: NO_OP_USAGE_RECORDER },
+    );
+    expect(capturedContext).toEqual({ workflowStage: "result_available", hasPendingDecision: true });
+    expect(Object.keys(capturedContext ?? {}).sort()).toEqual(["hasPendingDecision", "workflowStage"]);
   });
 
   // The exact PRIMARY GOAL example the task calls out by name: a

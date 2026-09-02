@@ -18,9 +18,11 @@ const ALL_REASON_CODES: OrchestratorReasonCode[] = [
   "video_offer_after_completed_preview",
   "role_not_yet_supported",
   "intent_not_understood",
+  "ambiguous_intent_needs_clarification",
+  "video_offer_declined",
 ];
 
-const ALL_ACTION_IDS: OrchestratorActionId[] = ["OPEN_CLIENTS", "OPEN_CLIENT", "START_ANALYSIS", "OPEN_ANALYSIS", "REQUEST_VIDEO"];
+const ALL_ACTION_IDS: OrchestratorActionId[] = ["OPEN_CLIENTS", "OPEN_CLIENT", "START_ANALYSIS", "OPEN_ANALYSIS", "OFFER_VIDEO", "REQUEST_VIDEO"];
 
 function decision(overrides: Partial<OrchestratorDecision> = {}): OrchestratorDecision {
   return {
@@ -58,12 +60,20 @@ describe("reasonCodeToTranslationKey / actionIdToTranslationKey -- the ONLY plac
   it("the video offer reason code maps to the exact required conversational question key", () => {
     expect(reasonCodeToTranslationKey("video_offer_after_completed_preview")).toBe("concierge.videoOffer.question");
   });
+
+  // Stage 4: distinct copy from intentNotUnderstood/ambiguousIntentNeedsClarification.
+  it("the video-offer-declined reason code maps to its own distinct, non-generic key", () => {
+    const key = reasonCodeToTranslationKey("video_offer_declined");
+    expect(key).toBe("concierge.info.videoOfferDeclined");
+    expect(key).not.toBe(reasonCodeToTranslationKey("intent_not_understood"));
+    expect(key).not.toBe(reasonCodeToTranslationKey("ambiguous_intent_needs_clarification"));
+  });
 });
 
 describe("buildOrchestrateRequestBody", () => {
   it("trims the message and carries context through", () => {
     const body = buildOrchestrateRequestBody("  show me the result  ", { currentClientId: "c1", currentAnalysisId: "a1", hasCompletedPhotoPreview: true });
-    expect(body).toEqual({ message: "show me the result", currentClientId: "c1", currentAnalysisId: "a1", hasCompletedPhotoPreview: true });
+    expect(body).toEqual({ message: "show me the result", currentClientId: "c1", currentAnalysisId: "a1", hasCompletedPhotoPreview: true, pendingDecision: null });
   });
 
   it("returns null for an empty/whitespace-only message", () => {
@@ -76,7 +86,19 @@ describe("buildOrchestrateRequestBody", () => {
   });
 
   it("defaults missing context fields safely", () => {
-    expect(buildOrchestrateRequestBody("hello", {})).toEqual({ message: "hello", currentClientId: null, currentAnalysisId: null, hasCompletedPhotoPreview: false });
+    expect(buildOrchestrateRequestBody("hello", {})).toEqual({
+      message: "hello",
+      currentClientId: null,
+      currentAnalysisId: null,
+      hasCompletedPhotoPreview: false,
+      pendingDecision: null,
+    });
+  });
+
+  // Stage 4.
+  it("carries pendingDecision through when supplied", () => {
+    const body = buildOrchestrateRequestBody("Da", { pendingDecision: "VIDEO_OFFER" });
+    expect(body?.pendingDecision).toBe("VIDEO_OFFER");
   });
 });
 

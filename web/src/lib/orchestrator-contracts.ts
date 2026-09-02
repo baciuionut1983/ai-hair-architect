@@ -80,7 +80,13 @@ export type OrchestratorReasonCode =
   // (multiple candidates fit, or the message is too vague). Never used to
   // silently promote a low-confidence guess into a real recommendation --
   // see orchestrator-hybrid-classifier.ts's own "clarification" source.
-  | "ambiguous_intent_needs_clarification";
+  | "ambiguous_intent_needs_clarification"
+  // Stage 4 (task section 3/17, tests C/K): a bare "no" reply while
+  // OFFER_VIDEO was the pending decision -- a clean, honest acknowledgment
+  // distinct from intent_not_understood. Produces zero Video call and
+  // clears the pending decision (see orchestrator-service.ts's own
+  // videoOfferDeclinedDecision).
+  | "video_offer_declined";
 
 const ORCHESTRATOR_REASON_CODES: readonly OrchestratorReasonCode[] = [
   "client_and_analysis_identified",
@@ -90,7 +96,30 @@ const ORCHESTRATOR_REASON_CODES: readonly OrchestratorReasonCode[] = [
   "role_not_yet_supported",
   "intent_not_understood",
   "ambiguous_intent_needs_clarification",
+  "video_offer_declined",
 ];
+
+// AI Concierge / Orchestrator, Stage 4 (task section 3): "pending decisions
+// must use closed typed enums." A single value today -- OFFER_VIDEO is the
+// only presentational question this app can currently ask (see
+// orchestrator-action-registry.ts). Deliberately a UNION, not a boolean,
+// so a second pending-decision kind added later (e.g. a future
+// professional-approval flow, if one is ever built) has an obvious,
+// type-safe place to go, and so isConciergePendingDecision keeps failing
+// closed on anything else in the meantime.
+//
+// CRITICAL (task section 2): this is a CLIENT-REMEMBERED HINT, never
+// authority. The server (orchestrator-service.ts) only ever uses it to
+// decide HOW to interpret a bare yes/no reply -- every actual permission
+// check (ownership, role, cost consent) still runs in full, every turn,
+// completely independent of whatever the caller claims is pending.
+export type ConciergePendingDecision = "VIDEO_OFFER";
+
+const CONCIERGE_PENDING_DECISIONS: readonly ConciergePendingDecision[] = ["VIDEO_OFFER"];
+
+export function isConciergePendingDecision(value: unknown): value is ConciergePendingDecision {
+  return typeof value === "string" && (CONCIERGE_PENDING_DECISIONS as readonly string[]).includes(value);
+}
 
 // Current, already-validated (never client-supplied-and-trusted-blindly)
 // context an OrchestratorDecision was built against. See

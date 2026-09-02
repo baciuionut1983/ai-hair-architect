@@ -5,9 +5,13 @@ import {
   type ConciergeClassifierSource,
   type HybridClassifierDependencies,
 } from "@/lib/orchestrator-hybrid-classifier";
+import { detectBareConfirmation } from "@/lib/orchestrator-confirmation-detector";
+import { resolveWorkflowStage } from "@/lib/orchestrator-workflow-stage";
 import { isOrchestratorActionAllowedForRole, ORCHESTRATOR_ACTION_REGISTRY } from "@/lib/orchestrator-action-registry";
 import {
+  isConciergePendingDecision,
   isOrchestratorDecision,
+  type ConciergePendingDecision,
   type OrchestratorActionId,
   type OrchestratorContext,
   type OrchestratorDecision,
@@ -47,6 +51,16 @@ export interface ResolveOrchestratorDecisionInput {
   currentClientId?: string | null;
   currentAnalysisId?: string | null;
   hasCompletedPhotoPreview?: boolean;
+  // Stage 4 (task section 3): a client-remembered hint of what
+  // presentational question was last asked -- e.g. after a decision with
+  // recommendedAction "OFFER_VIDEO", the caller may remember
+  // "VIDEO_OFFER" and echo it back on the NEXT turn so a bare "Da"/"Nu"
+  // can be interpreted correctly. Raw/untrusted (any string, or garbage) --
+  // validated by isConciergePendingDecision inside buildDecision, and
+  // even once validated, NEVER treated as authority: see this file's own
+  // header comment and orchestrator-contracts.ts's own doc comment on
+  // ConciergePendingDecision.
+  pendingDecision?: string | null;
 }
 
 export interface ResolveOrchestratorDecisionDependencies {
@@ -68,15 +82,15 @@ export async function resolveOrchestratorDecision(
   dependencies: ResolveOrchestratorDecisionDependencies = {},
 ): Promise<OrchestratorDecision> {
   const startedAt = Date.now();
-  const { decision, classifierSource } = await buildDecision(input, dependencies);
-  logOrchestratorDecision(input, decision, classifierSource, Date.now() - startedAt);
+  const { decision, pendingDecision, classifierSource } = await buildDecision(input, dependencies);
+  logOrchestratorDecision(input, decision, pendingDecision, classifierSource, Date.now() - startedAt);
   return decision;
 }
 
 async function buildDecision(
   input: ResolveOrchestratorDecisionInput,
   dependencies: ResolveOrchestratorDecisionDependencies,
-): Promise<{ decision: OrchestratorDecision; classifierSource: ConciergeClassifierSource | null }> {
+): Promise<{ decision: OrchestratorDecision; pendingDecision: ConciergePendingDecision | null; classifierSource: ConciergeClassifierSource | null }> {
   const resolveClient = dependencies.findClientForOwner ?? findClientForOwner;
   const resolveAnalysis = dependencies.findAnalysisForOwner ?? findAnalysisForOwner;
   const classifyHybrid = dependencies.classifyIntentHybrid ?? classifyOrchestratorIntentHybrid;
@@ -105,14 +119,45 @@ async function buildDecision(
     hasCompletedPhotoPreview: Boolean(input.hasCompletedPhotoPreview) && analysisId !== null,
   };
 
+  // Stage 4 (task section 3/4): a client-remembered pending decision is
+  // only ever CONSULTED here, never trusted as-is -- an unrecognized/
+  // garbage value fails closed to null, exactly like every other
+  // untrusted input this service handles.
+  const pendingDecision: ConciergePendingDecision | null = isConciergePendingDecision(input.pendingDecision) ? input.pendingDecision : null;
+  // A BARE yes/no reply only ever means something when there IS a pending
+  // decision to answer (task section 4: "without a pending VIDEO_OFFER, a
+  // bare 'Da' must NOT magically authorize Video") -- for any other
+  // message, or with no pending decision at all, this is always null and
+  // every existing Stage 1-3 code path below runs completely unaffected.
+  const confirmation = pendingDecision === "VIDEO_OFFER" ? detectBareConfirmation(input.message ?? "") : null;
+
   let decision: OrchestratorDecision;
   let classifierSource: ConciergeClassifierSource | null;
-  if (videoOfferApplies(context)) {
-    // Stage 2 priority, hoisted here (was previously the first check
-    // inside decideFromIntent) so it wins over ANY intent -- including a
-    // Stage 3 clarification outcome -- and so a real, server-verified
-    // completed Photo Preview never spends an AI classification call on
-    // whatever free text happened to arrive alongside it.
+
+  if (confirmation === "yes") {
+    // Answering "yes" to a REMEMBERED offer is treated as EXACTLY the
+    // same request_video intent a fresh "vreau un video" message already
+    // produces (task section 4: "still only means open existing Video
+    // cost confirmation") -- decideFromIntent's own request_video case
+    // re-verifies currentClientId/currentAnalysisId THIS turn (already
+    // done above, fresh, never carried over) before it can ever compose
+    // REQUEST_VIDEO; a stale/forged/deleted client or analysis silently
+    // falls back to noClientSelectedDecision, exactly like any other
+    // intent would (task section 6/7, test I).
+    decision = decideFromIntent("request_video", context);
+    classifierSource = "pending_decision";
+  } else if (confirmation === "no") {
+    // Task section 3/17, test C: zero Video calls, pending decision
+    // cleared (the client clears its own remembered pendingDecision after
+    // ANY decision that isn't itself a fresh OFFER_VIDEO -- see
+    // concierge-workflow-memory-logic.ts).
+    decision = videoOfferDeclinedDecision(context);
+    classifierSource = "pending_decision";
+  } else if (videoOfferApplies(context)) {
+    // Stage 2 priority (still wins over normal classification, exactly as
+    // before) -- but only reached once a pending-decision answer has
+    // already had first refusal above, so a real "yes"/"no" reply is
+    // never re-asked the same question instead of being honored.
     decision = composeDecision(
       "request_video",
       "video",
@@ -126,7 +171,17 @@ async function buildDecision(
   } else {
     const classification = await classifyHybrid(
       input.message ?? "",
-      { ownerUserId: input.ownerUserId, roleClass: context.roleClass, clientId, analysisId },
+      {
+        ownerUserId: input.ownerUserId,
+        roleClass: context.roleClass,
+        clientId,
+        analysisId,
+        // Stage 4 (task section 10): the ONLY contextual metadata the AI
+        // classifier ever receives, both derived fresh from THIS turn's
+        // already-verified context -- never a remembered/stale value.
+        workflowStage: resolveWorkflowStage(context),
+        hasPendingDecision: pendingDecision !== null,
+      },
       dependencies.aiClassifierDependencies,
     );
     classifierSource = classification.source;
@@ -139,10 +194,10 @@ async function buildDecision(
     // return types, but this is the exact seam an AI-influenced decision
     // must also pass through, so it is exercised for real here, not
     // assumed.
-    return { decision: unsupportedDecision(context), classifierSource };
+    return { decision: unsupportedDecision(context), pendingDecision, classifierSource };
   }
 
-  return { decision, classifierSource };
+  return { decision, pendingDecision, classifierSource };
 }
 
 function videoOfferApplies(context: OrchestratorContext): boolean {
@@ -229,7 +284,13 @@ function roleUnsupportedDecision(context: OrchestratorContext): OrchestratorDeci
   };
 }
 
-function unsupportedDecision(context: OrchestratorContext): OrchestratorDecision {
+// Stage 4: shared shape for every "no recommended action, zero cost/
+// consent/approval implications" decision this service ever returns --
+// unsupportedDecision, clarificationDecision, and videoOfferDeclinedDecision
+// (below) differ ONLY in reasonCode. Kept as one function (rather than
+// three near-duplicated object literals) so a future field added to this
+// shape can never accidentally drift between them.
+function honestNoActionDecision(context: OrchestratorContext, reasonCode: OrchestratorReasonCode): OrchestratorDecision {
   return {
     intent: "unsupported",
     targetVertical: "none",
@@ -241,33 +302,29 @@ function unsupportedDecision(context: OrchestratorContext): OrchestratorDecision
     requiresProfessionalApproval: false,
     requiresUserConsent: false,
     costClass: "NO_INCREMENTAL_COST",
-    reasonCode: "intent_not_understood",
-    nextStepCode: "intent_not_understood",
+    reasonCode,
+    nextStepCode: reasonCode,
   };
 }
 
-// Stage 3 (task section 9): structurally identical to unsupportedDecision
-// -- no recommended action, no consent/approval implications, zero cost --
-// but with its own honest reasonCode, distinguishing "I genuinely don't
-// understand" from "I see a few plausible things you might mean; please be
-// more specific" (orchestrator-hybrid-classifier.ts's own "clarification"
+function unsupportedDecision(context: OrchestratorContext): OrchestratorDecision {
+  return honestNoActionDecision(context, "intent_not_understood");
+}
+
+// Stage 3 (task section 9): distinguishes "I genuinely don't understand"
+// from "I see a few plausible things you might mean; please be more
+// specific" (orchestrator-hybrid-classifier.ts's own "clarification"
 // classifier source). Never guesses which of the plausible candidates to
 // act on.
 function clarificationDecision(context: OrchestratorContext): OrchestratorDecision {
-  return {
-    intent: "unsupported",
-    targetVertical: "none",
-    targetClientId: null,
-    targetAnalysisId: null,
-    currentContext: context,
-    recommendedAction: null,
-    availableActions: roleAllows("OPEN_CLIENTS", context.roleClass) ? ["OPEN_CLIENTS"] : [],
-    requiresProfessionalApproval: false,
-    requiresUserConsent: false,
-    costClass: "NO_INCREMENTAL_COST",
-    reasonCode: "ambiguous_intent_needs_clarification",
-    nextStepCode: "ambiguous_intent_needs_clarification",
-  };
+  return honestNoActionDecision(context, "ambiguous_intent_needs_clarification");
+}
+
+// Stage 4 (task section 3/17, tests C/K): a bare "no" reply to a pending
+// VIDEO_OFFER -- zero Video call, an honest, distinct acknowledgment
+// (never conflated with "I didn't understand you").
+function videoOfferDeclinedDecision(context: OrchestratorContext): OrchestratorDecision {
+  return honestNoActionDecision(context, "video_offer_declined");
 }
 
 function composeDecision(
@@ -296,20 +353,47 @@ function composeDecision(
   };
 }
 
-// Stage 2 (task section 11): "we should be able to distinguish
-// video_offer_presented" -- derived here, server-side, from the SAME real
-// decision every other event field already comes from (never a separate,
-// second source of truth). The three purely client-side interaction
-// events (accepted/declined/the existing dialog opening) have no server
-// mutation to hang off of and are emitted client-side instead -- see
-// concierge-video-offer-logic.ts's own header comment.
-function deriveOrchestrationEvent(decision: OrchestratorDecision): "video_offer_presented" | null {
-  return decision.recommendedAction === "OFFER_VIDEO" ? "video_offer_presented" : null;
+// Stage 2 (task section 11) + Stage 4 (task section 16): every event this
+// server-side, PER-REQUEST log can honestly distinguish without any
+// cross-turn memory (which only the caller's own browser session has --
+// see concierge-workflow-memory-logic.ts for workflow_started/
+// workflow_continued/context_switched, which genuinely need it and are
+// logged client-side instead, exactly like this file's own
+// video_offer_accepted/declined precedent from Stage 2).
+// "video_offer_presented" (kept as-is, Stage 2's own established string --
+// never renamed, since nothing about its meaning changed) IS this turn's
+// pending_decision_created moment: a fresh OFFER_VIDEO recommendation.
+// pending_decision_accepted/declined fire when THIS turn's decision came
+// from resolving a real pending decision (classifierSource ==
+// "pending_decision"); pending_decision_invalidated fires when the caller
+// claimed one was pending but this turn's message didn't answer it (a
+// stale/lapsed offer, silently superseded by whatever the message
+// actually asked for -- never re-asked, never guessed at).
+type OrchestratorEvent =
+  | "video_offer_presented"
+  | "pending_decision_accepted"
+  | "pending_decision_declined"
+  | "pending_decision_invalidated"
+  | null;
+
+function deriveOrchestrationEvent(
+  decision: OrchestratorDecision,
+  pendingDecision: ConciergePendingDecision | null,
+  classifierSource: ConciergeClassifierSource | null,
+): OrchestratorEvent {
+  if (decision.recommendedAction === "OFFER_VIDEO") return "video_offer_presented";
+  if (classifierSource === "pending_decision") {
+    if (decision.reasonCode === "video_offer_declined") return "pending_decision_declined";
+    if (decision.recommendedAction === "REQUEST_VIDEO") return "pending_decision_accepted";
+  }
+  if (pendingDecision !== null) return "pending_decision_invalidated";
+  return null;
 }
 
 function logOrchestratorDecision(
   input: ResolveOrchestratorDecisionInput,
   decision: OrchestratorDecision,
+  pendingDecision: ConciergePendingDecision | null,
   classifierSource: ConciergeClassifierSource | null,
   totalLatencyMs: number,
 ): void {
@@ -328,9 +412,13 @@ function logOrchestratorDecision(
     // null only for the video-offer priority path (buildDecision), which
     // never consults a classifier at all.
     classifierSource,
+    // Stage 4: the caller's own claimed pending decision for THIS turn
+    // (already validated -- see buildDecision's own isConciergePendingDecision
+    // check), never trusted as authority, logged only for diagnosis.
+    pendingDecision,
     intent: decision.intent,
     recommendedAction: decision.recommendedAction,
-    event: deriveOrchestrationEvent(decision),
+    event: deriveOrchestrationEvent(decision, pendingDecision, classifierSource),
     requiresUserConsent: decision.requiresUserConsent,
     costClass: decision.costClass,
     totalLatencyMs,

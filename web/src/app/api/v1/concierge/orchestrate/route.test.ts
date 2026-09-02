@@ -103,6 +103,21 @@ describe("POST /api/v1/concierge/orchestrate", () => {
     );
   });
 
+  // Stage 4: forwarded raw (validated downstream by resolveOrchestratorDecision
+  // itself -- see that function's own header comment on why this route
+  // never needs to know the ConciergePendingDecision vocabulary).
+  it("Stage 4: forwards pendingDecision from the body", async () => {
+    await POST(request({ message: "Da", pendingDecision: "VIDEO_OFFER" }));
+
+    expect(RESOLVE_DECISION_MOCK).toHaveBeenCalledWith(expect.objectContaining({ pendingDecision: "VIDEO_OFFER" }));
+  });
+
+  it("Stage 4: pendingDecision defaults to null when the body omits it entirely", async () => {
+    await POST(request({ message: "show me the result" }));
+
+    expect(RESOLVE_DECISION_MOCK).toHaveBeenCalledWith(expect.objectContaining({ pendingDecision: null }));
+  });
+
   it("returns the decision wrapped in { decision }, unmodified", async () => {
     const response = await POST(request({ message: "show me the result" }));
     expect(response.status).toBe(200);
