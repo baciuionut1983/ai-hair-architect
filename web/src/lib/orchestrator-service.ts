@@ -14,7 +14,7 @@ import {
   resolveVisualizeResultPlan,
   type ResolveVisualizeResultPlanDependencies,
 } from "@/lib/orchestrator-plan-service";
-import { isOrchestrationPlanGoal, type OrchestrationPlan, type OrchestrationPlanGoal } from "@/lib/orchestrator-plan-contracts";
+import { isOrchestrationPlan, isOrchestrationPlanGoal, type OrchestrationPlan, type OrchestrationPlanGoal } from "@/lib/orchestrator-plan-contracts";
 import {
   isConciergePendingDecision,
   isOrchestratorDecision,
@@ -273,6 +273,19 @@ async function buildDecision(
       // Task section 11: stop future orchestration, but never erase or
       // fabricate real progress -- see cancelPlan's own doc comment.
       plan = cancelPlan(plan);
+    }
+    if (!isOrchestrationPlan(plan)) {
+      // Defense in depth (task section 2/3), the exact same seam
+      // isOrchestratorDecision above already guards for `decision` --
+      // should be structurally unreachable given
+      // resolveVisualizeResultPlan's/cancelPlan's own return types (a plan
+      // is 100% server-authored, never AI-generated -- see
+      // orchestrator-plan-service.ts's own header comment), but a plan is
+      // an artifact this codebase hands to a real API response exactly
+      // like a decision is, and nothing here is exempt from the same
+      // fail-closed rule: never a malformed plan reaching a caller, an
+      // honest "no plan" instead.
+      plan = null;
     }
   }
 
