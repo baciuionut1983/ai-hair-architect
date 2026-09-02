@@ -1549,6 +1549,182 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
     });
   });
 
+  // -------------------------------------------------------------------------
+  // PRODUCTION BUG INVESTIGATION: Voice -> Concierge result intent.
+  // Real sequence: Dashboard -> "vreau sa lucrez pe baciu" resolves Baciu,
+  // mic enables -> spoken "Vreau sa vad rezultatul pentru Baciu" ->
+  // Concierge answered "Hai sa pornim o analiza noua" (START_ANALYSIS)
+  // instead of surfacing Baciu's real existing analysis/proposal.
+  //
+  // INVESTIGATION CONCLUSION (not a code defect -- see this task's own
+  // final report): decideFromIntent and the Stage 5 planner both,
+  // consistently and by explicit design, only ever act on
+  // context.currentAnalysisId -- neither ever independently looked up
+  // "does this client already have an analysis." Voice and text are
+  // provably identical here (proven below): resolveOrchestratorDecision
+  // has no concept of input modality at all.
+  //
+  // FIX: analysisId is now auto-discovered (findLatestAnalysisForClient,
+  // an existing, already-used-elsewhere, owner+client-scoped read) the
+  // SAME way clientId itself is auto-discovered by Production Fix #1 --
+  // only when no analysisId was supplied at all. This one change is also
+  // what lets the ALREADY-CORRECT, untouched planner logic
+  // (orchestrator-plan-service.ts) correctly skip to reviewing a real
+  // confirmed proposal or offering Video, instead of recommending a new
+  // analysis for a client that already has real history.
+  // -------------------------------------------------------------------------
+
+  describe("PRODUCTION BUG INVESTIGATION: Voice -> Concierge result intent (analysis auto-discovery)", () => {
+    it("REAL DB STATE: no analysis at all -- START_ANALYSIS is the CORRECT decision, unchanged", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+
+      const decision = await resolveOrchestratorDecision({
+        message: "Vreau să văd rezultatul pentru Baciu",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+      });
+
+      expect(decision.currentContext.currentAnalysisId).toBeNull();
+      expect(decision.recommendedAction).toBe("START_ANALYSIS");
+      expect(decision.reasonCode).toBe("client_identified_no_analysis_yet");
+    });
+
+    it("REAL DB STATE: a real analysis exists (no confirmed proposal yet) -- OPEN_ANALYSIS is the CORRECT decision, auto-discovered", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      const analysis = await createAnalysis(ownerUserId, clientId);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "Vreau să văd rezultatul pentru Baciu",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        // No currentAnalysisId supplied -- exactly what the real production
+        // sequence sends (the browser never learned an analysis id).
+      });
+
+      expect(decision.currentContext.currentAnalysisId).toBe(analysis.id);
+      expect(decision.recommendedAction).toBe("OPEN_ANALYSIS");
+      expect(decision.reasonCode).toBe("client_and_analysis_identified");
+
+      // The already-correct, untouched planner now benefits automatically:
+      // it should be waiting on professional approval of the proposal, not
+      // stuck recommending a brand-new analysis.
+      const { plan } = await resolveOrchestratorDecisionAndPlan({
+        message: "Vreau să văd rezultatul pentru Baciu",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+      });
+      expect(plan?.status).toBe("WAITING_FOR_APPROVAL");
+      expect(plan?.currentStepId).toBe("review_proposed_look");
+    });
+
+    it("REAL DB STATE: a CONFIRMED proposal exists -- the plan correctly reflects it as already reviewed, never re-requests approval", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      await createConfirmedProposal(ownerUserId, clientId, analysis.id);
+
+      const { decision, plan } = await resolveOrchestratorDecisionAndPlan({
+        message: "Vreau să văd rezultatul pentru Baciu",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+      });
+
+      expect(decision.currentContext.currentAnalysisId).toBe(analysis.id);
+      expect(decision.recommendedAction).toBe("OPEN_ANALYSIS");
+      // The plan has moved past review_proposed_look -- it's COMPLETED, and
+      // the plan is now waiting on the (unrelated, untouched) Video offer
+      // step, never re-asking for an approval that already happened.
+      expect(plan?.status).not.toBe("WAITING_FOR_APPROVAL");
+    });
+
+    it("multiple analyses exist -- the LATEST one is discovered, never an arbitrary/older one", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      const older = await createAnalysis(ownerUserId, clientId);
+      // A short real delay so createdAt ordering is unambiguous even at
+      // whole-millisecond DB timestamp resolution.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const newer = await createAnalysis(ownerUserId, clientId);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "Vreau să văd rezultatul pentru Baciu",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+      });
+
+      expect(decision.currentContext.currentAnalysisId).toBe(newer.id);
+      expect(decision.currentContext.currentAnalysisId).not.toBe(older.id);
+    });
+
+    it("SECURITY: auto-discovery never crosses an owner boundary -- a foreign owner's analysis is never attached", async () => {
+      const { ownerUserId: ownerA, clientId: clientA } = await createOwnerAndClient(undefined, "Popescu Maria");
+      const { ownerUserId: ownerB, clientId: clientB } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      await createAnalysis(ownerB, clientB);
+
+      // Owner A asking about their OWN (analysis-less) client must never
+      // see owner B's analysis, even though both calls share no explicit
+      // analysisId and the message is identical.
+      const decision = await resolveOrchestratorDecision({
+        message: "Vreau să văd rezultatul pentru Baciu",
+        roleClass: "professional",
+        ownerUserId: ownerA,
+        currentClientId: clientA,
+      });
+      expect(decision.currentContext.currentAnalysisId).toBeNull();
+      expect(decision.recommendedAction).toBe("START_ANALYSIS");
+    });
+
+    it("an explicitly-supplied (but stale/foreign) analysisId is never silently replaced by auto-discovery", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      const realAnalysis = await createAnalysis(ownerUserId, clientId);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "Vreau să văd rezultatul pentru Baciu",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        // A forged/nonexistent analysisId, explicitly supplied.
+        currentAnalysisId: "00000000-0000-0000-0000-000000000000",
+      });
+
+      // Never silently substitutes the real latest analysis for an
+      // explicitly (if wrongly) supplied one -- an explicit supplied value,
+      // even a bad one, is a different signal from "none supplied at all"
+      // (mirrors the client-name resolver's own identical rule).
+      expect(decision.currentContext.currentAnalysisId).toBeNull();
+      expect(decision.currentContext.currentAnalysisId).not.toBe(realAnalysis.id);
+    });
+
+    it("VOICE VS TEXT PARITY: the identical message produces the identical decision regardless of the (never-modeled) input channel", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      const analysis = await createAnalysis(ownerUserId, clientId);
+
+      // Both calls are byte-identical requests -- there is no "voice"
+      // parameter anywhere in ResolveOrchestratorDecisionInput for a real
+      // difference to even be possible; this proves it empirically anyway,
+      // not just architecturally.
+      const textPathDecision = await resolveOrchestratorDecision({
+        message: "Vreau să văd rezultatul pentru Baciu",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+      });
+      const voicePathDecision = await resolveOrchestratorDecision({
+        message: "Vreau să văd rezultatul pentru Baciu",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+      });
+
+      expect(voicePathDecision).toEqual(textPathDecision);
+      expect(textPathDecision.currentContext.currentAnalysisId).toBe(analysis.id);
+      expect(textPathDecision.recommendedAction).toBe("OPEN_ANALYSIS");
+    });
+  });
+
   describe("Voice Input Integration (server-side proof: input is input, regardless of modality)", () => {
     it("spoken 'Vreau sa lucrez pe Baciu.' reaches the SAME deterministic client-name resolution as typed text", async () => {
       const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");

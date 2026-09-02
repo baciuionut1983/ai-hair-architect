@@ -1,5 +1,5 @@
 import { findClientForOwner, listClientsForOwner } from "@/lib/client-repository";
-import { findAnalysisForOwner } from "@/lib/analysis-repository";
+import { findAnalysisForOwner, findLatestAnalysisForClient } from "@/lib/analysis-repository";
 import {
   classifyOrchestratorIntentHybrid,
   type ConciergeClassifierSource,
@@ -90,6 +90,10 @@ export interface ResolveOrchestratorDecisionDependencies {
   // resolveClientNameForMessage below. Same injection convention as every
   // other real lookup in this dependencies bag.
   listClientsForOwner?: typeof listClientsForOwner;
+  // Production bug fix (analysis auto-discovery): the ONLY repository read
+  // used to find a resolved client's own latest real analysis when none
+  // was supplied -- see this file's own analysisId computation below.
+  findLatestAnalysisForClient?: typeof findLatestAnalysisForClient;
   // Stage 3: replaces the old, never-externally-used `classifyIntent`
   // hook. Tests inject the full hybrid pipeline directly (real messages
   // resolve deterministically with zero AI dependency in every existing
@@ -144,6 +148,7 @@ async function buildDecision(
   const resolveClient = dependencies.findClientForOwner ?? findClientForOwner;
   const resolveAnalysis = dependencies.findAnalysisForOwner ?? findAnalysisForOwner;
   const listClients = dependencies.listClientsForOwner ?? listClientsForOwner;
+  const findLatestAnalysis = dependencies.findLatestAnalysisForClient ?? findLatestAnalysisForClient;
   const classifyHybrid = dependencies.classifyIntentHybrid ?? classifyOrchestratorIntentHybrid;
 
   // Re-verify ownership -- never trust the caller's own claim.
@@ -192,6 +197,31 @@ async function buildDecision(
     // can have many clients, and a stale/forged analysisId from a
     // different client of the same owner must not silently attach here).
     analysisId = analysis && analysis.clientId === clientId ? analysis.id : null;
+  } else if (clientId) {
+    // Production bug fix (real production investigation): a client
+    // resolved this turn (by id or, per Production Fix #1, by name) had no
+    // analysisId supplied at all -- auto-discover the client's own LATEST
+    // real analysis, symmetric to how clientId itself is auto-discovered
+    // above. Never guessed, never fabricated: a real, owner+client-scoped
+    // DB read via findLatestAnalysisForClient, the SAME existing function
+    // this app's Consult AI feature already relies on for "what is this
+    // client's current analysis" (analysis-repository.ts) -- reused, not
+    // duplicated. Only attempted when NO analysisId was supplied at all
+    // (mirrors the client-name resolver's own "never overrides an
+    // explicitly supplied value" rule) -- an explicitly-supplied but
+    // stale/forged analysisId (the `if` branch above) is a different
+    // signal and is never silently replaced by a different analysis.
+    //
+    // This one change is also what makes the Stage 5 planner
+    // (orchestrator-plan-service.ts, itself untouched) correctly skip
+    // straight to reviewing an already-CONFIRMED proposal, or offering
+    // Video, instead of recommending a new analysis for a client that
+    // already has real history -- its own step logic already branches
+    // correctly on `context.currentAnalysisId`; it was only ever missing
+    // this earlier discovery step, which belongs in context-building
+    // (here), not duplicated inside the planner.
+    const latestAnalysis = await findLatestAnalysis(input.ownerUserId, clientId);
+    analysisId = latestAnalysis ? latestAnalysis.id : null;
   }
 
   const context: OrchestratorContext = {
