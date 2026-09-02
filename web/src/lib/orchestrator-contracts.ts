@@ -73,7 +73,14 @@ export type OrchestratorReasonCode =
   | "no_client_selected"
   | "video_offer_after_completed_preview"
   | "role_not_yet_supported"
-  | "intent_not_understood";
+  | "intent_not_understood"
+  // Stage 3 (task section 9): distinct from intent_not_understood -- the
+  // classifier (deterministic or AI) genuinely recognized SOMETHING
+  // plausible but isn't confident enough to safely act on a single one
+  // (multiple candidates fit, or the message is too vague). Never used to
+  // silently promote a low-confidence guess into a real recommendation --
+  // see orchestrator-hybrid-classifier.ts's own "clarification" source.
+  | "ambiguous_intent_needs_clarification";
 
 const ORCHESTRATOR_REASON_CODES: readonly OrchestratorReasonCode[] = [
   "client_and_analysis_identified",
@@ -82,6 +89,7 @@ const ORCHESTRATOR_REASON_CODES: readonly OrchestratorReasonCode[] = [
   "video_offer_after_completed_preview",
   "role_not_yet_supported",
   "intent_not_understood",
+  "ambiguous_intent_needs_clarification",
 ];
 
 // Current, already-validated (never client-supplied-and-trusted-blindly)

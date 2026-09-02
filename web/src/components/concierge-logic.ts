@@ -18,6 +18,11 @@ const REASON_CODE_TO_KEY: Record<OrchestratorReasonCode, TranslationKey> = {
   video_offer_after_completed_preview: "concierge.videoOffer.question",
   role_not_yet_supported: "concierge.info.roleNotYetSupported",
   intent_not_understood: "concierge.info.intentNotUnderstood",
+  // Stage 3: distinct copy from intentNotUnderstood -- the classifier
+  // recognized something plausible but isn't confident enough to act on
+  // one specific option (orchestrator-hybrid-classifier.ts's own
+  // "clarification" source).
+  ambiguous_intent_needs_clarification: "concierge.info.ambiguousIntentNeedsClarification",
 };
 
 export function reasonCodeToTranslationKey(code: OrchestratorReasonCode): TranslationKey {

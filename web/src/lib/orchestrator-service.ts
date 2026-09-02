@@ -1,6 +1,10 @@
 import { findClientForOwner } from "@/lib/client-repository";
 import { findAnalysisForOwner } from "@/lib/analysis-repository";
-import { classifyOrchestratorIntent } from "@/lib/orchestrator-intent-classifier";
+import {
+  classifyOrchestratorIntentHybrid,
+  type ConciergeClassifierSource,
+  type HybridClassifierDependencies,
+} from "@/lib/orchestrator-hybrid-classifier";
 import { isOrchestratorActionAllowedForRole, ORCHESTRATOR_ACTION_REGISTRY } from "@/lib/orchestrator-action-registry";
 import {
   isOrchestratorDecision,
@@ -48,7 +52,15 @@ export interface ResolveOrchestratorDecisionInput {
 export interface ResolveOrchestratorDecisionDependencies {
   findClientForOwner?: typeof findClientForOwner;
   findAnalysisForOwner?: typeof findAnalysisForOwner;
-  classifyIntent?: typeof classifyOrchestratorIntent;
+  // Stage 3: replaces the old, never-externally-used `classifyIntent`
+  // hook. Tests inject the full hybrid pipeline directly (real messages
+  // resolve deterministically with zero AI dependency in every existing
+  // Stage 1/2 test -- see classifyOrchestratorIntentHybrid's own header
+  // comment) or inject `aiClassifierDependencies` below to reach the AI
+  // path specifically (fake provider, fake env) without needing a real
+  // network call.
+  classifyIntentHybrid?: typeof classifyOrchestratorIntentHybrid;
+  aiClassifierDependencies?: HybridClassifierDependencies;
 }
 
 export async function resolveOrchestratorDecision(
@@ -56,15 +68,18 @@ export async function resolveOrchestratorDecision(
   dependencies: ResolveOrchestratorDecisionDependencies = {},
 ): Promise<OrchestratorDecision> {
   const startedAt = Date.now();
-  const decision = await buildDecision(input, dependencies);
-  logOrchestratorDecision(input, decision, Date.now() - startedAt);
+  const { decision, classifierSource } = await buildDecision(input, dependencies);
+  logOrchestratorDecision(input, decision, classifierSource, Date.now() - startedAt);
   return decision;
 }
 
-async function buildDecision(input: ResolveOrchestratorDecisionInput, dependencies: ResolveOrchestratorDecisionDependencies): Promise<OrchestratorDecision> {
+async function buildDecision(
+  input: ResolveOrchestratorDecisionInput,
+  dependencies: ResolveOrchestratorDecisionDependencies,
+): Promise<{ decision: OrchestratorDecision; classifierSource: ConciergeClassifierSource | null }> {
   const resolveClient = dependencies.findClientForOwner ?? findClientForOwner;
   const resolveAnalysis = dependencies.findAnalysisForOwner ?? findAnalysisForOwner;
-  const classify = dependencies.classifyIntent ?? classifyOrchestratorIntent;
+  const classifyHybrid = dependencies.classifyIntentHybrid ?? classifyOrchestratorIntentHybrid;
 
   // Re-verify ownership -- never trust the caller's own claim.
   let clientId: string | null = null;
@@ -90,42 +105,63 @@ async function buildDecision(input: ResolveOrchestratorDecisionInput, dependenci
     hasCompletedPhotoPreview: Boolean(input.hasCompletedPhotoPreview) && analysisId !== null,
   };
 
-  const intent = classify(input.message ?? "");
-  const decision = decideFromIntent(intent, context);
+  let decision: OrchestratorDecision;
+  let classifierSource: ConciergeClassifierSource | null;
+  if (videoOfferApplies(context)) {
+    // Stage 2 priority, hoisted here (was previously the first check
+    // inside decideFromIntent) so it wins over ANY intent -- including a
+    // Stage 3 clarification outcome -- and so a real, server-verified
+    // completed Photo Preview never spends an AI classification call on
+    // whatever free text happened to arrive alongside it.
+    decision = composeDecision(
+      "request_video",
+      "video",
+      context,
+      "OFFER_VIDEO",
+      ["OPEN_ANALYSIS", "REQUEST_VIDEO"],
+      "video_offer_after_completed_preview",
+      "video_offer_after_completed_preview",
+    );
+    classifierSource = null;
+  } else {
+    const classification = await classifyHybrid(
+      input.message ?? "",
+      { ownerUserId: input.ownerUserId, roleClass: context.roleClass, clientId, analysisId },
+      dependencies.aiClassifierDependencies,
+    );
+    classifierSource = classification.source;
+    decision = classification.source === "clarification" ? clarificationDecision(context) : decideFromIntent(classification.intent, context);
+  }
 
   if (!isOrchestratorDecision(decision)) {
     // Defense in depth (task section 2/3) -- should be structurally
-    // unreachable given decideFromIntent's own return type, but this is
-    // the exact seam a future non-deterministic classifier must also pass
-    // through, so it is exercised for real here, not assumed.
-    return unsupportedDecision(context);
+    // unreachable given decideFromIntent's/clarificationDecision's own
+    // return types, but this is the exact seam an AI-influenced decision
+    // must also pass through, so it is exercised for real here, not
+    // assumed.
+    return { decision: unsupportedDecision(context), classifierSource };
   }
 
-  return decision;
+  return { decision, classifierSource };
+}
+
+function videoOfferApplies(context: OrchestratorContext): boolean {
+  return Boolean(
+    context.hasCompletedPhotoPreview &&
+      context.currentClientId &&
+      context.currentAnalysisId &&
+      roleAllows("OFFER_VIDEO", context.roleClass) &&
+      roleAllows("REQUEST_VIDEO", context.roleClass),
+  );
 }
 
 // Pure -- maps an already-classified intent plus an already-verified
 // context to a full OrchestratorDecision. No I/O, fully unit-testable.
+// The video-offer priority check (Stage 2) now lives one level up, in
+// buildDecision's own videoOfferApplies -- see that function's header
+// comment for why (Stage 3: must win over a clarification outcome too,
+// and must never spend an AI call it doesn't need).
 function decideFromIntent(intent: OrchestratorIntent, context: OrchestratorContext): OrchestratorDecision {
-  // The video offer takes priority whenever the caller's own context says
-  // a Photo Preview just completed, regardless of the free-text intent --
-  // this is the conversational moment task section 5 describes ("Dorești
-  // să îți generez și un video demonstrativ?"), not something the user
-  // has to ask for by name. Stage 2: recommends OFFER_VIDEO (the
-  // presentational question, zero billable effect), never REQUEST_VIDEO
-  // directly -- only an explicit "yes" click (a SEPARATE, later decision --
-  // see the UI's own useConciergeVideoOffer hook) leads there, and even
-  // then only as far as the existing Video UI's own real consent dialog.
-  if (
-    context.hasCompletedPhotoPreview &&
-    context.currentClientId &&
-    context.currentAnalysisId &&
-    roleAllows("OFFER_VIDEO", context.roleClass) &&
-    roleAllows("REQUEST_VIDEO", context.roleClass)
-  ) {
-    return composeDecision("request_video", "video", context, "OFFER_VIDEO", ["OPEN_ANALYSIS", "REQUEST_VIDEO"], "video_offer_after_completed_preview", "video_offer_after_completed_preview");
-  }
-
   switch (intent) {
     case "request_video": {
       if (!roleAllows("REQUEST_VIDEO", context.roleClass)) return roleUnsupportedDecision(context);
@@ -210,6 +246,30 @@ function unsupportedDecision(context: OrchestratorContext): OrchestratorDecision
   };
 }
 
+// Stage 3 (task section 9): structurally identical to unsupportedDecision
+// -- no recommended action, no consent/approval implications, zero cost --
+// but with its own honest reasonCode, distinguishing "I genuinely don't
+// understand" from "I see a few plausible things you might mean; please be
+// more specific" (orchestrator-hybrid-classifier.ts's own "clarification"
+// classifier source). Never guesses which of the plausible candidates to
+// act on.
+function clarificationDecision(context: OrchestratorContext): OrchestratorDecision {
+  return {
+    intent: "unsupported",
+    targetVertical: "none",
+    targetClientId: null,
+    targetAnalysisId: null,
+    currentContext: context,
+    recommendedAction: null,
+    availableActions: roleAllows("OPEN_CLIENTS", context.roleClass) ? ["OPEN_CLIENTS"] : [],
+    requiresProfessionalApproval: false,
+    requiresUserConsent: false,
+    costClass: "NO_INCREMENTAL_COST",
+    reasonCode: "ambiguous_intent_needs_clarification",
+    nextStepCode: "ambiguous_intent_needs_clarification",
+  };
+}
+
 function composeDecision(
   intent: OrchestratorIntent,
   targetVertical: OrchestratorDecision["targetVertical"],
@@ -247,7 +307,12 @@ function deriveOrchestrationEvent(decision: OrchestratorDecision): "video_offer_
   return decision.recommendedAction === "OFFER_VIDEO" ? "video_offer_presented" : null;
 }
 
-function logOrchestratorDecision(input: ResolveOrchestratorDecisionInput, decision: OrchestratorDecision, totalLatencyMs: number): void {
+function logOrchestratorDecision(
+  input: ResolveOrchestratorDecisionInput,
+  decision: OrchestratorDecision,
+  classifierSource: ConciergeClassifierSource | null,
+  totalLatencyMs: number,
+): void {
   // Never logs the raw message content (task section 10: "Do not log
   // sensitive prompt/user content unnecessarily") -- only the structured,
   // already-classified outcome.
@@ -259,6 +324,10 @@ function logOrchestratorDecision(input: ResolveOrchestratorDecisionInput, decisi
     // "a Photo Preview just completed" check -- never guessed, derived
     // directly from whether a message was actually sent.
     trigger: input.message && input.message.trim().length > 0 ? "message" : "context",
+    // Stage 3 (task section 17): how the intent was actually produced --
+    // null only for the video-offer priority path (buildDecision), which
+    // never consults a classifier at all.
+    classifierSource,
     intent: decision.intent,
     recommendedAction: decision.recommendedAction,
     event: deriveOrchestrationEvent(decision),

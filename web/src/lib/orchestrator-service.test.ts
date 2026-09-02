@@ -9,6 +9,29 @@ import { prisma } from "@/lib/prisma";
 import { createAnalysisForOwner } from "@/lib/analysis-repository";
 import { isOrchestratorDecision } from "@/lib/orchestrator-contracts";
 import { resolveOrchestratorDecision } from "@/lib/orchestrator-service";
+import { ORCHESTRATOR_ACTION_REGISTRY } from "@/lib/orchestrator-action-registry";
+import { OrchestratorIntentAiProvider, type OrchestratorIntentAiResult } from "@/lib/orchestrator-ai-intent-provider";
+
+// AI Concierge / Orchestrator, Stage 3 -- a hand-built fake AI provider,
+// injected through the real resolveOrchestratorDecision -> buildDecision ->
+// classifyOrchestratorIntentHybrid chain via aiClassifierDependencies, so
+// these tests prove the FULL real integration (real Postgres ownership
+// resolution + real policy composition), not just the hybrid classifier in
+// isolation (see orchestrator-hybrid-classifier.test.ts for that). No real
+// network call is ever made.
+class FakeAiProvider extends OrchestratorIntentAiProvider {
+  readonly name = "fake-provider";
+  readonly modelVersion = "fake-model";
+  constructor(private readonly result: OrchestratorIntentAiResult) {
+    super();
+  }
+  async classify(): Promise<OrchestratorIntentAiResult> {
+    return this.result;
+  }
+}
+
+const GEMINI_ENV = { AI_ANALYSIS_PROVIDER: "gemini", AI_ANALYSIS_API_KEY: "key", AI_ANALYSIS_MODEL: "gemini-2.5-flash" };
+const NO_OP_USAGE_RECORDER = async () => {};
 
 // AI Concierge / Orchestrator, Stage 1 -- the service layer, tested
 // against real Postgres, no mocks -- mirrors this codebase's own
@@ -274,6 +297,147 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
 
     expect(decision.currentContext.currentAnalysisId).toBeNull();
     expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
+  });
+
+  // -------------------------------------------------------------------------
+  // Stage 3: the hybrid AI classifier, wired through the REAL service (real
+  // Postgres ownership resolution, real policy composition) -- see
+  // orchestrator-hybrid-classifier.test.ts for the classifier's own
+  // isolated unit tests (A-G, L-O). These prove the full integration.
+  // -------------------------------------------------------------------------
+
+  it("Stage 3: a message the deterministic classifier can't resolve is classified by the injected (fake) AI and reaches the real OPEN_ANALYSIS decision", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    const decision = await resolveOrchestratorDecision(
+      {
+        message: "Aș păstra lungimea, dar aș vrea mai multă mișcare.",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      },
+      {
+        aiClassifierDependencies: {
+          env: GEMINI_ENV,
+          createAiProvider: () => new FakeAiProvider({ semanticIntent: "view_proposed_look", confidence: "high" }),
+          recordAiUsageEvent: NO_OP_USAGE_RECORDER,
+        },
+      },
+    );
+
+    expect(decision.recommendedAction).toBe("OPEN_ANALYSIS");
+    expect(decision.targetClientId).toBe(clientId);
+    expect(decision.targetAnalysisId).toBe(analysis.id);
+  });
+
+  // task section 18, test G: a low-confidence AI classification produces
+  // the distinct clarification outcome through the REAL service, never a
+  // risky guess promoted into a real recommendation.
+  it("Stage 3, test G: a low-confidence AI classification produces the clarification decision, not a guessed action", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    const decision = await resolveOrchestratorDecision(
+      {
+        message: "do it",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      },
+      {
+        aiClassifierDependencies: {
+          env: GEMINI_ENV,
+          createAiProvider: () => new FakeAiProvider({ semanticIntent: "view_proposed_look", confidence: "low" }),
+          recordAiUsageEvent: NO_OP_USAGE_RECORDER,
+        },
+      },
+    );
+
+    expect(decision.recommendedAction).toBeNull();
+    expect(decision.reasonCode).toBe("ambiguous_intent_needs_clarification");
+    expect(decision.nextStepCode).toBe("ambiguous_intent_needs_clarification");
+    expect(decision.costClass).toBe("NO_INCREMENTAL_COST");
+    expect(decision.requiresUserConsent).toBe(false);
+    expect(decision.requiresProfessionalApproval).toBe(false);
+    expect(isOrchestratorDecision(decision)).toBe(true);
+  });
+
+  // task section 18, test J: the AI classifier's own output shape
+  // (AiIntentClassificationResult) structurally has no field that could
+  // ever influence requiresProfessionalApproval -- this proves it end to
+  // end anyway, real service, real registry lookup: no action in Stage 1-3
+  // requires professional approval, and an AI classification (even one
+  // that tries smuggling an extra, unrecognized field) can never change
+  // that, because composeDecision only ever reads it from the STATIC
+  // action registry, never from the classifier's output.
+  it("Stage 3, test J: AI classification can never manufacture requiresProfessionalApproval -- it always comes from the static registry", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    const smuggledResult = { semanticIntent: "request_video_option", confidence: "high", requiresProfessionalApproval: true } as unknown as OrchestratorIntentAiResult;
+
+    const decision = await resolveOrchestratorDecision(
+      {
+        message: "would you consider a video, maybe",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      },
+      {
+        aiClassifierDependencies: {
+          env: GEMINI_ENV,
+          createAiProvider: () => new FakeAiProvider(smuggledResult),
+          recordAiUsageEvent: NO_OP_USAGE_RECORDER,
+        },
+      },
+    );
+
+    expect(decision.recommendedAction).toBe("REQUEST_VIDEO");
+    expect(decision.requiresProfessionalApproval).toBe(ORCHESTRATOR_ACTION_REGISTRY.REQUEST_VIDEO.requiresProfessionalApproval);
+    expect(decision.requiresProfessionalApproval).toBe(false);
+  });
+
+  // task section 18, test H/I: natural-language video phrasing still only
+  // ever reaches the existing NAVIGATE-only action -- never anything that
+  // could itself submit a real generation, regardless of whether the
+  // deterministic or the AI path produced "request_video".
+  it("Stage 3, test H: natural-language video phrasing resolves to REQUEST_VIDEO, which the registry proves is navigate-only, never execute", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    const decision = await resolveOrchestratorDecision({
+      message: "vreau un video cu rezultatul",
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: clientId,
+      currentAnalysisId: analysis.id,
+    });
+
+    expect(decision.recommendedAction).toBe("REQUEST_VIDEO");
+    const definition = ORCHESTRATOR_ACTION_REGISTRY.REQUEST_VIDEO;
+    expect(definition.kind).toBe("navigate");
+    expect(definition.changesData).toBe(false);
+    expect(definition.canExecuteAutomatically).toBe(false);
+    expect(definition.requiresUserConsent).toBe(true);
+  });
+
+  it("the classifierSource used internally is never part of the returned, public OrchestratorDecision", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    const decision = await resolveOrchestratorDecision({
+      message: "show me the expected result",
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: clientId,
+      currentAnalysisId: analysis.id,
+    });
+
+    expect(decision).not.toHaveProperty("classifierSource");
   });
 
   // -------------------------------------------------------------------------

@@ -84,6 +84,7 @@ export type TranslationKey =
   | "concierge.info.noClientSelected"
   | "concierge.info.roleNotYetSupported"
   | "concierge.info.intentNotUnderstood"
+  | "concierge.info.ambiguousIntentNeedsClarification"
   | "common.on"
   | "common.off";
 
@@ -143,6 +144,7 @@ const EN: Dictionary = {
   "concierge.info.noClientSelected": "Choose a client to continue.",
   "concierge.info.roleNotYetSupported": "This isn't available for your account type yet.",
   "concierge.info.intentNotUnderstood": "I didn't quite catch that. Here's what I can help with today.",
+  "concierge.info.ambiguousIntentNeedsClarification": "I'm not sure which one you mean -- could you be more specific?",
   "common.on": "On",
   "common.off": "Off",
 };
@@ -201,6 +203,7 @@ const RO: Dictionary = {
   "concierge.info.noClientSelected": "Alege un client pentru a continua.",
   "concierge.info.roleNotYetSupported": "Aceasta nu este încă disponibilă pentru tipul tău de cont.",
   "concierge.info.intentNotUnderstood": "Nu am înțeles exact. Iată cu ce te pot ajuta acum.",
+  "concierge.info.ambiguousIntentNeedsClarification": "Nu sunt sigur la ce te referi exact -- poți fi mai specific?",
   "common.on": "Activ",
   "common.off": "Inactiv",
 };
@@ -259,6 +262,7 @@ const AR: Dictionary = {
   "concierge.info.noClientSelected": "اختر عميلاً للمتابعة.",
   "concierge.info.roleNotYetSupported": "هذا غير متاح بعد لنوع حسابك.",
   "concierge.info.intentNotUnderstood": "لم أفهم ذلك تمامًا. إليك ما يمكنني مساعدتك به الآن.",
+  "concierge.info.ambiguousIntentNeedsClarification": "لست متأكدًا مما تقصده بالضبط -- هل يمكنك أن تكون أكثر تحديدًا؟",
   "common.on": "مفعّل",
   "common.off": "غير مفعّل",
 };
@@ -317,6 +321,7 @@ const IT: Dictionary = {
   "concierge.info.noClientSelected": "Scegli un cliente per continuare.",
   "concierge.info.roleNotYetSupported": "Non ancora disponibile per il tuo tipo di account.",
   "concierge.info.intentNotUnderstood": "Non ho capito bene. Ecco con cosa posso aiutarti ora.",
+  "concierge.info.ambiguousIntentNeedsClarification": "Non sono sicuro di cosa intendi esattamente -- puoi essere più specifico?",
   "common.on": "Attivo",
   "common.off": "Disattivo",
 };
@@ -375,6 +380,7 @@ const FR: Dictionary = {
   "concierge.info.noClientSelected": "Choisissez un client pour continuer.",
   "concierge.info.roleNotYetSupported": "Pas encore disponible pour votre type de compte.",
   "concierge.info.intentNotUnderstood": "Je n'ai pas bien compris. Voici ce que je peux faire pour vous aujourd'hui.",
+  "concierge.info.ambiguousIntentNeedsClarification": "Je ne suis pas sûr de ce que vous voulez dire exactement -- pouvez-vous préciser ?",
   "common.on": "Activé",
   "common.off": "Désactivé",
 };
@@ -433,6 +439,7 @@ const DE: Dictionary = {
   "concierge.info.noClientSelected": "Wähle einen Kunden, um fortzufahren.",
   "concierge.info.roleNotYetSupported": "Für deinen Kontotyp noch nicht verfügbar.",
   "concierge.info.intentNotUnderstood": "Das habe ich nicht ganz verstanden. Hier ist, womit ich dir heute helfen kann.",
+  "concierge.info.ambiguousIntentNeedsClarification": "Ich bin mir nicht sicher, was genau du meinst -- kannst du das genauer sagen?",
   "common.on": "Ein",
   "common.off": "Aus",
 };
@@ -491,6 +498,7 @@ const ES: Dictionary = {
   "concierge.info.noClientSelected": "Elige un cliente para continuar.",
   "concierge.info.roleNotYetSupported": "Esto aún no está disponible para tu tipo de cuenta.",
   "concierge.info.intentNotUnderstood": "No entendí bien. Esto es en lo que puedo ayudarte ahora.",
+  "concierge.info.ambiguousIntentNeedsClarification": "No estoy seguro de qué quieres decir exactamente -- ¿puedes ser más específico?",
   "common.on": "Activado",
   "common.off": "Desactivado",
 };
@@ -549,6 +557,7 @@ const PT: Dictionary = {
   "concierge.info.noClientSelected": "Escolha um cliente para continuar.",
   "concierge.info.roleNotYetSupported": "Ainda não disponível para o seu tipo de conta.",
   "concierge.info.intentNotUnderstood": "Não entendi bem. Aqui está no que posso ajudar agora.",
+  "concierge.info.ambiguousIntentNeedsClarification": "Não tenho certeza do que você quer dizer exatamente -- pode ser mais específico?",
   "common.on": "Ativado",
   "common.off": "Desativado",
 };
@@ -607,6 +616,7 @@ const NL: Dictionary = {
   "concierge.info.noClientSelected": "Kies een klant om verder te gaan.",
   "concierge.info.roleNotYetSupported": "Nog niet beschikbaar voor jouw accounttype.",
   "concierge.info.intentNotUnderstood": "Dat heb ik niet helemaal begrepen. Dit is waarmee ik nu kan helpen.",
+  "concierge.info.ambiguousIntentNeedsClarification": "Ik weet niet zeker wat je precies bedoelt -- kun je dat wat specifieker maken?",
   "common.on": "Aan",
   "common.off": "Uit",
 };
@@ -665,6 +675,7 @@ const PL: Dictionary = {
   "concierge.info.noClientSelected": "Wybierz klienta, aby kontynuować.",
   "concierge.info.roleNotYetSupported": "Niedostępne jeszcze dla Twojego typu konta.",
   "concierge.info.intentNotUnderstood": "Nie do końca zrozumiałem. Oto w czym mogę teraz pomóc.",
+  "concierge.info.ambiguousIntentNeedsClarification": "Nie jestem pewien, co dokładnie masz na myśli -- czy możesz sprecyzować?",
   "common.on": "Włączone",
   "common.off": "Wyłączone",
 };
@@ -723,6 +734,7 @@ const TR: Dictionary = {
   "concierge.info.noClientSelected": "Devam etmek için bir müşteri seç.",
   "concierge.info.roleNotYetSupported": "Hesap türün için henüz kullanılabilir değil.",
   "concierge.info.intentNotUnderstood": "Tam anlayamadım. İşte şu anda yardımcı olabileceğim konular.",
+  "concierge.info.ambiguousIntentNeedsClarification": "Tam olarak ne demek istediğinden emin değilim -- daha net söyler misin?",
   "common.on": "Açık",
   "common.off": "Kapalı",
 };
@@ -781,6 +793,7 @@ const EL: Dictionary = {
   "concierge.info.noClientSelected": "Επίλεξε έναν πελάτη για να συνεχίσεις.",
   "concierge.info.roleNotYetSupported": "Δεν είναι ακόμη διαθέσιμο για τον τύπο του λογαριασμού σου.",
   "concierge.info.intentNotUnderstood": "Δεν κατάλαβα ακριβώς. Ορίστε με τι μπορώ να βοηθήσω τώρα.",
+  "concierge.info.ambiguousIntentNeedsClarification": "Δεν είμαι σίγουρος τι ακριβώς εννοείς -- μπορείς να διευκρινίσεις;",
   "common.on": "Ενεργό",
   "common.off": "Ανενεργό",
 };
@@ -839,6 +852,7 @@ const HE: Dictionary = {
   "concierge.info.noClientSelected": "בחר לקוח כדי להמשיך.",
   "concierge.info.roleNotYetSupported": "עדיין לא זמין עבור סוג החשבון שלך.",
   "concierge.info.intentNotUnderstood": "לא הבנתי בדיוק. הנה במה אני יכול לעזור כרגע.",
+  "concierge.info.ambiguousIntentNeedsClarification": "אינני בטוח למה בדיוק כוונתך -- תוכל לפרט יותר?",
   "common.on": "פעיל",
   "common.off": "כבוי",
 };
@@ -897,6 +911,7 @@ const JA: Dictionary = {
   "concierge.info.noClientSelected": "続けるにはクライアントを選択してください。",
   "concierge.info.roleNotYetSupported": "お使いのアカウント種別ではまだご利用いただけません。",
   "concierge.info.intentNotUnderstood": "うまく理解できませんでした。現在お手伝いできる内容はこちらです。",
+  "concierge.info.ambiguousIntentNeedsClarification": "正確に何を意味しているか確信が持てません。もう少し詳しく教えてください。",
   "common.on": "オン",
   "common.off": "オフ",
 };
@@ -955,6 +970,7 @@ const KO: Dictionary = {
   "concierge.info.noClientSelected": "계속하려면 고객을 선택하세요.",
   "concierge.info.roleNotYetSupported": "귀하의 계정 유형에서는 아직 사용할 수 없습니다.",
   "concierge.info.intentNotUnderstood": "정확히 이해하지 못했어요. 지금 도와드릴 수 있는 항목은 다음과 같습니다.",
+  "concierge.info.ambiguousIntentNeedsClarification": "정확히 무엇을 의미하시는지 확실하지 않아요. 좀 더 구체적으로 말씀해 주시겠어요?",
   "common.on": "켜짐",
   "common.off": "꺼짐",
 };
@@ -1013,6 +1029,7 @@ const ZH_HANS: Dictionary = {
   "concierge.info.noClientSelected": "请选择一个客户以继续。",
   "concierge.info.roleNotYetSupported": "您的账户类型暂不支持此功能。",
   "concierge.info.intentNotUnderstood": "我没有完全理解。以下是我现在可以帮您做的。",
+  "concierge.info.ambiguousIntentNeedsClarification": "我不太确定您具体想做什么，能再说详细一点吗？",
   "common.on": "开启",
   "common.off": "关闭",
 };
@@ -1071,6 +1088,7 @@ const ZH_HANT: Dictionary = {
   "concierge.info.noClientSelected": "請選擇一位客戶以繼續。",
   "concierge.info.roleNotYetSupported": "您的帳戶類型尚不支援此功能。",
   "concierge.info.intentNotUnderstood": "我沒有完全理解。以下是我現在可以幫您做的。",
+  "concierge.info.ambiguousIntentNeedsClarification": "我不太確定您具體想做什麼，能再說詳細一點嗎？",
   "common.on": "開啟",
   "common.off": "關閉",
 };
@@ -1129,6 +1147,7 @@ const HI: Dictionary = {
   "concierge.info.noClientSelected": "जारी रखने के लिए एक क्लाइंट चुनें।",
   "concierge.info.roleNotYetSupported": "आपके खाते के प्रकार के लिए अभी उपलब्ध नहीं है।",
   "concierge.info.intentNotUnderstood": "मुझे ठीक से समझ नहीं आया। यहाँ बताया गया है कि मैं अभी किस चीज़ में मदद कर सकता हूँ।",
+  "concierge.info.ambiguousIntentNeedsClarification": "मुझे ठीक से समझ नहीं आया कि आपका क्या मतलब है -- क्या आप अधिक स्पष्ट रूप से बता सकते हैं?",
   "common.on": "चालू",
   "common.off": "बंद",
 };
