@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import type { AuthSessionResponse } from "@/lib/contracts";
 import { getLanguageDefinition, parseLanguageCode, type LanguageCode } from "@/lib/language-registry";
 import { UiLanguageProvider, useUiLanguage } from "@/lib/ui-language-context";
+import { ConciergeWorkflowMemoryProvider } from "@/components/concierge-workflow-memory-context";
 import { ErrorState, LanguageSelector, LoadingState, Sidebar, Topbar } from "@/components/ui";
 import type { SidebarNavItem } from "@/components/ui";
 
@@ -127,17 +128,30 @@ export default function AppLayout({ children }: { children: ReactNode }) {
 
   return (
     <UiLanguageProvider language={uiLanguage}>
-      <AuthenticatedShell
-        userEmail={auth.user.email}
-        mobileNavOpen={mobileNavOpen}
-        onMobileNavClose={() => setMobileNavOpen(false)}
-        onMobileNavOpen={() => setMobileNavOpen(true)}
-        onLogout={handleLogout}
-        uiLanguage={uiLanguage}
-        onUiLanguageChange={handleUiLanguageChange}
-      >
-        {children}
-      </AuthenticatedShell>
+      {/* Production Fix #2 (cross-navigation conversational continuity):
+          mounted here, at the SAME persistent level as UiLanguageProvider
+          above -- this tree does not unmount for ordinary internal
+          navigation between (app) routes (only {children} below does), so
+          a client the Concierge already resolved on the Dashboard survives
+          a trip to that client's own page and back. A hard refresh, a new
+          tab, or leaving this layout entirely (e.g. logout, which
+          navigates to /login -- outside the (app) route group) all
+          naturally start a fresh provider instance instead. See
+          concierge-workflow-memory-context.tsx's own header comment for
+          the full root-cause/architecture writeup. */}
+      <ConciergeWorkflowMemoryProvider>
+        <AuthenticatedShell
+          userEmail={auth.user.email}
+          mobileNavOpen={mobileNavOpen}
+          onMobileNavClose={() => setMobileNavOpen(false)}
+          onMobileNavOpen={() => setMobileNavOpen(true)}
+          onLogout={handleLogout}
+          uiLanguage={uiLanguage}
+          onUiLanguageChange={handleUiLanguageChange}
+        >
+          {children}
+        </AuthenticatedShell>
+      </ConciergeWorkflowMemoryProvider>
     </UiLanguageProvider>
   );
 }

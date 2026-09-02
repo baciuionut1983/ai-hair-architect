@@ -5,12 +5,11 @@ import { useCallback, useState } from "react";
 import type { OrchestratorDecision } from "@/lib/orchestrator-contracts";
 import type { OrchestrationPlan } from "@/lib/orchestrator-plan-contracts";
 import { buildOrchestrateRequestBody } from "./concierge-logic";
+import { useConciergeWorkflowMemoryContext } from "./concierge-workflow-memory-context";
 import {
-  INITIAL_WORKFLOW_MEMORY,
   resolveEffectiveContext,
   updateWorkflowMemory,
   type ConciergePageContext,
-  type ConciergeWorkflowMemory,
 } from "./concierge-workflow-memory-logic";
 
 // AI Concierge / Orchestrator, Stage 1 -- the data-fetching hook. Plain
@@ -28,6 +27,15 @@ import {
 // every response updates that memory in one atomic recompute, never a
 // merge with anything older.
 //
+// Production Fix #2: the memory itself is no longer a LOCAL useState here
+// -- it is sourced from useConciergeWorkflowMemoryContext (a Provider
+// mounted in (app)/layout.tsx, which does not unmount on ordinary internal
+// navigation, unlike this hook's own caller). This is the ONLY change:
+// every read/update of memory below is identical to before, just backed by
+// state that now survives Dashboard -> client page -> Dashboard instead of
+// being destroyed on unmount. See concierge-workflow-memory-context.tsx's
+// own header comment for the full root-cause/architecture writeup.
+//
 // Stage 5: `plan` (additive, may be null) is carried alongside `decision`
 // exactly the same way -- nothing here ever acts on the plan itself
 // (there is no "auto-run the whole plan" code path anywhere in this
@@ -44,7 +52,7 @@ export type UseConciergeContext = ConciergePageContext;
 
 export function useConcierge(context: UseConciergeContext = {}) {
   const [state, setState] = useState<ConciergeState>({ status: "idle" });
-  const [memory, setMemory] = useState<ConciergeWorkflowMemory>(INITIAL_WORKFLOW_MEMORY);
+  const { memory, setMemory } = useConciergeWorkflowMemoryContext();
 
   const ask = useCallback(
     async (rawMessage: string) => {
@@ -82,7 +90,7 @@ export function useConcierge(context: UseConciergeContext = {}) {
         setState({ status: "error" });
       }
     },
-    [context, memory],
+    [context, memory, setMemory],
   );
 
   const reset = useCallback(() => setState({ status: "idle" }), []);

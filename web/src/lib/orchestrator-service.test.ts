@@ -9,6 +9,7 @@ import { prisma } from "@/lib/prisma";
 import type { TechnicalCutPlan } from "@/lib/contracts";
 import { createAnalysisForOwner } from "@/lib/analysis-repository";
 import { createProposalForOwner, confirmProposal } from "@/lib/proposal-repository";
+import { softDeleteClientForOwner } from "@/lib/client-repository";
 import { isOrchestratorDecision } from "@/lib/orchestrator-contracts";
 import { resolveOrchestratorDecision, resolveOrchestratorDecisionAndPlan } from "@/lib/orchestrator-service";
 import { ORCHESTRATOR_ACTION_REGISTRY } from "@/lib/orchestrator-action-registry";
@@ -1222,6 +1223,251 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
 
       expect(decision.currentContext.currentClientId).toBe(activeClientId);
       expect(decision.currentContext.currentClientId).not.toBe(otherClientId);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Production Fix #2 (cross-navigation conversational continuity) -- real
+  // Postgres. The React-side root cause (ConciergePanel unmounting with
+  // Dashboard, destroying its local memory) is fixed by relocating that
+  // state into a Context Provider mounted in (app)/layout.tsx -- see
+  // concierge-workflow-memory-context.tsx's own header comment. From the
+  // SERVER's perspective nothing changed at all: it has never trusted a
+  // caller-supplied currentClientId/currentAnalysisId directly, regardless
+  // of whether the browser got that id from a fresh selection or from
+  // restored cross-navigation memory. These tests simulate the restored-
+  // memory round trip the SAME way the real browser Provider now does --
+  // by echoing a PRIOR turn's own currentContext.currentClientId back on a
+  // later, independent call -- and prove the existing re-verification path
+  // (unchanged) still rejects anything that isn't real, owned, current
+  // data.
+  // -------------------------------------------------------------------------
+
+  describe("cross-navigation conversational continuity (Production Fix #2)", () => {
+    it("the real production sequence: resolve Baciu by name, navigate away, return, 'Continua' recovers context and revalidates server-side", async () => {
+      const { ownerUserId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+
+      // Dashboard: "Vreau sa vad cum i-ar sta clientului Baciu cu noul look."
+      const resolveTurn = await resolveOrchestratorDecision({
+        message: "Vreau să văd cum i-ar sta clientului Baciu cu noul look.",
+        roleClass: "professional",
+        ownerUserId,
+      });
+      const rememberedClientId = resolveTurn.currentContext.currentClientId;
+      expect(rememberedClientId).not.toBeNull();
+
+      // User clicks "Deschide acest client", opens the real client page,
+      // then navigates back to Dashboard -- represented here purely by
+      // NOT reusing any in-memory JS state from the first call: this is a
+      // completely independent resolveOrchestratorDecision invocation,
+      // exactly as independent as two real HTTP requests are. The only
+      // thing carried forward is the id the (now-persistent) browser
+      // Provider remembered, exactly like currentClientId below.
+      const continueTurn = await resolveOrchestratorDecision({
+        message: "Continuă de unde am rămas.",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: rememberedClientId,
+      });
+
+      // Server revalidation happened again (findClientForOwner re-run),
+      // not a blind replay of the old decision -- "Continua" itself has no
+      // deterministic meaning without a more specific ask (Stage 4's own
+      // established behavior, unchanged), but the client context it needed
+      // to mean anything at all IS genuinely there.
+      expect(continueTurn.currentContext.currentClientId).toBe(rememberedClientId);
+
+      // The correct CURRENT next step, computed fresh: this client has no
+      // analysis yet, so the real next step is to start one -- never a
+      // stale replay of turn one's own OPEN_CLIENT recommendation.
+      const analysis = await createAnalysis(ownerUserId, rememberedClientId as string);
+      const afterAnalysisTurn = await resolveOrchestratorDecision({
+        message: "Arată-mi rezultatul.",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: rememberedClientId,
+        currentAnalysisId: analysis.id,
+      });
+      expect(afterAnalysisTurn.recommendedAction).toBe("OPEN_ANALYSIS");
+      expect(afterAnalysisTurn.reasonCode).toBe("client_and_analysis_identified");
+    });
+
+    it("a client deleted after being remembered is not restored as valid -- DB truth wins over remembered context", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      const firstTurn = await resolveOrchestratorDecision({
+        message: "Vreau să văd cum i-ar sta clientului Baciu cu noul look.",
+        roleClass: "professional",
+        ownerUserId,
+      });
+      expect(firstTurn.currentContext.currentClientId).toBe(clientId);
+
+      await softDeleteClientForOwner(ownerUserId, clientId);
+
+      const continueTurn = await resolveOrchestratorDecision({
+        message: "Continuă de unde am rămas.",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+      });
+      expect(continueTurn.currentContext.currentClientId).toBeNull();
+      expect(continueTurn.reasonCode).not.toBe("client_and_analysis_identified");
+    });
+
+    it("a stale/deleted analysis is not restored as valid -- the client stays, the analysis honestly does not", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const firstTurn = await resolveOrchestratorDecision({
+        message: "show me the expected result",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      });
+      expect(firstTurn.currentContext.currentAnalysisId).toBe(analysis.id);
+
+      await prisma.analysis.deleteMany({ where: { id: analysis.id } });
+
+      const continueTurn = await resolveOrchestratorDecision({
+        message: "Arată-mi rezultatul.",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      });
+      expect(continueTurn.currentContext.currentClientId).toBe(clientId);
+      expect(continueTurn.currentContext.currentAnalysisId).toBeNull();
+      expect(continueTurn.recommendedAction).toBe("START_ANALYSIS");
+    });
+
+    it("a foreign owner's client cannot be restored via a remembered id -- cross-account isolation holds even after a context switch", async () => {
+      const { ownerUserId: ownerA } = await createOwnerAndClient(undefined, "Popescu Maria");
+      const { clientId: foreignClientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+
+      // Simulates the exact leakage this task explicitly forbids: account
+      // A's Concierge somehow ends up echoing back an id that belongs to a
+      // completely different account (a corrupted/tampered value, or --
+      // structurally impossible with this fix, but tested anyway -- a
+      // provider instance that was never actually reset between accounts).
+      const decision = await resolveOrchestratorDecision({
+        message: "show me the expected result",
+        roleClass: "professional",
+        ownerUserId: ownerA,
+        currentClientId: foreignClientId,
+      });
+      expect(decision.currentContext.currentClientId).toBeNull();
+      expect(decision.reasonCode).toBe("no_client_selected");
+    });
+
+    it("a corrupted/tampered/nonexistent stored client id never resolves and never crashes", async () => {
+      const { ownerUserId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      const decision = await resolveOrchestratorDecision({
+        message: "Continuă de unde am rămas.",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: "not-a-real-id-at-all",
+      });
+      expect(decision.currentContext.currentClientId).toBeNull();
+      expect(isOrchestratorDecision(decision)).toBe(true);
+    });
+
+    it("a pending ambiguous-name clarification is never treated as authoritative on the next turn -- a fresh disambiguation is required", async () => {
+      const { ownerUserId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      await createOwnerAndClient(ownerUserId, "Baciu Andrei");
+
+      const ambiguousTurn = await resolveOrchestratorDecision({
+        message: "Vreau să văd cum i-ar sta clientului Baciu cu noul look.",
+        roleClass: "professional",
+        ownerUserId,
+      });
+      expect(ambiguousTurn.reasonCode).toBe("client_name_ambiguous");
+      expect(ambiguousTurn.currentContext.currentClientId).toBeNull();
+
+      // "Continua" after an ambiguous turn has nothing real to continue
+      // from -- there was never a resolved client, only a question. It
+      // must never silently pick one of the earlier candidates.
+      const continueTurn = await resolveOrchestratorDecision({
+        message: "Continuă de unde am rămas.",
+        roleClass: "professional",
+        ownerUserId,
+      });
+      expect(continueTurn.currentContext.currentClientId).toBeNull();
+      expect(continueTurn.ambiguousClientCandidates).toEqual([]);
+    });
+
+    it("professional approval / user consent / cost class are identical whether reached via a fresh id or a remembered/restored one -- memory has zero influence on authority", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      const analysis = await createAnalysis(ownerUserId, clientId);
+
+      const fresh = await resolveOrchestratorDecision({
+        message: "prepare a video",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      });
+
+      // "Restored" turn: same real ids, but arriving exactly as a
+      // Context-Provider-remembered value would (a completely independent
+      // call, no shared JS state with the one above).
+      const restored = await resolveOrchestratorDecision({
+        message: "prepare a video",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      });
+
+      expect(restored.requiresProfessionalApproval).toBe(fresh.requiresProfessionalApproval);
+      expect(restored.requiresUserConsent).toBe(fresh.requiresUserConsent);
+      expect(restored.costClass).toBe(fresh.costClass);
+      expect(restored.recommendedAction).toBe(fresh.recommendedAction);
+      // requiresUserConsent for REQUEST_VIDEO comes from the static
+      // registry, never from memory -- confirmed non-trivially true (not
+      // just "both false").
+      expect(restored.requiresUserConsent).toBe(true);
+      expect(restored.costClass).toBe("MEANINGFUL_COST");
+    });
+
+    it("a remembered pending VIDEO_OFFER cannot, by itself, produce a Video call or bypass the existing cost-consent requirement after a context switch", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      const analysis = await createAnalysis(ownerUserId, clientId);
+
+      // "Da" echoed alongside a pending VIDEO_OFFER, exactly as a restored
+      // Context Provider would replay it after navigation -- still only
+      // ever produces a NAVIGATION recommendation (REQUEST_VIDEO is
+      // kind: "navigate" in the registry), never a Video row, never a
+      // bypass of the existing Video UI's own real consent dialog.
+      const decision = await resolveOrchestratorDecision({
+        message: "Da",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+        pendingDecision: "VIDEO_OFFER",
+      });
+
+      expect(ORCHESTRATOR_ACTION_REGISTRY.REQUEST_VIDEO.kind).toBe("navigate");
+      expect(ORCHESTRATOR_ACTION_REGISTRY.REQUEST_VIDEO.canExecuteAutomatically).toBe(false);
+      if (decision.recommendedAction === "REQUEST_VIDEO") {
+        expect(decision.requiresUserConsent).toBe(true);
+      }
+    });
+
+    it("source-level lock: the workflow-memory Provider is mounted in the persistent (app) layout, never in an auth page or the root layout", () => {
+      const dirname = path.dirname(fileURLToPath(import.meta.url));
+      const layoutSource = fs.readFileSync(path.join(dirname, "..", "app", "(app)", "layout.tsx"), "utf8");
+      expect(layoutSource).toMatch(/ConciergeWorkflowMemoryProvider/);
+
+      const rootLayoutSource = fs.readFileSync(path.join(dirname, "..", "app", "layout.tsx"), "utf8");
+      expect(rootLayoutSource).not.toMatch(/ConciergeWorkflowMemoryProvider/);
+
+      // /login and friends live OUTSIDE the (app) route group -- this is
+      // what makes logout (which navigates to /login) and a fresh login
+      // unmount/remount the provider for real, with no extra code.
+      const loginDir = path.join(dirname, "..", "app", "login");
+      const appGroupDir = path.join(dirname, "..", "app", "(app)");
+      expect(fs.existsSync(loginDir)).toBe(true);
+      expect(loginDir.startsWith(appGroupDir)).toBe(false);
     });
   });
 });
