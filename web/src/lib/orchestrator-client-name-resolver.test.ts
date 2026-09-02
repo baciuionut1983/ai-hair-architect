@@ -30,6 +30,15 @@ describe("extractCandidateClientName", () => {
     expect(extractCandidateClientName("Vreau să lucrez pe Baciu.")).toBe("Baciu");
   });
 
+  it("PRODUCTION BUG: extracts the exact real production message -- all lowercase, no diacritics", () => {
+    expect(extractCandidateClientName("vreau sa lucrez pe baciu")).toBe("baciu");
+  });
+
+  it("never captures a bare connector word (pe/cu/on/with) as the candidate when nothing real follows it", () => {
+    expect(extractCandidateClientName("Vreau sa lucrez pe")).toBeNull();
+    expect(extractCandidateClientName("I want to work with")).toBeNull();
+  });
+
   it("Voice Input Integration: extracts other 'lucr'-rooted conjugations and an English 'work' phrasing", () => {
     expect(extractCandidateClientName("Lucrăm pe Baciu azi.")).toBe("Baciu");
     expect(extractCandidateClientName("I want to work on Baciu today.")).toBe("Baciu");
@@ -48,8 +57,15 @@ describe("extractCandidateClientName", () => {
     expect(extractCandidateClientName("Vreau să văd rezultatul.")).toBeNull();
   });
 
-  it("returns null when 'client' is present but nothing capitalized follows it", () => {
-    expect(extractCandidateClientName("Vreau un client nou.")).toBeNull();
+  it("extracts a lowercase word after 'client' as a candidate -- the real production bug fix (see this module's own header comment)", () => {
+    // No longer null: extraction is deliberately case-insensitive on the
+    // first word now, so a real lowercase name (the confirmed production
+    // bug) is never missed. A word that happens not to be a real client's
+    // name (like "nou" here) is still completely safe -- it simply never
+    // matches any real row in matchClientNameCandidates, producing an
+    // honest "not found", exactly as the product spec explicitly
+    // sanctions ("if none match, say so honestly").
+    expect(extractCandidateClientName("Vreau un client nou.")).toBe("nou");
   });
 
   it("never extracts a UUID-shaped token as a name (starts lowercase/digit)", () => {

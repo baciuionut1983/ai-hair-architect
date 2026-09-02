@@ -11,19 +11,20 @@ import type { ClientRecord } from "@/lib/contracts";
 // NEVER produce or accept a client id from free text. extractCandidateClientName
 // only ever returns a plain, untrusted NAME string pulled out of the raw
 // message -- never an id, never anything id-shaped by construction (the
-// pattern below requires the candidate to START with an uppercase LETTER,
-// which already excludes a UUID). matchClientNameCandidates only ever
-// compares that string against `fullName` on REAL rows the caller already
-// fetched from a real, owner-scoped repository call (listClientsForOwner --
-// see orchestrator-service.ts) -- it never reads or matches against `.id`
-// at all, so even a candidate string that happens to literally BE a real
+// pattern below requires the candidate to start with a real Unicode LETTER,
+// which already excludes a UUID, which starts with a digit).
+// matchClientNameCandidates only ever compares that string against
+// `fullName` on REAL rows the caller already fetched from a real,
+// owner-scoped repository call (listClientsForOwner -- see
+// orchestrator-service.ts) -- it never reads or matches against `.id` at
+// all, so even a candidate string that happens to literally BE a real
 // client's id can only ever resolve by (im)probably equaling that client's
 // actual fullName text, never as an id shortcut.
 //
 // SCOPE (deliberately narrow, matching orchestrator-intent-classifier.ts's
 // own EN/RO-only precedent): recognizes two families of phrasing, each
 // immediately (optionally through a short connector: pe/cu/on/with)
-// followed by one or two capitalized words:
+// followed by one or two words:
 //  - the word "client" (or a Romanian inflection of it: clientul/
 //    clientului/clienta/clientei/clienți) -- this task's own originally
 //    reported production failure ("clientul Baciu");
@@ -32,29 +33,58 @@ import type { ClientRecord } from "@/lib/contracts";
 //    own explicit required phrasing ("Vreau să lucrez pe Baciu." / "I want
 //    to work on Baciu"), added for that task, reusing this exact same
 //    extraction+resolution mechanism rather than inventing a second one.
+//
+// PRODUCTION BUG (real, confirmed, this fix's own reason for existing):
+// the ORIGINAL version of this pattern required the captured word to START
+// WITH AN UPPERCASE LETTER -- meant to distinguish "a name" from "an
+// ordinary word" without any real NLP. A real production message, "vreau
+// sa lucrez pe baciu" (typed all-lowercase, no diacritics -- extremely
+// common casual typing, and exactly what many STT transcripts also
+// produce for a name outside the provider's vocabulary), never matched
+// that capture at all: extractCandidateClientName silently returned null,
+// so a real, unique, owner-scoped "Baciu Ionuț Stelian" was never even
+// attempted. The capitalization gate is now applied ONLY to the OPTIONAL
+// second word of a two-word candidate (see below) -- never to the first --
+// closing this exact bug while still bounding the blast radius.
 // A missed pattern is always safe (falls through to the existing
 // "no client selected" behavior, unchanged) -- a wrong-looking match is
 // still always safe too, since it is only ever a CANDIDATE, subject to real
-// DB verification below, never trusted on its own.
+// DB verification below, never trusted on its own; a candidate that never
+// matches any real client produces an honest "not found," never a wrong
+// resolution (see this task's own explicit product rule: "if none match,
+// say so honestly").
 
 const MAX_CANDIDATE_NAME_LENGTH = 100;
 
 // [Cc]/[Ll]/[Ww] (not the `i` flag) deliberately keep ONLY the trigger
 // keyword case-insensitive -- a sentence-initial "Clientul Baciu..." or
-// "Lucrez pe Baciu..." must still match -- while the captured NAME itself
-// stays fully case-sensitive (requires a real uppercase first letter),
-// which is what keeps an ordinary lowercase word after the trigger from
-// ever being extracted at all (see this module's own SCOPE note above).
-// The optional connector (pe/cu/on/with) is consumed but never captured --
-// "lucrez pe Baciu" and "clientul Baciu" both resolve to the identical
-// candidate "Baciu".
-const CANDIDATE_NAME_PATTERN = /\b(?:[Cc]lient\p{L}*|[Ll]ucr\p{L}*|[Ww]ork\p{L}*)\s+(?:pe\s+|cu\s+|on\s+|with\s+)?([\p{Lu}][\p{L}'-]*(?:\s+[\p{Lu}][\p{L}'-]*)?)/u;
+// "Lucrez pe Baciu..." must still match. The FIRST captured word is
+// deliberately case-INSENSITIVE now (any real letter, not just uppercase --
+// see the PRODUCTION BUG note above) -- this is what makes "lucrez pe
+// baciu" resolve. The OPTIONAL second word of a two-word candidate stays
+// capitalization-gated ([\p{Lu}] only): loosening it too would let this
+// regex greedily swallow an unrelated trailing lowercase word (e.g. "...pe
+// Baciu azi" would otherwise capture "Baciu azi" as one candidate, which
+// then fails to match "Baciu Ionuț Stelian" at all -- a real match lost by
+// being too greedy). A single, case-insensitive first word is enough: the
+// downstream token-subset matcher (isTokenMatch below) already lets a
+// short candidate like "baciu" match a longer stored name like "Baciu
+// Ionuț Stelian" on its own.
+const CANDIDATE_NAME_PATTERN = /\b(?:[Cc]lient\p{L}*|[Ll]ucr\p{L}*|[Ww]ork\p{L}*)\s+(?:pe\s+|cu\s+|on\s+|with\s+)?(\p{L}[\p{L}'-]*(?:\s+[\p{Lu}][\p{L}'-]*)?)/u;
+
+// Guards against the regex's own optional connector (pe/cu/on/with) being
+// captured AS the name when nothing real follows it (e.g. a message ending
+// right after "lucrez pe") -- now that the capture is case-insensitive,
+// the connector words themselves would otherwise be valid matches for it.
+// Never a real candidate; case-insensitive since the capture itself is.
+const RESERVED_CONNECTOR_WORDS = new Set(["pe", "cu", "on", "with"]);
 
 export function extractCandidateClientName(message: string): string | null {
   const match = CANDIDATE_NAME_PATTERN.exec(message);
   if (!match) return null;
   const candidate = match[1].trim().replace(/\s+/g, " ");
   if (!candidate || candidate.length > MAX_CANDIDATE_NAME_LENGTH) return null;
+  if (RESERVED_CONNECTOR_WORDS.has(candidate.toLowerCase())) return null;
   return candidate;
 }
 

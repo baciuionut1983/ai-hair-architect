@@ -14,6 +14,7 @@ import { isOrchestratorDecision } from "@/lib/orchestrator-contracts";
 import { resolveOrchestratorDecision, resolveOrchestratorDecisionAndPlan } from "@/lib/orchestrator-service";
 import { ORCHESTRATOR_ACTION_REGISTRY } from "@/lib/orchestrator-action-registry";
 import { OrchestratorIntentAiProvider, type OrchestratorIntentAiResult } from "@/lib/orchestrator-ai-intent-provider";
+import { INITIAL_WORKFLOW_MEMORY, resolveEffectiveContext, updateWorkflowMemory } from "@/components/concierge-workflow-memory-logic";
 
 // AI Concierge / Orchestrator, Stage 3 -- a hand-built fake AI provider,
 // injected through the real resolveOrchestratorDecision -> buildDecision ->
@@ -1066,23 +1067,25 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
       expect(isOrchestratorDecision(decision)).toBe(true);
     });
 
-    it("a lowercase name mention is never extracted as a candidate -- falls through safely to the existing no_client_selected behavior", async () => {
-      const { ownerUserId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+    it("a lowercase name mention IS extracted and resolved -- PRODUCTION BUG fix (see orchestrator-client-name-resolver.ts's own header comment)", async () => {
+      // This test previously asserted the OPPOSITE (that lowercase never
+      // extracts) -- that assumption WAS the real, confirmed production
+      // bug ("vreau sa lucrez pe baciu" reached "Alege un client pentru a
+      // continua." instead of resolving a real, unique, owner-scoped
+      // client). Extraction is now deliberately case-insensitive on the
+      // candidate's first word; real case/diacritic-insensitivity of the
+      // MATCH itself was always proven separately (next test, and
+      // orchestrator-client-name-resolver.test.ts's own coverage) -- this
+      // test now proves the full, correct, end-to-end behavior instead of
+      // the bug.
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
       const decision = await resolveOrchestratorDecision({
         message: "clientul baciu, te rog",
         roleClass: "professional",
         ownerUserId,
       });
-      expect(decision.currentContext.currentClientId).toBeNull();
-      // Lowercase "baciu" is not itself extractable as a candidate (the
-      // pattern requires a capitalized word -- see
-      // orchestrator-client-name-resolver.ts) -- this proves the SAFE
-      // direction of that scope limit: it falls through to the honest,
-      // pre-existing no_client_selected behavior, never a wrong guess. Real
-      // case-insensitivity for a genuinely extracted candidate is proven
-      // by the next test (and by orchestrator-client-name-resolver.test.ts's
-      // own matchClientNameCandidates coverage).
-      expect(decision.reasonCode).toBe("no_client_selected");
+      expect(decision.currentContext.currentClientId).toBe(clientId);
+      expect(decision.reasonCode).not.toBe("no_client_selected");
     });
 
     it("resolves a real capitalized candidate case-insensitively against a differently-cased stored name", async () => {
@@ -1483,6 +1486,68 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
   // identically to typed text -- because, at this layer, there is no other
   // way for them to be handled.
   // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // PRODUCTION BUG (real, confirmed): "vreau sa lucrez pe baciu" (typed
+  // all-lowercase, no diacritics -- the EXACT real production message)
+  // reached "Alege un client pentru a continua." instead of resolving the
+  // real, unique, owner-scoped client "baciu ionut stelian". Root cause:
+  // extractCandidateClientName's capture group required an UPPERCASE
+  // first letter -- see orchestrator-client-name-resolver.ts's own
+  // "PRODUCTION BUG" header comment for the full writeup. This reproduces
+  // the COMPLETE real path end to end -- not just the resolver in
+  // isolation (already covered above) -- through the exact same pure
+  // functions the real browser Provider and mic-eligibility check use,
+  // proving the fix closes the full chain, not just one link of it.
+  // -------------------------------------------------------------------------
+
+  describe("PRODUCTION BUG: client resolution blocks Voice test (real production message)", () => {
+    it("the exact real production message resolves end to end: server decision -> workflow memory -> effective context -> mic eligibility", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "baciu ionut stelian");
+
+      // Step 1: Concierge input -> server orchestrator decision. The exact
+      // real production message, verbatim.
+      const decision = await resolveOrchestratorDecision({
+        message: "vreau sa lucrez pe baciu",
+        roleClass: "professional",
+        ownerUserId,
+      });
+      expect(decision.currentContext.currentClientId).toBe(clientId);
+      expect(decision.reasonCode).not.toBe("no_client_selected");
+
+      // Step 2: exactly what use-concierge.ts's ask() does with the
+      // response -- updateWorkflowMemory recomputes the FULL remembered
+      // workflow state from this one real decision (concierge-workflow-memory-logic.ts,
+      // completely unmodified by this fix).
+      const { memory } = updateWorkflowMemory(INITIAL_WORKFLOW_MEMORY, decision, null);
+      expect(memory.activeClientId).toBe(clientId);
+
+      // Step 3: exactly what useConcierge's own `activeClientId` return
+      // value computes (resolveEffectiveContext(context, memory) --
+      // Production Fix #2's cross-navigation Provider is what makes this
+      // memory survive to the NEXT render/navigation in the real browser).
+      const effectiveContext = resolveEffectiveContext({}, memory);
+      expect(effectiveContext.currentClientId).toBe(clientId);
+
+      // Step 4: mic eligibility -- concierge-voice-input.tsx's own
+      // ConciergeVoiceInput renders the disabled, explanation-only button
+      // when activeClientId is falsy, and only mounts the real recorder
+      // (useVoiceRecording) once it is truthy. This is that exact
+      // condition, proven true for the real production message.
+      const micEligible = Boolean(effectiveContext.currentClientId);
+      expect(micEligible).toBe(true);
+    });
+
+    it("a real client whose name is typed with diacritics AND without capitalization still resolves (both real-world variants of the same bug)", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Băciu Ionuț");
+      const decision = await resolveOrchestratorDecision({
+        message: "vreau sa lucrez pe baciu",
+        roleClass: "professional",
+        ownerUserId,
+      });
+      expect(decision.currentContext.currentClientId).toBe(clientId);
+    });
+  });
 
   describe("Voice Input Integration (server-side proof: input is input, regardless of modality)", () => {
     it("spoken 'Vreau sa lucrez pe Baciu.' reaches the SAME deterministic client-name resolution as typed text", async () => {
