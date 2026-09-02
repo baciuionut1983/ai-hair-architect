@@ -17,6 +17,7 @@ function decision(overrides: Partial<OrchestratorDecision> = {}): OrchestratorDe
     costClass: "NO_INCREMENTAL_COST",
     reasonCode: "no_client_selected",
     nextStepCode: "no_client_selected",
+    ambiguousClientCandidates: [],
     ...overrides,
   };
 }

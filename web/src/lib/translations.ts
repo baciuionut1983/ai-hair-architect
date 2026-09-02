@@ -87,6 +87,8 @@ export type TranslationKey =
   | "concierge.info.ambiguousIntentNeedsClarification"
   | "concierge.info.videoOfferDeclined"
   | "concierge.info.planCancelled"
+  | "concierge.info.clientNameAmbiguous"
+  | "concierge.info.clientNameNotFound"
   | "common.on"
   | "common.off";
 
@@ -149,6 +151,8 @@ const EN: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "I'm not sure which one you mean -- could you be more specific?",
   "concierge.info.videoOfferDeclined": "Okay, no video.",
   "concierge.info.planCancelled": "Okay, I've stopped.",
+  "concierge.info.clientNameAmbiguous": "I found more than one client matching that name. Which one did you mean?",
+  "concierge.info.clientNameNotFound": "I couldn't find a client matching that name. Choose a client to continue.",
   "common.on": "On",
   "common.off": "Off",
 };
@@ -210,6 +214,8 @@ const RO: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "Nu sunt sigur la ce te referi exact -- poți fi mai specific?",
   "concierge.info.videoOfferDeclined": "Bine, fără video.",
   "concierge.info.planCancelled": "Bine, am oprit.",
+  "concierge.info.clientNameAmbiguous": "Am găsit mai mulți clienți cu acest nume. La care te referi?",
+  "concierge.info.clientNameNotFound": "Nu am găsit niciun client cu acest nume. Alege un client pentru a continua.",
   "common.on": "Activ",
   "common.off": "Inactiv",
 };
@@ -271,6 +277,8 @@ const AR: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "لست متأكدًا مما تقصده بالضبط -- هل يمكنك أن تكون أكثر تحديدًا؟",
   "concierge.info.videoOfferDeclined": "حسنًا، بدون فيديو.",
   "concierge.info.planCancelled": "حسنًا، توقفت.",
+  "concierge.info.clientNameAmbiguous": "وجدت أكثر من عميل بهذا الاسم. أيهم تقصد؟",
+  "concierge.info.clientNameNotFound": "لم أجد عميلاً بهذا الاسم. اختر عميلاً للمتابعة.",
   "common.on": "مفعّل",
   "common.off": "غير مفعّل",
 };
@@ -332,6 +340,8 @@ const IT: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "Non sono sicuro di cosa intendi esattamente -- puoi essere più specifico?",
   "concierge.info.videoOfferDeclined": "Va bene, niente video.",
   "concierge.info.planCancelled": "Va bene, mi sono fermato.",
+  "concierge.info.clientNameAmbiguous": "Ho trovato più clienti con questo nome. A quale ti riferisci?",
+  "concierge.info.clientNameNotFound": "Non ho trovato nessun cliente con questo nome. Scegli un cliente per continuare.",
   "common.on": "Attivo",
   "common.off": "Disattivo",
 };
@@ -393,6 +403,8 @@ const FR: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "Je ne suis pas sûr de ce que vous voulez dire exactement -- pouvez-vous préciser ?",
   "concierge.info.videoOfferDeclined": "D'accord, pas de vidéo.",
   "concierge.info.planCancelled": "D'accord, j'ai arrêté.",
+  "concierge.info.clientNameAmbiguous": "J'ai trouvé plusieurs clients portant ce nom. Duquel s'agit-il ?",
+  "concierge.info.clientNameNotFound": "Je n'ai trouvé aucun client portant ce nom. Choisissez un client pour continuer.",
   "common.on": "Activé",
   "common.off": "Désactivé",
 };
@@ -454,6 +466,8 @@ const DE: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "Ich bin mir nicht sicher, was genau du meinst -- kannst du das genauer sagen?",
   "concierge.info.videoOfferDeclined": "Okay, kein Video.",
   "concierge.info.planCancelled": "Okay, ich habe gestoppt.",
+  "concierge.info.clientNameAmbiguous": "Ich habe mehrere Kunden mit diesem Namen gefunden. Welchen meinen Sie?",
+  "concierge.info.clientNameNotFound": "Ich konnte keinen Kunden mit diesem Namen finden. Wählen Sie einen Kunden aus, um fortzufahren.",
   "common.on": "Ein",
   "common.off": "Aus",
 };
@@ -515,6 +529,8 @@ const ES: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "No estoy seguro de qué quieres decir exactamente -- ¿puedes ser más específico?",
   "concierge.info.videoOfferDeclined": "De acuerdo, sin video.",
   "concierge.info.planCancelled": "De acuerdo, me he detenido.",
+  "concierge.info.clientNameAmbiguous": "Encontré más de un cliente con ese nombre. ¿A cuál te refieres?",
+  "concierge.info.clientNameNotFound": "No encontré ningún cliente con ese nombre. Elige un cliente para continuar.",
   "common.on": "Activado",
   "common.off": "Desactivado",
 };
@@ -576,6 +592,8 @@ const PT: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "Não tenho certeza do que você quer dizer exatamente -- pode ser mais específico?",
   "concierge.info.videoOfferDeclined": "Certo, sem vídeo.",
   "concierge.info.planCancelled": "Certo, parei.",
+  "concierge.info.clientNameAmbiguous": "Encontrei mais de um cliente com esse nome. A qual você se refere?",
+  "concierge.info.clientNameNotFound": "Não encontrei nenhum cliente com esse nome. Escolha um cliente para continuar.",
   "common.on": "Ativado",
   "common.off": "Desativado",
 };
@@ -637,6 +655,8 @@ const NL: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "Ik weet niet zeker wat je precies bedoelt -- kun je dat wat specifieker maken?",
   "concierge.info.videoOfferDeclined": "Oké, geen video.",
   "concierge.info.planCancelled": "Oké, ik ben gestopt.",
+  "concierge.info.clientNameAmbiguous": "Ik heb meerdere klanten met die naam gevonden. Welke bedoel je?",
+  "concierge.info.clientNameNotFound": "Ik kon geen klant met die naam vinden. Kies een klant om verder te gaan.",
   "common.on": "Aan",
   "common.off": "Uit",
 };
@@ -698,6 +718,8 @@ const PL: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "Nie jestem pewien, co dokładnie masz na myśli -- czy możesz sprecyzować?",
   "concierge.info.videoOfferDeclined": "Dobrze, bez wideo.",
   "concierge.info.planCancelled": "Dobrze, zatrzymałem się.",
+  "concierge.info.clientNameAmbiguous": "Znalazłem więcej niż jednego klienta o tym imieniu. Którego masz na myśli?",
+  "concierge.info.clientNameNotFound": "Nie znalazłem klienta o tym imieniu. Wybierz klienta, aby kontynuować.",
   "common.on": "Włączone",
   "common.off": "Wyłączone",
 };
@@ -759,6 +781,8 @@ const TR: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "Tam olarak ne demek istediğinden emin değilim -- daha net söyler misin?",
   "concierge.info.videoOfferDeclined": "Tamam, video yok.",
   "concierge.info.planCancelled": "Tamam, durdum.",
+  "concierge.info.clientNameAmbiguous": "Bu isimde birden fazla müşteri buldum. Hangisini kastediyorsunuz?",
+  "concierge.info.clientNameNotFound": "Bu isimde bir müşteri bulamadım. Devam etmek için bir müşteri seçin.",
   "common.on": "Açık",
   "common.off": "Kapalı",
 };
@@ -820,6 +844,8 @@ const EL: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "Δεν είμαι σίγουρος τι ακριβώς εννοείς -- μπορείς να διευκρινίσεις;",
   "concierge.info.videoOfferDeclined": "Εντάξει, χωρίς βίντεο.",
   "concierge.info.planCancelled": "Εντάξει, σταμάτησα.",
+  "concierge.info.clientNameAmbiguous": "Βρήκα περισσότερους από έναν πελάτες με αυτό το όνομα. Ποιον εννοείς;",
+  "concierge.info.clientNameNotFound": "Δεν βρήκα κανέναν πελάτη με αυτό το όνομα. Επίλεξε έναν πελάτη για να συνεχίσεις.",
   "common.on": "Ενεργό",
   "common.off": "Ανενεργό",
 };
@@ -881,6 +907,8 @@ const HE: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "אינני בטוח למה בדיוק כוונתך -- תוכל לפרט יותר?",
   "concierge.info.videoOfferDeclined": "בסדר, בלי סרטון.",
   "concierge.info.planCancelled": "בסדר, עצרתי.",
+  "concierge.info.clientNameAmbiguous": "מצאתי יותר מלקוח אחד בשם הזה. לאיזה מהם התכוונת?",
+  "concierge.info.clientNameNotFound": "לא מצאתי לקוח בשם הזה. בחר לקוח כדי להמשיך.",
   "common.on": "פעיל",
   "common.off": "כבוי",
 };
@@ -942,6 +970,8 @@ const JA: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "正確に何を意味しているか確信が持てません。もう少し詳しく教えてください。",
   "concierge.info.videoOfferDeclined": "了解しました。動画はなしですね。",
   "concierge.info.planCancelled": "了解しました。停止しました。",
+  "concierge.info.clientNameAmbiguous": "その名前に一致するクライアントが複数見つかりました。どちらのことですか？",
+  "concierge.info.clientNameNotFound": "その名前に一致するクライアントが見つかりませんでした。続けるにはクライアントを選択してください。",
   "common.on": "オン",
   "common.off": "オフ",
 };
@@ -1003,6 +1033,8 @@ const KO: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "정확히 무엇을 의미하시는지 확실하지 않아요. 좀 더 구체적으로 말씀해 주시겠어요?",
   "concierge.info.videoOfferDeclined": "알겠습니다. 영상은 만들지 않을게요.",
   "concierge.info.planCancelled": "알겠습니다. 중단했습니다.",
+  "concierge.info.clientNameAmbiguous": "해당 이름과 일치하는 고객이 여러 명 있습니다. 어느 분을 말씀하시나요?",
+  "concierge.info.clientNameNotFound": "해당 이름과 일치하는 고객을 찾을 수 없습니다. 계속하려면 고객을 선택하세요.",
   "common.on": "켜짐",
   "common.off": "꺼짐",
 };
@@ -1064,6 +1096,8 @@ const ZH_HANS: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "我不太确定您具体想做什么，能再说详细一点吗？",
   "concierge.info.videoOfferDeclined": "好的，不生成视频。",
   "concierge.info.planCancelled": "好的，我已停止。",
+  "concierge.info.clientNameAmbiguous": "找到多个匹配该姓名的客户，您指的是哪一位？",
+  "concierge.info.clientNameNotFound": "未找到匹配该姓名的客户。请选择一位客户以继续。",
   "common.on": "开启",
   "common.off": "关闭",
 };
@@ -1125,6 +1159,8 @@ const ZH_HANT: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "我不太確定您具體想做什麼，能再說詳細一點嗎？",
   "concierge.info.videoOfferDeclined": "好的，不生成影片。",
   "concierge.info.planCancelled": "好的，我已停止。",
+  "concierge.info.clientNameAmbiguous": "找到多個符合該姓名的客戶，您指的是哪一位？",
+  "concierge.info.clientNameNotFound": "找不到符合該姓名的客戶。請選擇一位客戶以繼續。",
   "common.on": "開啟",
   "common.off": "關閉",
 };
@@ -1186,6 +1222,8 @@ const HI: Dictionary = {
   "concierge.info.ambiguousIntentNeedsClarification": "मुझे ठीक से समझ नहीं आया कि आपका क्या मतलब है -- क्या आप अधिक स्पष्ट रूप से बता सकते हैं?",
   "concierge.info.videoOfferDeclined": "ठीक है, वीडियो नहीं।",
   "concierge.info.planCancelled": "ठीक है, मैंने रोक दिया।",
+  "concierge.info.clientNameAmbiguous": "मुझे इस नाम से मेल खाते कई ग्राहक मिले। आप किसकी बात कर रहे हैं?",
+  "concierge.info.clientNameNotFound": "मुझे इस नाम से मेल खाता कोई ग्राहक नहीं मिला। जारी रखने के लिए एक ग्राहक चुनें।",
   "common.on": "चालू",
   "common.off": "बंद",
 };

@@ -30,6 +30,16 @@ const REASON_CODE_TO_KEY: Record<OrchestratorReasonCode, TranslationKey> = {
   // Stage 5: a recognized "Stop."/"Anulează." -- future orchestration
   // steps stop; never implies a real provider operation was cancelled.
   plan_cancelled: "concierge.info.planCancelled",
+  // Production Fix #1 (client name resolution): a candidate name matched
+  // more than one real, owner-scoped client -- see
+  // orchestrator-client-name-resolver.ts. The real candidates themselves
+  // ride on OrchestratorDecision.ambiguousClientCandidates, rendered
+  // separately (see concierge-panel.tsx).
+  client_name_ambiguous: "concierge.info.clientNameAmbiguous",
+  // Production Fix #1: a candidate name matched no real, owner-scoped
+  // client -- distinct, more honest copy than the generic
+  // noClientSelected (which also covers "no name was mentioned at all").
+  client_name_not_found: "concierge.info.clientNameNotFound",
 };
 
 export function reasonCodeToTranslationKey(code: OrchestratorReasonCode): TranslationKey {
@@ -114,4 +124,18 @@ export function isVideoOfferDecision(decision: OrchestratorDecision): boolean {
 // task section 1's own "fail honestly and suggest available next steps."
 export function hasNoActionableRecommendation(decision: OrchestratorDecision): boolean {
   return decision.recommendedAction === null && decision.availableActions.length === 0;
+}
+
+// Production Fix #1 (input clearing): the real production bug was that
+// ConciergePanel's handleSubmit called ask(message) but never reset the
+// composer's own local state -- the same text stayed in the box and could
+// visually concatenate with whatever the professional typed next. This is
+// the exact same non-empty/not-already-loading guard handleSubmit already
+// uses to decide whether to send at all, pulled out as its own pure,
+// testable predicate: this codebase has no component-test harness (no
+// jsdom/testing-library configured -- see vitest.config.ts), so the DOM
+// effect of clearing can only be proven by a real browser check, but the
+// DECISION of when to clear is fully regression-tested here.
+export function shouldClearComposerAfterSubmit(rawMessage: string, isLoading: boolean): boolean {
+  return rawMessage.trim().length > 0 && !isLoading;
 }

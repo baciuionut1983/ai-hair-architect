@@ -19,6 +19,7 @@ function validDecision(overrides: Partial<OrchestratorDecision> = {}): Orchestra
     costClass: "NO_INCREMENTAL_COST",
     reasonCode: "no_client_selected",
     nextStepCode: "no_client_selected",
+    ambiguousClientCandidates: [],
     ...overrides,
   };
 }
@@ -85,5 +86,34 @@ describe("isOrchestratorDecision -- the runtime boundary (task section 2/3)", ()
   it("rejects targetClientId/targetAnalysisId that are neither null nor a string", () => {
     expect(isOrchestratorDecision(validDecision({ targetClientId: 123 as never }))).toBe(false);
     expect(isOrchestratorDecision(validDecision({ targetAnalysisId: {} as never }))).toBe(false);
+  });
+
+  // Production Fix #1 (client name resolution).
+  it("accepts real, well-formed ambiguousClientCandidates", () => {
+    expect(
+      isOrchestratorDecision(
+        validDecision({
+          reasonCode: "client_name_ambiguous",
+          nextStepCode: "client_name_ambiguous",
+          ambiguousClientCandidates: [
+            { clientId: "c1", fullName: "Baciu Ionuț" },
+            { clientId: "c2", fullName: "Baciu Andrei" },
+          ],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts the new client_name_not_found reasonCode", () => {
+    expect(isOrchestratorDecision(validDecision({ reasonCode: "client_name_not_found", nextStepCode: "client_name_not_found" }))).toBe(true);
+  });
+
+  it("rejects a non-array ambiguousClientCandidates", () => {
+    expect(isOrchestratorDecision(validDecision({ ambiguousClientCandidates: "none" as never }))).toBe(false);
+  });
+
+  it("rejects a candidate missing clientId/fullName -- an AI/malformed value could never fabricate an id-less or nameless entry", () => {
+    expect(isOrchestratorDecision(validDecision({ ambiguousClientCandidates: [{ clientId: "c1" }] as never }))).toBe(false);
+    expect(isOrchestratorDecision(validDecision({ ambiguousClientCandidates: [{ fullName: "Baciu" }] as never }))).toBe(false);
   });
 });

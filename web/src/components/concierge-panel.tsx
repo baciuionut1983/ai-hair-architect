@@ -8,7 +8,14 @@ import { Sparkles } from "lucide-react";
 import { Button, Card, Input } from "@/components/ui";
 import { useUiLanguage } from "@/lib/ui-language-context";
 import { resolveOrchestratorActionHref } from "@/lib/orchestrator-action-registry";
-import { actionIdToTranslationKey, hasNoActionableRecommendation, isVideoOfferDecision, reasonCodeToTranslationKey } from "./concierge-logic";
+import type { OrchestratorClientCandidate } from "@/lib/orchestrator-contracts";
+import {
+  actionIdToTranslationKey,
+  hasNoActionableRecommendation,
+  isVideoOfferDecision,
+  reasonCodeToTranslationKey,
+  shouldClearComposerAfterSubmit,
+} from "./concierge-logic";
 import { useConcierge, type UseConciergeContext } from "./use-concierge";
 
 // AI Concierge / Orchestrator, Stage 1 -- the entry-point widget (task
@@ -27,8 +34,14 @@ export function ConciergePanel({ context }: ConciergePanelProps) {
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!message.trim() || state.status === "loading") return;
+    if (!shouldClearComposerAfterSubmit(message, state.status === "loading")) return;
     void ask(message);
+    // Production Fix #1 (input clearing): the real production bug -- the
+    // composer never reset after a send, so the previous message could
+    // visually concatenate with the next one. Cleared here, immediately
+    // (matching this app's other chat-style composers), independent of
+    // ask()'s own async loading/ready/error transition above.
+    setMessage("");
   }
 
   return (
@@ -57,7 +70,15 @@ export function ConciergePanel({ context }: ConciergePanelProps) {
 
       {state.status === "ready" ? (
         <ConciergeDecisionView
-          decisionKind={isVideoOfferDecision(state.decision) ? "videoOffer" : hasNoActionableRecommendation(state.decision) ? "unsupported" : "action"}
+          decisionKind={
+            isVideoOfferDecision(state.decision)
+              ? "videoOffer"
+              : state.decision.ambiguousClientCandidates.length > 0
+                ? "clientAmbiguous"
+                : hasNoActionableRecommendation(state.decision)
+                  ? "unsupported"
+                  : "action"
+          }
           reasonKey={reasonCodeToTranslationKey(state.decision.reasonCode)}
           actionLabel={state.decision.recommendedAction ? t(actionIdToTranslationKey(state.decision.recommendedAction)) : null}
           href={
@@ -68,6 +89,7 @@ export function ConciergePanel({ context }: ConciergePanelProps) {
                 })
               : null
           }
+          ambiguousClientCandidates={state.decision.ambiguousClientCandidates}
           onDecline={reset}
           t={t}
         />
@@ -77,16 +99,45 @@ export function ConciergePanel({ context }: ConciergePanelProps) {
 }
 
 interface ConciergeDecisionViewProps {
-  decisionKind: "videoOffer" | "unsupported" | "action";
+  decisionKind: "videoOffer" | "unsupported" | "clientAmbiguous" | "action";
   reasonKey: ReturnType<typeof reasonCodeToTranslationKey>;
   actionLabel: string | null;
   href: string | null;
+  // Production Fix #1 (client name resolution): real, already owner-scoped
+  // candidates (id + fullName) -- see OrchestratorClientCandidate's own
+  // doc comment. Always [] outside the "clientAmbiguous" kind.
+  ambiguousClientCandidates: OrchestratorClientCandidate[];
   onDecline: () => void;
   t: ReturnType<typeof useUiLanguage>["t"];
 }
 
-function ConciergeDecisionView({ decisionKind, reasonKey, actionLabel, href, onDecline, t }: ConciergeDecisionViewProps) {
+function ConciergeDecisionView({ decisionKind, reasonKey, actionLabel, href, ambiguousClientCandidates, onDecline, t }: ConciergeDecisionViewProps) {
   const reasonText = t(reasonKey);
+
+  if (decisionKind === "clientAmbiguous") {
+    return (
+      <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface-alt p-4">
+        <p className="text-sm text-foreground">{reasonText}</p>
+        <div className="flex flex-col gap-2">
+          {ambiguousClientCandidates.map((candidate) => {
+            // Real navigation only -- resolveOrchestratorActionHref returns
+            // null unless OPEN_CLIENT's own declared requirements are met,
+            // never a raw/unverified string (same guarantee every other
+            // action link in this panel already relies on).
+            const candidateHref = resolveOrchestratorActionHref("OPEN_CLIENT", { clientId: candidate.clientId, analysisId: null });
+            if (!candidateHref) return null;
+            return (
+              <Link key={candidate.clientId} href={candidateHref}>
+                <Button variant="secondary" className="w-full justify-start">
+                  {candidate.fullName}
+                </Button>
+              </Link>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
 
   if (decisionKind === "videoOffer") {
     return (

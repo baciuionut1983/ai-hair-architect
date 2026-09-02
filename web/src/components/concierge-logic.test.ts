@@ -7,6 +7,7 @@ import {
   hasNoActionableRecommendation,
   isVideoOfferDecision,
   reasonCodeToTranslationKey,
+  shouldClearComposerAfterSubmit,
 } from "./concierge-logic";
 import type { OrchestratorActionId, OrchestratorDecision, OrchestratorReasonCode } from "@/lib/orchestrator-contracts";
 import { translate, type TranslationKey } from "@/lib/translations";
@@ -21,6 +22,8 @@ const ALL_REASON_CODES: OrchestratorReasonCode[] = [
   "ambiguous_intent_needs_clarification",
   "video_offer_declined",
   "plan_cancelled",
+  "client_name_ambiguous",
+  "client_name_not_found",
 ];
 
 const ALL_ACTION_IDS: OrchestratorActionId[] = ["OPEN_CLIENTS", "OPEN_CLIENT", "START_ANALYSIS", "OPEN_ANALYSIS", "OFFER_VIDEO", "REQUEST_VIDEO"];
@@ -39,6 +42,7 @@ function decision(overrides: Partial<OrchestratorDecision> = {}): OrchestratorDe
     costClass: "NO_INCREMENTAL_COST",
     reasonCode: "no_client_selected",
     nextStepCode: "no_client_selected",
+    ambiguousClientCandidates: [],
     ...overrides,
   };
 }
@@ -76,6 +80,34 @@ describe("reasonCodeToTranslationKey / actionIdToTranslationKey -- the ONLY plac
     expect(key).toBe("concierge.info.planCancelled");
     expect(key).not.toBe(reasonCodeToTranslationKey("intent_not_understood"));
     expect(key).not.toBe(reasonCodeToTranslationKey("video_offer_declined"));
+  });
+
+  // Production Fix #1: the two new client-name-resolution reason codes each
+  // map to their own distinct, honest copy -- never the generic
+  // no_client_selected/intent_not_understood keys.
+  it("the client-name-ambiguous and client-name-not-found reason codes map to their own distinct keys", () => {
+    const ambiguousKey = reasonCodeToTranslationKey("client_name_ambiguous");
+    const notFoundKey = reasonCodeToTranslationKey("client_name_not_found");
+    expect(ambiguousKey).toBe("concierge.info.clientNameAmbiguous");
+    expect(notFoundKey).toBe("concierge.info.clientNameNotFound");
+    expect(ambiguousKey).not.toBe(notFoundKey);
+    expect(ambiguousKey).not.toBe(reasonCodeToTranslationKey("no_client_selected"));
+    expect(notFoundKey).not.toBe(reasonCodeToTranslationKey("no_client_selected"));
+  });
+});
+
+describe("shouldClearComposerAfterSubmit -- Production Fix #1 (input clearing)", () => {
+  it("clears for a real, non-empty message while not loading", () => {
+    expect(shouldClearComposerAfterSubmit("Vreau să văd clientul Baciu", false)).toBe(true);
+  });
+
+  it("does not clear for an empty/whitespace-only message", () => {
+    expect(shouldClearComposerAfterSubmit("", false)).toBe(false);
+    expect(shouldClearComposerAfterSubmit("   ", false)).toBe(false);
+  });
+
+  it("does not clear while a request is already loading", () => {
+    expect(shouldClearComposerAfterSubmit("hello", true)).toBe(false);
   });
 });
 

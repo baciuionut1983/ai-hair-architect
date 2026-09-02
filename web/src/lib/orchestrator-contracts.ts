@@ -92,7 +92,18 @@ export type OrchestratorReasonCode =
   // orchestration steps have stopped. Never implies any real provider
   // operation was cancelled (see orchestrator-plan-service.ts's own
   // cancelPlan and this file's own header comment).
-  | "plan_cancelled";
+  | "plan_cancelled"
+  // Production Fix #1 (client name resolution): a message named a
+  // candidate client, and MORE THAN ONE real, owner-scoped client matched
+  // it -- see orchestrator-client-name-resolver.ts's own matchClientNameCandidates.
+  // Never silently picks one; the real candidates ride along on
+  // OrchestratorDecision.ambiguousClientCandidates below.
+  | "client_name_ambiguous"
+  // Production Fix #1: a message named a candidate client, and NO real,
+  // owner-scoped client matched it -- distinct, more honest copy than the
+  // generic no_client_selected (which also covers "no name was ever
+  // mentioned at all").
+  | "client_name_not_found";
 
 const ORCHESTRATOR_REASON_CODES: readonly OrchestratorReasonCode[] = [
   "client_and_analysis_identified",
@@ -104,6 +115,8 @@ const ORCHESTRATOR_REASON_CODES: readonly OrchestratorReasonCode[] = [
   "ambiguous_intent_needs_clarification",
   "video_offer_declined",
   "plan_cancelled",
+  "client_name_ambiguous",
+  "client_name_not_found",
 ];
 
 // AI Concierge / Orchestrator, Stage 4 (task section 3): "pending decisions
@@ -140,6 +153,18 @@ export interface OrchestratorContext {
   hasCompletedPhotoPreview: boolean;
 }
 
+// Production Fix #1 (client name resolution): a REAL, already owner-scoped
+// candidate the deterministic resolver found for an ambiguous name mention
+// -- id and fullName both come straight from the DB row
+// (orchestrator-client-name-resolver.ts's own matchClientNameCandidates),
+// never from AI or from the raw candidate string itself. Rendered by the
+// UI as real "open this client" links (same OPEN_CLIENT navigation every
+// other resolved-client decision already uses) -- never auto-selected.
+export interface OrchestratorClientCandidate {
+  clientId: string;
+  fullName: string;
+}
+
 export interface OrchestratorDecision {
   intent: OrchestratorIntent;
   targetVertical: "clients" | "analysis" | "video" | "none";
@@ -153,6 +178,10 @@ export interface OrchestratorDecision {
   costClass: OrchestratorCostClass;
   reasonCode: OrchestratorReasonCode;
   nextStepCode: OrchestratorReasonCode;
+  // Production Fix #1: always present (empty array unless reasonCode is
+  // "client_name_ambiguous") -- same "always-present, never optional"
+  // style as availableActions above, never `?`.
+  ambiguousClientCandidates: OrchestratorClientCandidate[];
 }
 
 function isOrchestratorRoleClass(value: unknown): value is OrchestratorRoleClass {
@@ -169,6 +198,12 @@ function isOrchestratorCostClass(value: unknown): value is OrchestratorCostClass
 
 function isOrchestratorReasonCode(value: unknown): value is OrchestratorReasonCode {
   return typeof value === "string" && (ORCHESTRATOR_REASON_CODES as readonly string[]).includes(value);
+}
+
+function isOrchestratorClientCandidate(value: unknown): value is OrchestratorClientCandidate {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.clientId === "string" && typeof candidate.fullName === "string";
 }
 
 function isOrchestratorContext(value: unknown): value is OrchestratorContext {
@@ -206,6 +241,7 @@ export function isOrchestratorDecision(value: unknown): value is OrchestratorDec
   if (!isOrchestratorCostClass(candidate.costClass)) return false;
   if (!isOrchestratorReasonCode(candidate.reasonCode)) return false;
   if (!isOrchestratorReasonCode(candidate.nextStepCode)) return false;
+  if (!Array.isArray(candidate.ambiguousClientCandidates) || !candidate.ambiguousClientCandidates.every(isOrchestratorClientCandidate)) return false;
 
   return true;
 }

@@ -23,6 +23,7 @@ const FAKE_DECISION = {
   costClass: "NO_INCREMENTAL_COST",
   reasonCode: "no_client_selected",
   nextStepCode: "no_client_selected",
+  ambiguousClientCandidates: [],
 };
 
 function request(body: unknown) {

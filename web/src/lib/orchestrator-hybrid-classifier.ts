@@ -50,7 +50,12 @@ export const CONCIERGE_INTENT_CLASSIFICATION_FEATURE = "concierge_intent_classif
 // "cancellation" -- a recognized "Stop."/"Anulează." reply, resolved by
 // orchestrator-cancellation-detector.ts, checked even earlier than
 // pending_decision -- also never reaching this file.
-export type ConciergeClassifierSource = "deterministic" | "ai" | "fallback" | "clarification" | "pending_decision" | "cancellation";
+// Production Fix #1 adds "client_name_resolution" -- a candidate client
+// name was extracted and resolved/disambiguated by
+// orchestrator-client-name-resolver.ts, checked before this hybrid
+// classifier is ever reached (see orchestrator-service.ts's own
+// buildDecision) -- also never reaching this file.
+export type ConciergeClassifierSource = "deterministic" | "ai" | "fallback" | "clarification" | "pending_decision" | "cancellation" | "client_name_resolution";
 
 export interface HybridClassificationOutcome {
   intent: OrchestratorIntent;

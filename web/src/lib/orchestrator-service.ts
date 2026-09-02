@@ -1,4 +1,4 @@
-import { findClientForOwner } from "@/lib/client-repository";
+import { findClientForOwner, listClientsForOwner } from "@/lib/client-repository";
 import { findAnalysisForOwner } from "@/lib/analysis-repository";
 import {
   classifyOrchestratorIntentHybrid,
@@ -7,6 +7,7 @@ import {
 } from "@/lib/orchestrator-hybrid-classifier";
 import { detectBareConfirmation } from "@/lib/orchestrator-confirmation-detector";
 import { detectCancellationRequest } from "@/lib/orchestrator-cancellation-detector";
+import { extractCandidateClientName, matchClientNameCandidates } from "@/lib/orchestrator-client-name-resolver";
 import { resolveWorkflowStage } from "@/lib/orchestrator-workflow-stage";
 import { isOrchestratorActionAllowedForRole, ORCHESTRATOR_ACTION_REGISTRY } from "@/lib/orchestrator-action-registry";
 import {
@@ -20,6 +21,7 @@ import {
   isOrchestratorDecision,
   type ConciergePendingDecision,
   type OrchestratorActionId,
+  type OrchestratorClientCandidate,
   type OrchestratorContext,
   type OrchestratorDecision,
   type OrchestratorIntent,
@@ -83,6 +85,11 @@ export interface ResolveOrchestratorDecisionInput {
 export interface ResolveOrchestratorDecisionDependencies {
   findClientForOwner?: typeof findClientForOwner;
   findAnalysisForOwner?: typeof findAnalysisForOwner;
+  // Production Fix #1 (client name resolution): the ONLY repository read
+  // the name-candidate resolver ever needs -- see this file's own
+  // resolveClientNameForMessage below. Same injection convention as every
+  // other real lookup in this dependencies bag.
+  listClientsForOwner?: typeof listClientsForOwner;
   // Stage 3: replaces the old, never-externally-used `classifyIntent`
   // hook. Tests inject the full hybrid pipeline directly (real messages
   // resolve deterministically with zero AI dependency in every existing
@@ -136,6 +143,7 @@ async function buildDecision(
 }> {
   const resolveClient = dependencies.findClientForOwner ?? findClientForOwner;
   const resolveAnalysis = dependencies.findAnalysisForOwner ?? findAnalysisForOwner;
+  const listClients = dependencies.listClientsForOwner ?? listClientsForOwner;
   const classifyHybrid = dependencies.classifyIntentHybrid ?? classifyOrchestratorIntentHybrid;
 
   // Re-verify ownership -- never trust the caller's own claim.
@@ -143,6 +151,37 @@ async function buildDecision(
   if (input.currentClientId) {
     const client = await resolveClient(input.ownerUserId, input.currentClientId);
     clientId = client ? client.id : null;
+  }
+
+  // Production Fix #1 (client name resolution): only attempted when no
+  // client is already established via currentClientId (never overrides an
+  // already-active context from a name mentioned in passing -- deliberately
+  // narrow scope, see this file's own report), and only for the
+  // professional role class (mirrors classifyOrchestratorIntentHybrid's own
+  // role gating one level up -- no action a resolved client could ever lead
+  // to is available to a public-role caller either). The candidate NAME
+  // (untrusted free text) is extracted here; matchClientNameCandidates then
+  // compares it ONLY against real fullName values on rows listClients
+  // already scoped to input.ownerUserId -- there is no path from this
+  // candidate string to a client id that did not already come from that
+  // owner-scoped read (task's own required rule: "AI must never choose,
+  // invent, return, or authorize a client ID" -- here, nothing but a real
+  // DB row's own id is ever assigned to clientId).
+  let clientNameMatch: ReturnType<typeof matchClientNameCandidates> | null = null;
+  if (!clientId && input.roleClass === "professional") {
+    const candidateName = extractCandidateClientName(input.message ?? "");
+    if (candidateName) {
+      const ownerClients = await listClients(input.ownerUserId);
+      clientNameMatch = matchClientNameCandidates(candidateName, ownerClients);
+      if (clientNameMatch.kind === "resolved") {
+        // From here on this turn behaves EXACTLY as if the caller had
+        // supplied this id as currentClientId to begin with -- it flows
+        // through analysisId lookup, context, workflow-continuity memory,
+        // and every downstream decision branch completely unmodified. No
+        // second continuity mechanism, per the task's own explicit rule.
+        clientId = clientNameMatch.clientId;
+      }
+    }
   }
 
   let analysisId: string | null = null;
@@ -224,6 +263,17 @@ async function buildDecision(
       "video_offer_after_completed_preview",
     );
     classifierSource = null;
+  } else if (clientNameMatch?.kind === "ambiguous") {
+    // Production Fix #1: never proceeds to intent classification with a
+    // still-unresolved client -- would otherwise silently fall through to
+    // the generic "no client selected" copy, losing the real, honest
+    // distinction the task requires between "no name was ever mentioned"
+    // and "a name was mentioned but matched more than one real client."
+    decision = clientNameAmbiguousDecision(context, clientNameMatch.candidates);
+    classifierSource = "client_name_resolution";
+  } else if (clientNameMatch?.kind === "not_found") {
+    decision = clientNameNotFoundDecision(context);
+    classifierSource = "client_name_resolution";
   } else {
     const classification = await classifyHybrid(
       input.message ?? "",
@@ -392,6 +442,7 @@ function roleUnsupportedDecision(context: OrchestratorContext): OrchestratorDeci
     costClass: "NO_INCREMENTAL_COST",
     reasonCode: "role_not_yet_supported",
     nextStepCode: "role_not_yet_supported",
+    ambiguousClientCandidates: [],
   };
 }
 
@@ -415,6 +466,7 @@ function honestNoActionDecision(context: OrchestratorContext, reasonCode: Orches
     costClass: "NO_INCREMENTAL_COST",
     reasonCode,
     nextStepCode: reasonCode,
+    ambiguousClientCandidates: [],
   };
 }
 
@@ -445,6 +497,24 @@ function planCancelledDecision(context: OrchestratorContext): OrchestratorDecisi
   return honestNoActionDecision(context, "plan_cancelled");
 }
 
+// Production Fix #1 (client name resolution): a candidate name matched
+// MORE THAN ONE real, owner-scoped client. `candidates` are real DB rows
+// (id + fullName) already scoped to input.ownerUserId by
+// listClientsForOwner -- never chosen between here, only surfaced so the
+// UI can render each as its own real "open this client" link (task's own
+// "ask user which real matching client they mean").
+function clientNameAmbiguousDecision(context: OrchestratorContext, candidates: OrchestratorClientCandidate[]): OrchestratorDecision {
+  return { ...honestNoActionDecision(context, "client_name_ambiguous"), ambiguousClientCandidates: candidates };
+}
+
+// Production Fix #1: a candidate name matched NO real, owner-scoped
+// client -- an honest, distinct acknowledgment from the generic
+// no_client_selected (which also covers "no name was mentioned at all"),
+// per the task's own required NOT FOUND behavior.
+function clientNameNotFoundDecision(context: OrchestratorContext): OrchestratorDecision {
+  return honestNoActionDecision(context, "client_name_not_found");
+}
+
 function composeDecision(
   intent: OrchestratorIntent,
   targetVertical: OrchestratorDecision["targetVertical"],
@@ -468,6 +538,7 @@ function composeDecision(
     costClass: definition.costClass,
     reasonCode,
     nextStepCode,
+    ambiguousClientCandidates: [],
   };
 }
 

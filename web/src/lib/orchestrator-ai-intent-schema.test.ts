@@ -118,6 +118,7 @@ describe("cross-check against isOrchestratorDecision's own closed intent list", 
       costClass: "NO_INCREMENTAL_COST",
       reasonCode: "no_client_selected",
       nextStepCode: "no_client_selected",
+      ambiguousClientCandidates: [],
     };
     expect(isOrchestratorDecision(decision)).toBe(true);
   });
