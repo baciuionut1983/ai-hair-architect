@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { Badge, Card } from "@/components/ui";
+import { ConciergePanel } from "@/components/concierge-panel";
 import type { AuthSessionResponse } from "@/lib/contracts";
 
 export interface DashboardLink {
@@ -96,6 +97,8 @@ export default function DashboardPage() {
           AI Hair Architect is being rebuilt as a full product experience. Here is what is available today.
         </p>
       </div>
+
+      <ConciergePanel />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {DASHBOARD_LINKS.map((link) => (
