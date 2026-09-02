@@ -39,9 +39,17 @@ export type OrchestratorIntent = "open_clients" | "start_analysis" | "open_analy
 // outside this union can type-check as an action id, and
 // isOrchestratorDecision (below) rejects anything else at the runtime
 // boundary too.
-export type OrchestratorActionId = "OPEN_CLIENTS" | "OPEN_CLIENT" | "START_ANALYSIS" | "OPEN_ANALYSIS" | "REQUEST_VIDEO";
+// Stage 2 (task section 3): OFFER_VIDEO is now a distinct action id from
+// REQUEST_VIDEO -- the domain model makes "presenting the conversational
+// question" and "handing off to the existing paid-engine confirmation"
+// two different, independently-classified actions (see
+// orchestrator-action-registry.ts's own `kind` field), rather than
+// overloading one id for both. OFFER_VIDEO can never itself reach the
+// Video engine; only REQUEST_VIDEO's own navigation, followed by the
+// EXISTING Video UI's own real cost-consent dialog, can.
+export type OrchestratorActionId = "OPEN_CLIENTS" | "OPEN_CLIENT" | "START_ANALYSIS" | "OPEN_ANALYSIS" | "OFFER_VIDEO" | "REQUEST_VIDEO";
 
-const ORCHESTRATOR_ACTION_IDS: readonly OrchestratorActionId[] = ["OPEN_CLIENTS", "OPEN_CLIENT", "START_ANALYSIS", "OPEN_ANALYSIS", "REQUEST_VIDEO"];
+const ORCHESTRATOR_ACTION_IDS: readonly OrchestratorActionId[] = ["OPEN_CLIENTS", "OPEN_CLIENT", "START_ANALYSIS", "OPEN_ANALYSIS", "OFFER_VIDEO", "REQUEST_VIDEO"];
 
 // Generic cost classification (task section 6) -- deliberately not Veo-
 // specific, and deliberately not a monetary figure: no price is invented

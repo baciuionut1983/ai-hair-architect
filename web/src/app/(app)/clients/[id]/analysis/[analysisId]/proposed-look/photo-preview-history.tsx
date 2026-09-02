@@ -1,8 +1,11 @@
 import { Loader2 } from "lucide-react";
+import { useParams } from "next/navigation";
+import { useState } from "react";
 
 import { Alert, Card } from "@/components/ui";
 import type { PhotoPreviewGenerationRecord } from "@/lib/photo-preview-generation-repository";
 
+import { ConciergeVideoOffer } from "./concierge-video-offer";
 import { PhotoPreviewComparison } from "./photo-preview-comparison";
 import {
   formatPhotoPreviewTimestamp,
@@ -31,14 +34,39 @@ export function PhotoPreviewHistoryList({ clientId, history }: PhotoPreviewHisto
   return (
     <div className="flex flex-col gap-4">
       <h4 className="text-sm font-semibold text-foreground">Preview history</h4>
-      {history.map((generation) => (
-        <PhotoPreviewHistoryRow key={generation.id} clientId={clientId} generation={generation} />
+      {history.map((generation, index) => (
+        // AI Concierge / Orchestrator, Stage 2: the video offer only ever
+        // appears once, tied to the NEWEST (index 0) result -- history is
+        // already newest-first (this file's own established ordering
+        // comment above), so multiple prior COMPLETED previews never each
+        // show their own redundant "want a video?" prompt.
+        <PhotoPreviewHistoryRow key={generation.id} clientId={clientId} generation={generation} isLatest={index === 0} />
       ))}
     </div>
   );
 }
 
-function PhotoPreviewHistoryRow({ clientId, generation }: { clientId: string; generation: PhotoPreviewGenerationRecord }) {
+function PhotoPreviewHistoryRow({
+  clientId,
+  generation,
+  isLatest,
+}: {
+  clientId: string;
+  generation: PhotoPreviewGenerationRecord;
+  isLatest: boolean;
+}) {
+  const params = useParams<{ id: string; analysisId: string }>();
+  const analysisId = params.analysisId;
+  // AI Concierge / Orchestrator, Stage 2 (task section 6): local-only,
+  // never persisted (task section 5: "persist nothing unless existing
+  // architecture genuinely requires it") -- flips true on an explicit
+  // "yes" click and hands off to VideoDemonstrationSection's own
+  // requestConsentOnMount prop, which opens the SAME EXISTING cost-consent
+  // dialog the manual "Create Result Video" button already uses. Scoped
+  // to this exact mounted row (keyed on generation.id, like
+  // VideoDemonstrationSection itself already is) -- never shared across a
+  // different Photo Preview generation.
+  const [videoConsentRequested, setVideoConsentRequested] = useState(false);
   const variationLabel = getPhotoPreviewVariationLabel(generation);
 
   const meta = (
@@ -67,6 +95,16 @@ function PhotoPreviewHistoryRow({ clientId, generation }: { clientId: string; ge
         </div>
         {meta}
         <PhotoPreviewComparison generation={{ ...generation, generatedImageAssetId: generation.generatedImageAssetId }} />
+        {/* AI Concierge / Orchestrator, Stage 2 (task section 4) -- the
+            conversational offer, ONLY next to the newest COMPLETED result
+            (isLatest, set by the caller's own .map() above), never on an
+            older one already in history. Server-verified for real (see
+            use-concierge-video-offer.ts) -- this component itself renders
+            nothing until the orchestrator confirms the offer applies. */}
+        {isLatest ? (
+          <ConciergeVideoOffer clientId={clientId} analysisId={analysisId} onAccept={() => setVideoConsentRequested(true)} />
+        ) : null}
+
         {/* Video UI, Result Visualization -- available ONLY for a COMPLETED
             Photo Preview (this exact branch's own condition), matching the
             product principle: Video visualizes an already-confirmed result,
@@ -74,7 +112,12 @@ function PhotoPreviewHistoryRow({ clientId, generation }: { clientId: string; ge
             generation's own id -- a different COMPLETED generation is a
             genuinely different source result, never a continuation of a
             previous one's Video state. */}
-        <VideoDemonstrationSection key={generation.id} clientId={clientId} photoPreviewGenerationId={generation.id} />
+        <VideoDemonstrationSection
+          key={generation.id}
+          clientId={clientId}
+          photoPreviewGenerationId={generation.id}
+          requestConsentOnMount={videoConsentRequested}
+        />
       </div>
     );
   }

@@ -1,7 +1,7 @@
 "use client";
 
 import { Film, Loader2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Alert, Button, Dialog, ErrorState, LoadingState } from "@/components/ui";
 import type { VideoDemonstrationStatusView } from "@/lib/video-demonstration-status-view";
@@ -22,6 +22,22 @@ export interface VideoDemonstrationSectionProps {
   // backend-ul rămâne authority" -- the server independently re-verifies
   // the full authority chain at creation time regardless, every time).
   photoPreviewGenerationId: string;
+  // AI Concierge / Orchestrator, Stage 2 (task section 6: "handoff to the
+  // EXISTING Video cost/consent UI... reuse the existing dialog/component/
+  // state path, do NOT create a second cost-confirmation implementation").
+  // When true (set by the caller only after an explicit "yes" click on the
+  // Concierge's own separate, presentational offer -- see
+  // concierge-video-offer.tsx), opens EXACTLY the same confirmation dialog
+  // the manual "Create Result Video" button already opens, via the SAME
+  // confirmIntent state and the SAME confirmAndSubmit/create() call below --
+  // no parallel confirmation UI, no parallel submit path. Fires at most
+  // ONCE per mount (the ref guard below), and only while no video exists
+  // yet for this Photo Preview -- never reopens on top of an in-flight or
+  // completed generation, and never fires merely because this prop is
+  // present (only a real transition to true does anything). Omitted
+  // (undefined/false) leaves every existing manual behavior byte-for-byte
+  // unchanged -- this is a strictly additive prop.
+  requestConsentOnMount?: boolean;
 }
 
 type ConfirmIntent = "create" | "retry" | null;
@@ -30,11 +46,26 @@ type ConfirmIntent = "create" | "retry" | null;
 // photo-preview-section.tsx's own role exactly: the ONE component that
 // calls useVideoDemonstration and owns the explicit create/retry actions
 // and their cost-consent confirmation; every child below is presentational).
-export function VideoDemonstrationSection({ clientId, photoPreviewGenerationId }: VideoDemonstrationSectionProps) {
+export function VideoDemonstrationSection({ clientId, photoPreviewGenerationId, requestConsentOnMount }: VideoDemonstrationSectionProps) {
   const { state, create, createVariation } = useVideoDemonstration(clientId, photoPreviewGenerationId);
   const [confirmIntent, setConfirmIntent] = useState<ConfirmIntent>(null);
   const [pendingIntent, setPendingIntent] = useState<ConfirmIntent>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const hasAutoOpenedRef = useRef(false);
+
+  useEffect(() => {
+    if (!requestConsentOnMount || hasAutoOpenedRef.current) return;
+    if (state.status !== "ready") return;
+    if (resolveLatestVideoDemonstration(state.history)) return; // a video already exists -- never reopen on top of it
+    hasAutoOpenedRef.current = true;
+    // Unavoidable: this is a one-shot sync of an external "the user already
+    // said yes" signal into local dialog state, genuinely synchronous (no
+    // fetch/async boundary to hide it behind) -- same accepted pattern as
+    // consultation-chat.tsx's own identical react-hooks/set-state-in-effect
+    // case, guarded by the ref above so it can only ever fire once.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setConfirmIntent("create");
+  }, [requestConsentOnMount, state]);
 
   function applyActionOutcome(outcome: VideoDemonstrationActionOutcome) {
     if (!outcome.ok) {

@@ -30,7 +30,14 @@ import {
 // being leaked back to the caller as "found but not yours".
 
 export interface ResolveOrchestratorDecisionInput {
-  message: string;
+  // Stage 2: optional. A caller with a genuine free-text goal ("show me
+  // the result") sends one; the NEW system-triggered check (a real,
+  // server-verified COMPLETED Photo Preview) sends none at all -- there is
+  // no user utterance to classify, and inventing a fake one just to
+  // satisfy a "message required" rule would make CONCIERGE_ORCHESTRATION's
+  // own observability dishonest (see logOrchestratorDecision's own
+  // `trigger` field below, which distinguishes the two cases for real).
+  message?: string;
   roleClass: OrchestratorRoleClass;
   ownerUserId: string;
   currentClientId?: string | null;
@@ -83,7 +90,7 @@ async function buildDecision(input: ResolveOrchestratorDecisionInput, dependenci
     hasCompletedPhotoPreview: Boolean(input.hasCompletedPhotoPreview) && analysisId !== null,
   };
 
-  const intent = classify(input.message);
+  const intent = classify(input.message ?? "");
   const decision = decideFromIntent(intent, context);
 
   if (!isOrchestratorDecision(decision)) {
@@ -104,9 +111,19 @@ function decideFromIntent(intent: OrchestratorIntent, context: OrchestratorConte
   // a Photo Preview just completed, regardless of the free-text intent --
   // this is the conversational moment task section 5 describes ("Dorești
   // să îți generez și un video demonstrativ?"), not something the user
-  // has to ask for by name.
-  if (context.hasCompletedPhotoPreview && context.currentClientId && context.currentAnalysisId && roleAllows("REQUEST_VIDEO", context.roleClass)) {
-    return composeDecision("request_video", "video", context, "REQUEST_VIDEO", ["OPEN_ANALYSIS", "REQUEST_VIDEO"], "video_offer_after_completed_preview", "video_offer_after_completed_preview");
+  // has to ask for by name. Stage 2: recommends OFFER_VIDEO (the
+  // presentational question, zero billable effect), never REQUEST_VIDEO
+  // directly -- only an explicit "yes" click (a SEPARATE, later decision --
+  // see the UI's own useConciergeVideoOffer hook) leads there, and even
+  // then only as far as the existing Video UI's own real consent dialog.
+  if (
+    context.hasCompletedPhotoPreview &&
+    context.currentClientId &&
+    context.currentAnalysisId &&
+    roleAllows("OFFER_VIDEO", context.roleClass) &&
+    roleAllows("REQUEST_VIDEO", context.roleClass)
+  ) {
+    return composeDecision("request_video", "video", context, "OFFER_VIDEO", ["OPEN_ANALYSIS", "REQUEST_VIDEO"], "video_offer_after_completed_preview", "video_offer_after_completed_preview");
   }
 
   switch (intent) {
@@ -219,6 +236,17 @@ function composeDecision(
   };
 }
 
+// Stage 2 (task section 11): "we should be able to distinguish
+// video_offer_presented" -- derived here, server-side, from the SAME real
+// decision every other event field already comes from (never a separate,
+// second source of truth). The three purely client-side interaction
+// events (accepted/declined/the existing dialog opening) have no server
+// mutation to hang off of and are emitted client-side instead -- see
+// concierge-video-offer-logic.ts's own header comment.
+function deriveOrchestrationEvent(decision: OrchestratorDecision): "video_offer_presented" | null {
+  return decision.recommendedAction === "OFFER_VIDEO" ? "video_offer_presented" : null;
+}
+
 function logOrchestratorDecision(input: ResolveOrchestratorDecisionInput, decision: OrchestratorDecision, totalLatencyMs: number): void {
   // Never logs the raw message content (task section 10: "Do not log
   // sensitive prompt/user content unnecessarily") -- only the structured,
@@ -227,8 +255,13 @@ function logOrchestratorDecision(input: ResolveOrchestratorDecisionInput, decisi
     gate: "CONCIERGE_ORCHESTRATION",
     ownerUserId: input.ownerUserId,
     roleClass: input.roleClass,
+    // Stage 2: distinguishes a real free-text ask from the system-observed
+    // "a Photo Preview just completed" check -- never guessed, derived
+    // directly from whether a message was actually sent.
+    trigger: input.message && input.message.trim().length > 0 ? "message" : "context",
     intent: decision.intent,
     recommendedAction: decision.recommendedAction,
+    event: deriveOrchestrationEvent(decision),
     requiresUserConsent: decision.requiresUserConsent,
     costClass: decision.costClass,
     totalLatencyMs,

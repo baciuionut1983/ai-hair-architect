@@ -29,6 +29,12 @@ const ACTION_ID_TO_KEY: Record<OrchestratorActionId, TranslationKey> = {
   OPEN_CLIENT: "concierge.action.openClient",
   START_ANALYSIS: "concierge.action.startAnalysis",
   OPEN_ANALYSIS: "concierge.action.openAnalysis",
+  // Stage 2: OFFER_VIDEO is presentational (see orchestrator-action-registry.ts) --
+  // it is never rendered as a generic action button by ConciergePanel in
+  // practice (the dedicated ConciergeVideoOffer component handles it), but
+  // this Record must stay exhaustive. Reuses the exact same question copy
+  // reasonCodeToTranslationKey already maps to for this same moment.
+  OFFER_VIDEO: "concierge.videoOffer.question",
   REQUEST_VIDEO: "concierge.action.requestVideo",
 };
 

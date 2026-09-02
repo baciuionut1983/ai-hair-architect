@@ -174,10 +174,15 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
       hasCompletedPhotoPreview: true,
     });
 
-    expect(decision.recommendedAction).toBe("REQUEST_VIDEO");
+    // Stage 2: the OFFER itself is presentational and NO_INCREMENTAL_COST --
+    // MEANINGFUL_COST/requiresUserConsent only apply once the user says yes
+    // and the SEPARATE REQUEST_VIDEO action is what gets reached (see the
+    // Stage 2 test suite for that boundary).
+    expect(decision.recommendedAction).toBe("OFFER_VIDEO");
     expect(decision.reasonCode).toBe("video_offer_after_completed_preview");
-    expect(decision.costClass).toBe("MEANINGFUL_COST");
-    expect(decision.requiresUserConsent).toBe(true);
+    expect(decision.costClass).toBe("NO_INCREMENTAL_COST");
+    expect(decision.requiresUserConsent).toBe(false);
+    expect(decision.availableActions).toContain("REQUEST_VIDEO");
   });
 
   it("does NOT offer video when hasCompletedPhotoPreview is true but no real client/analysis is resolved -- the flag alone is never trusted", async () => {
@@ -192,6 +197,83 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
 
     expect(decision.recommendedAction).not.toBe("REQUEST_VIDEO");
     expect(decision.reasonCode).not.toBe("video_offer_after_completed_preview");
+  });
+
+  // Stage 2's own "LIVE CONTEXT" trigger: a real, system-observed
+  // completion check with NO message at all -- never a fabricated user
+  // utterance (see orchestrator-service.ts's own header comment on
+  // ResolveOrchestratorDecisionInput.message).
+  it("a context-only call (no message at all) still produces the offer -- the system-triggered path, not a fabricated ask", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    const decision = await resolveOrchestratorDecision({
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: clientId,
+      currentAnalysisId: analysis.id,
+      hasCompletedPhotoPreview: true,
+    });
+
+    expect(decision.recommendedAction).toBe("OFFER_VIDEO");
+    expect(decision.reasonCode).toBe("video_offer_after_completed_preview");
+  });
+
+  it("a context-only call (no message) with no completed-preview flag produces an honest 'unsupported' answer, never a guess", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const analysis = await createAnalysis(ownerUserId, clientId);
+
+    const decision = await resolveOrchestratorDecision({
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: clientId,
+      currentAnalysisId: analysis.id,
+    });
+
+    expect(decision.intent).toBe("unsupported");
+    expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
+  });
+
+  // Test I (task section 13): forged/foreign resource context cannot
+  // produce an authorized Video handoff -- extends the earlier forged-id
+  // tests (which prove the ids themselves are rejected) by proving the
+  // SPECIFIC video-offer/handoff path is unreachable through a forged id
+  // too, not just the ordinary navigation actions.
+  it("I: a forged/foreign clientId with hasCompletedPhotoPreview:true can NEVER produce OFFER_VIDEO or any Video handoff", async () => {
+    const { ownerUserId: ownerA } = await createOwnerAndClient();
+    const { clientId: foreignClientId } = await createOwnerAndClient();
+    const foreignAnalysis = await createAnalysis((await prisma.client.findUniqueOrThrow({ where: { id: foreignClientId } })).ownerUserId, foreignClientId);
+
+    const decision = await resolveOrchestratorDecision({
+      roleClass: "professional",
+      ownerUserId: ownerA,
+      currentClientId: foreignClientId,
+      currentAnalysisId: foreignAnalysis.id,
+      hasCompletedPhotoPreview: true,
+    });
+
+    expect(decision.currentContext.currentClientId).toBeNull();
+    expect(decision.currentContext.currentAnalysisId).toBeNull();
+    expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
+    expect(decision.recommendedAction).not.toBe("REQUEST_VIDEO");
+    expect(decision.costClass).not.toBe("MEANINGFUL_COST");
+  });
+
+  it("I: a real analysisId belonging to a DIFFERENT client of the SAME owner, with hasCompletedPhotoPreview:true, cannot produce OFFER_VIDEO", async () => {
+    const { ownerUserId, clientId: client1 } = await createOwnerAndClient();
+    const { clientId: client2 } = await createOwnerAndClient(ownerUserId);
+    const analysisUnderClient2 = await createAnalysis(ownerUserId, client2);
+
+    const decision = await resolveOrchestratorDecision({
+      roleClass: "professional",
+      ownerUserId,
+      currentClientId: client1,
+      currentAnalysisId: analysisUnderClient2.id,
+      hasCompletedPhotoPreview: true,
+    });
+
+    expect(decision.currentContext.currentAnalysisId).toBeNull();
+    expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
   });
 
   // -------------------------------------------------------------------------

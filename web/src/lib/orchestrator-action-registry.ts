@@ -1,21 +1,25 @@
 import type { OrchestratorActionId, OrchestratorCostClass, OrchestratorRoleClass } from "@/lib/orchestrator-contracts";
 
-// AI Concierge / Orchestrator, Stage 1 -- the allowlisted action registry
-// (task section 4). This is the ONLY place a caller (the API route, the
-// UI) may look up what an action id means -- there is no path from a raw
-// string to an executed effect that does not go through this table.
+// AI Concierge / Orchestrator -- the allowlisted action registry (task
+// section 4, extended Stage 2 task section 8). This is the ONLY place a
+// caller (the API route, the UI) may look up what an action id means --
+// there is no path from a raw string to an executed effect that does not
+// go through this table.
 //
-// Every action in Stage 1 is `kind: "navigate"` -- client-side routing to
-// an EXISTING page only, never a direct call into an engine's own
-// create/execute endpoint. This is deliberate, not a placeholder: it is
-// what makes "intent != execution" (task section 3) true by construction
-// for this whole stage -- there is categorically no code path here that
+// Stage 2 introduces a second `kind`: "presentational" (OFFER_VIDEO --
+// the conversational question itself, zero billable effect) alongside
+// the existing "navigate" (client-side routing to an EXISTING page only,
+// never a direct call into an engine's own create/execute endpoint).
+// Neither kind can execute an engine directly -- this is deliberate, not
+// a placeholder: it is what makes "intent != execution" (task section 3)
+// true by construction -- there is categorically no code path here that
 // can submit a paid Video generation, mutate a client record, or do
 // anything beyond telling the browser which existing, already-authority-
-// checked page to go to. The actual mutation (creating an analysis,
-// confirming a proposal, requesting a video) still only ever happens
-// through the EXISTING pages/APIs those routes render, with their own
-// EXISTING consent/approval gates completely intact.
+// checked page to go to (or, for "presentational", nothing at all beyond
+// rendering text). The actual mutation (creating an analysis, confirming
+// a proposal, requesting a video) still only ever happens through the
+// EXISTING pages/APIs those routes render, with their own EXISTING
+// consent/approval gates completely intact.
 
 export interface OrchestratorActionDefinition {
   id: OrchestratorActionId;
@@ -31,11 +35,24 @@ export interface OrchestratorActionDefinition {
   requiresProfessionalApproval: boolean;
   requiresUserConsent: boolean;
   costClass: OrchestratorCostClass;
-  // Stage 1: always false. Nothing in this registry may run without a
-  // human clicking the resulting navigation button -- there is no
-  // autonomous execution path yet.
+  // Whether the UI may show/run this action without a human click.
+  // INVARIANT (task section 8, enforced by
+  // violatesAutomaticConsentInvariant below + its own test): a
+  // MEANINGFUL_COST action must NEVER be true here. A NO_INCREMENTAL_COST
+  // presentational question (like OFFER_VIDEO) MAY be true -- proactively
+  // asking costs nothing and is exactly what "the agent continuing the
+  // workflow" (task section 4) means.
   canExecuteAutomatically: boolean;
-  kind: "navigate";
+  kind: "navigate" | "presentational";
+}
+
+// Task section 8's own required invariant, as a real, reusable predicate
+// (not just prose): a MEANINGFUL_COST action can never be configured to
+// run automatically. Exercised over the WHOLE registry by
+// orchestrator-action-registry.test.ts, and callable by any future code
+// that constructs a new action definition dynamically.
+export function violatesAutomaticConsentInvariant(definition: OrchestratorActionDefinition): boolean {
+  return definition.costClass === "MEANINGFUL_COST" && definition.canExecuteAutomatically === true;
 }
 
 export const ORCHESTRATOR_ACTION_REGISTRY: Record<OrchestratorActionId, OrchestratorActionDefinition> = {
@@ -93,6 +110,29 @@ export const ORCHESTRATOR_ACTION_REGISTRY: Record<OrchestratorActionId, Orchestr
     canExecuteAutomatically: false,
     kind: "navigate",
   },
+  // Stage 2 (task section 3/4): the conversational offer itself --
+  // "Dorești să îți generez și un video demonstrativ?" -- distinct from
+  // REQUEST_VIDEO. Presenting this question has ZERO billable effect: no
+  // Video row is created, no engine is called, nothing is mutated.
+  // canExecuteAutomatically is deliberately TRUE (unlike every other
+  // action here) -- the whole point is that the agent proactively asks
+  // once a real, server-verified COMPLETED Photo Preview exists, without
+  // a human having to click anything first. This is safe ONLY because
+  // costClass is NO_INCREMENTAL_COST -- see violatesAutomaticConsentInvariant
+  // above and its own test, which would fail loudly if this were ever
+  // changed to a paid costClass without also flipping this back to false.
+  OFFER_VIDEO: {
+    id: "OFFER_VIDEO",
+    allowedRoleClasses: ["professional"],
+    requiresClientId: true,
+    requiresAnalysisId: true,
+    changesData: false,
+    requiresProfessionalApproval: false,
+    requiresUserConsent: false,
+    costClass: "NO_INCREMENTAL_COST",
+    canExecuteAutomatically: true,
+    kind: "presentational",
+  },
   REQUEST_VIDEO: {
     id: "REQUEST_VIDEO",
     allowedRoleClasses: ["professional"],
@@ -134,9 +174,12 @@ export interface OrchestratorActionHrefContext {
 // action's own declared requirements (requiresClientId/requiresAnalysisId)
 // are not met by that context -- never falls back to a caller-supplied
 // raw string that has not been through resolveOrchestratorDecision's own
-// ownership check.
+// ownership check. Also null, unconditionally, for a "presentational"
+// action (OFFER_VIDEO) -- it has no navigation target by definition; the
+// UI renders its own question text instead.
 export function resolveOrchestratorActionHref(actionId: OrchestratorActionId, context: OrchestratorActionHrefContext): string | null {
   const definition = ORCHESTRATOR_ACTION_REGISTRY[actionId];
+  if (definition.kind === "presentational") return null;
   if (definition.requiresClientId && !context.clientId) return null;
   if (definition.requiresAnalysisId && !context.analysisId) return null;
 
@@ -150,6 +193,8 @@ export function resolveOrchestratorActionHref(actionId: OrchestratorActionId, co
     case "OPEN_ANALYSIS":
     case "REQUEST_VIDEO":
       return `/clients/${context.clientId}/analysis/${context.analysisId}`;
+    case "OFFER_VIDEO":
+      return null;
     default: {
       const exhaustiveCheck: never = actionId;
       return exhaustiveCheck;

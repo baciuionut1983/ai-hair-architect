@@ -8,13 +8,17 @@ import { isRecord } from "@/lib/technical-visual-map-validators";
 const NO_STORE_HEADERS = { "Cache-Control": "no-store" } as const;
 const MAX_MESSAGE_LENGTH = 2000;
 
-// AI Concierge / Orchestrator, Stage 1 -- the ONLY HTTP surface this stage
-// exposes. Session-authenticated (task section 11: no path to any
-// orchestration effect without a real, authenticated owner). Accepts a
-// free-text message plus OPTIONAL context ids the caller believes are
-// current -- every one of those ids is re-verified server-side against
-// real ownership by resolveOrchestratorDecision itself before ever
-// influencing the response; this route never trusts them directly.
+// AI Concierge / Orchestrator -- the ONLY HTTP surface this feature
+// exposes. Session-authenticated (task section 11/12: no path to any
+// orchestration effect without a real, authenticated owner). Accepts
+// EITHER a free-text message OR hasCompletedPhotoPreview:true (Stage 2:
+// the system-triggered "a real Photo Preview just completed" check --
+// see orchestrator-service.ts's own header comment on why this is never a
+// fabricated message) -- at least one of the two is required. Also
+// accepts OPTIONAL context ids the caller believes are current -- every
+// one of those ids is re-verified server-side against real ownership by
+// resolveOrchestratorDecision itself before ever influencing the
+// response; this route never trusts them directly.
 //
 // Returns a validated OrchestratorDecision (never raw model/classifier
 // output) -- see orchestrator-contracts.ts's own isOrchestratorDecision,
@@ -22,8 +26,10 @@ const MAX_MESSAGE_LENGTH = 2000;
 //
 // This route NEVER calls into Video/Photo Preview/any other engine's own
 // create/execute endpoints -- it only ever returns a decision describing
-// where the client should navigate next. See orchestrator-action-registry.ts's
-// own header comment for why that is true by construction in this stage.
+// where the client should navigate next (or, for OFFER_VIDEO, a
+// presentational question with no navigation target at all). See
+// orchestrator-action-registry.ts's own header comment for why that is
+// true by construction in this stage.
 export async function POST(request: Request) {
   const sessionUser = await authenticateSessionRequest();
   if (!sessionUser) {
@@ -42,16 +48,22 @@ export async function POST(request: Request) {
   }
 
   const message = typeof body.message === "string" ? body.message.trim() : "";
-  if (!message || message.length > MAX_MESSAGE_LENGTH) {
+  const hasCompletedPhotoPreview = body.hasCompletedPhotoPreview === true;
+  if (!message && !hasCompletedPhotoPreview) {
     return NextResponse.json(
-      { error: "message is required and must be at most 2000 characters." },
+      { error: "message is required unless hasCompletedPhotoPreview is true." },
+      { status: 422, headers: NO_STORE_HEADERS },
+    );
+  }
+  if (message.length > MAX_MESSAGE_LENGTH) {
+    return NextResponse.json(
+      { error: "message must be at most 2000 characters." },
       { status: 422, headers: NO_STORE_HEADERS },
     );
   }
 
   const currentClientId = typeof body.currentClientId === "string" ? body.currentClientId : null;
   const currentAnalysisId = typeof body.currentAnalysisId === "string" ? body.currentAnalysisId : null;
-  const hasCompletedPhotoPreview = body.hasCompletedPhotoPreview === true;
 
   const decision = await resolveOrchestratorDecision({
     message,

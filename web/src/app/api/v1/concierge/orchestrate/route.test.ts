@@ -64,6 +64,24 @@ describe("POST /api/v1/concierge/orchestrate", () => {
     expect(response.status).toBe(422);
   });
 
+  // Stage 2: the system-triggered "a Photo Preview just completed" check
+  // sends NO message at all -- this must succeed, not 422, and must reach
+  // the orchestrator with an absent/empty message rather than a fabricated
+  // one (task section 11's own honesty requirement).
+  it("succeeds with NO message at all when hasCompletedPhotoPreview is true -- the context-only trigger", async () => {
+    const response = await POST(request({ currentClientId: "client-1", currentAnalysisId: "analysis-1", hasCompletedPhotoPreview: true }));
+    expect(response.status).toBe(200);
+    expect(RESOLVE_DECISION_MOCK).toHaveBeenCalledWith(expect.objectContaining({ hasCompletedPhotoPreview: true }));
+    const callArg = RESOLVE_DECISION_MOCK.mock.calls[0][0];
+    expect(callArg.message).toBe("");
+  });
+
+  it("still returns 422 when NEITHER a message NOR hasCompletedPhotoPreview is provided", async () => {
+    const response = await POST(request({ currentClientId: "client-1" }));
+    expect(response.status).toBe(422);
+    expect(RESOLVE_DECISION_MOCK).not.toHaveBeenCalled();
+  });
+
   it("returns 400 for an invalid JSON body", async () => {
     const response = await POST(new Request("http://localhost/api", { method: "POST", body: "not json" }));
     expect(response.status).toBe(400);
