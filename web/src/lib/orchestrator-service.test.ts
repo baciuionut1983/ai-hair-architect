@@ -1470,6 +1470,134 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
       expect(loginDir.startsWith(appGroupDir)).toBe(false);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Voice Input Integration -- real Postgres. resolveOrchestratorDecision has
+  // no concept of "input modality" at all -- it only ever accepts a
+  // `message: string`, regardless of whether the browser produced that
+  // string by typing or by an STT transcript (see
+  // concierge-voice-input.tsx's own header comment: the transcript is
+  // trimmed and handed to the SAME submitMessage/ask path a typed Send
+  // already uses). These tests use the EXACT example phrases this task's
+  // own spec lists as desired spoken input, proving they are handled
+  // identically to typed text -- because, at this layer, there is no other
+  // way for them to be handled.
+  // -------------------------------------------------------------------------
+
+  describe("Voice Input Integration (server-side proof: input is input, regardless of modality)", () => {
+    it("spoken 'Vreau sa lucrez pe Baciu.' reaches the SAME deterministic client-name resolution as typed text", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+
+      const decision = await resolveOrchestratorDecision({
+        message: "Vreau să lucrez pe Baciu.",
+        roleClass: "professional",
+        ownerUserId,
+      });
+
+      expect(decision.currentContext.currentClientId).toBe(clientId);
+      expect(decision.reasonCode).not.toBe("no_client_selected");
+    });
+
+    it("Voice cannot supply/invent a trusted client id -- only a transcript STRING ever reaches the server, exactly like typed text", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      // Simulates an STT transcript that happened to contain the real
+      // client's own id as literal text (e.g. a misheard/garbled
+      // transcription) -- still only ever compared as a NAME candidate
+      // against real fullName values, never trusted as an id (same
+      // invariant orchestrator-client-name-resolver.ts's own tests prove
+      // in isolation -- this proves it end to end through the real
+      // service for a voice-shaped input).
+      const decision = await resolveOrchestratorDecision({
+        message: `Vreau sa lucrez pe clientul ${clientId}.`,
+        roleClass: "professional",
+        ownerUserId,
+      });
+      expect(decision.currentContext.currentClientId).toBeNull();
+    });
+
+    it("a foreign-owner client remains inaccessible via a spoken-shaped name mention", async () => {
+      const { ownerUserId: ownerA } = await createOwnerAndClient(undefined, "Popescu Maria");
+      await createOwnerAndClient(undefined, "Baciu Ionuț");
+
+      const decision = await resolveOrchestratorDecision({
+        message: "Vreau să lucrez pe Baciu.",
+        roleClass: "professional",
+        ownerUserId: ownerA,
+      });
+      expect(decision.currentContext.currentClientId).toBeNull();
+      expect(decision.reasonCode).toBe("client_name_not_found");
+    });
+
+    it("spoken 'Continua de unde am ramas' uses the SAME preserved conversation context as typed text -- no separate voice continuity path", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      const analysis = await createAnalysis(ownerUserId, clientId);
+
+      // The (transcript, currentClientId) shape below is EXACTLY what
+      // concierge-voice-input.tsx's onTranscript -> submitMessage -> ask()
+      // chain produces -- the same POST body a typed "Continua" would.
+      const decision = await resolveOrchestratorDecision({
+        message: "Continuă de unde am rămas.",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      });
+      expect(decision.currentContext.currentClientId).toBe(clientId);
+      expect(decision.currentContext.currentAnalysisId).toBe(analysis.id);
+    });
+
+    it("spoken bare 'Da' without pending context cannot trigger Video", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      const analysis = await createAnalysis(ownerUserId, clientId);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "Da",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+        // No pendingDecision at all -- exactly what a spoken "Da" produces
+        // when the professional never received a video offer.
+      });
+      expect(decision.recommendedAction).not.toBe("REQUEST_VIDEO");
+      expect(decision.costClass).not.toBe("MEANINGFUL_COST");
+    });
+
+    it("spoken 'Da' to a real pending Video offer only ever reaches the existing navigate-only REQUEST_VIDEO action -- never a Video submission", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient(undefined, "Baciu Ionuț");
+      const analysis = await createAnalysis(ownerUserId, clientId);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "Da",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+        pendingDecision: "VIDEO_OFFER",
+      });
+
+      expect(decision.recommendedAction).toBe("REQUEST_VIDEO");
+      // The registry itself proves this is navigation only, never a
+      // billable engine call -- see orchestrator-action-registry.ts's own
+      // header comment ("categorically no code path here that can submit
+      // a paid Video generation").
+      expect(ORCHESTRATOR_ACTION_REGISTRY.REQUEST_VIDEO.kind).toBe("navigate");
+      expect(ORCHESTRATOR_ACTION_REGISTRY.REQUEST_VIDEO.changesData).toBe(false);
+      expect(ORCHESTRATOR_ACTION_REGISTRY.REQUEST_VIDEO.requiresUserConsent).toBe(true);
+    });
+
+    it("source-level lock: the Voice Input Integration surface never references Video/Photo Preview submission or Veo directly", () => {
+      const dirname = path.dirname(fileURLToPath(import.meta.url));
+      const componentsDir = path.join(dirname, "..", "components");
+      for (const file of ["concierge-voice-input.tsx", "concierge-panel.tsx", "use-concierge.ts"]) {
+        const source = fs.readFileSync(path.join(componentsDir, file), "utf8");
+        expect(source).not.toMatch(/generateVideos/);
+        expect(source).not.toMatch(/createVideoDemonstrationGeneration/);
+        expect(source).not.toMatch(/createPhotoPreviewGeneration/);
+        expect(source).not.toMatch(/Veo/);
+      }
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

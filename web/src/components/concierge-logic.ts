@@ -139,3 +139,17 @@ export function hasNoActionableRecommendation(decision: OrchestratorDecision): b
 export function shouldClearComposerAfterSubmit(rawMessage: string, isLoading: boolean): boolean {
   return rawMessage.trim().length > 0 && !isLoading;
 }
+
+// Voice input integration: mirrors consultation-chat-logic.ts's own
+// isVoiceInputBusy(sending, chatProcessing) exactly (same two-boolean
+// shape, same reasoning -- a second overlapping recording while the
+// FIRST one's transcript is still being generated, or its resulting
+// message is still being sent to the Orchestrator, must never be
+// startable). Not imported directly from that file: this is Concierge's
+// own thin pure-logic file, matching this codebase's established
+// per-surface convention (each surface owns its own tested predicates
+// over the SAME underlying closed Voice hook, never a shared cross-
+// feature coupling for a one-line guard).
+export function isConciergeVoiceInputBusy(loading: boolean, processing: boolean): boolean {
+  return loading || processing;
+}

@@ -5,6 +5,7 @@ import {
   buildOrchestrateRequestBody,
   CONCIERGE_MESSAGE_MAX_LENGTH,
   hasNoActionableRecommendation,
+  isConciergeVoiceInputBusy,
   isVideoOfferDecision,
   reasonCodeToTranslationKey,
   shouldClearComposerAfterSubmit,
@@ -166,5 +167,23 @@ describe("isVideoOfferDecision / hasNoActionableRecommendation", () => {
   it("hasNoActionableRecommendation is true only when there is truly nothing to do", () => {
     expect(hasNoActionableRecommendation(decision({ recommendedAction: null, availableActions: [] }))).toBe(true);
     expect(hasNoActionableRecommendation(decision({ recommendedAction: "OPEN_CLIENTS", availableActions: ["OPEN_CLIENTS"] }))).toBe(false);
+  });
+});
+
+describe("isConciergeVoiceInputBusy -- Voice Input Integration", () => {
+  it("is not busy when neither Concierge nor Voice is doing anything", () => {
+    expect(isConciergeVoiceInputBusy(false, false)).toBe(false);
+  });
+
+  it("is busy while a Concierge orchestration request is in flight, even if Voice itself is idle", () => {
+    expect(isConciergeVoiceInputBusy(true, false)).toBe(true);
+  });
+
+  it("is busy while Voice is transcribing, even if Concierge itself is idle", () => {
+    expect(isConciergeVoiceInputBusy(false, true)).toBe(true);
+  });
+
+  it("is busy when both are active", () => {
+    expect(isConciergeVoiceInputBusy(true, true)).toBe(true);
   });
 });

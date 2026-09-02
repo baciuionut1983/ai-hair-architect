@@ -21,10 +21,17 @@ import type { ClientRecord } from "@/lib/contracts";
 // actual fullName text, never as an id shortcut.
 //
 // SCOPE (deliberately narrow, matching orchestrator-intent-classifier.ts's
-// own EN/RO-only precedent): this only recognizes the single, most common
-// phrasing this task's own reported production failure used -- the word
-// "client" (or a Romanian inflection of it: clientul/clientului/clienta/
-// clientei/clienți) immediately followed by one or two capitalized words.
+// own EN/RO-only precedent): recognizes two families of phrasing, each
+// immediately (optionally through a short connector: pe/cu/on/with)
+// followed by one or two capitalized words:
+//  - the word "client" (or a Romanian inflection of it: clientul/
+//    clientului/clienta/clientei/clienți) -- this task's own originally
+//    reported production failure ("clientul Baciu");
+//  - a "lucr"-rooted Romanian verb form (lucrez/lucrăm/lucra/lucrați, "to
+//    work") or an English "work"-rooted one -- Voice Input Integration's
+//    own explicit required phrasing ("Vreau să lucrez pe Baciu." / "I want
+//    to work on Baciu"), added for that task, reusing this exact same
+//    extraction+resolution mechanism rather than inventing a second one.
 // A missed pattern is always safe (falls through to the existing
 // "no client selected" behavior, unchanged) -- a wrong-looking match is
 // still always safe too, since it is only ever a CANDIDATE, subject to real
@@ -32,13 +39,16 @@ import type { ClientRecord } from "@/lib/contracts";
 
 const MAX_CANDIDATE_NAME_LENGTH = 100;
 
-// [Cc] (not the `i` flag) deliberately keeps ONLY the "client" keyword
-// case-insensitive -- a sentence-initial "Clientul Baciu..." must still
-// match -- while the captured NAME itself stays fully case-sensitive
-// (requires a real uppercase first letter), which is what keeps an
-// ordinary lowercase word after "client" from ever being extracted at all
-// (see this module's own SCOPE note above).
-const CANDIDATE_NAME_PATTERN = /\b[Cc]lient\p{L}*\s+([\p{Lu}][\p{L}'-]*(?:\s+[\p{Lu}][\p{L}'-]*)?)/u;
+// [Cc]/[Ll]/[Ww] (not the `i` flag) deliberately keep ONLY the trigger
+// keyword case-insensitive -- a sentence-initial "Clientul Baciu..." or
+// "Lucrez pe Baciu..." must still match -- while the captured NAME itself
+// stays fully case-sensitive (requires a real uppercase first letter),
+// which is what keeps an ordinary lowercase word after the trigger from
+// ever being extracted at all (see this module's own SCOPE note above).
+// The optional connector (pe/cu/on/with) is consumed but never captured --
+// "lucrez pe Baciu" and "clientul Baciu" both resolve to the identical
+// candidate "Baciu".
+const CANDIDATE_NAME_PATTERN = /\b(?:[Cc]lient\p{L}*|[Ll]ucr\p{L}*|[Ww]ork\p{L}*)\s+(?:pe\s+|cu\s+|on\s+|with\s+)?([\p{Lu}][\p{L}'-]*(?:\s+[\p{Lu}][\p{L}'-]*)?)/u;
 
 export function extractCandidateClientName(message: string): string | null {
   const match = CANDIDATE_NAME_PATTERN.exec(message);

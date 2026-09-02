@@ -26,6 +26,16 @@ describe("extractCandidateClientName", () => {
     expect(extractCandidateClientName("Client Baciu needs a consultation.")).toBe("Baciu");
   });
 
+  it("Voice Input Integration: extracts from 'Vreau să lucrez pe Baciu.' (no 'client' word at all)", () => {
+    expect(extractCandidateClientName("Vreau să lucrez pe Baciu.")).toBe("Baciu");
+  });
+
+  it("Voice Input Integration: extracts other 'lucr'-rooted conjugations and an English 'work' phrasing", () => {
+    expect(extractCandidateClientName("Lucrăm pe Baciu azi.")).toBe("Baciu");
+    expect(extractCandidateClientName("I want to work on Baciu today.")).toBe("Baciu");
+    expect(extractCandidateClientName("Vreau să lucrez cu Baciu.")).toBe("Baciu");
+  });
+
   it("extracts an English phrasing", () => {
     expect(extractCandidateClientName("Show me how the new look would suit client Baciu")).toBe("Baciu");
   });

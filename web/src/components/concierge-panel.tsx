@@ -16,6 +16,7 @@ import {
   reasonCodeToTranslationKey,
   shouldClearComposerAfterSubmit,
 } from "./concierge-logic";
+import { ConciergeVoiceInput } from "./concierge-voice-input";
 import { useConcierge, type UseConciergeContext } from "./use-concierge";
 
 // AI Concierge / Orchestrator, Stage 1 -- the entry-point widget (task
@@ -28,20 +29,38 @@ export interface ConciergePanelProps {
 }
 
 export function ConciergePanel({ context }: ConciergePanelProps) {
-  const { t } = useUiLanguage();
-  const { state, ask, reset } = useConcierge(context);
+  const { t, language } = useUiLanguage();
+  const { state, ask, reset, activeClientId } = useConcierge(context);
   const [message, setMessage] = useState("");
+
+  // Shared by both typed submit AND a voice transcript (see
+  // handleVoiceTranscript below) -- the ONE place a raw string ever
+  // becomes a real Concierge orchestration request, so "text and voice
+  // converge into the exact same path" is true by construction, not by
+  // convention. Production Fix #1 (input clearing): the composer always
+  // resets immediately after a valid submit, independent of ask()'s own
+  // async loading/ready/error transition.
+  function submitMessage(rawMessage: string) {
+    if (!shouldClearComposerAfterSubmit(rawMessage, state.status === "loading")) return;
+    void ask(rawMessage);
+    setMessage("");
+  }
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!shouldClearComposerAfterSubmit(message, state.status === "loading")) return;
-    void ask(message);
-    // Production Fix #1 (input clearing): the real production bug -- the
-    // composer never reset after a send, so the previous message could
-    // visually concatenate with the next one. Cleared here, immediately
-    // (matching this app's other chat-style composers), independent of
-    // ask()'s own async loading/ready/error transition above.
-    setMessage("");
+    submitMessage(message);
+  }
+
+  // Voice input integration: onTranscript already only ever fires once per
+  // recording, with a real non-empty transcript (see
+  // concierge-voice-input.tsx's own header comment) -- this briefly shows
+  // the recognized text in the composer, exactly as a typed message would
+  // look right before Send, so the professional can see what was heard
+  // (task section 4), then submits it through the SAME submitMessage path
+  // a typed Send already uses.
+  function handleVoiceTranscript(transcript: string) {
+    setMessage(transcript);
+    submitMessage(transcript);
   }
 
   return (
@@ -52,7 +71,11 @@ export function ConciergePanel({ context }: ConciergePanelProps) {
       </div>
 
       <form onSubmit={handleSubmit} className="flex flex-col gap-3 sm:flex-row">
-        <div className="flex-1">
+        {/* min-w-0: same mobile-safety precedent as consultation-chat.tsx's
+            own composer row -- without it, a flex item's default min-width
+            ("auto") can refuse to shrink below its content's natural size
+            on a narrow phone and push the mic/Send buttons off screen. */}
+        <div className="min-w-0 flex-1">
           <Input
             value={message}
             onChange={(event) => setMessage(event.target.value)}
@@ -61,9 +84,15 @@ export function ConciergePanel({ context }: ConciergePanelProps) {
             aria-label={t("concierge.placeholder")}
           />
         </div>
-        <Button type="submit" loading={state.status === "loading"} disabled={!message.trim()}>
-          {t("consultAi.send")}
-        </Button>
+        {/* Mic + Send grouped together so mobile gets the input as its own
+            full-width row, then this pair as a second row -- never three
+            separately-stacked full-width controls. */}
+        <div className="flex gap-2">
+          <ConciergeVoiceInput activeClientId={activeClientId} language={language} t={t} loading={state.status === "loading"} onTranscript={handleVoiceTranscript} />
+          <Button type="submit" loading={state.status === "loading"} disabled={!message.trim()}>
+            {t("consultAi.send")}
+          </Button>
+        </div>
       </form>
 
       {state.status === "error" ? <p className="text-sm text-danger">{t("concierge.info.intentNotUnderstood")}</p> : null}

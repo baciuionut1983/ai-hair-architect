@@ -41,6 +41,14 @@ import {
 // (there is no "auto-run the whole plan" code path anywhere in this
 // hook); it is surfaced purely for a caller that wants to render richer
 // progress than the single recommendedAction already drives.
+//
+// Voice input integration: also returns `activeClientId` -- the SAME
+// resolveEffectiveContext computation `ask` already runs internally on
+// every call, exposed here purely so a caller can decide UI eligibility
+// (e.g. concierge-voice-input.tsx only mounts the existing, closed
+// useVoiceRecording hook once a real client id is available -- see that
+// file's own header comment for why). This is read-only, derived data --
+// never a second source of truth, never itself sent anywhere.
 
 export type ConciergeState =
   | { status: "idle" }
@@ -95,5 +103,7 @@ export function useConcierge(context: UseConciergeContext = {}) {
 
   const reset = useCallback(() => setState({ status: "idle" }), []);
 
-  return { state, ask, reset, pendingDecision: memory.pendingDecision, activePlanGoal: memory.activePlanGoal };
+  const activeClientId = resolveEffectiveContext(context, memory).currentClientId;
+
+  return { state, ask, reset, pendingDecision: memory.pendingDecision, activePlanGoal: memory.activePlanGoal, activeClientId };
 }
