@@ -57,11 +57,17 @@ export function isTechnicalDemonstrationPlanStatus(value: unknown): value is Tec
 // UNKNOWN: Stage 1 genuinely has no source data for this field -- honestly
 //   represented as absent, never fabricated (Decision Lock's own explicit
 //   "represent missing information honestly" rule).
-// PROFESSIONAL_OVERRIDE: reserved for a LATER stage where a human edits a
-//   derived step -- Stage 1's own derivation code never produces this
-//   value (no step-editing capability exists yet), but the vocabulary is
-//   included now so a later stage never needs a schema/type migration to
-//   introduce it.
+// PROFESSIONAL_OVERRIDE: the value came from a real professional edit on
+//   the confirmed AnalysisProposal (AnalysisProposal.edits, merged via
+//   technical-visual-map-assembler.ts's own computeEffectiveTechnicalCutPlan
+//   -- see technical-demonstration-derivation.ts's own header comment),
+//   never a generic engine-derived INFERRED value -- this is what keeps a
+//   professional-approved override from being collapsed into "just AI
+//   inference". Stage 1's own derivation code does NOT yet produce this
+//   tag for a directly-edited PER-STEP field (cuttingSteps itself has no
+//   edit mechanism today), only for the 7 plan-level fields a professional
+//   edit can actually touch (EDITABLE_TECHNIQUE_FIELDS) -- see
+//   CuttingDemonstrationStepPayload's own field-by-field doc comment.
 // ---------------------------------------------------------------------------
 
 export const TECHNICAL_DEMONSTRATION_VALUE_PROVENANCES = ["OBSERVED", "INFERRED", "UNKNOWN", "PROFESSIONAL_OVERRIDE"] as const;

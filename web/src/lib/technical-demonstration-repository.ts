@@ -2,8 +2,10 @@ import { randomUUID } from "crypto";
 
 import { Prisma, type TechnicalDemonstrationPlan as PrismaTechnicalDemonstrationPlanRow, type TechnicalDemonstrationStep as PrismaTechnicalDemonstrationStepRow } from "@prisma/client";
 
+import type { TechnicalCutPlan } from "@/lib/contracts";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
-import { isProposalStatus, isProposalVertical } from "@/lib/proposal-validators";
+import { isProposalStatus, isProposalVertical, isTechnicalCutPlanShape, type ProposalEditEntry } from "@/lib/proposal-validators";
+import { computeEffectiveTechnicalCutPlan, EDITABLE_TECHNIQUE_FIELDS } from "@/lib/technical-visual-map-assembler";
 import {
   computeTechnicalDemonstrationPlanRequestFingerprint,
   isTechnicalDemonstrationPlanStatus,
@@ -216,11 +218,45 @@ export async function createTechnicalDemonstrationPlanFromProposal(
         return { plan: toTechnicalDemonstrationPlanRecord(existingPlan), steps: steps.map(toTechnicalDemonstrationStepRecord), created: false };
       }
 
-      // Pure derivation -- no I/O, no provider call. Proposal.payload is
-      // trusted here exactly as createDraftFromConfirmedProposal already
-      // trusts it for the same CONFIRMED-cutting-proposal shape.
-      const cuttingPlan = proposalRow.payload as unknown as Parameters<typeof deriveCuttingDemonstrationSteps>[0];
-      const derivedSteps = deriveCuttingDemonstrationSteps(cuttingPlan);
+      // RELEASE-BLOCKER FIX: proposal.payload ALONE is only ever the
+      // engine's frozen baseline -- a professional's edit before
+      // confirmation lives separately, in proposal.edits, and is NEVER
+      // merged back into payload (same fact TechnicalVisualMap's own
+      // createDraftFromConfirmedProposal already has to account for).
+      // Reuses that exact same, already-proven merge function -- never a
+      // second, competing implementation of "what did the professional
+      // actually approve".
+      const cuttingPlan = proposalRow.payload as unknown as TechnicalCutPlan;
+      const edits = (proposalRow.edits ?? []) as unknown as ProposalEditEntry[];
+      const effectivePlan = computeEffectiveTechnicalCutPlan(cuttingPlan, edits);
+
+      // Defensive re-validation of the EFFECTIVE (post-merge) plan --
+      // mirrors assembleCuttingTechnicalVisualMap's own identical guard
+      // exactly (reuses the same shared isTechnicalCutPlanShape validator,
+      // never a second copy): the effective plan is a newly-derived object
+      // (an edit's own newValue is never independently re-validated at
+      // write time beyond ProposalEditEntry's own generic shape), so it
+      // must be proven structurally sound before anything is derived from
+      // it -- fail safely rather than persist malformed data.
+      if (!isTechnicalCutPlanShape(effectivePlan)) {
+        throw new TechnicalDemonstrationValidationError(
+          `Proposal ${analysisProposalId}'s effective technical cut plan (baseline + edits merged) failed structural validation; refusing to derive a Technical Demonstration Plan from malformed data.`,
+        );
+      }
+
+      // Which of the editable technique fields did a real edit actually
+      // touch -- provenance-only (see deriveCuttingDemonstrationSteps's own
+      // header comment): never affects the VALUE (effectivePlan already
+      // has the right value either way), only whether that value's own
+      // derived step fields are tagged PROFESSIONAL_OVERRIDE instead of a
+      // generic INFERRED.
+      const editableFieldNames: readonly string[] = EDITABLE_TECHNIQUE_FIELDS;
+      const editedFields = new Set(edits.map((edit) => edit.field).filter((field) => editableFieldNames.includes(field)));
+
+      // Pure derivation -- no I/O, no provider call. Runs against the
+      // EFFECTIVE plan (baseline + edits already merged above), never the
+      // raw frozen baseline alone.
+      const derivedSteps = deriveCuttingDemonstrationSteps(effectivePlan, editedFields);
 
       for (const derivedStep of derivedSteps) {
         if (!isValidCuttingDemonstrationStepPayload(derivedStep.payload)) {

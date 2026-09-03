@@ -56,21 +56,29 @@ export interface CuttingDemonstrationStepPayload {
 
   // INFERRED -- plan-level fields propagated uniformly to every step
   // (a deterministic "this policy applies throughout" rule, not a
-  // per-step fact literally stated in the source data).
+  // per-step fact literally stated in the source data). RELEASE-BLOCKER
+  // FIX: PROFESSIONAL_OVERRIDE instead of INFERRED whenever this exact
+  // field name is one of AnalysisProposal.edits' own edited fields --
+  // derived from the EFFECTIVE plan (baseline + edits merged), never the
+  // raw frozen baseline alone. See technical-demonstration-derivation.ts's
+  // own header comment.
   sectioning: TechnicalDemonstrationProvenanceValue<TechnicalCutSectioning>;
   guideType: TechnicalDemonstrationProvenanceValue<TechnicalCutGuideline>;
   structuralTechnique: TechnicalDemonstrationProvenanceValue<StructuralTechnique>;
   cuttingTechnique: TechnicalDemonstrationProvenanceValue<CuttingTechnique>;
   texturizingTechnique: TechnicalDemonstrationProvenanceValue<TexturizingTechnique>;
-  // INFERRED -- deterministically mapped from the plan-level `distribution`
-  // field (e.g. overdirected_back/overdirected_forward -> a real combing
-  // direction description; natural_fall/perpendicular -> "as the hair
-  // naturally falls"/"straight out from the head"). See
-  // technical-demonstration-derivation.ts's own mapping table.
+  // INFERRED (or PROFESSIONAL_OVERRIDE -- see above) -- deterministically
+  // mapped from the plan-level `distribution` field (e.g.
+  // overdirected_back/overdirected_forward -> a real combing direction
+  // description; natural_fall/perpendicular -> "as the hair naturally
+  // falls"/"straight out from the head"). See
+  // technical-demonstration-derivation.ts's own mapping table. Carries
+  // PROFESSIONAL_OVERRIDE whenever `distribution` itself was edited.
   combingDirection: TechnicalDemonstrationProvenanceValue<string>;
-  // INFERRED -- true iff `distribution` is one of the two overdirected
-  // values; false for the other three; never UNKNOWN, since `distribution`
-  // is always present on a valid TechnicalCutPlan.
+  // INFERRED (or PROFESSIONAL_OVERRIDE) -- true iff `distribution` is one
+  // of the two overdirected values; false for the other three; never
+  // UNKNOWN, since `distribution` is always present on a valid
+  // TechnicalCutPlan.
   overdirection: TechnicalDemonstrationProvenanceValue<boolean>;
 
   // UNKNOWN in Stage 1 -- no source data exists for these yet. Present so

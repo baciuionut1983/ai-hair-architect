@@ -20,7 +20,12 @@ import {
 export const TECHNICAL_VISUAL_MAP_SCHEMA_VERSION = "1.0.0";
 export const TECHNICAL_VISUAL_MAP_GENERATOR_VERSION = "1.0.0-tvm1";
 
-const EDITABLE_TECHNIQUE_FIELDS = [
+// Exported (Technical Demonstration Stage 1 release-blocker fix): the ONE
+// existing, already-proven "which technical fields can a professional edit"
+// vocabulary -- Technical Demonstration's own derivation reuses this exact
+// list to know which fields to check for an edit, never a second,
+// competing list.
+export const EDITABLE_TECHNIQUE_FIELDS = [
   "structuralTechnique",
   "cuttingTechnique",
   "texturizingTechnique",
@@ -40,7 +45,13 @@ type EditableTechniqueField = (typeof EDITABLE_TECHNIQUE_FIELDS)[number];
 // self-contained restatement of the identical algorithm, operating on the
 // same shared ProposalEditEntry/TechnicalCutPlan types, not a divergent
 // reimplementation of the rule itself.
-function computeEffectiveTechnicalCutPlan(payload: TechnicalCutPlan, edits: ProposalEditEntry[]): TechnicalCutPlan {
+//
+// Exported (Technical Demonstration Stage 1 release-blocker fix): Technical
+// Demonstration derivation must consume the SAME effective (baseline +
+// edits merged) plan this function already produces for Technical Visual
+// Map -- reused verbatim, never reimplemented a second time. Unchanged
+// behavior/signature -- this export is additive only.
+export function computeEffectiveTechnicalCutPlan(payload: TechnicalCutPlan, edits: ProposalEditEntry[]): TechnicalCutPlan {
   const effective: TechnicalCutPlan = { ...payload };
   for (const field of EDITABLE_TECHNIQUE_FIELDS) {
     let latestValue: unknown;

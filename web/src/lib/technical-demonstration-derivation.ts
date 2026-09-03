@@ -10,6 +10,20 @@ import { isHeadZone } from "@/lib/technical-visual-map-validators";
 // already-CONFIRMED proposal's own structured TechnicalCutPlan -- never
 // free text, never a live re-read of anything else.
 //
+// RELEASE-BLOCKER FIX: the `plan` this function receives MUST be the
+// EFFECTIVE plan (baseline + professional edits merged), never the raw
+// frozen baseline alone -- exactly the same authority
+// technical-visual-map-assembler.ts's own `computeEffectiveTechnicalCutPlan`
+// already establishes for Technical Visual Map. This function itself does
+// NOT perform that merge (never a second, competing implementation of the
+// merge rule) -- the caller (technical-demonstration-repository.ts)
+// computes the effective plan by reusing that exact existing function,
+// then passes both the effective plan AND the set of field names it
+// actually overrode, so a professional-edited field's own value can be
+// tagged PROFESSIONAL_OVERRIDE instead of a generic INFERRED (see
+// `editedFields` below) -- provenance is never collapsed into "just AI
+// inference" for a value a human actually approved.
+//
 // One TechnicalDemonstrationStep is derived per entry in the source
 // plan's own `cuttingSteps` array -- NEVER a synthetic step invented for
 // a concept (texturizing/styling/cross-check/...) the source plan didn't
@@ -29,8 +43,13 @@ function observed<T>(value: T): TechnicalDemonstrationProvenanceValue<T> {
   return { value, provenance: "OBSERVED" };
 }
 
-function inferred<T>(value: T): TechnicalDemonstrationProvenanceValue<T> {
-  return { value, provenance: "INFERRED" };
+// A plan-level field that was actually overridden by a professional edit
+// carries that authority forward -- PROFESSIONAL_OVERRIDE, never a
+// generic INFERRED, so a later reader can tell "the professional
+// specifically approved this exact value" apart from "the deterministic
+// engine's own untouched suggestion, propagated by a fixed rule".
+function inferredOrOverride<T>(value: T, wasEdited: boolean): TechnicalDemonstrationProvenanceValue<T> {
+  return { value, provenance: wasEdited ? "PROFESSIONAL_OVERRIDE" : "INFERRED" };
 }
 
 function unknownValue<T>(): TechnicalDemonstrationProvenanceValue<T> {
@@ -61,7 +80,15 @@ const OVERDIRECTED_DISTRIBUTIONS: ReadonlySet<TechnicalCutPlan["distribution"]> 
 // persisted (planId, stepNumber) uniqueness constraint always holds
 // regardless of what the source data itself contains, without ever
 // reordering a single step relative to another.
-export function deriveCuttingDemonstrationSteps(plan: TechnicalCutPlan): DerivedCuttingDemonstrationStep[] {
+// `editedFields`: the set of EDITABLE_TECHNIQUE_FIELDS names (technical-
+// visual-map-assembler.ts's own existing vocabulary) that a professional
+// edit actually overrode on this exact confirmed proposal -- defaults to
+// empty (every existing call site, and every genuinely unedited proposal,
+// keeps deriving exactly as before: every plan-level field stays
+// INFERRED). Never used to decide the VALUE (that is `plan`'s own job,
+// already the effective/merged plan by the time this function runs) --
+// only ever used to decide the PROVENANCE TAG on that value.
+export function deriveCuttingDemonstrationSteps(plan: TechnicalCutPlan, editedFields: ReadonlySet<string> = new Set()): DerivedCuttingDemonstrationStep[] {
   const constraints = [...plan.warnings, ...plan.contraindications];
   const sourceSteps = [...plan.cuttingSteps].sort((a, b) => a.stepNumber - b.stepNumber);
 
@@ -72,13 +99,18 @@ export function deriveCuttingDemonstrationSteps(plan: TechnicalCutPlan): Derived
       elevation: observed(sourceStep.elevationAngle),
       tool: observed(sourceStep.toolRequired),
 
-      sectioning: inferred(plan.sectioning),
-      guideType: inferred(plan.guideline),
-      structuralTechnique: inferred(plan.structuralTechnique),
-      cuttingTechnique: inferred(plan.cuttingTechnique),
-      texturizingTechnique: plan.texturizingTechnique ? inferred(plan.texturizingTechnique) : unknownValue(),
-      combingDirection: inferred(COMBING_DIRECTION_BY_DISTRIBUTION[plan.distribution]),
-      overdirection: inferred(OVERDIRECTED_DISTRIBUTIONS.has(plan.distribution)),
+      sectioning: inferredOrOverride(plan.sectioning, editedFields.has("sectioning")),
+      guideType: inferredOrOverride(plan.guideline, editedFields.has("guideline")),
+      structuralTechnique: inferredOrOverride(plan.structuralTechnique, editedFields.has("structuralTechnique")),
+      cuttingTechnique: inferredOrOverride(plan.cuttingTechnique, editedFields.has("cuttingTechnique")),
+      texturizingTechnique: plan.texturizingTechnique
+        ? inferredOrOverride(plan.texturizingTechnique, editedFields.has("texturizingTechnique"))
+        : unknownValue(),
+      // Both derived FROM `distribution` -- both carry PROFESSIONAL_OVERRIDE
+      // together whenever `distribution` itself was the edited field, since
+      // both values are deterministic functions of that one same input.
+      combingDirection: inferredOrOverride(COMBING_DIRECTION_BY_DISTRIBUTION[plan.distribution], editedFields.has("distribution")),
+      overdirection: inferredOrOverride(OVERDIRECTED_DISTRIBUTIONS.has(plan.distribution), editedFields.has("distribution")),
 
       headBodyPositioning: unknownValue(),
       fingerPosition: unknownValue(),

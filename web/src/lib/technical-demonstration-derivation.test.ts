@@ -151,3 +151,90 @@ describe("deriveCuttingDemonstrationSteps", () => {
     expect(step.payload).not.toHaveProperty("explanation");
   });
 });
+
+// RELEASE-BLOCKER FIX -- professional edit provenance / effective payload.
+// `plan` is expected to already be the EFFECTIVE plan (baseline + edits
+// merged, via technical-visual-map-assembler.ts's own
+// computeEffectiveTechnicalCutPlan) by the time it reaches this function --
+// these tests exercise ONLY the provenance-tagging half of the fix (the
+// VALUE-merging half is proven separately, at the real-DB level, in
+// technical-demonstration-repository.test.ts, since the merge itself
+// happens in the repository, not here).
+describe("deriveCuttingDemonstrationSteps -- editedFields provenance", () => {
+  // Required test 1: unedited derivation is unaffected -- the default
+  // (omitted) editedFields argument keeps every existing call site and
+  // every genuinely unedited proposal deriving exactly as before.
+  it("1. defaults to INFERRED for every plan-level field when no editedFields are supplied -- unchanged from before this fix", () => {
+    const [step] = deriveCuttingDemonstrationSteps(cuttingPlan());
+    expect(step.payload.sectioning.provenance).toBe("INFERRED");
+    expect(step.payload.guideType.provenance).toBe("INFERRED");
+    expect(step.payload.structuralTechnique.provenance).toBe("INFERRED");
+    expect(step.payload.cuttingTechnique.provenance).toBe("INFERRED");
+    expect(step.payload.texturizingTechnique.provenance).toBe("INFERRED");
+    expect(step.payload.combingDirection.provenance).toBe("INFERRED");
+    expect(step.payload.overdirection.provenance).toBe("INFERRED");
+  });
+
+  it("an explicitly empty editedFields set behaves identically to the default", () => {
+    const withDefault = deriveCuttingDemonstrationSteps(cuttingPlan());
+    const withEmptySet = deriveCuttingDemonstrationSteps(cuttingPlan(), new Set());
+    expect(withEmptySet).toEqual(withDefault);
+  });
+
+  // Required test 5: professional edit provenance is retained/distinguishable.
+  it("5. tags a specifically-edited field PROFESSIONAL_OVERRIDE, and every non-edited field stays INFERRED", () => {
+    const plan = cuttingPlan({ sectioning: "horseshoe_crown" }); // the caller already merged this value in
+    const [step] = deriveCuttingDemonstrationSteps(plan, new Set(["sectioning"]));
+
+    expect(step.payload.sectioning).toEqual({ value: "horseshoe_crown", provenance: "PROFESSIONAL_OVERRIDE" });
+    // Untouched fields are unaffected by an edit to a DIFFERENT field.
+    expect(step.payload.guideType.provenance).toBe("INFERRED");
+    expect(step.payload.structuralTechnique.provenance).toBe("INFERRED");
+    expect(step.payload.cuttingTechnique.provenance).toBe("INFERRED");
+  });
+
+  // Required test 4: multiple supported edits.
+  it("4. tags MULTIPLE edited fields PROFESSIONAL_OVERRIDE simultaneously, independently of each other", () => {
+    const plan = cuttingPlan({ structuralTechnique: "one_length", cuttingTechnique: "blunt_line", guideline: "multiple_reference" });
+    const [step] = deriveCuttingDemonstrationSteps(plan, new Set(["structuralTechnique", "cuttingTechnique", "guideline"]));
+
+    expect(step.payload.structuralTechnique).toEqual({ value: "one_length", provenance: "PROFESSIONAL_OVERRIDE" });
+    expect(step.payload.cuttingTechnique).toEqual({ value: "blunt_line", provenance: "PROFESSIONAL_OVERRIDE" });
+    expect(step.payload.guideType).toEqual({ value: "multiple_reference", provenance: "PROFESSIONAL_OVERRIDE" });
+    // sectioning was NOT edited -- stays INFERRED.
+    expect(step.payload.sectioning.provenance).toBe("INFERRED");
+  });
+
+  it("an edit to `distribution` marks BOTH derived fields (combingDirection and overdirection) PROFESSIONAL_OVERRIDE -- both are functions of the same one input", () => {
+    const plan = cuttingPlan({ distribution: "natural_fall" });
+    const [step] = deriveCuttingDemonstrationSteps(plan, new Set(["distribution"]));
+
+    expect(step.payload.combingDirection).toEqual({
+      value: "Comb the section to fall naturally, with no directional pull.",
+      provenance: "PROFESSIONAL_OVERRIDE",
+    });
+    expect(step.payload.overdirection).toEqual({ value: false, provenance: "PROFESSIONAL_OVERRIDE" });
+  });
+
+  it("an edited texturizingTechnique is PROFESSIONAL_OVERRIDE; an edit to an UNRELATED field never turns an absent texturizingTechnique into a fabricated value", () => {
+    const withTexturizing = deriveCuttingDemonstrationSteps(cuttingPlan({ texturizingTechnique: "channel_cutting" }), new Set(["texturizingTechnique"]))[0];
+    expect(withTexturizing.payload.texturizingTechnique).toEqual({ value: "channel_cutting", provenance: "PROFESSIONAL_OVERRIDE" });
+
+    const stillAbsent = deriveCuttingDemonstrationSteps(cuttingPlan({ texturizingTechnique: undefined }), new Set(["sectioning"]))[0];
+    expect(stillAbsent.payload.texturizingTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
+  });
+
+  it("editedFields naming an unrelated/unsupported field name never affects any real field -- fails closed, never crashes", () => {
+    const [step] = deriveCuttingDemonstrationSteps(cuttingPlan(), new Set(["not_a_real_field", "cuttingSteps"]));
+    expect(step.payload.sectioning.provenance).toBe("INFERRED");
+    expect(step.payload.structuralTechnique.provenance).toBe("INFERRED");
+  });
+
+  it("every PROFESSIONAL_OVERRIDE-tagged step payload is still structurally valid", () => {
+    const plan = cuttingPlan({ sectioning: "pivot_radial", distribution: "shifting_line" });
+    const steps = deriveCuttingDemonstrationSteps(plan, new Set(["sectioning", "distribution"]));
+    for (const step of steps) {
+      expect(isValidCuttingDemonstrationStepPayload(step.payload)).toBe(true);
+    }
+  });
+});
