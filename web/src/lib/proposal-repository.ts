@@ -5,6 +5,7 @@ import { Prisma, type AnalysisProposal as PrismaAnalysisProposalRow } from "@pri
 import type { TechnicalCutPlan } from "@/lib/contracts";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 import {
+  isAnalysisProposalSourceKind,
   isConsideredMemoryEntry,
   isLegalProposalStatusTransition,
   isNonEmptyString,
@@ -15,6 +16,7 @@ import {
   isRecord,
   isValidProposalPayload,
   PROPOSAL_VERTICALS,
+  type AnalysisProposalSourceKind,
   type ConsideredMemoryEntry,
   type ProposalEditEntry,
   type ProposalStatus,
@@ -142,6 +144,13 @@ export interface ProposalRecord {
   analysisId: string;
   vertical: ProposalVertical;
   status: ProposalStatus;
+  /**
+   * Technical Demonstration Decision Lock -- WHERE this proposal's
+   * technical intent originally came from. Every row created before this
+   * field existed reads back as "AI_ANALYSIS" (the real, correct default --
+   * see the schema's own column-default comment), never null/undefined.
+   */
+  sourceKind: AnalysisProposalSourceKind;
   /** The source Analysis.updatedAt, frozen at creation time (ISO 8601). */
   analysisSnapshotAt: string;
   sourceImageAssetId: string | null;
@@ -765,6 +774,7 @@ function toProposalRecord(row: PrismaAnalysisProposalRow): ProposalRecord {
   if (
     !isProposalVertical(row.vertical) ||
     !isProposalStatus(row.status) ||
+    !isAnalysisProposalSourceKind(row.sourceKind) ||
     !isNonEmptyString(row.engineVersion) ||
     !isValidDate(row.analysisSnapshotAt) ||
     !isValidDate(row.createdAt) ||
@@ -801,6 +811,7 @@ function toProposalRecord(row: PrismaAnalysisProposalRow): ProposalRecord {
     analysisId: row.analysisId,
     vertical,
     status,
+    sourceKind: row.sourceKind as AnalysisProposalSourceKind,
     analysisSnapshotAt: row.analysisSnapshotAt.toISOString(),
     sourceImageAssetId: row.sourceImageAssetId,
     sourceImageAnalysisId: row.sourceImageAnalysisId,

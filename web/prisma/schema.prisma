@@ -179,6 +179,11 @@ model User {
   // Real AI Video Demonstration, Stage 1. Virtual back-relation only.
   videoDemonstrationGenerations     VideoDemonstrationGeneration[]
   videoAssets                       VideoAsset[]
+  // Technical Demonstration, Stage 1. Virtual back-relation only -- produces
+  // no column or constraint on "User"; the FK lives on
+  // "TechnicalDemonstrationPlan"/"TechnicalDemonstrationStep".
+  technicalDemonstrationPlans       TechnicalDemonstrationPlan[]
+  technicalDemonstrationSteps       TechnicalDemonstrationStep[]
 }
 
 model Session {
@@ -255,6 +260,11 @@ model Client {
   // Real AI Video Demonstration, Stage 1. Virtual back-relation only.
   videoDemonstrationGenerations     VideoDemonstrationGeneration[]
   videoAssets                       VideoAsset[]
+  // Technical Demonstration, Stage 1. Virtual back-relation only -- produces
+  // no column or constraint on "Client"; the FK lives on
+  // "TechnicalDemonstrationPlan"/"TechnicalDemonstrationStep".
+  technicalDemonstrationPlans       TechnicalDemonstrationPlan[]
+  technicalDemonstrationSteps       TechnicalDemonstrationStep[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -1425,6 +1435,23 @@ model AnalysisProposal {
   // later never requires a schema migration. Stage 2 validates the value.
   vertical String
 
+  // Technical Demonstration Decision Lock -- additive provenance: WHERE
+  // this proposal's technical intent originally came from, independent of
+  // `vertical` (WHAT domain it's in). Plain string, not a Postgres enum --
+  // same reasoning as every other lifecycle/vocabulary field in this
+  // schema (a future source kind must never require a migration).
+  // Application-validated to one of: AI_ANALYSIS | REFERENCE_IMAGE |
+  // OUTFIT_DRIVEN | PROFESSIONAL_MANUAL. Defaults to "AI_ANALYSIS" for
+  // every existing row -- verified the ONLY correct semantic default, not
+  // merely a safe guess: every AnalysisProposal ever created before this
+  // field existed was produced exclusively by the deterministic cutting
+  // engine from the client's own AI-analyzed evidence (Path A); Reference
+  // Image (Path B) and Outfit-Driven (Path C) sourcing do not exist in
+  // this codebase yet -- Technical Demonstration Stage 1 does not
+  // implement them either, this field only reserves the vocabulary so a
+  // future stage never needs a migration to introduce them.
+  sourceKind String @default("AI_ANALYSIS")
+
   // Plain string, NOT a Postgres enum -- same reasoning as `vertical` above
   // and Analysis.phase, to avoid a migration if the lifecycle changes.
   // Application-validated (Stage 2) to exactly one of:
@@ -1520,6 +1547,10 @@ model AnalysisProposal {
   // Technical Visual Map, Stage 1. Virtual back-relation only -- produces no
   // column or constraint here; the FK lives on "TechnicalVisualMap".
   technicalVisualMaps TechnicalVisualMap[]
+  // Technical Demonstration, Stage 1. Virtual back-relation only -- produces
+  // no column or constraint here; the FK lives on
+  // "TechnicalDemonstrationPlan".
+  technicalDemonstrationPlans TechnicalDemonstrationPlan[]
 
   @@unique([id, ownerUserId, clientId])
   @@index([clientId, ownerUserId, createdAt, id])
@@ -1799,6 +1830,192 @@ model TechnicalVisualMapSpatialBinding {
   @@index([clientId, ownerUserId, technicalVisualMapId])
   @@index([technicalVisualMapId, ownerUserId, clientId, sourceImageAssetId, viewLabel, spatialVersion])
   @@index([ownerUserId, clientId, technicalVisualMapId, sourceImageAssetId, viewLabel, status])
+}
+
+// Technical Demonstration, Stage 1 (Decision Lock: "cutting plan
+// foundation only" -- data + domain logic, no generation) -- the
+// persisted, versioned, professional-approvable EXECUTION plan derived
+// DETERMINISTICALLY from one CONFIRMED AnalysisProposal. Mirrors
+// TechnicalVisualMap's own shape/lifecycle deliberately (the Decision
+// Lock's own "cleanest architecture based on the current repository"
+// instruction): DRAFT | CONFIRMED | SUPERSEDED, a real composite FK to
+// AnalysisProposal (safe because AnalysisProposal already exposes
+// @@unique([id, ownerUserId, clientId]) for TechnicalVisualMap's own
+// identical need), a frozen confirmedAt version anchor, and a planVersion
+// revision counter within the same locked authority scope every other
+// derived-artifact table in this schema already uses.
+//
+// Stage 1 only ever derives vertical = "cutting". `vertical` stays a
+// plain string (never a Postgres enum), exactly like
+// AnalysisProposal.vertical/TechnicalVisualMap.vertical, so a future
+// vertical (color/styling/treatment/nails/makeup) never requires a
+// migration here either -- this table's own shape carries no cutting-
+// specific columns at all; every cutting-specific field lives in
+// TechnicalDemonstrationStep.payload's own JSON shape instead (see
+// technical-demonstration-cutting-contracts.ts).
+model TechnicalDemonstrationPlan {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  // Real composite FK -- see this model's own header comment for why a
+  // real FK (unlike PhotoPreviewGeneration's validated-pointer choice,
+  // forced by ITS multi-ancestor chain reaching a table with no composite
+  // unique yet) is both possible and more correct here.
+  analysisProposalId String
+
+  // AnalysisProposal has no revision counter of its own (a replacement is
+  // a whole new row) -- confirmedAt is therefore the correct "was this the
+  // exact confirmed proposal at derivation time" anchor, mirroring
+  // PhotoPreviewGeneration.analysisProposalConfirmedAt exactly. This is
+  // also what makes "a plan derived from proposal version N must never
+  // silently mutate if the proposal later changes" true BY CONSTRUCTION: a
+  // newer confirmed proposal is a different row (different id), so it can
+  // never match this plan's own frozen pointer+anchor pair -- no active
+  // supersession logic is needed for this specific guarantee to hold.
+  analysisProposalConfirmedAt DateTime @db.Timestamp(6)
+
+  // Plain string, not a Postgres enum -- same reasoning as every other
+  // vertical field in this schema. Stage 1 only ever writes "cutting".
+  vertical String
+
+  // Plain string, not a Postgres enum. Application-validated to exactly
+  // one of: DRAFT | CONFIRMED | SUPERSEDED -- mirrors TechnicalVisualMap's
+  // own lifecycle exactly (a derived artifact of an already-confirmed
+  // proposal, not an independently-evaluated option with its own
+  // accept/decline decision -- deliberately no REJECTED state, same
+  // reasoning TechnicalVisualMap's own header comment already gives).
+  status String
+
+  // Revision counter within the locked authority scope (ownerUserId,
+  // clientId, analysisProposalId, vertical) -- mirrors
+  // TechnicalVisualMap.mapVersion. Stage 1's own repository entry point
+  // only ever produces version 1 for a given confirmed proposal (idempotent
+  // re-derivation returns the existing row, never a new version -- see
+  // requestFingerprint below); the counter exists so a later, explicit
+  // "regenerate" action never needs a schema change.
+  planVersion Int
+
+  // The frozen PAYLOAD SHAPE's own version, distinct from planVersion (a
+  // revision counter) -- same "freeze what was actually used, even if the
+  // shape evolves later" discipline as TechnicalVisualMap.schemaVersion.
+  schemaVersion String
+
+  // The deterministic derivation function's own frozen version string --
+  // same discipline as TechnicalVisualMap.generatorVersion. If derivation
+  // logic improves later, existing plans keep their original
+  // generatorVersion, never silently upgraded.
+  generatorVersion String
+
+  // DB-level idempotency backstop (Stage 1's own explicit requirement:
+  // "repeated creation requests for the same authoritative proposal/
+  // version must not generate duplicate active plans"). Deterministically
+  // derived from (ownerUserId, clientId, analysisProposalId,
+  // analysisProposalConfirmedAt, vertical, generatorVersion) -- mirrors
+  // PhotoPreviewGeneration.requestFingerprint's own precedent exactly,
+  // including its own "a unique-constraint violation on write means
+  // already recorded, never an error the caller sees" handling.
+  requestFingerprint String @db.VarChar(64)
+
+  // Nullable pointer to the plan that superseded this one -- mirrors
+  // TechnicalVisualMap.supersededByMapId exactly, including its own
+  // reasoning (plain nullable column, not an enforced self-relation FK).
+  // Stage 1 never performs supersession itself (no explicit "regenerate"
+  // action exists yet) -- reserved for a later stage, per the Decision
+  // Lock's own "explicit regeneration/versioning/supersession" rule.
+  supersededByPlanId String?
+
+  // Set once, on confirm -- never edited afterward (enforced at the
+  // repository layer, mirroring confirmedAt/supersededAt on
+  // TechnicalVisualMap).
+  confirmedAt  DateTime? @db.Timestamp(6)
+  supersededAt DateTime? @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner    User             @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client   Client           @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  proposal AnalysisProposal @relation(fields: [analysisProposalId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+
+  // TechnicalDemonstrationStep needs a real composite FK to this exact
+  // plan revision -- same prerequisite-fix pattern TechnicalVisualMap
+  // already established for TechnicalVisualMapSpatialBinding.
+  steps TechnicalDemonstrationStep[]
+
+  @@unique([requestFingerprint])
+  @@unique([analysisProposalId, ownerUserId, clientId, vertical, planVersion])
+  @@unique([id, ownerUserId, clientId])
+  @@index([clientId, ownerUserId, createdAt, id])
+  @@index([analysisProposalId, ownerUserId, clientId])
+  @@index([ownerUserId, clientId, vertical, status])
+}
+
+// Technical Demonstration, Stage 1 -- one ordered execution step within a
+// specific TechnicalDemonstrationPlan revision. A SEPARATE table (not one
+// JSON array on the plan, unlike TechnicalVisualMap's own per-zone array)
+// deliberately: a future Segment (explicitly NOT built in Stage 1) will
+// need to point at one specific step by a real, stable id -- collapsing
+// steps into one JSON blob now would force a schema change later just to
+// make that possible, which the Decision Lock explicitly asks Stage 1 to
+// avoid ("must not require a redesign later").
+//
+// Frozen once written -- a plan revision's steps are never edited in
+// place; a changed derivation is a new plan version (a new planId), never
+// a mutation of an existing step row.
+model TechnicalDemonstrationStep {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  // Real composite FK to the exact plan revision this step belongs to --
+  // see TechnicalDemonstrationPlan's own @@unique([id, ownerUserId,
+  // clientId]) above.
+  planId String
+
+  // Denormalized copy of the parent plan's own vertical -- query/defense-
+  // in-depth convenience, same precedent as every other denormalized
+  // scoping field in this schema (e.g.
+  // TechnicalVisualMapSpatialBinding's own frozen source-image fields).
+  vertical String
+
+  // 1-based ordering within the plan -- the PROGRESSION/ORDER concept
+  // itself (Decision Lock's own Cutting V1 field list), never a separate
+  // JSON field.
+  stepNumber Int
+
+  // The frozen PAYLOAD SHAPE's own version, distinct from the plan's own
+  // schemaVersion -- same "freeze what was actually used" discipline as
+  // TechnicalVisualMapSpatialBinding.geometrySchemaVersion being distinct
+  // from TechnicalVisualMap.schemaVersion.
+  stepSchemaVersion String
+
+  // Frozen JSON -- the structured technical fields (see
+  // technical-demonstration-cutting-contracts.ts for Stage 1's own
+  // CuttingDemonstrationStepPayload shape), each wrapped with an
+  // OBSERVED | INFERRED | UNKNOWN | PROFESSIONAL_OVERRIDE provenance tag
+  // (Decision Lock). No Prisma-level structure beyond "it is JSON" -- same
+  // reasoning TechnicalVisualMap.payload's own header comment already
+  // gives (the shape can evolve without a migration).
+  payload Json
+
+  // Human-readable explanation, kept STRUCTURALLY SEPARATE from the
+  // structured technical `payload` above (Stage 1's own explicit
+  // requirement) -- carries the source cuttingStep's own free-text
+  // `action` field verbatim. Never parsed as a structured value, never
+  // consulted by deterministic derivation logic.
+  explanation String?
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner  User                       @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client Client                     @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  plan   TechnicalDemonstrationPlan @relation(fields: [planId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([planId, ownerUserId, clientId, stepNumber])
+  @@index([clientId, ownerUserId, planId])
+  @@index([planId, ownerUserId, clientId, stepNumber])
 }
 
 // Real AI Photo Preview, Stage 1 -- the durable, auditable generation

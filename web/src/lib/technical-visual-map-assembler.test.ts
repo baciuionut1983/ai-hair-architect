@@ -61,6 +61,7 @@ function proposalRecord(overrides: Partial<ProposalRecord> = {}): ProposalRecord
     analysisId: "analysis-1",
     vertical: "cutting",
     status: "CONFIRMED",
+    sourceKind: "AI_ANALYSIS",
     analysisSnapshotAt: "2026-01-01T00:00:00.000Z",
     sourceImageAssetId: "asset-1",
     sourceImageAnalysisId: "image-analysis-1",

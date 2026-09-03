@@ -53,6 +53,26 @@ export function isProposalStatus(value: unknown): value is ProposalStatus {
   return typeof value === "string" && (PROPOSAL_STATUSES as readonly string[]).includes(value);
 }
 
+// ---------------------------------------------------------------------------
+// Source kind -- Technical Demonstration Decision Lock
+// ---------------------------------------------------------------------------
+
+// Technical Demonstration Decision Lock: WHERE a proposal's technical
+// intent originally came from, independent of `vertical` (WHAT domain it's
+// in). Plain string allowlist, same reasoning/precedent as PROPOSAL_VERTICALS
+// above -- a future source kind is a one-line change here, never a schema
+// migration. REFERENCE_IMAGE and OUTFIT_DRIVEN are reserved vocabulary
+// only; nothing in this codebase produces a proposal with either value yet
+// (Technical Demonstration Stage 1 does not implement Path B/C -- see that
+// audit's own header). PROFESSIONAL_MANUAL is reserved the same way, for a
+// possible future "stylist writes the plan directly, no engine at all" path.
+export const ANALYSIS_PROPOSAL_SOURCE_KINDS = ["AI_ANALYSIS", "REFERENCE_IMAGE", "OUTFIT_DRIVEN", "PROFESSIONAL_MANUAL"] as const;
+export type AnalysisProposalSourceKind = (typeof ANALYSIS_PROPOSAL_SOURCE_KINDS)[number];
+
+export function isAnalysisProposalSourceKind(value: unknown): value is AnalysisProposalSourceKind {
+  return typeof value === "string" && (ANALYSIS_PROPOSAL_SOURCE_KINDS as readonly string[]).includes(value);
+}
+
 // The ONLY legal status changes in the architecture:
 //   DRAFT -> CONFIRMED      (confirmProposal)
 //   DRAFT -> REJECTED       (rejectProposal)
@@ -84,48 +104,48 @@ export function isLegalProposalStatusTransition(from: unknown, to: unknown): boo
 // is not exported and analysis-repository.ts must not be modified in Stage 2.
 // `satisfies` keeps these in lockstep with the contracts.ts unions at compile
 // time.
-const STRUCTURAL_TECHNIQUES = [
+export const STRUCTURAL_TECHNIQUES = [
   "precision_layering",
   "graduation",
   "one_length",
   "internal_layering",
   "compact_graduation",
 ] as const satisfies readonly StructuralTechnique[];
-const CUTTING_TECHNIQUES = [
+export const CUTTING_TECHNIQUES = [
   "blunt_line",
   "scissor_over_comb",
   "slice_cutting",
   "elevation_cutting",
 ] as const satisfies readonly CuttingTechnique[];
-const TEXTURIZING_TECHNIQUES = [
+export const TEXTURIZING_TECHNIQUES = [
   "point_cutting",
   "slice_and_slide",
   "razor_texturizing",
   "channel_cutting",
   "debulking",
 ] as const satisfies readonly TexturizingTechnique[];
-const SECTIONING_OPTIONS = [
+export const SECTIONING_OPTIONS = [
   "4_quadrant_profile_radial",
   "horseshoe_crown",
   "diagonal_back",
   "pivot_radial",
   "horseshoe_fringe",
 ] as const satisfies readonly TechnicalCutSectioning[];
-const ELEVATION_OPTIONS = [
+export const ELEVATION_OPTIONS = [
   "0_deg_blunt",
   "45_deg_graduation",
   "90_deg_uniform_layer",
   "135_deg_long_layer",
   "180_deg_overdirection",
 ] as const satisfies readonly TechnicalCutElevation[];
-const DISTRIBUTION_OPTIONS = [
+export const DISTRIBUTION_OPTIONS = [
   "natural_fall",
   "perpendicular",
   "overdirected_back",
   "overdirected_forward",
   "shifting_line",
 ] as const satisfies readonly TechnicalCutDistribution[];
-const GUIDELINE_OPTIONS = [
+export const GUIDELINE_OPTIONS = [
   "stationary",
   "traveling",
   "visual_perimeter",
@@ -303,11 +323,11 @@ export function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-function isStringArray(value: unknown): value is string[] {
+export function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string");
 }
 
-function isOneOf<T extends string>(value: unknown, allowed: readonly T[]): value is T {
+export function isOneOf<T extends string>(value: unknown, allowed: readonly T[]): value is T {
   return typeof value === "string" && (allowed as readonly string[]).includes(value);
 }
 
