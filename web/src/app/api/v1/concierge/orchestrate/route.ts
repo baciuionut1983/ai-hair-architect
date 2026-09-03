@@ -70,6 +70,12 @@ export async function POST(request: Request) {
   // either one.
   const pendingDecision = typeof body.pendingDecision === "string" ? body.pendingDecision : null;
   const activePlanGoal = typeof body.activePlanGoal === "string" ? body.activePlanGoal : null;
+  // AI Concierge Gap #3: forwarded raw, same as pendingDecision/
+  // activePlanGoal above -- resolveOrchestratorDecisionAndPlan only ever
+  // uses this for presentation-layer offer-repetition suppression, never
+  // as eligibility authority (that is always rediscovered fresh from real
+  // DB state -- see orchestrator-service.ts's own header comment).
+  const suppressVideoOfferForPhotoPreviewId = typeof body.suppressVideoOfferForPhotoPreviewId === "string" ? body.suppressVideoOfferForPhotoPreviewId : null;
 
   const { decision, plan } = await resolveOrchestratorDecisionAndPlan({
     message,
@@ -80,6 +86,7 @@ export async function POST(request: Request) {
     hasCompletedPhotoPreview,
     pendingDecision,
     activePlanGoal,
+    suppressVideoOfferForPhotoPreviewId,
   });
 
   // Stage 5: `plan` is additive -- null whenever no registered goal

@@ -44,6 +44,7 @@ function decision(overrides: Partial<OrchestratorDecision> = {}): OrchestratorDe
     reasonCode: "no_client_selected",
     nextStepCode: "no_client_selected",
     ambiguousClientCandidates: [],
+    eligiblePhotoPreviewGenerationId: null,
     ...overrides,
   };
 }
@@ -122,6 +123,7 @@ describe("buildOrchestrateRequestBody", () => {
       hasCompletedPhotoPreview: true,
       pendingDecision: null,
       activePlanGoal: null,
+      suppressVideoOfferForPhotoPreviewId: null,
     });
   });
 
@@ -142,6 +144,7 @@ describe("buildOrchestrateRequestBody", () => {
       hasCompletedPhotoPreview: false,
       pendingDecision: null,
       activePlanGoal: null,
+      suppressVideoOfferForPhotoPreviewId: null,
     });
   });
 

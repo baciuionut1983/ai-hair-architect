@@ -79,6 +79,11 @@ export interface OrchestrateRequestBody {
   // (if any) the caller is still tracking -- see orchestrator-service.ts's
   // own header comment on ResolveOrchestratorDecisionInput.activePlanGoal.
   activePlanGoal?: OrchestrationPlanGoal | null;
+  // AI Concierge Gap #3: the SAME echo pattern, for whichever Photo
+  // Preview generation id OFFER_VIDEO was already presented for earlier in
+  // this conversation -- see orchestrator-service.ts's own header comment
+  // on ResolveOrchestratorDecisionInput.suppressVideoOfferForPhotoPreviewId.
+  suppressVideoOfferForPhotoPreviewId?: string | null;
 }
 
 // Trims and validates a raw message before it is ever sent -- the same
@@ -96,6 +101,7 @@ export function buildOrchestrateRequestBody(
     hasCompletedPhotoPreview?: boolean;
     pendingDecision?: ConciergePendingDecision | null;
     activePlanGoal?: OrchestrationPlanGoal | null;
+    suppressVideoOfferForPhotoPreviewId?: string | null;
   },
 ): OrchestrateRequestBody | null {
   const message = rawMessage.trim();
@@ -108,6 +114,7 @@ export function buildOrchestrateRequestBody(
     hasCompletedPhotoPreview: context.hasCompletedPhotoPreview === true,
     pendingDecision: context.pendingDecision ?? null,
     activePlanGoal: context.activePlanGoal ?? null,
+    suppressVideoOfferForPhotoPreviewId: context.suppressVideoOfferForPhotoPreviewId ?? null,
   };
 }
 

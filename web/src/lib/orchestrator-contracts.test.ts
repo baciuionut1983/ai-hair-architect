@@ -20,6 +20,7 @@ function validDecision(overrides: Partial<OrchestratorDecision> = {}): Orchestra
     reasonCode: "no_client_selected",
     nextStepCode: "no_client_selected",
     ambiguousClientCandidates: [],
+    eligiblePhotoPreviewGenerationId: null,
     ...overrides,
   };
 }

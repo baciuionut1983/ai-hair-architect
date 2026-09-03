@@ -24,6 +24,7 @@ function decision(overrides: Partial<OrchestratorDecision> = {}): OrchestratorDe
     reasonCode: "no_client_selected",
     nextStepCode: "no_client_selected",
     ambiguousClientCandidates: [],
+    eligiblePhotoPreviewGenerationId: null,
     ...overrides,
   };
 }

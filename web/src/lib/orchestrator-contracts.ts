@@ -182,6 +182,18 @@ export interface OrchestratorDecision {
   // "client_name_ambiguous") -- same "always-present, never optional"
   // style as availableActions above, never `?`.
   ambiguousClientCandidates: OrchestratorClientCandidate[];
+  // AI Concierge Gap #3: always present (null unless a real, server-
+  // verified COMPLETED Photo Preview was just discovered for the current
+  // client -- see photo-preview-eligibility.ts and orchestrator-service.ts's
+  // own centralized override at the end of buildDecision). This is the id
+  // the CALLER may remember, alongside recommendedAction === "OFFER_VIDEO",
+  // to suppress a REPEATED automatic offer for the SAME preview later in
+  // the same conversation (ResolveOrchestratorDecisionInput.
+  // suppressVideoOfferForPhotoPreviewId) -- purely a presentation-layer
+  // convenience. It is NEVER itself authority: the server re-discovers
+  // eligibility fresh from real DB state every single turn regardless of
+  // what a caller remembers or echoes back here.
+  eligiblePhotoPreviewGenerationId: string | null;
 }
 
 function isOrchestratorRoleClass(value: unknown): value is OrchestratorRoleClass {
@@ -242,6 +254,7 @@ export function isOrchestratorDecision(value: unknown): value is OrchestratorDec
   if (!isOrchestratorReasonCode(candidate.reasonCode)) return false;
   if (!isOrchestratorReasonCode(candidate.nextStepCode)) return false;
   if (!Array.isArray(candidate.ambiguousClientCandidates) || !candidate.ambiguousClientCandidates.every(isOrchestratorClientCandidate)) return false;
+  if (candidate.eligiblePhotoPreviewGenerationId !== null && typeof candidate.eligiblePhotoPreviewGenerationId !== "string") return false;
 
   return true;
 }

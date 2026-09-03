@@ -15,6 +15,15 @@ import { resolveOrchestratorDecision, resolveOrchestratorDecisionAndPlan } from 
 import { ORCHESTRATOR_ACTION_REGISTRY } from "@/lib/orchestrator-action-registry";
 import { OrchestratorIntentAiProvider, type OrchestratorIntentAiResult } from "@/lib/orchestrator-ai-intent-provider";
 import { INITIAL_WORKFLOW_MEMORY, resolveEffectiveContext, updateWorkflowMemory } from "@/components/concierge-workflow-memory-logic";
+// AI Concierge Gap #3 -- the SAME real repository functions
+// photo-preview-eligibility.test.ts already proves the discovery chain
+// against in isolation; used here to prove the CONCIERGE-level integration
+// (DB-over-browser precedence, offer-repetition suppression, explicit
+// request/decline handling) end to end through the real service entry
+// point, not a fake.
+import { createDraftFromConfirmedProposal, confirmDraftMap } from "@/lib/technical-visual-map-repository";
+import { createDraftSpatialBinding, confirmSpatialBinding } from "@/lib/technical-visual-map-spatial-binding-repository";
+import { createPhotoPreviewGeneration } from "@/lib/photo-preview-generation-repository";
 
 // AI Concierge / Orchestrator, Stage 3 -- a hand-built fake AI provider,
 // injected through the real resolveOrchestratorDecision -> buildDecision ->
@@ -47,6 +56,13 @@ const owners = new Set<string>();
 suite("resolveOrchestratorDecision (real Postgres -- security boundary + decision correctness)", () => {
   afterEach(async () => {
     const ownerUserIds = [...owners];
+    // AI Concierge Gap #3: the new Photo Preview chain tables, deleted in
+    // FK-safe order BEFORE AnalysisProposal (mirrors
+    // photo-preview-eligibility.test.ts's own afterEach exactly).
+    await prisma.photoPreviewGeneration.deleteMany({ where: { ownerUserId: { in: ownerUserIds } } });
+    await prisma.technicalVisualMapSpatialBinding.deleteMany({ where: { ownerUserId: { in: ownerUserIds } } });
+    await prisma.imageAsset.deleteMany({ where: { ownerUserId: { in: ownerUserIds } } });
+    await prisma.technicalVisualMap.deleteMany({ where: { ownerUserId: { in: ownerUserIds } } });
     // Stage 5: AnalysisProposal rows (createConfirmedProposal) FK-reference
     // Analysis -- must be deleted first, or the Analysis delete below fails.
     await prisma.analysisProposal.deleteMany({ where: { ownerUserId: { in: ownerUserIds } } });
@@ -195,14 +211,24 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
     const { ownerUserId, clientId } = await createOwnerAndClient();
     const analysis = await createAnalysis(ownerUserId, clientId);
 
-    const decision = await resolveOrchestratorDecision({
-      message: "anything, even unrelated text",
-      roleClass: "professional",
-      ownerUserId,
-      currentClientId: clientId,
-      currentAnalysisId: analysis.id,
-      hasCompletedPhotoPreview: true,
-    });
+    // AI Concierge Gap #3: server-authoritative discovery now DECIDES
+    // eligibility -- this test's own subject is the video-offer PRIORITY/
+    // shape behavior (not eligibility-chain correctness, which is
+    // exhaustively covered by photo-preview-eligibility.test.ts), so a
+    // fake discovery result stands in for a real DB chain here, exactly
+    // like aiClassifierDependencies already stands in for a real AI call
+    // elsewhere in this file.
+    const decision = await resolveOrchestratorDecision(
+      {
+        message: "anything, even unrelated text",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+        hasCompletedPhotoPreview: true,
+      },
+      { findEligibleCompletedPhotoPreview: async () => ({ eligible: true, photoPreviewGenerationId: "fixture-preview-1" }) },
+    );
 
     // Stage 2: the OFFER itself is presentational and NO_INCREMENTAL_COST --
     // MEANINGFUL_COST/requiresUserConsent only apply once the user says yes
@@ -213,6 +239,9 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
     expect(decision.costClass).toBe("NO_INCREMENTAL_COST");
     expect(decision.requiresUserConsent).toBe(false);
     expect(decision.availableActions).toContain("REQUEST_VIDEO");
+    // Gap #3: the real, freshly-discovered eligible preview id rides along
+    // on the decision itself.
+    expect(decision.eligiblePhotoPreviewGenerationId).toBe("fixture-preview-1");
   });
 
   it("does NOT offer video when hasCompletedPhotoPreview is true but no real client/analysis is resolved -- the flag alone is never trusted", async () => {
@@ -237,13 +266,16 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
     const { ownerUserId, clientId } = await createOwnerAndClient();
     const analysis = await createAnalysis(ownerUserId, clientId);
 
-    const decision = await resolveOrchestratorDecision({
-      roleClass: "professional",
-      ownerUserId,
-      currentClientId: clientId,
-      currentAnalysisId: analysis.id,
-      hasCompletedPhotoPreview: true,
-    });
+    const decision = await resolveOrchestratorDecision(
+      {
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+        hasCompletedPhotoPreview: true,
+      },
+      { findEligibleCompletedPhotoPreview: async () => ({ eligible: true, photoPreviewGenerationId: "fixture-preview-2" }) },
+    );
 
     expect(decision.recommendedAction).toBe("OFFER_VIDEO");
     expect(decision.reasonCode).toBe("video_offer_after_completed_preview");
@@ -845,6 +877,10 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
           createAiProvider: () => new FakeAiProvider({ semanticIntent: "start_or_continue_analysis", confidence: "high" }),
           recordAiUsageEvent: NO_OP_USAGE_RECORDER,
         },
+        // AI Concierge Gap #3: this test's own subject is plan/consent
+        // priority, not eligibility-chain correctness -- a fake discovery
+        // result stands in for a real DB chain, same convention as above.
+        findEligibleCompletedPhotoPreview: async () => ({ eligible: true, photoPreviewGenerationId: "fixture-preview-g" }),
       },
     );
 
@@ -916,6 +952,9 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
 
     const forClientB = await resolveOrchestratorDecisionAndPlan(
       { message: "arată-mi rezultatul", roleClass: "professional", ownerUserId, currentClientId: clientB, currentAnalysisId: analysisB.id, hasCompletedPhotoPreview: true },
+      // AI Concierge Gap #3: this test's own subject is plan-scoping
+      // isolation across clients, not eligibility-chain correctness.
+      { findEligibleCompletedPhotoPreview: async () => ({ eligible: true, photoPreviewGenerationId: "fixture-preview-o" }) },
     );
     expect(forClientB.plan?.planId).toContain(clientB);
     expect(forClientB.plan?.planId).not.toBe(forClientA.plan?.planId);
@@ -960,6 +999,9 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
         hasCompletedPhotoPreview: true,
         // activePlanGoal deliberately omitted.
       },
+      // AI Concierge Gap #3: this test's own subject is plan
+      // reconstruction from DB state, not eligibility-chain correctness.
+      { findEligibleCompletedPhotoPreview: async () => ({ eligible: true, photoPreviewGenerationId: "fixture-preview-q" }) },
     );
 
     expect(plan?.status).toBe("WAITING_FOR_USER");
@@ -1839,6 +1881,430 @@ suite("resolveOrchestratorDecision (real Postgres -- security boundary + decisio
       }
     });
   });
+
+  // ---------------------------------------------------------------------
+  // AI Concierge Gap #3 -- server-authoritative Photo Preview discovery.
+  // The discovery function's own exhaustive chain-shape proof (FAILED/
+  // PROCESSING/REQUESTED/no-map/no-binding/multi-view/cross-owner/
+  // cross-client/stale-proposal) already lives in
+  // photo-preview-eligibility.test.ts, against real Postgres. The 19 tests
+  // below prove the CONCIERGE-LEVEL integration specifically: DB-over-
+  // browser precedence in both directions, offer-repetition suppression,
+  // explicit request/decline handling, and two of the chain-shape
+  // protections (superseded proposal, superseded map) reproduced here
+  // because they matter specifically to what OFFER_VIDEO does through the
+  // real service entry point, not merely to the discovery function alone.
+  // ---------------------------------------------------------------------
+  describe("AI Concierge Gap #3: server-authoritative Photo Preview discovery", () => {
+    // 1. Eligible persisted preview -> server-side discovery (no browser
+    // claim at all -- hasCompletedPhotoPreview omitted).
+    it("1. a real, eligible persisted preview is discovered server-side with no browser claim at all", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const { generation } = await createEligiblePhotoPreviewChain(ownerUserId, clientId, analysis.id);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "orice",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+        // hasCompletedPhotoPreview deliberately omitted.
+      });
+
+      expect(decision.recommendedAction).toBe("OFFER_VIDEO");
+      expect(decision.eligiblePhotoPreviewGenerationId).toBe(generation.id);
+    });
+
+    // 2. browser=false, DB=eligible -> DB wins (the offer becomes
+    // available even though the caller explicitly claimed false).
+    it("2. an explicit browser claim of false is overridden by real DB eligibility", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const { generation } = await createEligiblePhotoPreviewChain(ownerUserId, clientId, analysis.id);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "orice",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+        hasCompletedPhotoPreview: false,
+      });
+
+      expect(decision.recommendedAction).toBe("OFFER_VIDEO");
+      expect(decision.eligiblePhotoPreviewGenerationId).toBe(generation.id);
+    });
+
+    // 3. browser=stale-positive, DB=not-eligible -> DB wins (no offer),
+    // even though the caller claims true.
+    it("3. a stale/wrong browser claim of true cannot force an offer the DB does not back", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      await createConfirmedProposal(ownerUserId, clientId, analysis.id);
+      // Deliberately NO map/binding/generation at all.
+
+      const decision = await resolveOrchestratorDecision({
+        message: "orice",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+        hasCompletedPhotoPreview: true,
+      });
+
+      expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
+      expect(decision.eligiblePhotoPreviewGenerationId).toBeNull();
+    });
+
+    // 4. no preview at all -> no offer (the honest baseline, no browser
+    // claim either).
+    it("4. no Photo Preview of any kind exists -- no offer, no claim either", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "orice",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      });
+
+      expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
+      expect(decision.eligiblePhotoPreviewGenerationId).toBeNull();
+    });
+
+    // 5. FAILED -> no offer.
+    it("5. a FAILED generation is never offered", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await createConfirmedProposal(ownerUserId, clientId, analysis.id);
+      const map = await createConfirmedMap(ownerUserId, clientId, proposal!.id);
+      const binding = await createConfirmedBinding(ownerUserId, clientId, map.id);
+      const generation = await createPhotoPreviewGeneration(ownerUserId, clientId, binding.id, "gemini", "gemini-3.1-flash-image");
+      await prisma.photoPreviewGeneration.update({ where: { id: generation.record.id }, data: { status: "FAILED", errorCode: "PROVIDER_ERROR" } });
+
+      const decision = await resolveOrchestratorDecision({
+        message: "orice",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      });
+
+      expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
+    });
+
+    // 6. PROCESSING/REQUESTED -> no offer.
+    it("6. a PROCESSING or REQUESTED generation is never offered", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await createConfirmedProposal(ownerUserId, clientId, analysis.id);
+      const map = await createConfirmedMap(ownerUserId, clientId, proposal!.id);
+      const binding = await createConfirmedBinding(ownerUserId, clientId, map.id);
+      const generation = await createPhotoPreviewGeneration(ownerUserId, clientId, binding.id, "gemini", "gemini-3.1-flash-image");
+      await prisma.photoPreviewGeneration.update({ where: { id: generation.record.id }, data: { status: "PROCESSING" } });
+
+      const decisionProcessing = await resolveOrchestratorDecision({
+        message: "orice",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      });
+      expect(decisionProcessing.recommendedAction).not.toBe("OFFER_VIDEO");
+
+      // Still REQUESTED (createPhotoPreviewGeneration's own starting
+      // status) is checked against a SEPARATE binding, same client.
+      const binding2 = await createConfirmedBinding(ownerUserId, clientId, map.id, "back");
+      await createPhotoPreviewGeneration(ownerUserId, clientId, binding2.id, "gemini", "gemini-3.1-flash-image");
+      const decisionRequested = await resolveOrchestratorDecision({
+        message: "orice",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      });
+      expect(decisionRequested.recommendedAction).not.toBe("OFFER_VIDEO");
+    });
+
+    // 7. STALE AUTHORITY (proposal-level): a preview belonging to a
+    // SUPERSEDED proposal's own old chain is never eligible once a newer
+    // proposal is confirmed for the same client -- "another Analysis's own
+    // preview" in practice, since a new proposal is what a new Analysis
+    // being carried forward actually produces.
+    it("7. a preview bound to a SUPERSEDED proposal (a different Analysis's own chain) is never offered once a newer proposal is confirmed", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysisA = await createAnalysis(ownerUserId, clientId);
+      const { proposal } = await createEligiblePhotoPreviewChain(ownerUserId, clientId, analysisA.id);
+
+      const analysisB = await createAnalysis(ownerUserId, clientId);
+      await createConfirmedProposal(ownerUserId, clientId, analysisB.id, proposal.id);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "orice",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysisB.id,
+      });
+
+      expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
+    });
+
+    // 8. other client's preview -> no offer.
+    it("8. another client's real eligible preview never leaks into this client's context", async () => {
+      const { ownerUserId, clientId: clientA } = await createOwnerAndClient();
+      const analysisA = await createAnalysis(ownerUserId, clientA);
+      const { clientId: clientB } = await createOwnerAndClient(ownerUserId);
+      const analysisB = await createAnalysis(ownerUserId, clientB);
+      await createEligiblePhotoPreviewChain(ownerUserId, clientB, analysisB.id);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "orice",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientA,
+        currentAnalysisId: analysisA.id,
+      });
+
+      expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
+    });
+
+    // 9. other owner's preview -> no offer.
+    it("9. another owner's real eligible preview never leaks across accounts", async () => {
+      const { ownerUserId: ownerA, clientId: clientA } = await createOwnerAndClient();
+      const analysisA = await createAnalysis(ownerA, clientA);
+      const { ownerUserId: ownerB, clientId: clientB } = await createOwnerAndClient();
+      const analysisB = await createAnalysis(ownerB, clientB);
+      await createEligiblePhotoPreviewChain(ownerB, clientB, analysisB.id);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "orice",
+        roleClass: "professional",
+        ownerUserId: ownerA,
+        currentClientId: clientA,
+        currentAnalysisId: analysisA.id,
+      });
+
+      expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
+    });
+
+    // 10. STALE AUTHORITY (map-level): a preview bound to a SUPERSEDED
+    // Spatial Mapping revision is never eligible once a NEWER map is
+    // confirmed under the SAME still-current proposal.
+    it("10. a preview bound to a SUPERSEDED Technical Visual Map is never offered once a newer map is confirmed", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const { proposal, map } = await createEligiblePhotoPreviewChain(ownerUserId, clientId, analysis.id);
+
+      // A second map revision gets confirmed under the SAME proposal --
+      // the first map (and everything bound to it) is now superseded.
+      await createConfirmedMap(ownerUserId, clientId, proposal.id, map.id);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "orice",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      });
+
+      expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
+    });
+
+    // 11. Text path with an eligible preview -- the offer still wins
+    // PRIORITY over ordinary classification, exactly as before Gap #3,
+    // now driven by real DB discovery instead of a trusted claim.
+    it("11. a real, unrelated free-text message still surfaces the offer when a real eligible preview exists", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      await createEligiblePhotoPreviewChain(ownerUserId, clientId, analysis.id);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "bună, ce mai faci?",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      });
+
+      expect(decision.recommendedAction).toBe("OFFER_VIDEO");
+    });
+
+    // 12. Voice-transcribed equivalent -> identical decision. Mirrors this
+    // file's own established "VOICE VS TEXT PARITY" precedent -- there is
+    // no separate voice code path anywhere in the server; a transcript is
+    // just a string, indistinguishable from typed text.
+    it("12. the identical message produces the identical decision regardless of the (never-modeled) input channel", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      await createEligiblePhotoPreviewChain(ownerUserId, clientId, analysis.id);
+
+      const input = { message: "arată-mi rezultatul", roleClass: "professional" as const, ownerUserId, currentClientId: clientId, currentAnalysisId: analysis.id };
+      const typed = await resolveOrchestratorDecision(input);
+      const spoken = await resolveOrchestratorDecision({ ...input });
+
+      expect(spoken).toEqual(typed);
+      expect(typed.recommendedAction).toBe("OFFER_VIDEO");
+    });
+
+    // 13/17/18/19: the FULL repetition-suppression lifecycle across turns,
+    // in one connected scenario (the natural conversational sequence the
+    // task's own LOCK FOR V1 rule describes) -- offer, decline, unrelated
+    // follow-up, explicit override, and a genuinely new eligible identity.
+    it("13/17/18/19: decline suppresses repeat offers for the SAME preview, but never blocks an explicit request, and a NEW eligible preview is never suppressed by an old one", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const { generation } = await createEligiblePhotoPreviewChain(ownerUserId, clientId, analysis.id);
+
+      // Turn 1: the offer fires for real.
+      const offered = await resolveOrchestratorDecision({
+        message: "orice",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      });
+      expect(offered.recommendedAction).toBe("OFFER_VIDEO");
+      expect(offered.eligiblePhotoPreviewGenerationId).toBe(generation.id);
+
+      // The client's own memory update rule (concierge-workflow-memory-logic.ts)
+      // would now remember this preview id as "already offered."
+      const { memory: afterOffer } = updateWorkflowMemory(INITIAL_WORKFLOW_MEMORY, offered);
+      expect(afterOffer.offeredVideoForPhotoPreviewId).toBe(generation.id);
+      expect(afterOffer.pendingDecision).toBe("VIDEO_OFFER");
+
+      // 13. Turn 2: a bare "Nu" answers the pending offer -- zero Video
+      // call (recommendedAction is null, never REQUEST_VIDEO), and the
+      // decline reasonCode means the memory rule KEEPS the old offered id
+      // (does not clear it) -- suppression must survive a decline.
+      const declined = await resolveOrchestratorDecision({
+        message: "Nu",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+        pendingDecision: afterOffer.pendingDecision,
+      });
+      expect(declined.reasonCode).toBe("video_offer_declined");
+      expect(declined.recommendedAction).toBeNull();
+      const { memory: afterDecline } = updateWorkflowMemory(afterOffer, declined);
+      expect(afterDecline.offeredVideoForPhotoPreviewId).toBe(generation.id);
+      expect(afterDecline.pendingDecision).toBeNull();
+
+      // 17. Turn 3: a later, completely unrelated message -- the SAME
+      // preview is still real and eligible in the DB, but the remembered
+      // suppression id matches it, so no repeated automatic offer fires.
+      const unrelated = await resolveOrchestratorDecision({
+        message: "cum arată programul de mâine?",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+        suppressVideoOfferForPhotoPreviewId: afterDecline.offeredVideoForPhotoPreviewId,
+      });
+      expect(unrelated.recommendedAction).not.toBe("OFFER_VIDEO");
+      // The decision is still honest about real eligibility -- suppression
+      // is presentation-only, never authority.
+      expect(unrelated.eligiblePhotoPreviewGenerationId).toBe(generation.id);
+
+      // 18. Turn 4: an EXPLICIT later request for Video still reaches the
+      // existing navigate-only consent path, completely unaffected by the
+      // presentation suppression above.
+      const explicitRequest = await resolveOrchestratorDecision({
+        message: "vreau un video",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+        suppressVideoOfferForPhotoPreviewId: afterDecline.offeredVideoForPhotoPreviewId,
+      });
+      expect(explicitRequest.recommendedAction).toBe("REQUEST_VIDEO");
+      expect(explicitRequest.requiresUserConsent).toBe(true);
+    });
+
+    // 19. A genuinely NEW/DIFFERENT eligible Photo Preview identity is
+    // never suppressed by an OLD remembered one from a past context (a
+    // fresh client here stands in for "a different, later conversation" --
+    // the suppression comparison is a pure id-equality check, so what
+    // matters is only that today's real discovered id differs from the
+    // remembered one, not which client it came from).
+    it("19. an old remembered suppression id never blocks a genuinely different, currently eligible preview", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const { generation } = await createEligiblePhotoPreviewChain(ownerUserId, clientId, analysis.id);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "orice",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+        // A stale id remembered from a completely different, past preview
+        // -- never matches today's real discovery.
+        suppressVideoOfferForPhotoPreviewId: "some-old-preview-id-from-a-past-conversation",
+      });
+
+      expect(decision.recommendedAction).toBe("OFFER_VIDEO");
+      expect(decision.eligiblePhotoPreviewGenerationId).toBe(generation.id);
+    });
+
+    // 14. YES -> only the EXISTING Video cost/consent flow is reached --
+    // never a Veo call, never a Photo Preview call (the registry itself is
+    // the proof: REQUEST_VIDEO is navigate-only, changesData:false).
+    it("14. answering YES to a real offer reaches only the existing navigate-only Video consent action, never a provider call", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      await createEligiblePhotoPreviewChain(ownerUserId, clientId, analysis.id);
+
+      const decision = await resolveOrchestratorDecision({
+        message: "Da",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+        pendingDecision: "VIDEO_OFFER",
+      });
+
+      expect(decision.recommendedAction).toBe("REQUEST_VIDEO");
+      expect(decision.requiresUserConsent).toBe(true);
+      expect(decision.costClass).toBe("MEANINGFUL_COST");
+      expect(ORCHESTRATOR_ACTION_REGISTRY.REQUEST_VIDEO.kind).toBe("navigate");
+      expect(ORCHESTRATOR_ACTION_REGISTRY.REQUEST_VIDEO.changesData).toBe(false);
+    });
+
+    // 15. A bare "Da" with NO pending decision at all, and no real
+    // eligible preview either, can never authorize Video.
+    it("15. a bare 'Da' with no pending offer and no real eligible preview cannot authorize Video", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      // Deliberately no Photo Preview chain and no pendingDecision.
+
+      const decision = await resolveOrchestratorDecision({
+        message: "Da",
+        roleClass: "professional",
+        ownerUserId,
+        currentClientId: clientId,
+        currentAnalysisId: analysis.id,
+      });
+
+      expect(decision.recommendedAction).not.toBe("REQUEST_VIDEO");
+      expect(decision.recommendedAction).not.toBe("OFFER_VIDEO");
+    });
+
+    // 16. A brand-new session with genuinely blank browser state (the
+    // client-side half -- see resolveEffectiveContext) still resolves to
+    // a request that lets the server rediscover a real persisted preview:
+    // no pendingDecision, no activePlanGoal, no suppression hint at all
+    // survive a reload, exactly like every other remembered field.
+    it("16. a blank ConciergeWorkflowMemory (fresh session/reload) carries no stale suppression -- the server is free to rediscover", () => {
+      const effective = resolveEffectiveContext({ currentClientId: "c1", currentAnalysisId: "a1" }, INITIAL_WORKFLOW_MEMORY);
+      expect(effective.offeredVideoForPhotoPreviewId).toBeNull();
+      expect(effective.pendingDecision).toBeNull();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1882,7 +2348,7 @@ async function createAnalysis(ownerUserId: string, clientId: string) {
 // findCurrentConfirmedProposal wiring genuinely works end to end -- every
 // other plan-step-sequencing test uses a fake, isolated in
 // orchestrator-plan-service.test.ts).
-async function createConfirmedProposal(ownerUserId: string, clientId: string, analysisId: string) {
+async function createConfirmedProposal(ownerUserId: string, clientId: string, analysisId: string, expectedCurrentConfirmedProposalId: string | null = null) {
   const draft = await createProposalForOwner(
     ownerUserId,
     clientId,
@@ -1892,7 +2358,59 @@ async function createConfirmedProposal(ownerUserId: string, clientId: string, an
     evidenceSnapshot(),
     "1.0.0-m8",
   );
-  return confirmProposal(ownerUserId, draft.id, ownerUserId, null);
+  return confirmProposal(ownerUserId, draft.id, ownerUserId, expectedCurrentConfirmedProposalId);
+}
+
+// AI Concierge Gap #3 -- the real chain findEligibleCompletedPhotoPreview
+// walks (see that file's own header comment): confirmed proposal ->
+// confirmed map under THAT proposal -> confirmed spatial binding under
+// THAT map -> COMPLETED generation for THAT binding. Mirrors
+// photo-preview-eligibility.test.ts's own fixture helpers, redeclared
+// locally per this codebase's established "no shared test-helper exports
+// across files" convention.
+async function createConfirmedMap(ownerUserId: string, clientId: string, analysisProposalId: string, expectedCurrentConfirmedMapId: string | null = null) {
+  const draft = await createDraftFromConfirmedProposal(ownerUserId, clientId, analysisProposalId);
+  const confirmed = await confirmDraftMap(ownerUserId, draft.id, expectedCurrentConfirmedMapId);
+  if (!confirmed) throw new Error("expected confirmed map");
+  return confirmed;
+}
+
+async function createImageAsset(ownerUserId: string, clientId: string) {
+  return prisma.imageAsset.create({
+    data: { id: randomUUID(), fileName: "photo.jpg", mimeType: "image/jpeg", sizeBytes: 12345, ownerUserId, clientId, storagePath: "pending", width: 1080, height: 1440 },
+  });
+}
+
+async function createConfirmedBinding(ownerUserId: string, clientId: string, technicalVisualMapId: string, viewLabel = "front") {
+  const asset = await createImageAsset(ownerUserId, clientId);
+  const draft = await createDraftSpatialBinding(ownerUserId, clientId, technicalVisualMapId, asset.id, viewLabel);
+  const confirmed = await confirmSpatialBinding(ownerUserId, draft.id, null);
+  if (!confirmed) throw new Error("expected confirmed spatial binding");
+  return confirmed;
+}
+
+// Real REQUESTED row (createPhotoPreviewGeneration -- a real sealed
+// request, no provider call) flipped directly to COMPLETED with a real
+// generatedImageAssetId via Prisma -- never through the real execution
+// path, which would call a provider.
+async function completedPhotoPreview(ownerUserId: string, clientId: string, spatialBindingId: string) {
+  const outcome = await createPhotoPreviewGeneration(ownerUserId, clientId, spatialBindingId, "gemini", "gemini-3.1-flash-image");
+  const outputAsset = await createImageAsset(ownerUserId, clientId);
+  return prisma.photoPreviewGeneration.update({
+    where: { id: outcome.record.id },
+    data: { status: "COMPLETED", generatedImageAssetId: outputAsset.id },
+  });
+}
+
+// Builds the FULL real, currently-eligible authority chain in one call --
+// the "happy path" starting point most Gap #3 tests need.
+async function createEligiblePhotoPreviewChain(ownerUserId: string, clientId: string, analysisId: string) {
+  const proposal = await createConfirmedProposal(ownerUserId, clientId, analysisId);
+  if (!proposal) throw new Error("expected confirmed proposal");
+  const map = await createConfirmedMap(ownerUserId, clientId, proposal.id);
+  const binding = await createConfirmedBinding(ownerUserId, clientId, map.id);
+  const generation = await completedPhotoPreview(ownerUserId, clientId, binding.id);
+  return { proposal, map, binding, generation };
 }
 
 function cuttingPayload(): TechnicalCutPlan {

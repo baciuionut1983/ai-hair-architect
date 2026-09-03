@@ -11,6 +11,11 @@ import { extractCandidateClientName, matchClientNameCandidates } from "@/lib/orc
 import { resolveWorkflowStage } from "@/lib/orchestrator-workflow-stage";
 import { isOrchestratorActionAllowedForRole, ORCHESTRATOR_ACTION_REGISTRY } from "@/lib/orchestrator-action-registry";
 import {
+  findEligibleCompletedPhotoPreview,
+  type EligiblePhotoPreviewResult,
+  type FindEligibleCompletedPhotoPreviewDependencies,
+} from "@/lib/photo-preview-eligibility";
+import {
   cancelPlan,
   resolveVisualizeResultPlan,
   type ResolveVisualizeResultPlanDependencies,
@@ -80,6 +85,21 @@ export interface ResolveOrchestratorDecisionInput {
   // never authority -- the plan it produces is recomputed from real DB
   // state every time, never assumed to still be accurate.
   activePlanGoal?: string | null;
+  // AI Concierge Gap #3 (task section "Offer repetition rule -- LOCK FOR
+  // V1"): a client-remembered id of the Photo Preview generation that
+  // OFFER_VIDEO was ALREADY presented for earlier in the current
+  // conversation -- see ConciergeWorkflowMemory.offeredVideoForPhotoPreviewId.
+  // Raw/untrusted (any string, or garbage) -- only ever compared for exact
+  // equality against a real, freshly-discovered eligible preview id inside
+  // buildDecision (isVideoOfferAlreadyPresented below). Worst-case misuse
+  // has ZERO security impact: at most it can suppress or fail to suppress a
+  // FREE, presentational OFFER_VIDEO suggestion -- it can never grant
+  // Video/Veo authority, which is decided entirely independently (see
+  // decideFromIntent's own "request_video" case). This is presentation
+  // suppression, NOT eligibility -- eligibility itself is always
+  // rediscovered fresh from real DB state (see eligiblePhotoPreview below),
+  // never influenced by this field.
+  suppressVideoOfferForPhotoPreviewId?: string | null;
 }
 
 export interface ResolveOrchestratorDecisionDependencies {
@@ -107,6 +127,14 @@ export interface ResolveOrchestratorDecisionDependencies {
   // findCurrentConfirmedProposal injection, so a plan-triggering test can
   // fake the Proposal read without needing a real Postgres fixture.
   planDependencies?: ResolveVisualizeResultPlanDependencies;
+  // AI Concierge Gap #3: the ONLY discovery call this fix adds. Defaults to
+  // the real findEligibleCompletedPhotoPreview (composed entirely of
+  // existing, unmodified repository reads -- see that file's own header
+  // comment for the full authority chain). Tests inject a fake to prove
+  // decision behavior without needing a real Postgres fixture; the fixture-
+  // backed proof itself lives in photo-preview-eligibility.test.ts.
+  findEligibleCompletedPhotoPreview?: typeof findEligibleCompletedPhotoPreview;
+  photoPreviewEligibilityDependencies?: FindEligibleCompletedPhotoPreviewDependencies;
 }
 
 // Stage 5: the plan-aware entry point (used by the HTTP route). Shares
@@ -150,6 +178,7 @@ async function buildDecision(
   const listClients = dependencies.listClientsForOwner ?? listClientsForOwner;
   const findLatestAnalysis = dependencies.findLatestAnalysisForClient ?? findLatestAnalysisForClient;
   const classifyHybrid = dependencies.classifyIntentHybrid ?? classifyOrchestratorIntentHybrid;
+  const findEligiblePreview = dependencies.findEligibleCompletedPhotoPreview ?? findEligibleCompletedPhotoPreview;
 
   // Re-verify ownership -- never trust the caller's own claim.
   let clientId: string | null = null;
@@ -224,12 +253,37 @@ async function buildDecision(
     analysisId = latestAnalysis ? latestAnalysis.id : null;
   }
 
+  // AI Concierge Gap #3: server-authoritative discovery REPLACES the
+  // caller's own claim entirely -- input.hasCompletedPhotoPreview is no
+  // longer read here at all. DB wins in BOTH directions (task's own
+  // explicit requirement): a caller that never claimed completion (e.g.
+  // Dashboard's ConciergePanel, which always sent `false`) still gets a
+  // real offer once real DB state says a preview is eligible; a caller
+  // with a stale/wrong positive claim can no longer force an offer the DB
+  // does not back. Only attempted once BOTH a real client and a real
+  // analysis have resolved this turn -- mirrors the previous gate exactly
+  // (analysisId !== null) and avoids a pointless DB round-trip otherwise
+  // (findEligibleCompletedPhotoPreview is client-scoped, not analysis-
+  // scoped -- see its own header comment -- but nothing before this point
+  // in the app ever offers Video without a current analysis either).
+  let eligiblePhotoPreview: EligiblePhotoPreviewResult = { eligible: false, photoPreviewGenerationId: null };
+  if (clientId && analysisId) {
+    eligiblePhotoPreview = await findEligiblePreview(input.ownerUserId, clientId, dependencies.photoPreviewEligibilityDependencies);
+  }
+
   const context: OrchestratorContext = {
     roleClass: input.roleClass,
     currentClientId: clientId,
     currentAnalysisId: analysisId,
-    hasCompletedPhotoPreview: Boolean(input.hasCompletedPhotoPreview) && analysisId !== null,
+    hasCompletedPhotoPreview: eligiblePhotoPreview.eligible,
   };
+
+  // Stage 4-style client-remembered hint (task's own "Offer repetition
+  // rule -- LOCK FOR V1"): presentation suppression ONLY, never authority
+  // -- see this function's own isVideoOfferAlreadyPresented and this
+  // file's ResolveOrchestratorDecisionInput doc comment on this field.
+  const suppressVideoOfferForPhotoPreviewId: string | null =
+    typeof input.suppressVideoOfferForPhotoPreviewId === "string" ? input.suppressVideoOfferForPhotoPreviewId : null;
 
   // Stage 4 (task section 3/4): a client-remembered pending decision is
   // only ever CONSULTED here, never trusted as-is -- an unrecognized/
@@ -278,11 +332,18 @@ async function buildDecision(
     // concierge-workflow-memory-logic.ts).
     decision = videoOfferDeclinedDecision(context);
     classifierSource = "pending_decision";
-  } else if (videoOfferApplies(context)) {
+  } else if (
+    videoOfferApplies(context) &&
+    !isVideoOfferAlreadyPresented(suppressVideoOfferForPhotoPreviewId, eligiblePhotoPreview.photoPreviewGenerationId)
+  ) {
     // Stage 2 priority (still wins over normal classification, exactly as
     // before) -- but only reached once a pending-decision answer has
     // already had first refusal above, so a real "yes"/"no" reply is
-    // never re-asked the same question instead of being honored.
+    // never re-asked the same question instead of being honored. AI
+    // Concierge Gap #3: also now gated on NOT having already presented
+    // THIS SAME eligible preview earlier in the conversation (repetition
+    // suppression, task's own LOCK FOR V1 rule) -- a genuinely different
+    // (newer) eligible preview is a different id and is never suppressed.
     decision = composeDecision(
       "request_video",
       "video",
@@ -332,6 +393,15 @@ async function buildDecision(
     // assumed.
     decision = unsupportedDecision(context);
   }
+
+  // AI Concierge Gap #3: ONE centralized override, applied to whichever
+  // decision this turn actually produced (never threaded individually
+  // through every decision-builder above) -- the discovered eligible
+  // preview id is the same real value regardless of which branch fired.
+  // Always the fresh, just-discovered value -- never the caller's own
+  // suppressVideoOfferForPhotoPreviewId echoed back (that field only ever
+  // influences the branch condition above, never this field's own value).
+  decision = { ...decision, eligiblePhotoPreviewGenerationId: eligiblePhotoPreview.photoPreviewGenerationId };
 
   // Stage 5 (task section 2/6): a plan is built whenever THIS turn's own
   // resolved DECISION already points at one of the "visualize_result"
@@ -399,6 +469,20 @@ function videoOfferApplies(context: OrchestratorContext): boolean {
       roleAllows("OFFER_VIDEO", context.roleClass) &&
       roleAllows("REQUEST_VIDEO", context.roleClass),
   );
+}
+
+// AI Concierge Gap #3 (task's own "Offer repetition rule -- LOCK FOR V1"):
+// pure presentation-suppression check -- true only when the caller's own
+// remembered "already offered for this preview" hint EXACTLY matches
+// today's freshly-discovered eligible preview id. Both null (nothing
+// remembered, or nothing eligible today) never suppresses. A genuinely NEW
+// eligible preview (a different id) is never suppressed by an old
+// remembered one -- the equality check alone is enough, with no separate
+// "reset on client switch" logic needed anywhere: photo preview generation
+// ids are globally-unique, so a stale id from a different client/preview
+// can never accidentally collide with today's.
+function isVideoOfferAlreadyPresented(suppressedId: string | null, eligibleId: string | null): boolean {
+  return suppressedId !== null && eligibleId !== null && suppressedId === eligibleId;
 }
 
 // Pure -- maps an already-classified intent plus an already-verified
@@ -473,6 +557,9 @@ function roleUnsupportedDecision(context: OrchestratorContext): OrchestratorDeci
     reasonCode: "role_not_yet_supported",
     nextStepCode: "role_not_yet_supported",
     ambiguousClientCandidates: [],
+    // Placeholder -- buildDecision overrides this centrally on every path,
+    // see its own header comment on eligiblePhotoPreview.
+    eligiblePhotoPreviewGenerationId: null,
   };
 }
 
@@ -497,6 +584,8 @@ function honestNoActionDecision(context: OrchestratorContext, reasonCode: Orches
     reasonCode,
     nextStepCode: reasonCode,
     ambiguousClientCandidates: [],
+    // Placeholder -- buildDecision overrides this centrally on every path.
+    eligiblePhotoPreviewGenerationId: null,
   };
 }
 
@@ -569,6 +658,8 @@ function composeDecision(
     reasonCode,
     nextStepCode,
     ambiguousClientCandidates: [],
+    // Placeholder -- buildDecision overrides this centrally on every path.
+    eligiblePhotoPreviewGenerationId: null,
   };
 }
 

@@ -65,7 +65,14 @@ export function useConcierge(context: UseConciergeContext = {}) {
   const ask = useCallback(
     async (rawMessage: string) => {
       const effectiveContext = resolveEffectiveContext(context, memory);
-      const body = buildOrchestrateRequestBody(rawMessage, effectiveContext);
+      // AI Concierge Gap #3: echoes the remembered "already offered for
+      // this preview" hint under the request body's own field name --
+      // presentation suppression only, see concierge-workflow-memory-logic.ts's
+      // own header comment on ConciergeEffectiveContext.offeredVideoForPhotoPreviewId.
+      const body = buildOrchestrateRequestBody(rawMessage, {
+        ...effectiveContext,
+        suppressVideoOfferForPhotoPreviewId: effectiveContext.offeredVideoForPhotoPreviewId,
+      });
       if (!body) return;
 
       setState({ status: "loading" });

@@ -33,6 +33,15 @@ export interface ConciergeWorkflowMemory {
   pendingDecision: ConciergePendingDecision | null;
   activePlanGoal: OrchestrationPlanGoal | null;
   activePlanStepId: string | null;
+  // AI Concierge Gap #3 (task's own "Offer repetition rule -- LOCK FOR
+  // V1"): the id of the Photo Preview generation OFFER_VIDEO was last
+  // actually PRESENTED for in this conversation -- null until the first
+  // real offer. Presentation-layer only, exactly like pendingDecision
+  // above: the server never trusts this as eligibility, only as a hint for
+  // whether to suppress repeating the SAME offer (see
+  // resolveEffectiveContext and updateWorkflowMemory's own update rule
+  // below, and orchestrator-service.ts's own isVideoOfferAlreadyPresented).
+  offeredVideoForPhotoPreviewId: string | null;
 }
 
 export const INITIAL_WORKFLOW_MEMORY: ConciergeWorkflowMemory = {
@@ -41,6 +50,7 @@ export const INITIAL_WORKFLOW_MEMORY: ConciergeWorkflowMemory = {
   pendingDecision: null,
   activePlanGoal: null,
   activePlanStepId: null,
+  offeredVideoForPhotoPreviewId: null,
 };
 
 // task section 16 (Stage 4) + task section 17 (Stage 5): the workflow/plan
@@ -102,6 +112,23 @@ export function updateWorkflowMemory(
   const nextPendingDecision: ConciergePendingDecision | null = decision.recommendedAction === "OFFER_VIDEO" ? "VIDEO_OFFER" : null;
   const nextPlanGoal = plan?.goal ?? null;
   const nextPlanStepId = plan?.currentStepId ?? null;
+  // AI Concierge Gap #3: updated ONLY when THIS decision was a genuinely
+  // FRESH offer (reasonCode "video_offer_after_completed_preview") -- kept
+  // unchanged on every other turn, including a decline (reasonCode
+  // "video_offer_declined"), an unrelated message, or a navigation. This
+  // single rule is what makes ALL of the following correct with no extra
+  // branching: suppression survives unrelated messages (this branch simply
+  // doesn't fire, so the old value rides along unchanged); suppression
+  // survives an explicit "No" (same reason -- "no" produces
+  // video_offer_declined, not the offer's own reason code, so the id from
+  // the offer that was just declined is correctly KEPT, not cleared, which
+  // is exactly what "don't re-offer the same declined preview" requires);
+  // a genuinely NEW eligible preview is never suppressed by an old one (a
+  // fresh offer for a DIFFERENT id simply overwrites the old remembered
+  // value the moment it fires, and orchestrator-service.ts's own equality
+  // check already lets a different id straight through even before that).
+  const nextOfferedVideoForPhotoPreviewId =
+    decision.reasonCode === "video_offer_after_completed_preview" ? decision.eligiblePhotoPreviewGenerationId : previous.offeredVideoForPhotoPreviewId;
 
   const events: ConciergeWorkflowEvent[] = [];
   if (nextActiveClientId) {
@@ -134,6 +161,7 @@ export function updateWorkflowMemory(
       pendingDecision: nextPendingDecision,
       activePlanGoal: nextPlanGoal,
       activePlanStepId: nextPlanStepId,
+      offeredVideoForPhotoPreviewId: nextOfferedVideoForPhotoPreviewId,
     },
     events,
   };
@@ -151,6 +179,11 @@ export interface ConciergeEffectiveContext {
   hasCompletedPhotoPreview: boolean;
   pendingDecision: ConciergePendingDecision | null;
   activePlanGoal: OrchestrationPlanGoal | null;
+  // AI Concierge Gap #3: always taken from memory alone, exactly like
+  // pendingDecision/activePlanGoal above -- no page ever supplies this
+  // directly, it only ever exists because a prior turn's decision actually
+  // presented an offer.
+  offeredVideoForPhotoPreviewId: string | null;
 }
 
 // Merges the CALLER's own real page context (route params, e.g. a future
@@ -171,5 +204,6 @@ export function resolveEffectiveContext(pageContext: ConciergePageContext, memor
     hasCompletedPhotoPreview: pageContext.hasCompletedPhotoPreview === true,
     pendingDecision: memory.pendingDecision,
     activePlanGoal: memory.activePlanGoal,
+    offeredVideoForPhotoPreviewId: memory.offeredVideoForPhotoPreviewId,
   };
 }
