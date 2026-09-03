@@ -14,6 +14,7 @@ import {
   hasNoActionableRecommendation,
   isVideoOfferDecision,
   reasonCodeToTranslationKey,
+  resolveVideoOfferAcceptHref,
   shouldClearComposerAfterSubmit,
 } from "./concierge-logic";
 import { ConciergeVoiceInput } from "./concierge-voice-input";
@@ -119,6 +120,7 @@ export function ConciergePanel({ context }: ConciergePanelProps) {
               : null
           }
           ambiguousClientCandidates={state.decision.ambiguousClientCandidates}
+          videoOfferAcceptHref={resolveVideoOfferAcceptHref(state.decision)}
           onDecline={reset}
           t={t}
         />
@@ -136,11 +138,19 @@ interface ConciergeDecisionViewProps {
   // candidates (id + fullName) -- see OrchestratorClientCandidate's own
   // doc comment. Always [] outside the "clientAmbiguous" kind.
   ambiguousClientCandidates: OrchestratorClientCandidate[];
+  // Production bug fix: the "Da" destination for a videoOffer decision --
+  // deliberately SEPARATE from `href` above (which is null for a video
+  // offer by design, since OFFER_VIDEO itself has no navigation target).
+  // See resolveVideoOfferAcceptHref's own header comment in
+  // concierge-logic.ts. Only ever read inside the "videoOffer" branch
+  // below -- every other decisionKind's own href/actionLabel is completely
+  // unaffected by this prop.
+  videoOfferAcceptHref: string | null;
   onDecline: () => void;
   t: ReturnType<typeof useUiLanguage>["t"];
 }
 
-function ConciergeDecisionView({ decisionKind, reasonKey, actionLabel, href, ambiguousClientCandidates, onDecline, t }: ConciergeDecisionViewProps) {
+function ConciergeDecisionView({ decisionKind, reasonKey, actionLabel, href, ambiguousClientCandidates, videoOfferAcceptHref, onDecline, t }: ConciergeDecisionViewProps) {
   const reasonText = t(reasonKey);
 
   if (decisionKind === "clientAmbiguous") {
@@ -173,8 +183,8 @@ function ConciergeDecisionView({ decisionKind, reasonKey, actionLabel, href, amb
       <div className="flex flex-col gap-3 rounded-xl border border-border bg-surface-alt p-4">
         <p className="text-sm text-foreground">{reasonText}</p>
         <div className="flex gap-2">
-          {href ? (
-            <Link href={href}>
+          {videoOfferAcceptHref ? (
+            <Link href={videoOfferAcceptHref}>
               <Button variant="primary">{t("concierge.videoOffer.yes")}</Button>
             </Link>
           ) : null}

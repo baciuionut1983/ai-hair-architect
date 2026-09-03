@@ -1,6 +1,7 @@
 import type { TranslationKey } from "@/lib/translations";
 import type { ConciergePendingDecision, OrchestratorActionId, OrchestratorDecision, OrchestratorReasonCode } from "@/lib/orchestrator-contracts";
 import type { OrchestrationPlanGoal } from "@/lib/orchestrator-plan-contracts";
+import { resolveOrchestratorActionHref } from "@/lib/orchestrator-action-registry";
 
 // AI Concierge / Orchestrator, Stage 1 -- pure UI-facing logic, no React,
 // no fetch. Mirrors video-demonstration-logic.ts's own established split
@@ -124,6 +125,35 @@ export function buildOrchestrateRequestBody(
 // distinguishable predicate rather than just checking recommendedAction.
 export function isVideoOfferDecision(decision: OrchestratorDecision): boolean {
   return decision.reasonCode === "video_offer_after_completed_preview";
+}
+
+// PRODUCTION BUG FIX (real production evidence, post AI Concierge Gap #3):
+// the video offer's own recommendedAction (OFFER_VIDEO) has no navigation
+// target by design -- it is a presentational question, not a destination
+// (see resolveOrchestratorActionHref's own header comment) -- so a caller
+// that reused the SAME href computed from recommendedAction for the "Da"
+// button was always null, silently hiding the "Da" option. This bug was
+// only ever reachable once Gap #3 made a real, server-verified eligible
+// Photo Preview discoverable from the Dashboard for the first time -- the
+// branch existed since Stage 2 but had never actually fired in production
+// before.
+//
+// "Da" always means REQUEST_VIDEO specifically -- the SAME existing
+// navigate-only action a bare "Da" reply to a pending offer already
+// reaches (orchestrator-service.ts's own decideFromIntent("request_video",
+// ...) case, unchanged). Computed here from the SAME already-server-
+// verified targetClientId/targetAnalysisId the decision itself carries --
+// never a second, independently-derived id.
+//
+// Returns null (no "Da" link renders) whenever the decision is not a
+// video offer at all, OR when REQUEST_VIDEO's own declared requirements
+// (a real client + a real analysis) are not met by the decision's own
+// target ids -- resolveOrchestratorActionHref's own existing fail-closed
+// guard, reused unchanged, never a link to an invalid/incomplete
+// destination.
+export function resolveVideoOfferAcceptHref(decision: OrchestratorDecision): string | null {
+  if (!isVideoOfferDecision(decision)) return null;
+  return resolveOrchestratorActionHref("REQUEST_VIDEO", { clientId: decision.targetClientId, analysisId: decision.targetAnalysisId });
 }
 
 // A decision with no recommended action at all (role not supported /

@@ -8,6 +8,7 @@ import {
   isConciergeVoiceInputBusy,
   isVideoOfferDecision,
   reasonCodeToTranslationKey,
+  resolveVideoOfferAcceptHref,
   shouldClearComposerAfterSubmit,
 } from "./concierge-logic";
 import type { OrchestratorActionId, OrchestratorDecision, OrchestratorReasonCode } from "@/lib/orchestrator-contracts";
@@ -170,6 +171,48 @@ describe("isVideoOfferDecision / hasNoActionableRecommendation", () => {
   it("hasNoActionableRecommendation is true only when there is truly nothing to do", () => {
     expect(hasNoActionableRecommendation(decision({ recommendedAction: null, availableActions: [] }))).toBe(true);
     expect(hasNoActionableRecommendation(decision({ recommendedAction: "OPEN_CLIENTS", availableActions: ["OPEN_CLIENTS"] }))).toBe(false);
+  });
+});
+
+// PRODUCTION BUG FIX: real production evidence -- the videoOffer "Da"
+// button never rendered (ConciergePanel reused OFFER_VIDEO's own href,
+// which is always null by design). Verifies the exact 5 things this fix
+// authorization required.
+describe("resolveVideoOfferAcceptHref -- 'Da' destination for the video offer", () => {
+  const videoOfferDecision = (overrides: Partial<OrchestratorDecision> = {}) =>
+    decision({
+      reasonCode: "video_offer_after_completed_preview",
+      recommendedAction: "OFFER_VIDEO",
+      targetClientId: "client-1",
+      targetAnalysisId: "analysis-1",
+      ...overrides,
+    });
+
+  // 1 + 2: "Da" is available for a real videoOffer decision, and leads to
+  // the REQUEST_VIDEO destination built from the decision's own already-
+  // server-verified client/analysis ids.
+  it("resolves the REQUEST_VIDEO destination for a real videoOffer decision", () => {
+    expect(resolveVideoOfferAcceptHref(videoOfferDecision())).toBe("/clients/client-1/analysis/analysis-1");
+  });
+
+  // 4: any other recommendedAction/decision kind is completely unaffected
+  // -- this function is never even consulted for them in ConciergePanel,
+  // and it returns null for them here too if ever called.
+  it("returns null for any non-videoOffer decision -- never interferes with other CTAs", () => {
+    expect(resolveVideoOfferAcceptHref(decision({ reasonCode: "client_and_analysis_identified", recommendedAction: "OPEN_ANALYSIS", targetClientId: "client-1", targetAnalysisId: "analysis-1" }))).toBeNull();
+    expect(resolveVideoOfferAcceptHref(decision({ reasonCode: "no_client_selected", recommendedAction: "OPEN_CLIENTS" }))).toBeNull();
+    expect(resolveVideoOfferAcceptHref(decision({ reasonCode: "video_offer_declined", recommendedAction: null }))).toBeNull();
+  });
+
+  // 5: never an invalid/incomplete "Da" -- missing client or analysis id
+  // (should be structurally impossible for a real OFFER_VIDEO decision,
+  // since that action's own registry entry requires both -- but defended
+  // here anyway, exactly like resolveOrchestratorActionHref's own guard
+  // for every other action).
+  it("returns null when the required client or analysis id is missing, even for a videoOffer-shaped decision", () => {
+    expect(resolveVideoOfferAcceptHref(videoOfferDecision({ targetClientId: null }))).toBeNull();
+    expect(resolveVideoOfferAcceptHref(videoOfferDecision({ targetAnalysisId: null }))).toBeNull();
+    expect(resolveVideoOfferAcceptHref(videoOfferDecision({ targetClientId: null, targetAnalysisId: null }))).toBeNull();
   });
 });
 
