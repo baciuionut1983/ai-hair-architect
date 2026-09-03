@@ -1,5 +1,6 @@
 import type { ClientPhotoRecord } from "@/lib/contracts";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
+import { PHOTO_PREVIEW_OUTPUT_ORIGIN } from "@/lib/photo-preview-output-storage";
 
 // Technical Visual Map, Stage 5C -- a source image is "eligible" for spatial
 // binding creation only when its normalized dimensions are known (Stage 5B's
@@ -9,6 +10,22 @@ import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 // listImageAssetPhotosForClient/ClientPhotoRecord above, which back the
 // protected client History tab and carry no width/height field; adding one
 // there would risk that unrelated, already-shipped feature for no benefit.
+//
+// Spatial Mapping revisit fix #2 (real production defect): this list must
+// never include a real AI Photo Preview's own generated OUTPUT image --
+// ImageAsset.origin is the EXISTING, purpose-built structural discriminator
+// for exactly this (see photo-preview-output-storage.ts's own header
+// comment: "this is what makes it structurally impossible to confuse a
+// generated preview with a real client upload later"). Excluding the one
+// known-generated value (rather than restricting to the one known-upload
+// value) is the deliberate, future-proof direction: ImageAsset.origin's own
+// schema comment says a future THIRD origin must never require a
+// migration, and any such value would still legitimately belong here
+// unless it specifically means "not a real client photo." No filename
+// heuristic is used -- a real client photo that happens to be named
+// something like "photo-preview-of-new-style.jpg" must never be excluded
+// just because of its name; only this real, persisted provenance field
+// decides.
 export interface EligibleSpatialSourceImage {
   id: string;
   fileName: string;
@@ -28,7 +45,17 @@ export async function listEligibleSpatialSourceImagesForClient(
 
   try {
     const rows = await prisma.imageAsset.findMany({
-      where: { ownerUserId, clientId, deletedAt: null, width: { not: null }, height: { not: null } },
+      where: {
+        ownerUserId,
+        clientId,
+        deletedAt: null,
+        width: { not: null },
+        height: { not: null },
+        // Fix #2: never offer a real AI Photo Preview's own generated
+        // output image as a Spatial Mapping source -- see this file's own
+        // header comment above.
+        origin: { not: PHOTO_PREVIEW_OUTPUT_ORIGIN },
+      },
       orderBy: [{ uploadedAt: "desc" }, { id: "desc" }],
     });
 

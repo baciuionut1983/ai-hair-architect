@@ -17,9 +17,38 @@ import {
   isSpatialPayloadDirty,
   mapSpatialBindingApiError,
   replacePerimeterPointAt,
+  resolveAutoRestoreSelection,
   resolveSpatialBindingLoadStatus,
   zonesInCanonicalOrder,
 } from "./spatial-binding-logic";
+import type { TechnicalVisualMapSpatialBindingRecord } from "@/lib/technical-visual-map-spatial-binding-repository";
+
+function binding(overrides: Partial<TechnicalVisualMapSpatialBindingRecord> = {}): TechnicalVisualMapSpatialBindingRecord {
+  return {
+    id: "binding-1",
+    ownerUserId: "owner-1",
+    clientId: "client-1",
+    technicalVisualMapId: "map-1",
+    sourceImageAssetId: "asset-1",
+    sourceImageAnalysisId: null,
+    viewLabel: "front",
+    status: "CONFIRMED",
+    spatialVersion: 1,
+    geometrySchemaVersion: "1.0.0",
+    payload: { zones: [], perimeter: { state: "not_placed" } },
+    frozenWidth: 1080,
+    frozenHeight: 1440,
+    frozenOrientation: 0,
+    frozenContentSha256: null,
+    frozenStorageVersionId: null,
+    supersededBySpatialBindingId: null,
+    confirmedAt: "2026-08-31T10:00:00.000Z",
+    supersededAt: null,
+    createdAt: "2026-08-31T09:00:00.000Z",
+    updatedAt: "2026-08-31T10:00:00.000Z",
+    ...overrides,
+  };
+}
 
 function skeleton(): TechnicalVisualMapSpatialPayload {
   return {
@@ -126,6 +155,47 @@ describe("filterSpatialBindingsByScope", () => {
     expect(filterSpatialBindingsByScope(history, "asset-A", "front").map((b) => b.id)).toEqual(["b1"]);
     expect(filterSpatialBindingsByScope(history, "asset-A", "back").map((b) => b.id)).toEqual(["b2"]);
     expect(filterSpatialBindingsByScope(history, "asset-B", "front").map((b) => b.id)).toEqual(["b3"]);
+  });
+});
+
+describe("resolveAutoRestoreSelection -- Spatial Mapping revisit fix #1", () => {
+  it("1/2. an existing CONFIRMED mapping restores both the source photo and the view", () => {
+    const result = resolveAutoRestoreSelection([binding({ sourceImageAssetId: "asset-A", viewLabel: "front" })]);
+    expect(result).toEqual({ sourceImageAssetId: "asset-A", viewLabel: "front" });
+  });
+
+  it("3. no CONFIRMED mapping at all -- returns null, selection stays empty/default", () => {
+    expect(resolveAutoRestoreSelection([])).toBeNull();
+    expect(resolveAutoRestoreSelection([binding({ status: "DRAFT", confirmedAt: null })])).toBeNull();
+  });
+
+  it("8. a SUPERSEDED binding is never restored as authoritative, even if it used to be confirmed", () => {
+    const result = resolveAutoRestoreSelection([
+      binding({ id: "old", status: "SUPERSEDED", sourceImageAssetId: "asset-OLD", confirmedAt: "2026-08-01T00:00:00.000Z" }),
+    ]);
+    expect(result).toBeNull();
+  });
+
+  it("a DRAFT binding is never restored -- only a real CONFIRMED one counts", () => {
+    const result = resolveAutoRestoreSelection([binding({ status: "DRAFT", confirmedAt: null, sourceImageAssetId: "asset-DRAFT" })]);
+    expect(result).toBeNull();
+  });
+
+  it("multiple independent CONFIRMED scopes (front, back, ...) can coexist -- the MOST RECENTLY confirmed one is picked as the initial default", () => {
+    const result = resolveAutoRestoreSelection([
+      binding({ id: "b-front", sourceImageAssetId: "asset-A", viewLabel: "front", confirmedAt: "2026-08-31T09:00:00.000Z" }),
+      binding({ id: "b-back", sourceImageAssetId: "asset-B", viewLabel: "back", confirmedAt: "2026-08-31T11:00:00.000Z" }),
+    ]);
+    expect(result).toEqual({ sourceImageAssetId: "asset-B", viewLabel: "back" });
+  });
+
+  it("a mix of DRAFT/SUPERSEDED/CONFIRMED for the same map -- only the real CONFIRMED row is ever picked, never a stale/wrong one", () => {
+    const result = resolveAutoRestoreSelection([
+      binding({ id: "old", status: "SUPERSEDED", sourceImageAssetId: "asset-OLD", viewLabel: "front", confirmedAt: "2026-08-01T00:00:00.000Z" }),
+      binding({ id: "draft", status: "DRAFT", confirmedAt: null, sourceImageAssetId: "asset-DRAFT", viewLabel: "back" }),
+      binding({ id: "current", status: "CONFIRMED", sourceImageAssetId: "asset-CURRENT", viewLabel: "front", confirmedAt: "2026-08-31T10:00:00.000Z" }),
+    ]);
+    expect(result).toEqual({ sourceImageAssetId: "asset-CURRENT", viewLabel: "front" });
   });
 });
 

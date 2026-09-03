@@ -45,6 +45,42 @@ export function filterSpatialBindingsByScope(
   return history.filter((binding) => binding.sourceImageAssetId === sourceImageAssetId && binding.viewLabel === viewLabel);
 }
 
+export interface SpatialBindingAutoRestoreSelection {
+  sourceImageAssetId: string;
+  viewLabel: string;
+}
+
+// Spatial Mapping revisit fix #1 (real production defect): on a fresh page
+// load, the professional's (sourceImageAssetId, viewLabel) selection starts
+// empty even when a real CONFIRMED spatial binding already exists -- this
+// picks the real, persisted answer to restore it from, so the UI never
+// needs to invent state from browser memory.
+//
+// Only ever considers CONFIRMED rows -- a DRAFT or SUPERSEDED binding must
+// never silently become authoritative (mirrors this same map-wide list's
+// own CONFIRMED-only authority rule everywhere else in this domain). The
+// partial unique index this domain already relies on
+// (technical-visual-map-spatial-binding-repository.ts) makes more than one
+// CONFIRMED row per (image, view) scope impossible, but MULTIPLE
+// INDEPENDENT scopes (front, back, left profile, ...) can each have their
+// own CONFIRMED row at once -- when they do, this deliberately picks the
+// MOST RECENTLY confirmed one as a reasonable initial default (never a
+// guess among equally-plausible options presented as certain -- the
+// professional can always pick a different eligible scope afterward; nothing
+// here is authoritative beyond "a sensible starting point").
+export function resolveAutoRestoreSelection(
+  bindings: readonly TechnicalVisualMapSpatialBindingRecord[],
+): SpatialBindingAutoRestoreSelection | null {
+  const confirmed = bindings.filter(
+    (binding): binding is TechnicalVisualMapSpatialBindingRecord & { confirmedAt: string } =>
+      binding.status === "CONFIRMED" && binding.confirmedAt !== null,
+  );
+  if (confirmed.length === 0) return null;
+
+  const mostRecent = [...confirmed].sort((a, b) => new Date(b.confirmedAt).getTime() - new Date(a.confirmedAt).getTime())[0];
+  return { sourceImageAssetId: mostRecent.sourceImageAssetId, viewLabel: mostRecent.viewLabel };
+}
+
 // Short, safe, professional-facing messages -- never a raw internal error.
 export function mapSpatialBindingApiError(status: number, code?: string): string {
   if (status === 401) return "Please sign in again.";

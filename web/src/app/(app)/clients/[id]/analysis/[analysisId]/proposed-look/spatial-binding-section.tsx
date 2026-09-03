@@ -13,6 +13,7 @@ import { SpatialBindingHistoryList } from "./spatial-binding-history";
 import { SpatialBindingImageSelector } from "./spatial-binding-image-selector";
 import { filterSpatialBindingsByScope, findExistingDraftSpatialBinding } from "./spatial-binding-logic";
 import { shouldShowSpatialBindingConfirmConflictMessage } from "./spatial-binding-section-logic";
+import { useSpatialBindingAutoRestore } from "./use-spatial-binding-auto-restore";
 import { type SpatialBindingActionOutcome, useSpatialBinding } from "./use-spatial-binding";
 
 export interface SpatialBindingSectionProps {
@@ -34,6 +35,11 @@ function contentUrl(imageAssetId: string): string {
 export function SpatialBindingSection({ clientId, proposalId, technicalVisualMapId }: SpatialBindingSectionProps) {
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [selectedViewLabel, setSelectedViewLabel] = useState<string | null>(null);
+  // Spatial Mapping revisit fix #1: one-shot, best-effort restore of an
+  // already-CONFIRMED (source photo, view) selection from real persisted
+  // state -- see use-spatial-binding-auto-restore.ts's own header comment.
+  // Never overwrites a selection the professional already made.
+  useSpatialBindingAutoRestore(clientId, proposalId, technicalVisualMapId, setSelectedImageId, setSelectedViewLabel);
   const { state, createDraft, applyEdits, confirmDraft } = useSpatialBinding(
     clientId,
     proposalId,

@@ -165,6 +165,19 @@ describe("listEligibleSpatialSourceImagesForClient", () => {
     );
   });
 
+  // Spatial Mapping revisit fix #2: excludes a real AI Photo Preview's own
+  // generated output image at the QUERY level -- never a client-side
+  // filename check (see image-asset-repository-spatial-eligibility.test.ts
+  // for the real-Postgres proof that this actually excludes/includes the
+  // right rows, structural provenance only, never by filename).
+  it("excludes AI-generated Photo Preview outputs at the query level via ImageAsset.origin", async () => {
+    prismaMocks.imageAssetFindMany.mockResolvedValue([]);
+    await listEligibleSpatialSourceImagesForClient("owner-1", "client-1");
+    expect(prismaMocks.imageAssetFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ origin: { not: "ai_generated" } }) }),
+    );
+  });
+
   it("never includes a storage key, bucket, or storage path", async () => {
     prismaMocks.imageAssetFindMany.mockResolvedValue([assetRow({ width: 640, height: 480, storagePath: "s3://secret-bucket/key" })]);
     const [image] = await listEligibleSpatialSourceImagesForClient("owner-1", "client-1");
