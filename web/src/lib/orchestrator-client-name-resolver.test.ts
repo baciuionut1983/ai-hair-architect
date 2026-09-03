@@ -82,6 +82,56 @@ describe("extractCandidateClientName", () => {
     const longToken = "A" + "b".repeat(150);
     expect(extractCandidateClientName(`clientul ${longToken}`)).toBeNull();
   });
+
+  // PRODUCTION BUG FOLLOW-UP (real production evidence): "Vreau să văd
+  // rezultatul pentru Baciu." never resolved a client -- none of the
+  // existing client/lucr/work triggers are present. New "pentru"/
+  // "despre"/"for" family, this fix's own required real-world phrasings.
+  describe("PRODUCTION BUG FOLLOW-UP: pentru/despre/for connector family", () => {
+    it("extracts the exact real production message", () => {
+      expect(extractCandidateClientName("Vreau să văd rezultatul pentru Baciu.")).toBe("Baciu");
+    });
+
+    it("extracts every one of this fix's own required real-world phrasings", () => {
+      expect(extractCandidateClientName("rezultatul pentru Baciu")).toBe("Baciu");
+      expect(extractCandidateClientName("vreau rezultatul pentru Baciu")).toBe("Baciu");
+      expect(extractCandidateClientName("arată-mi analiza pentru Baciu")).toBe("Baciu");
+      expect(extractCandidateClientName("ce avem despre Baciu")).toBe("Baciu");
+    });
+
+    it("extracts the English parity phrasing", () => {
+      expect(extractCandidateClientName("show me the result for Baciu")).toBe("Baciu");
+    });
+
+    it("extracts a capitalized two-word name after pentru/despre/for", () => {
+      expect(extractCandidateClientName("analiza pentru Maria Popescu")).toBe("Maria Popescu");
+    });
+
+    it("matches 'Pentru'/'Despre'/'For' capitalized at the start of a sentence", () => {
+      expect(extractCandidateClientName("Pentru Baciu, arată rezultatul.")).toBe("Baciu");
+      expect(extractCandidateClientName("Despre Baciu, ce mai știm?")).toBe("Baciu");
+      expect(extractCandidateClientName("For Baciu, show the result.")).toBe("Baciu");
+    });
+
+    // FALSE POSITIVE GUARDS: unlike client/lucr/work, pentru/despre/for
+    // are ordinary prepositions that can precede any noun -- the
+    // capitalization gate is what keeps an unrelated word from ever being
+    // extracted as a candidate at all.
+    it("does NOT extract a lowercase word after pentru/despre/for -- these are ordinary prepositions, not an unambiguous client trigger", () => {
+      expect(extractCandidateClientName("fă o rezervare pentru mâine")).toBeNull();
+      expect(extractCandidateClientName("caută tratamente pentru păr")).toBeNull();
+      expect(extractCandidateClientName("search for treatments")).toBeNull();
+      expect(extractCandidateClientName("what's the plan for today")).toBeNull();
+    });
+
+    it("does not regress the existing lowercase-name leniency for client/lucr/work -- that family is untouched", () => {
+      expect(extractCandidateClientName("vreau sa lucrez pe baciu")).toBe("baciu");
+    });
+
+    it("does not break the existing 'no client-word at all' case", () => {
+      expect(extractCandidateClientName("Vreau să văd rezultatul.")).toBeNull();
+    });
+  });
 });
 
 describe("matchClientNameCandidates", () => {

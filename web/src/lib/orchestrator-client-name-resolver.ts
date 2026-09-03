@@ -22,17 +22,32 @@ import type { ClientRecord } from "@/lib/contracts";
 // actual fullName text, never as an id shortcut.
 //
 // SCOPE (deliberately narrow, matching orchestrator-intent-classifier.ts's
-// own EN/RO-only precedent): recognizes two families of phrasing, each
-// immediately (optionally through a short connector: pe/cu/on/with)
-// followed by one or two words:
+// own EN/RO-only precedent): recognizes three families of phrasing:
 //  - the word "client" (or a Romanian inflection of it: clientul/
-//    clientului/clienta/clientei/clienți) -- this task's own originally
-//    reported production failure ("clientul Baciu");
+//    clientului/clienta/clientei/clienți), optionally through a short
+//    connector (pe/cu/on/with) -- this task's own originally reported
+//    production failure ("clientul Baciu");
 //  - a "lucr"-rooted Romanian verb form (lucrez/lucrăm/lucra/lucrați, "to
-//    work") or an English "work"-rooted one -- Voice Input Integration's
-//    own explicit required phrasing ("Vreau să lucrez pe Baciu." / "I want
-//    to work on Baciu"), added for that task, reusing this exact same
-//    extraction+resolution mechanism rather than inventing a second one.
+//    work") or an English "work"-rooted one, optionally through the same
+//    connector -- Voice Input Integration's own explicit required
+//    phrasing ("Vreau să lucrez pe Baciu." / "I want to work on Baciu");
+//  - PRODUCTION FIX (real production evidence: "Vreau să văd rezultatul
+//    pentru Baciu." never resolved a client) -- a bare "pentru"/"despre"/
+//    "for" directly followed by a name, e.g. "rezultatul pentru Baciu",
+//    "ce avem despre Baciu", "the result for Baciu". Unlike the two
+//    families above, these three words are ordinary, semantically-empty
+//    prepositions that can precede ANY noun, not necessarily a name (e.g.
+//    "o rezervare pentru mâine", "search for treatments") -- so, UNLIKE
+//    client/lucr/work, the word immediately following them must be
+//    CAPITALIZED (the same signal already used for an optional SECOND
+//    word below). This is what keeps "pentru mâine"/"for treatments" from
+//    ever being extracted as a candidate at all, while still catching
+//    every one of this fix's own required real-world phrasings (a
+//    properly-typed name is capitalized). A message needing the exact
+//    "lowercase name after 'pentru'" leniency the client/lucr/work
+//    families already have can still say "clientul <name>"/"lucrez pe
+//    <name>" -- this new family only ever ADDS coverage, never narrows
+//    the existing one.
 //
 // PRODUCTION BUG (real, confirmed, this fix's own reason for existing):
 // the ORIGINAL version of this pattern required the captured word to START
@@ -70,7 +85,8 @@ const MAX_CANDIDATE_NAME_LENGTH = 100;
 // downstream token-subset matcher (isTokenMatch below) already lets a
 // short candidate like "baciu" match a longer stored name like "Baciu
 // Ionuț Stelian" on its own.
-const CANDIDATE_NAME_PATTERN = /\b(?:[Cc]lient\p{L}*|[Ll]ucr\p{L}*|[Ww]ork\p{L}*)\s+(?:pe\s+|cu\s+|on\s+|with\s+)?(\p{L}[\p{L}'-]*(?:\s+[\p{Lu}][\p{L}'-]*)?)/u;
+const CANDIDATE_NAME_PATTERN =
+  /\b(?:[Cc]lient\p{L}*|[Ll]ucr\p{L}*|[Ww]ork\p{L}*)\s+(?:pe\s+|cu\s+|on\s+|with\s+)?(\p{L}[\p{L}'-]*(?:\s+[\p{Lu}][\p{L}'-]*)?)|\b(?:[Pp]entru|[Dd]espre|[Ff]or)\s+([\p{Lu}][\p{L}'-]*(?:\s+[\p{Lu}][\p{L}'-]*)?)/u;
 
 // Guards against the regex's own optional connector (pe/cu/on/with) being
 // captured AS the name when nothing real follows it (e.g. a message ending
@@ -82,7 +98,13 @@ const RESERVED_CONNECTOR_WORDS = new Set(["pe", "cu", "on", "with"]);
 export function extractCandidateClientName(message: string): string | null {
   const match = CANDIDATE_NAME_PATTERN.exec(message);
   if (!match) return null;
-  const candidate = match[1].trim().replace(/\s+/g, " ");
+  // Exactly one of the two alternatives' capture groups is ever populated
+  // for a given match -- group 1 for client/lucr/work, group 2 for the
+  // capitalization-gated pentru/despre/for family (see this file's own
+  // header comment on why the two families need different capture rules).
+  const rawCandidate = match[1] ?? match[2];
+  if (!rawCandidate) return null;
+  const candidate = rawCandidate.trim().replace(/\s+/g, " ");
   if (!candidate || candidate.length > MAX_CANDIDATE_NAME_LENGTH) return null;
   if (RESERVED_CONNECTOR_WORDS.has(candidate.toLowerCase())) return null;
   return candidate;
