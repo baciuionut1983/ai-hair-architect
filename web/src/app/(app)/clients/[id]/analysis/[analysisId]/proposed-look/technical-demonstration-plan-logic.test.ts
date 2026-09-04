@@ -3,15 +3,20 @@ import { describe, expect, it } from "vitest";
 import type { TechnicalDemonstrationPlanRecord, TechnicalDemonstrationStepRecord } from "@/lib/technical-demonstration-contracts";
 
 import {
+  CUTTING_STEP_FIELD_EDITORS,
   findExistingDraftPlan,
+  isProvenanceNotApplicable,
   isProvenancePopulated,
   mapTechnicalDemonstrationPlanApiError,
+  resolveCuttingStepFieldEditor,
   resolveStepConstraints,
   resolveStepFieldRows,
   resolveTechnicalDemonstrationPlanLoadStatus,
   shouldShowTechnicalDemonstrationConfirmConflictMessage,
   technicalDemonstrationProvenanceLabel,
+  zoneOptionsForEditor,
 } from "./technical-demonstration-plan-logic";
+import { CUTTING_STEP_OVERRIDE_FIELD_NAMES } from "@/lib/technical-demonstration-cutting-overrides";
 import { getTechnicalDemonstrationPlanStatusBadgeVariant, getTechnicalDemonstrationPlanStatusLabel } from "./technical-demonstration-plan-status-badge";
 import { getTechnicalDemonstrationProvenanceBadgeVariant } from "./technical-demonstration-provenance-badge";
 import type { TechnicalDemonstrationPlanActionOutcome } from "./use-technical-demonstration-plan";
@@ -33,6 +38,7 @@ function plan(overrides: Partial<TechnicalDemonstrationPlanRecord> = {}): Techni
     schemaVersion: "1.0.0-td1",
     generatorVersion: "1.0.0-td1",
     requestFingerprint: "fp",
+    professionalOverrides: [],
     supersededByPlanId: null,
     confirmedAt: null,
     supersededAt: null,
@@ -127,7 +133,7 @@ describe("shouldShowTechnicalDemonstrationConfirmConflictMessage", () => {
   });
 
   it("returns null for a success outcome", () => {
-    const success: TechnicalDemonstrationPlanActionOutcome = { ok: true, plan: plan(), steps: [] };
+    const success: TechnicalDemonstrationPlanActionOutcome = { ok: true, plan: plan(), steps: [], effectiveSteps: [] };
     expect(shouldShowTechnicalDemonstrationConfirmConflictMessage(success)).toBeNull();
   });
 
@@ -208,15 +214,79 @@ describe("resolveStepFieldRows", () => {
     // "unknown" bucket -- never fabricated, never silently dropped.
     expect(unknown).toContain("Finger position");
     expect(unknown).toContain("Cutting angle");
-    expect(unknown.length + populated.length).toBe(18); // the full Cutting V1 field count (CUTTING_STEP_FIELD_DESCRIPTORS)
+    expect(unknown.length + populated.length).toBe(25); // the full Cutting V1 field count (CUTTING_STEP_FIELD_DESCRIPTORS, incl. Stage 2.5.a/b additions)
   });
 
   it("never dumps a raw field for an UNKNOWN entry -- unknown fields carry only their label, no value/provenance leakage", () => {
     const s = step();
     const { populated, unknown } = resolveStepFieldRows(s.payload);
     expect(populated).toEqual([]);
-    expect(unknown.length).toBe(18);
+    expect(unknown.length).toBe(25);
     expect(unknown.every((label) => typeof label === "string")).toBe(true);
+  });
+
+  // Stage 2.5.b -- NOT_APPLICABLE bucket.
+  it("splits a NOT_APPLICABLE field into its own honest bucket -- never counted as populated, never counted as unknown", () => {
+    const s = step({ crossCheck: { value: null, provenance: "NOT_APPLICABLE" } });
+    const { populated, notApplicable, unknown } = resolveStepFieldRows(s.payload);
+    expect(populated.find((row) => row.key === "crossCheck")).toBeUndefined();
+    expect(notApplicable).toContain("Cross-check");
+    expect(unknown).not.toContain("Cross-check");
+  });
+
+  it("technicalDemonstrationProvenanceLabel renders NOT_APPLICABLE distinctly from UNKNOWN, never worded as an error", () => {
+    expect(technicalDemonstrationProvenanceLabel("NOT_APPLICABLE")).toBe("Not applicable");
+    expect(technicalDemonstrationProvenanceLabel("NOT_APPLICABLE")).not.toBe(technicalDemonstrationProvenanceLabel("UNKNOWN"));
+    expect(technicalDemonstrationProvenanceLabel("NOT_APPLICABLE")).not.toMatch(/error|fail/i);
+  });
+
+  it("isProvenanceNotApplicable is true only for a real NOT_APPLICABLE entry", () => {
+    expect(isProvenanceNotApplicable({ provenance: "NOT_APPLICABLE" })).toBe(true);
+    expect(isProvenanceNotApplicable({ provenance: "UNKNOWN" })).toBe(false);
+    expect(isProvenanceNotApplicable({ provenance: "OBSERVED" })).toBe(false);
+    expect(isProvenanceNotApplicable(null)).toBe(false);
+  });
+
+  it("isProvenancePopulated is false for NOT_APPLICABLE, same as UNKNOWN", () => {
+    expect(isProvenancePopulated({ provenance: "NOT_APPLICABLE" })).toBe(false);
+  });
+});
+
+// Stage 2.5.b -- field editor descriptors.
+describe("CUTTING_STEP_FIELD_EDITORS", () => {
+  it("has exactly one editor descriptor per real, closed override field name -- never more, never fewer", () => {
+    const editorKeys = CUTTING_STEP_FIELD_EDITORS.map((e) => e.key).sort();
+    const overrideFieldNames = [...CUTTING_STEP_OVERRIDE_FIELD_NAMES].sort();
+    expect(editorKeys).toEqual(overrideFieldNames);
+  });
+
+  it("never includes `phase` or `constraints` -- the two deliberately non-editable fields", () => {
+    const editorKeys = CUTTING_STEP_FIELD_EDITORS.map((e) => e.key);
+    expect(editorKeys).not.toContain("phase");
+    expect(editorKeys).not.toContain("constraints");
+  });
+
+  it("every 'select' kind editor carries a real, non-empty options list", () => {
+    for (const editor of CUTTING_STEP_FIELD_EDITORS) {
+      if (editor.kind === "select") {
+        expect(editor.options).toBeDefined();
+        expect(editor.options!.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("resolveCuttingStepFieldEditor returns the exact registered descriptor for a real field", () => {
+    expect(resolveCuttingStepFieldEditor("elevation")).toEqual({ key: "elevation", kind: "select", options: expect.any(Array) });
+    expect(resolveCuttingStepFieldEditor("stateBefore")).toEqual({ key: "stateBefore", kind: "text" });
+    expect(resolveCuttingStepFieldEditor("overdirection")).toEqual({ key: "overdirection", kind: "boolean" });
+    expect(resolveCuttingStepFieldEditor("zones")).toEqual({ key: "zones", kind: "zones" });
+  });
+
+  it("zoneOptionsForEditor returns the real, closed HeadZone vocabulary", () => {
+    const zones = zoneOptionsForEditor();
+    expect(zones).toContain("crown");
+    expect(zones).toContain("nape");
+    expect(zones.length).toBe(6);
   });
 });
 

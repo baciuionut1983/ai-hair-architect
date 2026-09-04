@@ -5,31 +5,38 @@ import type { TechnicalDemonstrationPlanRecord, TechnicalDemonstrationStepRecord
 
 import { TechnicalDemonstrationPlanStatusBadge } from "./technical-demonstration-plan-status-badge";
 import { TechnicalDemonstrationStepCard } from "./technical-demonstration-step-card";
+import type { TechnicalDemonstrationStepFieldEditSubmission } from "./technical-demonstration-step-field-editor";
 import type { TechnicalDemonstrationPlanActionOutcome } from "./use-technical-demonstration-plan";
 
 export interface TechnicalDemonstrationPlanViewProps {
   plan: TechnicalDemonstrationPlanRecord;
+  // The EFFECTIVE steps (baseline + professional overrides already
+  // resolved server-side) -- the caller always passes effectiveSteps here,
+  // never the raw baseline `steps`, so this component and everything below
+  // it only ever renders what the professional actually sees/confirms.
   steps: TechnicalDemonstrationStepRecord[];
   // Present only for a DRAFT plan awaiting professional review -- a
   // CONFIRMED or SUPERSEDED plan is always rendered read-only, with no
-  // confirm affordance at all (Stage 2's own explicit "review + confirm
-  // only" boundary -- no step-level editing anywhere in this component).
+  // confirm affordance at all.
   onConfirm?: () => Promise<TechnicalDemonstrationPlanActionOutcome>;
   confirmConflictMessage?: string | null;
+  // Stage 2.5.b -- present ONLY for a DRAFT plan (mirrors onConfirm's own
+  // "DRAFT only" gating exactly). Threaded straight down to every
+  // TechnicalDemonstrationStepCard -- a CONFIRMED/SUPERSEDED plan's view
+  // never receives this prop, so its own step cards stay structurally
+  // read-only, not just by convention.
+  onEditField?: (submission: TechnicalDemonstrationStepFieldEditSubmission & { stepNumber: number }) => Promise<boolean>;
 }
 
-// Technical Demonstration, Stage 2 -- the single read-only plan view, used
-// for BOTH a DRAFT awaiting review (with its own Confirm action) and the
-// CONFIRMED current plan (fully read-only). Deliberately ONE component
-// rather than TechnicalVisualMap's own separate draft-editor/current-view
-// split: unlike a map, a Technical Demonstration Plan has no in-place
-// professional adjustment mechanism at all in Stage 2 (Decision Lock: step-
-// level editing would introduce a second, competing authority alongside
-// AnalysisProposal.edits -- see this Stage's own report) -- the DRAFT and
-// CONFIRMED views only ever differ by whether a Confirm button is shown, so
-// splitting them into two components would just duplicate the step list
-// rendering for no real benefit.
-export function TechnicalDemonstrationPlanView({ plan, steps, onConfirm, confirmConflictMessage }: TechnicalDemonstrationPlanViewProps) {
+// Technical Demonstration, Stage 2 (+ Stage 2.5.b) -- the single plan view,
+// used for BOTH a DRAFT awaiting review (with its own Confirm action AND,
+// since Stage 2.5.b, per-field professional editing) and the CONFIRMED
+// current plan (fully read-only). Deliberately ONE component rather than
+// TechnicalVisualMap's own separate draft-editor/current-view split: the
+// DRAFT and CONFIRMED views only ever differ by whether onConfirm/
+// onEditField are supplied, so splitting them into two components would
+// just duplicate the step list rendering for no real benefit.
+export function TechnicalDemonstrationPlanView({ plan, steps, onConfirm, confirmConflictMessage, onEditField }: TechnicalDemonstrationPlanViewProps) {
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
 
@@ -62,7 +69,7 @@ export function TechnicalDemonstrationPlanView({ plan, steps, onConfirm, confirm
       {steps.length > 0 ? (
         <div className="flex flex-col gap-3">
           {steps.map((step) => (
-            <TechnicalDemonstrationStepCard key={step.id} step={step} />
+            <TechnicalDemonstrationStepCard key={step.id} step={step} onEditField={onEditField} />
           ))}
         </div>
       ) : (

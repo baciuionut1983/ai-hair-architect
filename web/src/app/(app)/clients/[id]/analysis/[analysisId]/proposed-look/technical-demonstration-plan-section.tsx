@@ -7,6 +7,7 @@ import { Alert, Button, ErrorState, LoadingState } from "@/components/ui";
 import { shouldShowTechnicalDemonstrationConfirmConflictMessage } from "./technical-demonstration-plan-logic";
 import { TechnicalDemonstrationPlanHistoryList } from "./technical-demonstration-plan-history";
 import { TechnicalDemonstrationPlanView } from "./technical-demonstration-plan-view";
+import type { TechnicalDemonstrationStepFieldEditSubmission } from "./technical-demonstration-step-field-editor";
 import { useTechnicalDemonstrationPlan, type TechnicalDemonstrationPlanActionOutcome } from "./use-technical-demonstration-plan";
 
 export interface TechnicalDemonstrationPlanSectionProps {
@@ -35,7 +36,7 @@ export interface TechnicalDemonstrationPlanSectionProps {
 // derives/reviews/confirms the technical PLAN. A future Stage 3 is what
 // will ever call a provider.
 export function TechnicalDemonstrationPlanSection({ clientId, proposalId }: TechnicalDemonstrationPlanSectionProps) {
-  const { state, deriveOrOpen, confirmPlan } = useTechnicalDemonstrationPlan(clientId, proposalId);
+  const { state, deriveOrOpen, confirmPlan, applyOverrides } = useTechnicalDemonstrationPlan(clientId, proposalId);
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const [confirmConflictMessage, setConfirmConflictMessage] = useState<string | null>(null);
@@ -76,6 +77,17 @@ export function TechnicalDemonstrationPlanSection({ clientId, proposalId }: Tech
     return outcome;
   }
 
+  // Stage 2.5.b -- applies ONE professional override at a time (the field
+  // editor's own "Save"/"Mark not applicable"/"Reset" actions each submit
+  // independently, never batched) to the CURRENT draft. Only ever reachable
+  // while `draft` exists -- TechnicalDemonstrationPlanView only receives
+  // this callback on the draft branch below, never the confirmed one.
+  async function handleEditField(submission: TechnicalDemonstrationStepFieldEditSubmission & { stepNumber: number }): Promise<boolean> {
+    if (!draft) return false;
+    const outcome = await applyOverrides(draft.plan.id, [submission]);
+    return outcome.ok;
+  }
+
   return (
     <div id="technical-demonstration-plan-section" className="flex flex-col gap-4">
       <div>
@@ -90,12 +102,13 @@ export function TechnicalDemonstrationPlanSection({ clientId, proposalId }: Tech
         <TechnicalDemonstrationPlanView
           key={draft.plan.id}
           plan={draft.plan}
-          steps={draft.steps}
+          steps={draft.effectiveSteps}
           onConfirm={handleConfirm}
           confirmConflictMessage={confirmConflictMessage}
+          onEditField={handleEditField}
         />
       ) : current ? (
-        <TechnicalDemonstrationPlanView key={current.plan.id} plan={current.plan} steps={current.steps} />
+        <TechnicalDemonstrationPlanView key={current.plan.id} plan={current.plan} steps={current.effectiveSteps} />
       ) : (
         <div className="flex flex-col gap-2">
           <Button type="button" onClick={handleOpen} loading={opening}>

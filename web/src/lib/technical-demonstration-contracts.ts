@@ -61,16 +61,26 @@ export function isTechnicalDemonstrationPlanStatus(value: unknown): value is Tec
 //   the confirmed AnalysisProposal (AnalysisProposal.edits, merged via
 //   technical-visual-map-assembler.ts's own computeEffectiveTechnicalCutPlan
 //   -- see technical-demonstration-derivation.ts's own header comment),
-//   never a generic engine-derived INFERRED value -- this is what keeps a
-//   professional-approved override from being collapsed into "just AI
-//   inference". Stage 1's own derivation code does NOT yet produce this
-//   tag for a directly-edited PER-STEP field (cuttingSteps itself has no
-//   edit mechanism today), only for the 7 plan-level fields a professional
-//   edit can actually touch (EDITABLE_TECHNIQUE_FIELDS) -- see
-//   CuttingDemonstrationStepPayload's own field-by-field doc comment.
+//   OR (Stage 2.5.b) from a real professional adjustment on the
+//   TechnicalDemonstrationPlan itself (professionalOverrides, resolved via
+//   technical-demonstration-cutting-overrides.ts's own
+//   resolveEffectiveCuttingStepPayload) -- never a generic engine-derived
+//   INFERRED value either way, so a later reader can always tell "a human
+//   specifically approved/supplied this exact value" apart from "the
+//   deterministic engine's own untouched suggestion".
+// NOT_APPLICABLE (Stage 2.5.b): a real professional decision that this
+//   field genuinely does not apply to this specific step's own action --
+//   deliberately DISTINCT from UNKNOWN ("we don't have this information
+//   yet", a gap that may still be filled) and from PROFESSIONAL_OVERRIDE
+//   ("here is the real value") -- e.g. a professional reviewing a
+//   sectioning-phase step may correctly determine crossCheck simply has no
+//   meaning for that specific action. The deterministic derivation
+//   (technical-demonstration-derivation.ts) never produces this tag itself
+//   -- like PROFESSIONAL_OVERRIDE, only a real professional decision ever
+//   does.
 // ---------------------------------------------------------------------------
 
-export const TECHNICAL_DEMONSTRATION_VALUE_PROVENANCES = ["OBSERVED", "INFERRED", "UNKNOWN", "PROFESSIONAL_OVERRIDE"] as const;
+export const TECHNICAL_DEMONSTRATION_VALUE_PROVENANCES = ["OBSERVED", "INFERRED", "UNKNOWN", "PROFESSIONAL_OVERRIDE", "NOT_APPLICABLE"] as const;
 export type TechnicalDemonstrationValueProvenance = (typeof TECHNICAL_DEMONSTRATION_VALUE_PROVENANCES)[number];
 
 export function isTechnicalDemonstrationValueProvenance(value: unknown): value is TechnicalDemonstrationValueProvenance {
@@ -78,9 +88,10 @@ export function isTechnicalDemonstrationValueProvenance(value: unknown): value i
 }
 
 // A single technical field, tagged with where its value actually came
-// from. `value` is null whenever `provenance` is "UNKNOWN" (Stage 1 never
-// pairs a real value with an honest "we don't know this" tag) -- enforced
-// by isProvenanceValue below, not just by convention.
+// from. `value` is null whenever `provenance` is "UNKNOWN" or
+// "NOT_APPLICABLE" (this codebase never pairs a real value with an honest
+// "we don't know this" / "this doesn't apply" tag) -- enforced by
+// isProvenanceValue below, not just by convention.
 export interface TechnicalDemonstrationProvenanceValue<T> {
   value: T | null;
   provenance: TechnicalDemonstrationValueProvenance;
@@ -88,12 +99,12 @@ export interface TechnicalDemonstrationProvenanceValue<T> {
 
 // Shared runtime guard factory -- reused by every vertical-specific step
 // validator (Stage 1: technical-demonstration-cutting-contracts.ts) so the
-// "value is null iff provenance is UNKNOWN" invariant is enforced in
-// exactly one place, never re-implemented per field.
+// "value is null iff provenance is UNKNOWN/NOT_APPLICABLE" invariant is
+// enforced in exactly one place, never re-implemented per field.
 export function isProvenanceValue<T>(value: unknown, isInner: (candidate: unknown) => candidate is T): value is TechnicalDemonstrationProvenanceValue<T> {
   if (!isRecord(value)) return false;
   if (!isTechnicalDemonstrationValueProvenance(value.provenance)) return false;
-  if (value.provenance === "UNKNOWN") return value.value === null;
+  if (value.provenance === "UNKNOWN" || value.provenance === "NOT_APPLICABLE") return value.value === null;
   return isInner(value.value);
 }
 
@@ -114,6 +125,15 @@ export interface TechnicalDemonstrationPlanRecord {
   schemaVersion: string;
   generatorVersion: string;
   requestFingerprint: string;
+  // Stage 2.5.b -- vertical-specific shape, `unknown[]` here deliberately,
+  // same reasoning as TechnicalDemonstrationStepRecord.payload below: this
+  // file has no notion of what a cutting/color/... override entry looks
+  // like. Callers narrow it with the matching vertical's own validator
+  // (Stage 1/2.5.b: isCuttingStepOverrideEntryArray,
+  // technical-demonstration-cutting-overrides.ts). Always `[]` for a plan
+  // with no professional overrides yet, never `null` at this record layer
+  // (the repository normalizes a NULL database column to `[]`).
+  professionalOverrides: unknown[];
   supersededByPlanId: string | null;
   confirmedAt: string | null;
   supersededAt: string | null;

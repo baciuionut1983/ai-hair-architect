@@ -11,6 +11,7 @@ import {
   TechnicalDemonstrationValidationError,
   createTechnicalDemonstrationPlanFromProposal,
   listTechnicalDemonstrationPlansForProposal,
+  resolveEffectiveCuttingStepsForRecord,
 } from "@/lib/technical-demonstration-repository";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
@@ -102,7 +103,15 @@ export async function POST(_request: Request, context: { params: Promise<{ id: s
 
   try {
     const outcome = await createTechnicalDemonstrationPlanFromProposal(sessionUser.id, id, proposalId);
-    return NextResponse.json({ plan: outcome.plan, steps: outcome.steps, created: outcome.created }, { status: outcome.created ? 201 : 200 });
+    // A freshly-derived (or idempotently-reopened) plan may already carry
+    // real professionalOverrides on the reopen path -- resolve effective
+    // here too, rather than assuming "just derived" always means "no
+    // overrides yet".
+    const effectiveSteps = resolveEffectiveCuttingStepsForRecord(outcome.plan, outcome.steps);
+    return NextResponse.json(
+      { plan: outcome.plan, steps: outcome.steps, effectiveSteps, created: outcome.created },
+      { status: outcome.created ? 201 : 200 },
+    );
   } catch (error) {
     return mapDomainError(error);
   }

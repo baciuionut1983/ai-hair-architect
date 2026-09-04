@@ -23,6 +23,14 @@ import {
   type CuttingDemonstrationStepPayload,
 } from "@/lib/technical-demonstration-cutting-contracts";
 import {
+  isCuttingStepOverrideEntryArray,
+  isCuttingStepOverrideInput,
+  resolveEffectiveCuttingStepPayload,
+  toCuttingStepOverrideEntry,
+  type CuttingStepOverrideEntry,
+  type CuttingStepOverrideInput,
+} from "@/lib/technical-demonstration-cutting-overrides";
+import {
   deriveCuttingDemonstrationSteps,
   TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION,
 } from "@/lib/technical-demonstration-derivation";
@@ -88,11 +96,32 @@ export class TechnicalDemonstrationStateError extends Error {
 
   constructor(
     readonly fromStatus: string,
-    readonly attempted: "confirm",
+    // Stage 2.5.b: widened to include "adjust" -- applyOverridesToDraft's
+    // own DRAFT-only guard throws this same error class, mirroring
+    // TechnicalVisualMapStateError's own identical "adjust" | "confirm"
+    // union exactly.
+    readonly attempted: "confirm" | "adjust",
     message: string,
   ) {
     super(message);
     this.name = "TechnicalDemonstrationStateError";
+  }
+}
+
+// Stage 2.5.b -- a professional override input failed structural
+// validation (malformed shape, unknown field, out-of-vocabulary value,
+// nonexistent stepNumber). Deliberately a SEPARATE class from
+// TechnicalDemonstrationValidationError above (that one is reserved for
+// "the deterministic derivation itself produced something invalid" -- a
+// 500, should-be-impossible condition) -- an invalid override is ordinary,
+// expected, CALLER input validation, a 422, never a server fault.
+export class TechnicalDemonstrationOverrideValidationError extends Error {
+  readonly code = "TECHNICAL_DEMONSTRATION_INVALID_OVERRIDE";
+  readonly httpStatus = 422;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "TechnicalDemonstrationOverrideValidationError";
   }
 }
 
@@ -481,6 +510,108 @@ export async function confirmTechnicalDemonstrationPlan(
 }
 
 // ---------------------------------------------------------------------------
+// applyOverridesToDraft -- Stage 2.5.b
+// ---------------------------------------------------------------------------
+
+// Legal only while the row is DRAFT. Appends the given inputs (server-
+// stamped into full CuttingStepOverrideEntry values, never caller-authored
+// wholesale) to (or seeds) the `professionalOverrides` array -- never
+// mutates any TechnicalDemonstrationStep.payload, the frozen deterministic
+// derivation output. Mirrors applyAdjustmentsToDraft
+// (technical-visual-map-repository.ts) exactly, including its own
+// "reject with a typed error and write nothing if the row is not currently
+// DRAFT" discipline -- once a plan is CONFIRMED, this function's own DRAFT
+// check is what permanently freezes professionalOverrides; no separate
+// "seal" step exists or is needed.
+//
+// Each input's own `stepNumber` is additionally checked against this
+// plan's REAL, existing step numbers (read fresh inside the same
+// transaction) -- mirrors applyAdjustmentsToDraft's own "any zone it
+// references is one of the six real zones already present on this map's
+// own baseline" check: a professional can only ever adjust a step that
+// genuinely exists on this exact plan revision.
+export async function applyOverridesToDraft(
+  ownerUserId: string,
+  clientId: string,
+  planId: string,
+  inputs: CuttingStepOverrideInput[],
+  now: Date = new Date(),
+): Promise<TechnicalDemonstrationPlanRecord | null> {
+  if (!Array.isArray(inputs) || inputs.length === 0) {
+    throw new TechnicalDemonstrationOverrideValidationError("overrides must be a non-empty array.");
+  }
+  const normalizedInputs = inputs.map((input, index) => {
+    if (!isCuttingStepOverrideInput(input)) {
+      throw new TechnicalDemonstrationOverrideValidationError(`overrides[${index}] is not a structurally valid override input.`);
+    }
+    return input;
+  });
+
+  return runTechnicalDemonstrationQuery(() =>
+    runSerializableTransaction(async (tx) => {
+      const row = await tx.technicalDemonstrationPlan.findFirst({ where: { id: planId, ownerUserId, clientId } });
+      if (!row) return null;
+
+      if (row.status !== "DRAFT") {
+        throw new TechnicalDemonstrationStateError(
+          row.status,
+          "adjust",
+          `Technical Demonstration Plan ${planId} is ${row.status}; only a DRAFT plan can receive professional overrides.`,
+        );
+      }
+
+      const realStepNumbers = new Set(
+        (await tx.technicalDemonstrationStep.findMany({ where: { planId: row.id, ownerUserId, clientId }, select: { stepNumber: true } })).map(
+          (s) => s.stepNumber,
+        ),
+      );
+      for (const input of normalizedInputs) {
+        if (!realStepNumbers.has(input.stepNumber)) {
+          throw new TechnicalDemonstrationOverrideValidationError(
+            `Step ${input.stepNumber} does not exist on Technical Demonstration Plan ${planId} -- refusing to record an override for a step that isn't real.`,
+          );
+        }
+      }
+
+      const existingOverrides = parseProfessionalOverrides(row.professionalOverrides);
+      const newEntries = normalizedInputs.map((input) => toCuttingStepOverrideEntry(input, now));
+      const nextOverrides = [...existingOverrides, ...newEntries];
+
+      const updated = await tx.technicalDemonstrationPlan.update({
+        where: { id: row.id },
+        data: {
+          professionalOverrides: nextOverrides as unknown as Prisma.InputJsonValue,
+          // `payload`-equivalent (the steps' own frozen payload rows) is
+          // deliberately never touched here -- an override is layered on
+          // top, never a mutation of the deterministic baseline.
+        },
+      });
+      return toTechnicalDemonstrationPlanRecord(updated);
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Effective steps (baseline + professional overrides) for callers that need
+// the fully-resolved current state of a plan's steps without re-deriving
+// the merge themselves. Mirrors resolveEffectiveMapForRecord exactly.
+// ---------------------------------------------------------------------------
+
+export function resolveEffectiveCuttingStepsForRecord(
+  plan: TechnicalDemonstrationPlanRecord,
+  steps: TechnicalDemonstrationStepRecord[],
+): TechnicalDemonstrationStepRecord[] {
+  const overrides = plan.professionalOverrides as CuttingStepOverrideEntry[];
+  return steps.map((step) => ({
+    ...step,
+    payload: resolveEffectiveCuttingStepPayload(step.stepNumber, step.payload as unknown as CuttingDemonstrationStepPayload, overrides) as unknown as Record<
+      string,
+      unknown
+    >,
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
 
@@ -495,6 +626,7 @@ async function runTechnicalDemonstrationQuery<T>(operation: () => Promise<T>): P
       error instanceof TechnicalDemonstrationDependencyError ||
       error instanceof TechnicalDemonstrationConcurrencyError ||
       error instanceof TechnicalDemonstrationValidationError ||
+      error instanceof TechnicalDemonstrationOverrideValidationError ||
       error instanceof TechnicalDemonstrationStateError ||
       error instanceof TechnicalDemonstrationInvariantError
     ) {
@@ -530,6 +662,7 @@ function isRetryableConcurrencyError(error: unknown): boolean {
     error instanceof TechnicalDemonstrationStateError ||
     error instanceof TechnicalDemonstrationDependencyError ||
     error instanceof TechnicalDemonstrationValidationError ||
+    error instanceof TechnicalDemonstrationOverrideValidationError ||
     error instanceof TechnicalDemonstrationInvariantError ||
     error instanceof TechnicalDemonstrationPersistenceError
   ) {
@@ -562,6 +695,21 @@ function hitsTechnicalDemonstrationUniqueIndex(error: Prisma.PrismaClientKnownRe
   return targetText.includes("TechnicalDemonstrationPlan") || targetText.includes("planVersion") || targetText.includes("requestFingerprint");
 }
 
+// Stage 2.5.b -- NULL (every row created before this column existed, and
+// every row that has never received a professional override) normalizes to
+// an empty array, never a caller-visible null. A non-null value that fails
+// structural validation fails closed (TechnicalDemonstrationPersistenceError),
+// mirroring TechnicalVisualMap's own parseProfessionalAdjustments exactly --
+// this column only ever exists from this stage forward, so there is no
+// historical-shape compatibility concern the way TechnicalDemonstrationStep.payload
+// has (see that function's own comment for why THAT one is deliberately
+// never re-validated on read).
+function parseProfessionalOverrides(value: Prisma.JsonValue | null): CuttingStepOverrideEntry[] {
+  if (value === null) return [];
+  if (!isCuttingStepOverrideEntryArray(value)) throw new TechnicalDemonstrationPersistenceError();
+  return value;
+}
+
 function toTechnicalDemonstrationPlanRecord(row: PrismaTechnicalDemonstrationPlanRow): TechnicalDemonstrationPlanRecord {
   if (!isTechnicalDemonstrationVertical(row.vertical) || !isTechnicalDemonstrationPlanStatus(row.status)) {
     throw new TechnicalDemonstrationPersistenceError();
@@ -583,6 +731,7 @@ function toTechnicalDemonstrationPlanRecord(row: PrismaTechnicalDemonstrationPla
     schemaVersion: row.schemaVersion,
     generatorVersion: row.generatorVersion,
     requestFingerprint: row.requestFingerprint,
+    professionalOverrides: parseProfessionalOverrides(row.professionalOverrides),
     supersededByPlanId: row.supersededByPlanId,
     confirmedAt: row.confirmedAt ? row.confirmedAt.toISOString() : null,
     supersededAt: row.supersededAt ? row.supersededAt.toISOString() : null,

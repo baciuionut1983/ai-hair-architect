@@ -67,6 +67,7 @@ const repositoryMock = vi.hoisted(() => {
     TechnicalDemonstrationConcurrencyError,
     findCurrentConfirmedTechnicalDemonstrationPlan: vi.fn(),
     listTechnicalDemonstrationStepsForPlan: vi.fn(),
+    resolveEffectiveCuttingStepsForRecord: vi.fn((_plan: unknown, steps: unknown) => steps),
   };
 });
 
@@ -152,7 +153,7 @@ describe("GET /api/v1/clients/[id]/analysis-proposals/[proposalId]/technical-dem
     expect(response.status).toBe(200);
     expect(repositoryMock.findCurrentConfirmedTechnicalDemonstrationPlan).toHaveBeenCalledWith("owner-1", "client-1", "proposal-1", "cutting");
     expect(repositoryMock.listTechnicalDemonstrationStepsForPlan).toHaveBeenCalledWith("owner-1", "client-1", "plan-2");
-    expect(await response.json()).toEqual({ plan: CONFIRMED_PLAN, steps: STEPS });
+    expect(await response.json()).toEqual({ plan: CONFIRMED_PLAN, steps: STEPS, effectiveSteps: STEPS });
   });
 
   it("returns plan: null with 200 (never 404) when no plan has been confirmed yet, and never queries steps", async () => {
@@ -161,7 +162,7 @@ describe("GET /api/v1/clients/[id]/analysis-proposals/[proposalId]/technical-dem
     const response = await GET(getReq(), ctx());
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ plan: null, steps: [] });
+    expect(await response.json()).toEqual({ plan: null, steps: [], effectiveSteps: [] });
     expect(repositoryMock.listTechnicalDemonstrationStepsForPlan).not.toHaveBeenCalled();
   });
 

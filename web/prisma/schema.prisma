@@ -1917,6 +1917,18 @@ model TechnicalDemonstrationPlan {
   // already recorded, never an error the caller sees" handling.
   requestFingerprint String @db.VarChar(64)
 
+  // Stage 2.5.b -- nullable array, frozen-baseline + additive-adjustment
+  // architecture, mirroring TechnicalVisualMap.professionalAdjustments
+  // exactly: {op, stepNumber, field, value?, source, reason?, setAt}. A
+  // professional's correction is layered on top here; it NEVER mutates any
+  // TechnicalDemonstrationStep.payload, the frozen deterministic derivation
+  // output. Legal to append to only while this plan's own status is DRAFT
+  // (enforced at the repository layer, same discipline as
+  // applyAdjustmentsToDraft) -- once CONFIRMED, this array is permanently
+  // frozen by the same guard that already freezes `payload`, with no
+  // separate "seal" step needed.
+  professionalOverrides Json?
+
   // Nullable pointer to the plan that superseded this one -- mirrors
   // TechnicalVisualMap.supersededByMapId exactly, including its own
   // reasoning (plain nullable column, not an enforced self-relation FK).

@@ -11,6 +11,7 @@ import {
   confirmTechnicalDemonstrationPlan,
   findTechnicalDemonstrationPlanForOwner,
   listTechnicalDemonstrationStepsForPlan,
+  resolveEffectiveCuttingStepsForRecord,
 } from "@/lib/technical-demonstration-repository";
 import { isRecord } from "@/lib/technical-visual-map-validators";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
@@ -79,7 +80,12 @@ export async function POST(
       return NextResponse.json({ error: "Technical Demonstration Plan not found." }, { status: 404 });
     }
     const steps = await listTechnicalDemonstrationStepsForPlan(sessionUser.id, id, confirmed.id);
-    return NextResponse.json({ plan: confirmed, steps }, { status: 200 });
+    // Confirmation freezes the EXACT effective reviewed state -- the
+    // professionalOverrides array that produced it is now permanently
+    // frozen too (applyOverridesToDraft's own DRAFT-only guard), so this
+    // is the same effective view the professional confirmed, forever.
+    const effectiveSteps = resolveEffectiveCuttingStepsForRecord(confirmed, steps);
+    return NextResponse.json({ plan: confirmed, steps, effectiveSteps }, { status: 200 });
   } catch (error) {
     if (error instanceof TechnicalDemonstrationConcurrencyError) {
       // SPECIAL CASE -- a deliberately different machine-readable code and a

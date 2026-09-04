@@ -67,6 +67,7 @@ const repositoryMock = vi.hoisted(() => {
     findTechnicalDemonstrationPlanForOwner: vi.fn(),
     confirmTechnicalDemonstrationPlan: vi.fn(),
     listTechnicalDemonstrationStepsForPlan: vi.fn(),
+    resolveEffectiveCuttingStepsForRecord: vi.fn((_plan: unknown, steps: unknown) => steps),
   };
 });
 

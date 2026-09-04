@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { TechnicalDemonstrationPlanRecord, TechnicalDemonstrationStepRecord } from "@/lib/technical-demonstration-contracts";
+import type { CuttingStepOverrideInput } from "@/lib/technical-demonstration-cutting-overrides";
 
 import { findExistingDraftPlan, mapTechnicalDemonstrationPlanApiError, resolveTechnicalDemonstrationPlanLoadStatus } from "./technical-demonstration-plan-logic";
 
@@ -18,6 +19,11 @@ import { findExistingDraftPlan, mapTechnicalDemonstrationPlanApiError, resolveTe
 export interface TechnicalDemonstrationPlanWithSteps {
   plan: TechnicalDemonstrationPlanRecord;
   steps: TechnicalDemonstrationStepRecord[];
+  // Stage 2.5.b -- steps + professionalOverrides applied, resolved
+  // server-side (technical-demonstration-repository.ts's own
+  // resolveEffectiveCuttingStepsForRecord). The UI always renders THIS,
+  // never `steps` directly.
+  effectiveSteps: TechnicalDemonstrationStepRecord[];
 }
 
 export type TechnicalDemonstrationPlanState =
@@ -40,6 +46,7 @@ export interface TechnicalDemonstrationPlanActionSuccess {
   ok: true;
   plan: TechnicalDemonstrationPlanRecord;
   steps: TechnicalDemonstrationStepRecord[];
+  effectiveSteps: TechnicalDemonstrationStepRecord[];
 }
 
 export interface TechnicalDemonstrationPlanActionFailure {
@@ -56,6 +63,11 @@ export interface UseTechnicalDemonstrationPlanResult {
   reload: () => void;
   deriveOrOpen: () => Promise<TechnicalDemonstrationPlanActionOutcome>;
   confirmPlan: (planId: string, expectedCurrentConfirmedPlanId: string | null) => Promise<TechnicalDemonstrationPlanActionOutcome>;
+  // Stage 2.5.b -- append professional overrides to a DRAFT plan. Legal
+  // only while DRAFT (server-enforced; see applyOverridesToDraft's own
+  // guard) -- the route/repository reject a CONFIRMED plan's own attempt
+  // with a 409, never silently reopening it.
+  applyOverrides: (planId: string, overrides: CuttingStepOverrideInput[]) => Promise<TechnicalDemonstrationPlanActionOutcome>;
 }
 
 interface ParsedErrorBody {
@@ -65,8 +77,12 @@ interface ParsedErrorBody {
 
 async function toActionOutcome(response: Response): Promise<TechnicalDemonstrationPlanActionOutcome> {
   if (response.ok) {
-    const body = (await response.json()) as { plan: TechnicalDemonstrationPlanRecord; steps: TechnicalDemonstrationStepRecord[] };
-    return { ok: true, plan: body.plan, steps: body.steps };
+    const body = (await response.json()) as {
+      plan: TechnicalDemonstrationPlanRecord;
+      steps: TechnicalDemonstrationStepRecord[];
+      effectiveSteps: TechnicalDemonstrationStepRecord[];
+    };
+    return { ok: true, plan: body.plan, steps: body.steps, effectiveSteps: body.effectiveSteps };
   }
 
   let body: ParsedErrorBody = {};
@@ -114,6 +130,7 @@ export function useTechnicalDemonstrationPlan(clientId: string, proposalId: stri
         const currentBody = (await currentResponse.json()) as {
           plan: TechnicalDemonstrationPlanRecord | null;
           steps: TechnicalDemonstrationStepRecord[];
+          effectiveSteps: TechnicalDemonstrationStepRecord[];
         };
         const listBody = (await listResponse.json()) as { plans: TechnicalDemonstrationPlanRecord[] };
         if (cancelled) return;
@@ -124,15 +141,19 @@ export function useTechnicalDemonstrationPlan(clientId: string, proposalId: stri
           const draftResponse = await fetch(`${baseUrl(clientId, proposalId)}/${draftMeta.id}`, { method: "GET" });
           if (cancelled) return;
           if (resolveTechnicalDemonstrationPlanLoadStatus(draftResponse) === "ready") {
-            const draftBody = (await draftResponse.json()) as { plan: TechnicalDemonstrationPlanRecord; steps: TechnicalDemonstrationStepRecord[] };
-            draft = { plan: draftBody.plan, steps: draftBody.steps };
+            const draftBody = (await draftResponse.json()) as {
+              plan: TechnicalDemonstrationPlanRecord;
+              steps: TechnicalDemonstrationStepRecord[];
+              effectiveSteps: TechnicalDemonstrationStepRecord[];
+            };
+            draft = { plan: draftBody.plan, steps: draftBody.steps, effectiveSteps: draftBody.effectiveSteps };
           }
         }
         if (cancelled) return;
 
         setState({
           status: "ready",
-          current: currentBody.plan ? { plan: currentBody.plan, steps: currentBody.steps } : null,
+          current: currentBody.plan ? { plan: currentBody.plan, steps: currentBody.steps, effectiveSteps: currentBody.effectiveSteps } : null,
           draft,
           history: listBody.plans,
         });
@@ -185,5 +206,28 @@ export function useTechnicalDemonstrationPlan(clientId: string, proposalId: stri
     [clientId, proposalId, reload],
   );
 
-  return { state, reload, deriveOrOpen, confirmPlan };
+  // Stage 2.5.b -- PATCH the DRAFT plan's own professionalOverrides.
+  // `overrides` are the caller-suppliable CuttingStepOverrideInput shape
+  // only (op/stepNumber/field/value?/reason?) -- source/setAt are always
+  // server-stamped, never sent from here.
+  const applyOverrides = useCallback(
+    async (planId: string, overrides: CuttingStepOverrideInput[]): Promise<TechnicalDemonstrationPlanActionOutcome> => {
+      try {
+        const response = await fetch(`${baseUrl(clientId, proposalId)}/${planId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overrides }),
+        });
+        const outcome = await toActionOutcome(response);
+        reload();
+        return outcome;
+      } catch {
+        reload();
+        return { ok: false, status: 0, message: mapTechnicalDemonstrationPlanApiError(0) };
+      }
+    },
+    [clientId, proposalId, reload],
+  );
+
+  return { state, reload, deriveOrOpen, confirmPlan, applyOverrides };
 }

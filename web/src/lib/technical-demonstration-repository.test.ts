@@ -7,15 +7,19 @@ import { createAnalysisForOwner } from "@/lib/analysis-repository";
 import { prisma } from "@/lib/prisma";
 import { confirmProposal, createProposalForOwner, editDraftProposal, rejectProposal } from "@/lib/proposal-repository";
 import {
+  applyOverridesToDraft,
   confirmTechnicalDemonstrationPlan,
   createTechnicalDemonstrationPlanFromProposal,
   findCurrentConfirmedTechnicalDemonstrationPlan,
   findTechnicalDemonstrationPlanForOwner,
   listTechnicalDemonstrationStepsForPlan,
+  resolveEffectiveCuttingStepsForRecord,
   TechnicalDemonstrationConcurrencyError,
   TechnicalDemonstrationDependencyError,
+  TechnicalDemonstrationOverrideValidationError,
   TechnicalDemonstrationStateError,
 } from "@/lib/technical-demonstration-repository";
+import type { CuttingStepOverrideInput } from "@/lib/technical-demonstration-cutting-overrides";
 
 // Technical Demonstration, Stage 1 -- real Postgres, no mocks, mirroring
 // this codebase's own established convention for every domain-repository
@@ -441,6 +445,153 @@ suite("technical-demonstration-repository (real Postgres)", () => {
 
       const allPlans = await prisma.technicalDemonstrationPlan.findMany({ where: { ownerUserId, clientId, analysisProposalId: proposal.id } });
       expect(allPlans).toHaveLength(2);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Stage 2.5.b -- professional adjustment layer.
+  // ---------------------------------------------------------------------
+  describe("Stage 2.5.b -- applyOverridesToDraft / resolveEffectiveCuttingStepsForRecord", () => {
+    it("appends a valid override to a DRAFT plan and it is immediately reflected in the effective steps", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      const overrides: CuttingStepOverrideInput[] = [{ op: "set_value", stepNumber: 1, field: "zones", value: ["nape"] }];
+      const updated = await applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, overrides, new Date("2026-09-04T12:00:00.000Z"));
+      expect(updated?.professionalOverrides).toHaveLength(1);
+      expect((updated!.professionalOverrides[0] as { source: string }).source).toBe("professional");
+      expect((updated!.professionalOverrides[0] as { setAt: string }).setAt).toBe("2026-09-04T12:00:00.000Z");
+
+      const steps = await listTechnicalDemonstrationStepsForPlan(ownerUserId, clientId, outcome.plan.id);
+      const effectiveSteps = resolveEffectiveCuttingStepsForRecord(updated!, steps);
+      const step1 = effectiveSteps.find((s) => s.stepNumber === 1)!;
+      expect((step1.payload as { zones: unknown }).zones).toEqual({ value: ["nape"], provenance: "PROFESSIONAL_OVERRIDE" });
+    });
+
+    it("multiple overrides across multiple steps all persist and resolve correctly, each scoped to its own step", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      const first = await applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, [
+        { op: "set_value", stepNumber: 1, field: "tool", value: "custom-comb" },
+      ]);
+      const second = await applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, [
+        { op: "mark_not_applicable", stepNumber: 2, field: "crossCheck" },
+      ]);
+      expect(second?.professionalOverrides).toHaveLength(2); // both calls append to the SAME array
+
+      const steps = await listTechnicalDemonstrationStepsForPlan(ownerUserId, clientId, outcome.plan.id);
+      const effectiveSteps = resolveEffectiveCuttingStepsForRecord(second!, steps);
+      const step1 = effectiveSteps.find((s) => s.stepNumber === 1)!;
+      const step2 = effectiveSteps.find((s) => s.stepNumber === 2)!;
+      expect((step1.payload as { tool: unknown }).tool).toEqual({ value: "custom-comb", provenance: "PROFESSIONAL_OVERRIDE" });
+      expect((step2.payload as { crossCheck: unknown }).crossCheck).toEqual({ value: null, provenance: "NOT_APPLICABLE" });
+      // Untouched: step 1's own crossCheck and step 2's own tool are unaffected.
+      expect((step1.payload as { crossCheck: unknown }).crossCheck).toEqual({ value: null, provenance: "UNKNOWN" });
+      void first;
+    });
+
+    it("rejects applying an override to a CONFIRMED plan -- the plan is never silently reopened", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+      await confirmTechnicalDemonstrationPlan(ownerUserId, outcome.plan.id, null);
+
+      await expect(
+        applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, [{ op: "set_value", stepNumber: 1, field: "tool", value: "x" }]),
+      ).rejects.toThrow(TechnicalDemonstrationStateError);
+
+      // And the plan's own overrides remain exactly what they were before the attempt (empty).
+      const stillConfirmed = await findTechnicalDemonstrationPlanForOwner(ownerUserId, outcome.plan.id);
+      expect(stillConfirmed?.professionalOverrides).toEqual([]);
+      expect(stillConfirmed?.status).toBe("CONFIRMED");
+    });
+
+    it("rejects an override targeting a stepNumber that does not exist on this plan", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      await expect(
+        applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, [{ op: "set_value", stepNumber: 999, field: "tool", value: "x" }]),
+      ).rejects.toThrow(TechnicalDemonstrationOverrideValidationError);
+
+      const stillEmpty = await findTechnicalDemonstrationPlanForOwner(ownerUserId, outcome.plan.id);
+      expect(stillEmpty?.professionalOverrides).toEqual([]);
+    });
+
+    it("rejects a structurally malformed override input, writing nothing", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      await expect(
+        applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, [
+          { op: "set_value", stepNumber: 1, field: "elevation", value: "not_a_real_elevation" },
+        ]),
+      ).rejects.toThrow(TechnicalDemonstrationOverrideValidationError);
+
+      await expect(applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, [])).rejects.toThrow(TechnicalDemonstrationOverrideValidationError);
+    });
+
+    it("returns null (never throws) for a nonexistent plan id or a foreign owner/client, never leaking existence", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const { ownerUserId: otherOwner, clientId: otherClient } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      const overrides: CuttingStepOverrideInput[] = [{ op: "set_value", stepNumber: 1, field: "tool", value: "x" }];
+      expect(await applyOverridesToDraft(ownerUserId, clientId, randomUUID(), overrides)).toBeNull();
+      expect(await applyOverridesToDraft(otherOwner, otherClient, outcome.plan.id, overrides)).toBeNull();
+      expect(await applyOverridesToDraft(ownerUserId, otherClient, outcome.plan.id, overrides)).toBeNull();
+    });
+
+    it("provenance survives a real Postgres JSONB round-trip for professionalOverrides too", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      await applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, [
+        { op: "set_value", stepNumber: 1, field: "stateBefore", value: "Nape section not yet established.", reason: "professional review" },
+      ]);
+
+      const reread = await findTechnicalDemonstrationPlanForOwner(ownerUserId, outcome.plan.id);
+      expect(reread?.professionalOverrides).toEqual([
+        {
+          op: "set_value",
+          stepNumber: 1,
+          field: "stateBefore",
+          value: "Nape section not yet established.",
+          source: "professional",
+          reason: "professional review",
+          setAt: expect.any(String),
+        },
+      ]);
+    });
+
+    it("a plan created before this stage (professionalOverrides column is NULL) reads back as an honest empty array, not an error", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+      // createTechnicalDemonstrationPlanFromProposal never sets
+      // professionalOverrides itself -- the column is NULL by construction
+      // for a freshly-derived plan, exactly like every real pre-2.5.b
+      // production row.
+      expect(outcome.plan.professionalOverrides).toEqual([]);
+
+      const steps = await listTechnicalDemonstrationStepsForPlan(ownerUserId, clientId, outcome.plan.id);
+      const effectiveSteps = resolveEffectiveCuttingStepsForRecord(outcome.plan, steps);
+      expect(effectiveSteps).toEqual(steps); // no overrides -- effective === baseline
     });
   });
 

@@ -1,0 +1,23 @@
+-- Technical Demonstration, Stage 2.5.b (Professional Adjustment Layer).
+--
+-- Hand-curated from a live-DB diff: the raw `prisma migrate diff` output
+-- also contained unrelated PRE-EXISTING drift (a WebhookEndpoint FK
+-- drop/recreate, an Analysis.updatedAt default drop, Client column type
+-- changes, and several constraint/index RENAMEs on tables this task never
+-- touches -- Notification, TechnicalVisualMapSpatialBinding,
+-- WebhookDelivery, AnalysisCorrection, OpsBackupRestore*,
+-- PhotoPreviewGeneration, TechnicalVisualMap*, VideoDemonstrationGeneration,
+-- WebhookEndpointSecretVersion). That drift is the same PRE-EXISTING
+-- Postgres identifier-length-truncation condition already documented in
+-- 20260903_technical_demonstration_plan_stage1's own migration.sql header
+-- comment -- not something this migration introduces or is authorized to
+-- touch. The line below is exactly, and only, what this stage's own
+-- schema.prisma change requires: additive, backward-compatible, and
+-- reversible by a plain DROP COLUMN.
+
+-- AlterTable: TechnicalDemonstrationPlan.professionalOverrides -- additive,
+-- nullable, so every existing row (Stage 1/2's own real production rows,
+-- including the one confirmed live during Stage 2.5.a's own production
+-- validation) is safely and correctly left NULL by this single statement.
+-- No backfill needed, no existing row can ever be corrupted by this change.
+ALTER TABLE "TechnicalDemonstrationPlan" ADD COLUMN "professionalOverrides" JSONB;

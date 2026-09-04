@@ -11,6 +11,7 @@ import {
   TechnicalDemonstrationValidationError,
   findCurrentConfirmedTechnicalDemonstrationPlan,
   listTechnicalDemonstrationStepsForPlan,
+  resolveEffectiveCuttingStepsForRecord,
 } from "@/lib/technical-demonstration-repository";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
 
@@ -45,7 +46,12 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
 
     const plan = await findCurrentConfirmedTechnicalDemonstrationPlan(sessionUser.id, id, proposalId, proposal.vertical);
     const steps = plan ? await listTechnicalDemonstrationStepsForPlan(sessionUser.id, id, plan.id) : [];
-    return NextResponse.json({ plan, steps }, { status: 200 });
+    // A CONFIRMED plan's own overrides are already permanently frozen (see
+    // applyOverridesToDraft's own DRAFT-only guard) -- resolving effective
+    // here is still correct and necessary: the UI must render the SAME
+    // effective values it showed during review, never the raw baseline.
+    const effectiveSteps = plan ? resolveEffectiveCuttingStepsForRecord(plan, steps) : [];
+    return NextResponse.json({ plan, steps, effectiveSteps }, { status: 200 });
   } catch (error) {
     if (error instanceof TechnicalDemonstrationDependencyError) {
       return NextResponse.json({ error: error.code, message: error.message }, { status: error.httpStatus });

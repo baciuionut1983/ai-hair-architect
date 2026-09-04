@@ -31,11 +31,16 @@ const STAGE_2_UI_FILES = [
   "technical-demonstration-plan-status-badge.tsx",
   "technical-demonstration-provenance-badge.tsx",
   "technical-demonstration-step-card.tsx",
+  "technical-demonstration-step-field-editor.tsx",
   "technical-demonstration-plan-view.tsx",
   "technical-demonstration-plan-history.tsx",
   "technical-demonstration-plan-section.tsx",
   "use-technical-demonstration-plan.ts",
 ];
+
+// Stage 2.5.b -- the new professional adjustment layer, same discipline:
+// it edits the technical PLAN, never triggers or references a provider.
+const STAGE_25B_LIB_FILES = ["technical-demonstration-cutting-overrides.ts"];
 
 const STAGE_2_API_ROOT = path.join(
   "..",
@@ -76,8 +81,13 @@ describe("Technical Demonstration Stage 2 -- no video/image generation source lo
     expect(source).not.toMatch(FORBIDDEN_PATTERN);
   });
 
-  it("the Technical Demonstration repository (Stage 1, reused unmodified by Stage 2) has no provider call either", () => {
+  it("the Technical Demonstration repository (extended by Stage 2.5.b) has no provider call either", () => {
     const source = readSource("..", "..", "..", "..", "..", "..", "..", "lib", "technical-demonstration-repository.ts");
+    expect(source).not.toMatch(FORBIDDEN_PATTERN);
+  });
+
+  it.each(STAGE_25B_LIB_FILES)("lib/%s (Stage 2.5.b) never references a video/image generation provider", (file) => {
+    const source = readSource("..", "..", "..", "..", "..", "..", "..", "lib", file);
     expect(source).not.toMatch(FORBIDDEN_PATTERN);
   });
 

@@ -67,6 +67,7 @@ const repositoryMock = vi.hoisted(() => {
     TechnicalDemonstrationInvariantError,
     createTechnicalDemonstrationPlanFromProposal: vi.fn(),
     listTechnicalDemonstrationPlansForProposal: vi.fn(),
+    resolveEffectiveCuttingStepsForRecord: vi.fn((_plan: unknown, steps: unknown) => steps),
   };
 });
 
@@ -195,7 +196,7 @@ describe("POST /api/v1/clients/[id]/analysis-proposals/[proposalId]/technical-de
 
     expect(response.status).toBe(201);
     expect(repositoryMock.createTechnicalDemonstrationPlanFromProposal).toHaveBeenCalledWith("owner-1", "client-1", "proposal-1");
-    expect(await response.json()).toEqual({ plan: PLAN_A, steps: STEPS, created: true });
+    expect(await response.json()).toEqual({ plan: PLAN_A, steps: STEPS, effectiveSteps: STEPS, created: true });
   });
 
   it("2. an idempotent reopen (same exact confirmed proposal version) returns 200, not 201, with created: false", async () => {
@@ -204,7 +205,7 @@ describe("POST /api/v1/clients/[id]/analysis-proposals/[proposalId]/technical-de
     const response = await POST(postReq(), ctx());
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ plan: PLAN_A, steps: STEPS, created: false });
+    expect(await response.json()).toEqual({ plan: PLAN_A, steps: STEPS, effectiveSteps: STEPS, created: false });
   });
 
   it("unauthenticated is blocked, touching nothing", async () => {

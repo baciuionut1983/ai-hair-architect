@@ -1,6 +1,16 @@
+import {
+  CUTTING_TECHNIQUES,
+  ELEVATION_OPTIONS,
+  GUIDELINE_OPTIONS,
+  SECTIONING_OPTIONS,
+  STRUCTURAL_TECHNIQUES,
+  TEXTURIZING_TECHNIQUES,
+} from "@/lib/proposal-validators";
 import { humanizeEnumValue } from "@/lib/humanize-enum-value";
 import type { TechnicalDemonstrationPlanRecord, TechnicalDemonstrationStepRecord } from "@/lib/technical-demonstration-contracts";
 import type { CuttingDemonstrationStepPayload } from "@/lib/technical-demonstration-cutting-contracts";
+import { CUTTING_STEP_OVERRIDE_FIELD_NAMES, type CuttingStepOverrideFieldName } from "@/lib/technical-demonstration-cutting-overrides";
+import { HEAD_ZONES } from "@/lib/technical-visual-map-validators";
 import { HEAD_ZONE_LABELS } from "./technical-visual-map-logic";
 import type { TechnicalDemonstrationPlanActionOutcome } from "./use-technical-demonstration-plan";
 
@@ -52,6 +62,10 @@ export const TECHNICAL_DEMONSTRATION_PROVENANCE_LABELS: Record<string, string> =
   INFERRED: "Inferred",
   UNKNOWN: "Not yet available",
   PROFESSIONAL_OVERRIDE: "Professional override",
+  // Stage 2.5.b -- a real professional decision ("this genuinely doesn't
+  // apply here"), deliberately worded distinctly from "Not yet available"
+  // (UNKNOWN) -- the professional actively decided this, it isn't a gap.
+  NOT_APPLICABLE: "Not applicable",
 };
 
 export function technicalDemonstrationProvenanceLabel(provenance: string): string {
@@ -59,11 +73,20 @@ export function technicalDemonstrationProvenanceLabel(provenance: string): strin
 }
 
 // Only OBSERVED/INFERRED/PROFESSIONAL_OVERRIDE ever carry a real value --
-// UNKNOWN always pairs with `value: null` (enforced server-side by
-// isProvenanceValue). This is the single predicate every rendering call site
-// uses to decide "does this field have anything to show at all".
+// UNKNOWN and NOT_APPLICABLE always pair with `value: null` (enforced
+// server-side by isProvenanceValue). This is the single predicate every
+// rendering call site uses to decide "does this field have a real value to
+// show at all".
 export function isProvenancePopulated(entry: { provenance: string } | undefined | null): boolean {
-  return !!entry && entry.provenance !== "UNKNOWN";
+  return !!entry && entry.provenance !== "UNKNOWN" && entry.provenance !== "NOT_APPLICABLE";
+}
+
+// Stage 2.5.b -- distinguishes an honest "not applicable" decision from an
+// honest "we don't know yet" gap (isProvenancePopulated's own false case
+// covers both; this is the finer split TechnicalDemonstrationStepCard uses
+// to render three buckets instead of two).
+export function isProvenanceNotApplicable(entry: { provenance: string } | undefined | null): boolean {
+  return !!entry && entry.provenance === "NOT_APPLICABLE";
 }
 
 // ---------------------------------------------------------------------------
@@ -99,27 +122,41 @@ function formatBoolean(value: unknown): string {
 }
 
 // Order here is the ON-CARD reading order -- matches the natural execution
-// narrative (where/what technique -> how to hold/direct -> the cut itself
-// -> progression -> finishing), not the payload's own object key order.
+// narrative (starting state -> where/what technique -> how to hold/direct
+// -> the cut itself -> progression -> finishing -> resulting state), not
+// the payload's own object key order. Stage 2.5.b addition: `phase`
+// (read-only context -- see CUTTING_STEP_OVERRIDE_FIELD_NAMES's own
+// deliberate exclusion of it from the editable set) and the six Stage
+// 2.5.a execution fields (fingerAngle, subsectionThickness, toolOrientation,
+// progression, stateBefore, stateAfter) that Stage 2.5.a's own domain
+// foundation added but deliberately left undisplayed pending this stage's
+// review UI.
 export const CUTTING_STEP_FIELD_DESCRIPTORS: readonly StepFieldDescriptor[] = [
+  { key: "phase", label: "Execution phase", formatValue: formatEnum },
+  { key: "stateBefore", label: "State before", formatValue: formatText },
   { key: "zones", label: "Zone(s)", formatValue: joinZones },
   { key: "structuralTechnique", label: "Structural technique", formatValue: formatEnum },
   { key: "cuttingTechnique", label: "Cutting technique", formatValue: formatEnum },
   { key: "texturizingTechnique", label: "Texturizing technique", formatValue: formatEnum },
   { key: "sectioning", label: "Sectioning", formatValue: formatEnum },
   { key: "subsectioning", label: "Subsectioning", formatValue: formatText },
+  { key: "subsectionThickness", label: "Subsection thickness", formatValue: formatText },
   { key: "guideType", label: "Guide", formatValue: formatEnum },
   { key: "headBodyPositioning", label: "Head / body positioning", formatValue: formatText },
   { key: "combingDirection", label: "Combing direction", formatValue: formatText },
   { key: "fingerPosition", label: "Finger position", formatValue: formatText },
+  { key: "fingerAngle", label: "Finger angle", formatValue: formatText },
   { key: "elevation", label: "Elevation", formatValue: formatEnum },
   { key: "overdirection", label: "Overdirection", formatValue: formatBoolean },
   { key: "cuttingAngle", label: "Cutting angle", formatValue: formatText },
   { key: "cuttingLine", label: "Cutting line", formatValue: formatText },
   { key: "tool", label: "Tool", formatValue: formatText },
+  { key: "toolOrientation", label: "Tool orientation", formatValue: formatText },
+  { key: "progression", label: "Progression", formatValue: formatText },
   { key: "zoneConnection", label: "Zone connection", formatValue: formatText },
   { key: "crossCheck", label: "Cross-check", formatValue: formatBoolean },
   { key: "styling", label: "Styling / finish", formatValue: formatText },
+  { key: "stateAfter", label: "State after", formatValue: formatText },
 ];
 
 export interface StepFieldRow {
@@ -129,12 +166,17 @@ export interface StepFieldRow {
   provenance: string;
 }
 
-// Splits a step's payload into the fields that actually have something to
-// show (any provenance except UNKNOWN) versus the ones that honestly don't
-// yet (UNKNOWN) -- TechnicalDemonstrationStepCard renders the first group
-// prominently and the second as a clearly-labeled, non-alarming list.
-export function resolveStepFieldRows(payload: TechnicalDemonstrationStepRecord["payload"]): { populated: StepFieldRow[]; unknown: string[] } {
+// Splits a step's payload into three buckets: fields that actually have
+// something to show (any provenance except UNKNOWN/NOT_APPLICABLE), fields
+// a professional actively decided don't apply here (NOT_APPLICABLE), and
+// fields that honestly don't have a value yet (UNKNOWN) --
+// TechnicalDemonstrationStepCard renders all three, each with its own
+// distinct, non-alarming presentation.
+export function resolveStepFieldRows(
+  payload: TechnicalDemonstrationStepRecord["payload"],
+): { populated: StepFieldRow[]; notApplicable: string[]; unknown: string[] } {
   const populated: StepFieldRow[] = [];
+  const notApplicableLabels: string[] = [];
   const unknownLabels: string[] = [];
 
   for (const descriptor of CUTTING_STEP_FIELD_DESCRIPTORS) {
@@ -146,12 +188,81 @@ export function resolveStepFieldRows(payload: TechnicalDemonstrationStepRecord["
         value: descriptor.formatValue(entry!.value),
         provenance: entry!.provenance,
       });
+    } else if (isProvenanceNotApplicable(entry)) {
+      notApplicableLabels.push(descriptor.label);
     } else {
       unknownLabels.push(descriptor.label);
     }
   }
 
-  return { populated, unknown: unknownLabels };
+  return { populated, notApplicable: notApplicableLabels, unknown: unknownLabels };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2.5.b -- professional editor descriptors. A SMALLER, SEPARATE list
+// from CUTTING_STEP_FIELD_DESCRIPTORS above (display) -- deliberately
+// excludes `phase` (system-derived, never professionally editable; see
+// technical-demonstration-cutting-overrides.ts's own header comment for
+// why) and `constraints` (safety-critical, never editable). Every OTHER
+// display field has exactly one editor descriptor here, enforced at the
+// type level via `satisfies` against CuttingStepOverrideFieldName.
+// ---------------------------------------------------------------------------
+
+export type CuttingStepFieldEditorKind = "zones" | "select" | "text" | "boolean";
+
+export interface CuttingStepFieldEditorDescriptor {
+  key: CuttingStepOverrideFieldName;
+  kind: CuttingStepFieldEditorKind;
+  // Present only for kind "select" -- the closed vocabulary a <select>
+  // control offers, reusing the EXACT SAME arrays the server-side
+  // validator (technical-demonstration-cutting-overrides.ts) checks
+  // against, never a second, competing list.
+  options?: readonly string[];
+}
+
+export const CUTTING_STEP_FIELD_EDITORS: readonly CuttingStepFieldEditorDescriptor[] = [
+  { key: "zones", kind: "zones" },
+  { key: "elevation", kind: "select", options: ELEVATION_OPTIONS },
+  { key: "tool", kind: "text" },
+  { key: "sectioning", kind: "select", options: SECTIONING_OPTIONS },
+  { key: "guideType", kind: "select", options: GUIDELINE_OPTIONS },
+  { key: "structuralTechnique", kind: "select", options: STRUCTURAL_TECHNIQUES },
+  { key: "cuttingTechnique", kind: "select", options: CUTTING_TECHNIQUES },
+  { key: "texturizingTechnique", kind: "select", options: TEXTURIZING_TECHNIQUES },
+  { key: "combingDirection", kind: "text" },
+  { key: "overdirection", kind: "boolean" },
+  { key: "headBodyPositioning", kind: "text" },
+  { key: "fingerPosition", kind: "text" },
+  { key: "fingerAngle", kind: "text" },
+  { key: "cuttingAngle", kind: "text" },
+  { key: "cuttingLine", kind: "text" },
+  { key: "subsectioning", kind: "text" },
+  { key: "subsectionThickness", kind: "text" },
+  { key: "toolOrientation", kind: "text" },
+  { key: "progression", kind: "text" },
+  { key: "zoneConnection", kind: "text" },
+  { key: "crossCheck", kind: "boolean" },
+  { key: "styling", kind: "text" },
+  { key: "stateBefore", kind: "text" },
+  { key: "stateAfter", kind: "text" },
+] as const satisfies readonly { key: CuttingStepOverrideFieldName; kind: CuttingStepFieldEditorKind; options?: readonly string[] }[];
+
+// Every field in CUTTING_STEP_OVERRIDE_FIELD_NAMES has exactly one editor
+// descriptor -- proven once, here, rather than trusted by construction (a
+// future field added to one list and forgotten in the other would
+// otherwise fail silently, not loudly).
+if (CUTTING_STEP_FIELD_EDITORS.length !== CUTTING_STEP_OVERRIDE_FIELD_NAMES.length) {
+  throw new Error("CUTTING_STEP_FIELD_EDITORS is out of sync with CUTTING_STEP_OVERRIDE_FIELD_NAMES.");
+}
+
+export function resolveCuttingStepFieldEditor(field: CuttingStepOverrideFieldName): CuttingStepFieldEditorDescriptor {
+  const editor = CUTTING_STEP_FIELD_EDITORS.find((e) => e.key === field);
+  if (!editor) throw new Error(`No editor descriptor for field "${field}".`);
+  return editor;
+}
+
+export function zoneOptionsForEditor(): readonly string[] {
+  return HEAD_ZONES;
 }
 
 export function resolveStepConstraints(payload: TechnicalDemonstrationStepRecord["payload"]): string[] {
