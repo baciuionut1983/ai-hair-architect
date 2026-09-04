@@ -2,10 +2,12 @@ import { useState } from "react";
 
 import { Alert, Button, Card } from "@/components/ui";
 import type { TechnicalDemonstrationPlanRecord, TechnicalDemonstrationStepRecord } from "@/lib/technical-demonstration-contracts";
+import type { PlanReadinessResult } from "@/lib/technical-demonstration-cutting-video-readiness";
 
 import { TechnicalDemonstrationPlanStatusBadge } from "./technical-demonstration-plan-status-badge";
 import { TechnicalDemonstrationStepCard } from "./technical-demonstration-step-card";
 import type { TechnicalDemonstrationStepFieldEditSubmission } from "./technical-demonstration-step-field-editor";
+import { TechnicalExecutionVideoReadinessSummary } from "./technical-execution-video-readiness-summary";
 import type { TechnicalDemonstrationPlanActionOutcome } from "./use-technical-demonstration-plan";
 
 export interface TechnicalDemonstrationPlanViewProps {
@@ -26,6 +28,12 @@ export interface TechnicalDemonstrationPlanViewProps {
   // never receives this prop, so its own step cards stay structurally
   // read-only, not just by convention.
   onEditField?: (submission: TechnicalDemonstrationStepFieldEditSubmission & { stepNumber: number }) => Promise<boolean>;
+  // Stage 2.5.c -- present ONLY for the CONFIRMED plan (the caller,
+  // technical-demonstration-plan-section.tsx, only ever fetches readiness
+  // for `current`, never for `draft`). `undefined` while still loading (or
+  // for a DRAFT/absent plan) -- this component simply renders nothing in
+  // that case, never a fabricated placeholder.
+  readiness?: PlanReadinessResult;
 }
 
 // Technical Demonstration, Stage 2 (+ Stage 2.5.b) -- the single plan view,
@@ -36,7 +44,7 @@ export interface TechnicalDemonstrationPlanViewProps {
 // DRAFT and CONFIRMED views only ever differ by whether onConfirm/
 // onEditField are supplied, so splitting them into two components would
 // just duplicate the step list rendering for no real benefit.
-export function TechnicalDemonstrationPlanView({ plan, steps, onConfirm, confirmConflictMessage, onEditField }: TechnicalDemonstrationPlanViewProps) {
+export function TechnicalDemonstrationPlanView({ plan, steps, onConfirm, confirmConflictMessage, onEditField, readiness }: TechnicalDemonstrationPlanViewProps) {
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
 
@@ -85,6 +93,8 @@ export function TechnicalDemonstrationPlanView({ plan, steps, onConfirm, confirm
           {confirmError ? <Alert variant="error">{confirmError}</Alert> : null}
         </div>
       ) : null}
+
+      {readiness ? <TechnicalExecutionVideoReadinessSummary readiness={readiness} /> : null}
     </Card>
   );
 }

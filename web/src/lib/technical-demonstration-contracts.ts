@@ -108,6 +108,36 @@ export function isProvenanceValue<T>(value: unknown, isInner: (candidate: unknow
   return isInner(value.value);
 }
 
+// Stage 2.5.c -- relocated here (from the proposed-look page's own
+// technical-demonstration-plan-logic.ts, which still re-exports both for
+// backward compatibility with every existing import site) because the new
+// server-side Technical Execution Video readiness evaluator
+// (technical-demonstration-cutting-video-readiness.ts) needs these same
+// two predicates and lives in src/lib -- it must never import from a
+// route's own colocated UI logic file (wrong architectural layering
+// direction, same rule this codebase already enforces everywhere else).
+// These are generic, vertical-agnostic provenance predicates (operate on
+// the bare `{provenance: string}` shape), so this shared file is their
+// correct home, exactly like isProvenanceValue above.
+
+// Only OBSERVED/INFERRED/PROFESSIONAL_OVERRIDE ever carry a real value --
+// UNKNOWN and NOT_APPLICABLE always pair with `value: null` (enforced by
+// isProvenanceValue above). This is the single predicate every call site
+// (UI rendering AND readiness evaluation) uses to decide "does this field
+// have a real value to show/count at all".
+export function isProvenancePopulated(entry: { provenance: string } | undefined | null): boolean {
+  return !!entry && entry.provenance !== "UNKNOWN" && entry.provenance !== "NOT_APPLICABLE";
+}
+
+// Distinguishes an honest "not applicable" decision from an honest "we
+// don't know yet" gap (isProvenancePopulated's own false case covers
+// both) -- used both to render a distinct UI bucket and, since Stage
+// 2.5.c, to let a professional's explicit NOT_APPLICABLE decision satisfy
+// a readiness rule exactly like a real value would.
+export function isProvenanceNotApplicable(entry: { provenance: string } | undefined | null): boolean {
+  return !!entry && entry.provenance === "NOT_APPLICABLE";
+}
+
 // ---------------------------------------------------------------------------
 // Persisted record shapes -- returned by technical-demonstration-repository.ts.
 // Mirrors TechnicalVisualMapRecord's own shape/field-naming exactly.

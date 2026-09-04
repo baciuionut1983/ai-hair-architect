@@ -36,11 +36,21 @@ const STAGE_2_UI_FILES = [
   "technical-demonstration-plan-history.tsx",
   "technical-demonstration-plan-section.tsx",
   "use-technical-demonstration-plan.ts",
+  // Stage 2.5.c -- the readiness-gate UI: read-only, no provider reference
+  // anywhere (same discipline as every file already in this list).
+  "technical-execution-video-readiness-summary.tsx",
+  "use-technical-execution-video-readiness.ts",
 ];
 
 // Stage 2.5.b -- the new professional adjustment layer, same discipline:
 // it edits the technical PLAN, never triggers or references a provider.
 const STAGE_25B_LIB_FILES = ["technical-demonstration-cutting-overrides.ts"];
+
+// Stage 2.5.c -- the Technical Execution Video READINESS GATE. Pure,
+// server-side, zero-I/O rules engine: computes whether a CONFIRMED plan
+// has enough approved structured information, never calls a provider,
+// never generates anything itself.
+const STAGE_25C_LIB_FILES = ["technical-demonstration-cutting-video-readiness.ts"];
 
 const STAGE_2_API_ROOT = path.join(
   "..",
@@ -63,6 +73,9 @@ const STAGE_2_API_FILES = [
   ["current", "route.ts"],
   ["[planId]", "route.ts"],
   ["[planId]", "confirm", "route.ts"],
+  // Stage 2.5.c -- the readiness sub-route: read-only, computes from
+  // already-persisted data only, zero provider reference.
+  ["[planId]", "readiness", "route.ts"],
 ];
 
 // Anything matching this is a real provider/video/image-generation
@@ -87,6 +100,11 @@ describe("Technical Demonstration Stage 2 -- no video/image generation source lo
   });
 
   it.each(STAGE_25B_LIB_FILES)("lib/%s (Stage 2.5.b) never references a video/image generation provider", (file) => {
+    const source = readSource("..", "..", "..", "..", "..", "..", "..", "lib", file);
+    expect(source).not.toMatch(FORBIDDEN_PATTERN);
+  });
+
+  it.each(STAGE_25C_LIB_FILES)("lib/%s (Stage 2.5.c) never references a video/image generation provider", (file) => {
     const source = readSource("..", "..", "..", "..", "..", "..", "..", "lib", file);
     expect(source).not.toMatch(FORBIDDEN_PATTERN);
   });

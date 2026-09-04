@@ -214,14 +214,14 @@ describe("resolveStepFieldRows", () => {
     // "unknown" bucket -- never fabricated, never silently dropped.
     expect(unknown).toContain("Finger position");
     expect(unknown).toContain("Cutting angle");
-    expect(unknown.length + populated.length).toBe(25); // the full Cutting V1 field count (CUTTING_STEP_FIELD_DESCRIPTORS, incl. Stage 2.5.a/b additions)
+    expect(unknown.length + populated.length).toBe(27); // the full Cutting V1 field count (CUTTING_STEP_FIELD_DESCRIPTORS, incl. Stage 2.5.a/b/c additions)
   });
 
   it("never dumps a raw field for an UNKNOWN entry -- unknown fields carry only their label, no value/provenance leakage", () => {
     const s = step();
     const { populated, unknown } = resolveStepFieldRows(s.payload);
     expect(populated).toEqual([]);
-    expect(unknown.length).toBe(25);
+    expect(unknown.length).toBe(27);
     expect(unknown.every((label) => typeof label === "string")).toBe(true);
   });
 

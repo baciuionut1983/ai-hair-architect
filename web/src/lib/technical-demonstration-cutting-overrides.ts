@@ -58,7 +58,18 @@ export const CUTTING_STEP_OVERRIDE_FIELD_NAMES = [
   "texturizingTechnique",
   "combingDirection",
   "overdirection",
+  // Stage 2.5.c: `headBodyPositioning` is deprecated (see its own doc
+  // comment in technical-demonstration-cutting-contracts.ts) but
+  // deliberately kept here, unchanged -- removing it would make
+  // isCuttingStepOverrideEntryArray reject any already-recorded real
+  // professional override that targeted it (that validator runs on every
+  // READ of professionalOverrides, not just on write), a genuine backward-
+  // compatibility break. New professional input should target
+  // `clientHeadPosition`/`observationView` instead; this stays purely for
+  // safe, non-destructive compatibility.
   "headBodyPositioning",
+  "clientHeadPosition",
+  "observationView",
   "fingerPosition",
   "fingerAngle",
   "cuttingAngle",
@@ -104,6 +115,8 @@ const FIELD_VALUE_VALIDATORS: Record<CuttingStepOverrideFieldName, (value: unkno
   combingDirection: isNonEmptyString,
   overdirection: (v) => typeof v === "boolean",
   headBodyPositioning: isNonEmptyString,
+  clientHeadPosition: isNonEmptyString,
+  observationView: isNonEmptyString,
   fingerPosition: isNonEmptyString,
   fingerAngle: isNonEmptyString,
   cuttingAngle: isNonEmptyString,

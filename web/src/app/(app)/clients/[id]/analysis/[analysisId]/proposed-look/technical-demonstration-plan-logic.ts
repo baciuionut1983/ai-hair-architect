@@ -10,6 +10,7 @@ import { humanizeEnumValue } from "@/lib/humanize-enum-value";
 import type { TechnicalDemonstrationPlanRecord, TechnicalDemonstrationStepRecord } from "@/lib/technical-demonstration-contracts";
 import type { CuttingDemonstrationStepPayload } from "@/lib/technical-demonstration-cutting-contracts";
 import { CUTTING_STEP_OVERRIDE_FIELD_NAMES, type CuttingStepOverrideFieldName } from "@/lib/technical-demonstration-cutting-overrides";
+import { isProvenanceNotApplicable, isProvenancePopulated } from "@/lib/technical-demonstration-contracts";
 import { HEAD_ZONES } from "@/lib/technical-visual-map-validators";
 import { HEAD_ZONE_LABELS } from "./technical-visual-map-logic";
 import type { TechnicalDemonstrationPlanActionOutcome } from "./use-technical-demonstration-plan";
@@ -72,22 +73,13 @@ export function technicalDemonstrationProvenanceLabel(provenance: string): strin
   return TECHNICAL_DEMONSTRATION_PROVENANCE_LABELS[provenance] ?? provenance;
 }
 
-// Only OBSERVED/INFERRED/PROFESSIONAL_OVERRIDE ever carry a real value --
-// UNKNOWN and NOT_APPLICABLE always pair with `value: null` (enforced
-// server-side by isProvenanceValue). This is the single predicate every
-// rendering call site uses to decide "does this field have a real value to
-// show at all".
-export function isProvenancePopulated(entry: { provenance: string } | undefined | null): boolean {
-  return !!entry && entry.provenance !== "UNKNOWN" && entry.provenance !== "NOT_APPLICABLE";
-}
-
-// Stage 2.5.b -- distinguishes an honest "not applicable" decision from an
-// honest "we don't know yet" gap (isProvenancePopulated's own false case
-// covers both; this is the finer split TechnicalDemonstrationStepCard uses
-// to render three buckets instead of two).
-export function isProvenanceNotApplicable(entry: { provenance: string } | undefined | null): boolean {
-  return !!entry && entry.provenance === "NOT_APPLICABLE";
-}
+// Stage 2.5.c -- relocated to technical-demonstration-contracts.ts (a
+// server-side readiness evaluator in src/lib now needs these same two
+// generic predicates and must never import from this route's own
+// colocated logic file). Imported above and re-exported here, unchanged,
+// so every existing import site in this UI feature keeps working
+// verbatim.
+export { isProvenancePopulated, isProvenanceNotApplicable };
 
 // ---------------------------------------------------------------------------
 // Step field descriptors -- the ONE place the full Cutting V1 field list
@@ -142,7 +134,14 @@ export const CUTTING_STEP_FIELD_DESCRIPTORS: readonly StepFieldDescriptor[] = [
   { key: "subsectioning", label: "Subsectioning", formatValue: formatText },
   { key: "subsectionThickness", label: "Subsection thickness", formatValue: formatText },
   { key: "guideType", label: "Guide", formatValue: formatEnum },
-  { key: "headBodyPositioning", label: "Head / body positioning", formatValue: formatText },
+  // Stage 2.5.c: `headBodyPositioning` is deprecated (kept only for
+  // backward compatibility with already-recorded data -- see its own doc
+  // comment in technical-demonstration-cutting-contracts.ts) but still
+  // shown if a real value happens to be present on an older record. New
+  // professional input targets the two fields below instead.
+  { key: "headBodyPositioning", label: "Head / body positioning (deprecated)", formatValue: formatText },
+  { key: "clientHeadPosition", label: "Client head position", formatValue: formatText },
+  { key: "observationView", label: "Observation viewpoint", formatValue: formatText },
   { key: "combingDirection", label: "Combing direction", formatValue: formatText },
   { key: "fingerPosition", label: "Finger position", formatValue: formatText },
   { key: "fingerAngle", label: "Finger angle", formatValue: formatText },
@@ -232,6 +231,8 @@ export const CUTTING_STEP_FIELD_EDITORS: readonly CuttingStepFieldEditorDescript
   { key: "combingDirection", kind: "text" },
   { key: "overdirection", kind: "boolean" },
   { key: "headBodyPositioning", kind: "text" },
+  { key: "clientHeadPosition", kind: "text" },
+  { key: "observationView", kind: "text" },
   { key: "fingerPosition", kind: "text" },
   { key: "fingerAngle", kind: "text" },
   { key: "cuttingAngle", kind: "text" },

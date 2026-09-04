@@ -184,7 +184,34 @@ export interface CuttingDemonstrationStepPayload {
   // UNKNOWN in Stage 1/2.5.a -- no source data exists for these yet.
   // Present so a later UI/professional-input stage can honestly show "not
   // yet available" rather than omit the concept entirely.
+  //
+  // DEPRECATED (Stage 2.5.c domain-model correction): this single field
+  // was found, during the Stage 2.5.c professional review, to conflate two
+  // genuinely distinct concepts -- the CLIENT's physical head position
+  // during execution vs. the OBSERVATION viewpoint used to check/demonstrate
+  // a result -- which must never be treated as equivalent (a stylist's own
+  // body posture is neither of these and was never represented here
+  // either). Kept unchanged, additive-only, purely for backward
+  // compatibility with any already-recorded baseline/professional-override
+  // data (this field's own persisted history is never rewritten or
+  // deleted) -- never required by the Stage 2.5.c readiness gate, and no
+  // longer the field new professional input should target. See
+  // `clientHeadPosition` and `observationView` below, the two real,
+  // separate replacements.
   headBodyPositioning: TechnicalDemonstrationProvenanceValue<string>;
+  // Stage 2.5.c -- replaces headBodyPositioning's "client/head" half.
+  // Physical position of the CLIENT's head required for correct/safe
+  // execution (e.g. neutral/upright, chin down, chin slightly raised,
+  // head tilted, controlled rotation) -- relevant DURING an execution
+  // action, never during a pure observation/check.
+  clientHeadPosition: TechnicalDemonstrationProvenanceValue<string>;
+  // Stage 2.5.c -- replaces headBodyPositioning's "viewpoint" half.
+  // The OBSERVATION/CHECK viewpoint required to see or demonstrate the
+  // result correctly (e.g. front, back, profile, left/right comparison,
+  // three-quarter) -- deliberately never conflated with clientHeadPosition
+  // above: one describes the CLIENT during execution, the other describes
+  // how the RESULT is being looked at.
+  observationView: TechnicalDemonstrationProvenanceValue<string>;
   fingerPosition: TechnicalDemonstrationProvenanceValue<string>;
   // Stage 2.5.a -- a distinct concept from fingerPosition (WHERE the
   // fingers are placed vs. AT WHAT ANGLE they hold the section); kept as
@@ -261,6 +288,8 @@ export function isValidCuttingDemonstrationStepPayload(value: unknown): value is
     isProvenanceString(value.combingDirection) &&
     isProvenanceBoolean(value.overdirection) &&
     isProvenanceString(value.headBodyPositioning) &&
+    isProvenanceString(value.clientHeadPosition) &&
+    isProvenanceString(value.observationView) &&
     isProvenanceString(value.fingerPosition) &&
     isProvenanceString(value.fingerAngle) &&
     isProvenanceString(value.cuttingAngle) &&

@@ -9,6 +9,7 @@ import { TechnicalDemonstrationPlanHistoryList } from "./technical-demonstration
 import { TechnicalDemonstrationPlanView } from "./technical-demonstration-plan-view";
 import type { TechnicalDemonstrationStepFieldEditSubmission } from "./technical-demonstration-step-field-editor";
 import { useTechnicalDemonstrationPlan, type TechnicalDemonstrationPlanActionOutcome } from "./use-technical-demonstration-plan";
+import { useTechnicalExecutionVideoReadiness } from "./use-technical-execution-video-readiness";
 
 export interface TechnicalDemonstrationPlanSectionProps {
   clientId: string;
@@ -40,6 +41,18 @@ export function TechnicalDemonstrationPlanSection({ clientId, proposalId }: Tech
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const [confirmConflictMessage, setConfirmConflictMessage] = useState<string | null>(null);
+
+  // Stage 2.5.c -- called unconditionally (Rules of Hooks: never after an
+  // early return, even though it's only ever semantically meaningful once
+  // `state` is "ready" and a CONFIRMED plan exists). `confirmedPlanId`
+  // collapses to `null` for every other state, and the hook itself then
+  // stays "idle" (see use-technical-execution-video-readiness.ts),
+  // fetching nothing -- a DRAFT is never VIDEO_READY by construction, so
+  // there is nothing honest to ask readiness about until a real CONFIRMED
+  // plan exists.
+  const confirmedPlanId = state.status === "ready" ? (state.current?.plan.id ?? null) : null;
+  const readinessState = useTechnicalExecutionVideoReadiness(clientId, proposalId, confirmedPlanId);
+  const readiness = readinessState.status === "ready" ? readinessState.readiness : undefined;
 
   if (state.status === "loading") {
     return <LoadingState label="Loading Technical Demonstration Plan..." />;
@@ -108,7 +121,7 @@ export function TechnicalDemonstrationPlanSection({ clientId, proposalId }: Tech
           onEditField={handleEditField}
         />
       ) : current ? (
-        <TechnicalDemonstrationPlanView key={current.plan.id} plan={current.plan} steps={current.effectiveSteps} />
+        <TechnicalDemonstrationPlanView key={current.plan.id} plan={current.plan} steps={current.effectiveSteps} readiness={readiness} />
       ) : (
         <div className="flex flex-col gap-2">
           <Button type="button" onClick={handleOpen} loading={opening}>

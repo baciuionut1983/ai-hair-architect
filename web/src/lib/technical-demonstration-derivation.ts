@@ -255,7 +255,9 @@ export function deriveCuttingDemonstrationSteps(plan: TechnicalCutPlan, editedFi
         inferredOrOverride(OVERDIRECTED_DISTRIBUTIONS.has(plan.distribution), editedFields.has("distribution")),
       ),
 
-      headBodyPositioning: unknownValue(),
+      headBodyPositioning: unknownValue(), // deprecated (Stage 2.5.c) -- kept only for backward compatibility, see its own field-level doc comment in technical-demonstration-cutting-contracts.ts
+      clientHeadPosition: unknownValue(),
+      observationView: unknownValue(),
       fingerPosition: unknownValue(),
       fingerAngle: unknownValue(),
       cuttingAngle: unknownValue(),
