@@ -19,6 +19,8 @@ import {
 import {
   CUTTING_DEMONSTRATION_STEP_SCHEMA_VERSION,
   isValidCuttingDemonstrationStepPayload,
+  isValidCuttingExecutionPhaseSequence,
+  type CuttingDemonstrationStepPayload,
 } from "@/lib/technical-demonstration-cutting-contracts";
 import {
   deriveCuttingDemonstrationSteps,
@@ -264,6 +266,20 @@ export async function createTechnicalDemonstrationPlanFromProposal(
             `Derived step ${derivedStep.stepNumber} produced a structurally invalid payload -- refusing to persist.`,
           );
         }
+      }
+
+      // Stage 2.5.a defensive check: the derived steps' own resolved
+      // execution phases must never regress (see
+      // isValidCuttingExecutionPhaseSequence's own header comment) --
+      // "should be impossible" given the pure, order-preserving derivation
+      // above, but the repository never persists unvalidated structure
+      // regardless, mirroring this exact file's own established discipline
+      // for every other defensive re-check above.
+      const phaseSequence = derivedSteps.map((derivedStep) => (derivedStep.payload as CuttingDemonstrationStepPayload).phase.value);
+      if (!isValidCuttingExecutionPhaseSequence(phaseSequence)) {
+        throw new TechnicalDemonstrationValidationError(
+          `Derived steps for proposal ${analysisProposalId} report execution phases out of canonical order -- refusing to persist.`,
+        );
       }
 
       const maxVersion = await tx.technicalDemonstrationPlan.aggregate({

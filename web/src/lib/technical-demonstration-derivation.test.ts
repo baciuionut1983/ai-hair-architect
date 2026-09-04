@@ -1,27 +1,36 @@
 import { describe, expect, it } from "vitest";
 
-import type { TechnicalCutPlan } from "@/lib/contracts";
+import type { CuttingStep, TechnicalCutPlan } from "@/lib/contracts";
 import { deriveCuttingDemonstrationSteps } from "@/lib/technical-demonstration-derivation";
 import { isValidCuttingDemonstrationStepPayload } from "@/lib/technical-demonstration-cutting-contracts";
 
-// Technical Demonstration, Stage 1 -- pure derivation tests. No I/O, no
-// database, mirrors this codebase's own established convention for a pure
-// transform (e.g. photo-preview-instruction-assembler.test.ts).
+// Technical Demonstration, Stage 1 (+ Stage 2.5.a) -- pure derivation
+// tests. No I/O, no database, mirrors this codebase's own established
+// convention for a pure transform (e.g. photo-preview-instruction-
+// assembler.test.ts).
+//
+// Stage 2.5.a fixture note: `realisticCuttingSteps` below uses the EXACT
+// step "zone" label strings cutting-plan-engine.ts's own
+// generateTechnicalCutPlan really emits ("Mapping and sectioning", ...) --
+// this is what lets these tests exercise the real phase-detection/
+// phase-scoped-propagation logic honestly, matching real production shape,
+// rather than the arbitrary HeadZone-named fixture Stage 1's own tests
+// used (kept below, explicitly, only for the couple of tests that are
+// specifically about the zones-from-a-real-HeadZone-string mechanism in
+// isolation -- a mechanism that is real and correct, but that Stage 2.5.a's
+// own audit proved never actually fires against this codebase's one real
+// producer).
 
 function cuttingPlan(overrides: Partial<TechnicalCutPlan> = {}): TechnicalCutPlan {
   return {
-    structuralTechnique: "graduation",
-    cuttingTechnique: "slice_cutting",
-    texturizingTechnique: "point_cutting",
-    sectioning: "diagonal_back",
-    elevation: "45_deg_graduation",
-    distribution: "overdirected_back",
-    guideline: "stationary",
-    cuttingSteps: [
-      { stepNumber: 1, zone: "nape", action: "Establish the guideline low in the nape.", elevationAngle: "0_deg_blunt", toolRequired: "shears" },
-      { stepNumber: 2, zone: "sides", action: "Blend the sides into the guideline.", elevationAngle: "45_deg_graduation", toolRequired: "shears" },
-      { stepNumber: 3, zone: "crown", action: "Connect the crown to the sides.", elevationAngle: "90_deg_uniform_layer", toolRequired: "shears" },
-    ],
+    structuralTechnique: "one_length",
+    cuttingTechnique: "blunt_line",
+    texturizingTechnique: "slice_and_slide",
+    sectioning: "4_quadrant_profile_radial",
+    elevation: "0_deg_blunt",
+    distribution: "natural_fall",
+    guideline: "visual_perimeter",
+    cuttingSteps: realisticCuttingSteps(),
     stylistExplanation: "x",
     clientExplanation: "x",
     professionalReason: "x",
@@ -36,22 +45,68 @@ function cuttingPlan(overrides: Partial<TechnicalCutPlan> = {}): TechnicalCutPla
   };
 }
 
+// Mirrors cutting-plan-engine.ts's own generateTechnicalCutPlan output
+// shape exactly (same 5 fixed "zone" label strings, same tool progression)
+// -- the real production shape, not a synthetic stand-in.
+function realisticCuttingSteps(includeTexturizing = true): CuttingStep[] {
+  const steps: CuttingStep[] = [
+    {
+      stepNumber: 1,
+      zone: "Mapping and sectioning",
+      action: "Partition using 4 quadrant profile radial with visual balance checkpoints.",
+      elevationAngle: "0_deg_blunt",
+      toolRequired: "tail-comb",
+    },
+    {
+      stepNumber: 2,
+      zone: "Baseline guideline",
+      action: "Set a visual perimeter guideline and establish the structural shape with one length.",
+      elevationAngle: "0_deg_blunt",
+      toolRequired: "straight-shear",
+    },
+    {
+      stepNumber: 3,
+      zone: "Bulk and shape control",
+      action: "Use blunt line for perimeter control and natural fall distribution for silhouette correction.",
+      elevationAngle: "0_deg_blunt",
+      toolRequired: "straight-shear",
+    },
+  ];
+  if (includeTexturizing) {
+    steps.push({
+      stepNumber: 4,
+      zone: "Texture refinement",
+      action: "Apply slice and slide only after the structural form is established.",
+      elevationAngle: "0_deg_blunt",
+      toolRequired: "texturizer-shear",
+    });
+  }
+  steps.push({
+    stepNumber: includeTexturizing ? 5 : 4,
+    zone: "Cross-check and finish",
+    action: "Finish with slice and slide to soften line weight, then cross-check symmetry at profile and frontal view.",
+    elevationAngle: "0_deg_blunt",
+    toolRequired: "finishing-comb",
+  });
+  return steps;
+}
+
 describe("deriveCuttingDemonstrationSteps", () => {
   it("derives one step per source cuttingStep, every one a structurally valid payload", () => {
     const steps = deriveCuttingDemonstrationSteps(cuttingPlan());
-    expect(steps).toHaveLength(3);
+    expect(steps).toHaveLength(5);
     for (const step of steps) {
       expect(isValidCuttingDemonstrationStepPayload(step.payload)).toBe(true);
     }
   });
 
-  // Required test 3: correct ordered steps.
+  // Required test 2: deterministic order.
   it("orders steps by the source's own stepNumber, then renumbers cleanly 1..N regardless of source gaps/order", () => {
     const plan = cuttingPlan({
       cuttingSteps: [
-        { stepNumber: 30, zone: "crown", action: "third", elevationAngle: "90_deg_uniform_layer", toolRequired: "shears" },
-        { stepNumber: 5, zone: "nape", action: "first", elevationAngle: "0_deg_blunt", toolRequired: "shears" },
-        { stepNumber: 17, zone: "sides", action: "second", elevationAngle: "45_deg_graduation", toolRequired: "shears" },
+        { stepNumber: 30, zone: "Cross-check and finish", action: "third", elevationAngle: "90_deg_uniform_layer", toolRequired: "shears" },
+        { stepNumber: 5, zone: "Mapping and sectioning", action: "first", elevationAngle: "0_deg_blunt", toolRequired: "shears" },
+        { stepNumber: 17, zone: "Baseline guideline", action: "second", elevationAngle: "45_deg_graduation", toolRequired: "shears" },
       ],
     });
     const steps = deriveCuttingDemonstrationSteps(plan);
@@ -64,74 +119,52 @@ describe("deriveCuttingDemonstrationSteps", () => {
     expect(steps).toEqual([]);
   });
 
-  // Required test 6: missing technical information is not hallucinated.
-  it("represents fields with no Stage 1 source data as honestly UNKNOWN, never fabricated", () => {
+  // Required tests 9-14 + 17: missing technical information is not
+  // hallucinated, across every field with no Stage 2.5.a source data.
+  it("represents fields with no source data as honestly UNKNOWN, never fabricated", () => {
     const [step] = deriveCuttingDemonstrationSteps(cuttingPlan());
     const alwaysUnknown = [
       step.payload.headBodyPositioning,
       step.payload.fingerPosition,
+      step.payload.fingerAngle,
       step.payload.cuttingAngle,
       step.payload.cuttingLine,
       step.payload.subsectioning,
+      step.payload.subsectionThickness,
+      step.payload.toolOrientation,
+      step.payload.progression,
       step.payload.zoneConnection,
       step.payload.crossCheck,
       step.payload.styling,
+      step.payload.stateBefore,
+      step.payload.stateAfter,
     ];
     for (const field of alwaysUnknown) {
       expect(field).toEqual({ value: null, provenance: "UNKNOWN" });
     }
   });
 
-  it("tags directly-copied source fields as OBSERVED, with the exact source values", () => {
-    const [step] = deriveCuttingDemonstrationSteps(cuttingPlan());
+  it("tags this step's own directly-copied source fields (elevation/tool) as OBSERVED, with the exact source values, on every step regardless of phase", () => {
+    const steps = deriveCuttingDemonstrationSteps(cuttingPlan());
+    for (const step of steps) {
+      expect(step.payload.elevation).toEqual({ value: "0_deg_blunt", provenance: "OBSERVED" });
+    }
+    expect(steps[0].payload.tool).toEqual({ value: "tail-comb", provenance: "OBSERVED" });
+    expect(steps[1].payload.tool).toEqual({ value: "straight-shear", provenance: "OBSERVED" });
+  });
+
+  // The zones-from-a-real-HeadZone-string mechanism, tested in isolation:
+  // real, correct, and defensive, even though Stage 2.5.a's own audit
+  // proved this codebase's one real producer (cutting-plan-engine.ts)
+  // never actually supplies a real HeadZone string here today (see the
+  // "phase label cannot become a zone" test below for that honest,
+  // production-shaped case).
+  it("tags zones OBSERVED when the source step's own zone string is a real, recognized HeadZone", () => {
+    const plan = cuttingPlan({
+      cuttingSteps: [{ stepNumber: 1, zone: "nape", action: "x", elevationAngle: "0_deg_blunt", toolRequired: "shears" }],
+    });
+    const [step] = deriveCuttingDemonstrationSteps(plan);
     expect(step.payload.zones).toEqual({ value: ["nape"], provenance: "OBSERVED" });
-    expect(step.payload.elevation).toEqual({ value: "0_deg_blunt", provenance: "OBSERVED" });
-    expect(step.payload.tool).toEqual({ value: "shears", provenance: "OBSERVED" });
-  });
-
-  it("tags plan-level-propagated fields as INFERRED, applied uniformly to every step", () => {
-    const plan = cuttingPlan();
-    const steps = deriveCuttingDemonstrationSteps(plan);
-    for (const step of steps) {
-      expect(step.payload.sectioning).toEqual({ value: plan.sectioning, provenance: "INFERRED" });
-      expect(step.payload.guideType).toEqual({ value: plan.guideline, provenance: "INFERRED" });
-      expect(step.payload.structuralTechnique).toEqual({ value: plan.structuralTechnique, provenance: "INFERRED" });
-      expect(step.payload.cuttingTechnique).toEqual({ value: plan.cuttingTechnique, provenance: "INFERRED" });
-    }
-  });
-
-  it("derives combingDirection and overdirection deterministically from distribution -- overdirected values", () => {
-    const [step] = deriveCuttingDemonstrationSteps(cuttingPlan({ distribution: "overdirected_forward" }));
-    expect(step.payload.combingDirection).toEqual({
-      value: "Comb the section overdirected toward the front of the head.",
-      provenance: "INFERRED",
-    });
-    expect(step.payload.overdirection).toEqual({ value: true, provenance: "INFERRED" });
-  });
-
-  it("derives combingDirection and overdirection deterministically from distribution -- non-overdirected values", () => {
-    const [step] = deriveCuttingDemonstrationSteps(cuttingPlan({ distribution: "natural_fall" }));
-    expect(step.payload.combingDirection).toEqual({
-      value: "Comb the section to fall naturally, with no directional pull.",
-      provenance: "INFERRED",
-    });
-    expect(step.payload.overdirection).toEqual({ value: false, provenance: "INFERRED" });
-  });
-
-  it("handles the optional texturizingTechnique correctly -- present becomes INFERRED, absent becomes UNKNOWN", () => {
-    const withTexturizing = deriveCuttingDemonstrationSteps(cuttingPlan({ texturizingTechnique: "razor_texturizing" }))[0];
-    expect(withTexturizing.payload.texturizingTechnique).toEqual({ value: "razor_texturizing", provenance: "INFERRED" });
-
-    const withoutTexturizing = deriveCuttingDemonstrationSteps(cuttingPlan({ texturizingTechnique: undefined }))[0];
-    expect(withoutTexturizing.payload.texturizingTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
-  });
-
-  it("copies the full confirmed warnings+contraindications onto every step's own constraints, verbatim", () => {
-    const plan = cuttingPlan({ warnings: ["w1"], contraindications: ["c1", "c2"] });
-    const steps = deriveCuttingDemonstrationSteps(plan);
-    for (const step of steps) {
-      expect(step.payload.constraints).toEqual(["w1", "c1", "c2"]);
-    }
   });
 
   it("falls back honestly to UNKNOWN zones for an out-of-vocabulary zone string, never smuggling an unvalidated value into a typed slot", () => {
@@ -145,10 +178,146 @@ describe("deriveCuttingDemonstrationSteps", () => {
     expect(isValidCuttingDemonstrationStepPayload(step.payload)).toBe(true);
   });
 
+  it("copies the full confirmed warnings+contraindications onto every step's own constraints, verbatim", () => {
+    const plan = cuttingPlan({ warnings: ["w1"], contraindications: ["c1", "c2"] });
+    const steps = deriveCuttingDemonstrationSteps(plan);
+    for (const step of steps) {
+      expect(step.payload.constraints).toEqual(["w1", "c1", "c2"]);
+    }
+  });
+
   it("keeps the human-readable explanation structurally separate from the structured payload -- never parsed, never validated as an enum", () => {
     const [step] = deriveCuttingDemonstrationSteps(cuttingPlan());
-    expect(step.explanation).toBe("Establish the guideline low in the nape.");
+    expect(step.explanation).toBe("Partition using 4 quadrant profile radial with visual balance checkpoints.");
     expect(step.payload).not.toHaveProperty("explanation");
+  });
+
+  // -------------------------------------------------------------------------
+  // Stage 2.5.a -- execution phase detection.
+  // -------------------------------------------------------------------------
+  describe("execution phase detection", () => {
+    // Required test 3: steps are assigned to valid execution phases.
+    it("3. resolves each of the 5 known engine phase labels to its own correct, distinct phase, as INFERRED", () => {
+      const steps = deriveCuttingDemonstrationSteps(cuttingPlan());
+      expect(steps.map((s) => s.payload.phase)).toEqual([
+        { value: "PREPARATION_AND_SECTIONING", provenance: "INFERRED" },
+        { value: "GUIDE_AND_STRUCTURE", provenance: "INFERRED" },
+        { value: "STRUCTURAL_CUTTING", provenance: "INFERRED" },
+        { value: "REFINEMENT_TEXTURIZING", provenance: "INFERRED" },
+        { value: "CROSS_CHECK_AND_FINISH", provenance: "INFERRED" },
+      ]);
+    });
+
+    // Required test 6: a phase label can never become an anatomical zone.
+    it("6. a real phase label ('Mapping and sectioning') is correctly resolved as a PHASE, and never becomes an anatomical zone -- zones stays honestly UNKNOWN for it", () => {
+      const [step] = deriveCuttingDemonstrationSteps(cuttingPlan());
+      expect(step.payload.phase).toEqual({ value: "PREPARATION_AND_SECTIONING", provenance: "INFERRED" });
+      expect(step.payload.zones).toEqual({ value: null, provenance: "UNKNOWN" });
+    });
+
+    it("resolves an unrecognized zone/phase-label string honestly to UNKNOWN phase, never a guess", () => {
+      const plan = cuttingPlan({
+        cuttingSteps: [{ stepNumber: 1, zone: "Some future phase nobody wrote a lookup entry for", action: "x", elevationAngle: "0_deg_blunt", toolRequired: "shears" }],
+      });
+      const [step] = deriveCuttingDemonstrationSteps(plan);
+      expect(step.payload.phase).toEqual({ value: null, provenance: "UNKNOWN" });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Stage 2.5.a -- the granularity fix: plan-level fields are propagated
+  // ONLY onto the step whose own phase is where that fact is genuinely
+  // true, never blindly onto every step.
+  // -------------------------------------------------------------------------
+  describe("plan-level field propagation is phase-scoped, not uniform", () => {
+    // Required test 4.
+    it("4. plan-level values are NOT blindly copied into every step -- each field appears only on its own applicable-phase step", () => {
+      const [sectioningStep, guideStep, structuralStep, refinementStep, crossCheckStep] = deriveCuttingDemonstrationSteps(cuttingPlan());
+
+      expect(sectioningStep.payload.sectioning).toEqual({ value: "4_quadrant_profile_radial", provenance: "INFERRED" });
+      expect(sectioningStep.payload.guideType).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(sectioningStep.payload.structuralTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
+
+      expect(guideStep.payload.guideType).toEqual({ value: "visual_perimeter", provenance: "INFERRED" });
+      expect(guideStep.payload.sectioning).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(guideStep.payload.structuralTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
+
+      expect(structuralStep.payload.structuralTechnique).toEqual({ value: "one_length", provenance: "INFERRED" });
+      expect(structuralStep.payload.cuttingTechnique).toEqual({ value: "blunt_line", provenance: "INFERRED" });
+      expect(structuralStep.payload.combingDirection.provenance).toBe("INFERRED");
+      expect(structuralStep.payload.overdirection.provenance).toBe("INFERRED");
+      expect(structuralStep.payload.texturizingTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(structuralStep.payload.sectioning).toEqual({ value: null, provenance: "UNKNOWN" });
+
+      expect(refinementStep.payload.texturizingTechnique).toEqual({ value: "slice_and_slide", provenance: "INFERRED" });
+
+      // Cross-check/finish is not any plan-level field's applicable phase.
+      expect(crossCheckStep.payload.structuralTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(crossCheckStep.payload.sectioning).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(crossCheckStep.payload.guideType).toEqual({ value: null, provenance: "UNKNOWN" });
+    });
+
+    // Required test 5.
+    it("5. a refinement step does not falsely inherit structural cutting geometry merely because the plan globally contains it", () => {
+      const steps = deriveCuttingDemonstrationSteps(cuttingPlan());
+      const refinementStep = steps.find((s) => s.payload.phase.value === "REFINEMENT_TEXTURIZING");
+      expect(refinementStep).toBeDefined();
+      expect(refinementStep!.payload.structuralTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(refinementStep!.payload.cuttingTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(refinementStep!.payload.combingDirection).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(refinementStep!.payload.overdirection).toEqual({ value: null, provenance: "UNKNOWN" });
+      // It DOES correctly carry its own genuinely-applicable field.
+      expect(refinementStep!.payload.texturizingTechnique.provenance).toBe("INFERRED");
+    });
+
+    it("when a step's own phase cannot be determined (UNKNOWN), every phase-scoped plan-level field is honestly UNKNOWN too -- never a fallback guess", () => {
+      const plan = cuttingPlan({
+        cuttingSteps: [{ stepNumber: 1, zone: "an unrecognized label", action: "x", elevationAngle: "0_deg_blunt", toolRequired: "shears" }],
+      });
+      const [step] = deriveCuttingDemonstrationSteps(plan);
+      expect(step.payload.phase).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(step.payload.sectioning).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(step.payload.guideType).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(step.payload.structuralTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(step.payload.cuttingTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(step.payload.texturizingTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(step.payload.combingDirection).toEqual({ value: null, provenance: "UNKNOWN" });
+      expect(step.payload.overdirection).toEqual({ value: null, provenance: "UNKNOWN" });
+      // elevation/tool are read from the step's OWN record, not phase-scoped.
+      expect(step.payload.elevation).toEqual({ value: "0_deg_blunt", provenance: "OBSERVED" });
+      expect(step.payload.tool).toEqual({ value: "shears", provenance: "OBSERVED" });
+    });
+
+    it("handles the optional texturizingTechnique correctly on its own applicable-phase step -- present becomes INFERRED, absent becomes UNKNOWN", () => {
+      const withTexturizing = deriveCuttingDemonstrationSteps(cuttingPlan({ texturizingTechnique: "razor_texturizing" }));
+      const refinementStep = withTexturizing.find((s) => s.payload.phase.value === "REFINEMENT_TEXTURIZING")!;
+      expect(refinementStep.payload.texturizingTechnique).toEqual({ value: "razor_texturizing", provenance: "INFERRED" });
+
+      const withoutTexturizing = deriveCuttingDemonstrationSteps(cuttingPlan({ texturizingTechnique: undefined, cuttingSteps: realisticCuttingSteps(false) }));
+      for (const step of withoutTexturizing) {
+        expect(step.payload.texturizingTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
+      }
+    });
+
+    it("derives combingDirection and overdirection deterministically from distribution, only on the STRUCTURAL_CUTTING-phase step -- overdirected values", () => {
+      const steps = deriveCuttingDemonstrationSteps(cuttingPlan({ distribution: "overdirected_forward" }));
+      const structuralStep = steps.find((s) => s.payload.phase.value === "STRUCTURAL_CUTTING")!;
+      expect(structuralStep.payload.combingDirection).toEqual({
+        value: "Comb the section overdirected toward the front of the head.",
+        provenance: "INFERRED",
+      });
+      expect(structuralStep.payload.overdirection).toEqual({ value: true, provenance: "INFERRED" });
+    });
+
+    it("derives combingDirection and overdirection deterministically from distribution, only on the STRUCTURAL_CUTTING-phase step -- non-overdirected values", () => {
+      const steps = deriveCuttingDemonstrationSteps(cuttingPlan({ distribution: "natural_fall" }));
+      const structuralStep = steps.find((s) => s.payload.phase.value === "STRUCTURAL_CUTTING")!;
+      expect(structuralStep.payload.combingDirection).toEqual({
+        value: "Comb the section to fall naturally, with no directional pull.",
+        provenance: "INFERRED",
+      });
+      expect(structuralStep.payload.overdirection).toEqual({ value: false, provenance: "INFERRED" });
+    });
   });
 });
 
@@ -159,20 +328,24 @@ describe("deriveCuttingDemonstrationSteps", () => {
 // these tests exercise ONLY the provenance-tagging half of the fix (the
 // VALUE-merging half is proven separately, at the real-DB level, in
 // technical-demonstration-repository.test.ts, since the merge itself
-// happens in the repository, not here).
+// happens in the repository, not here). Stage 2.5.a note: these fixtures
+// now use realistic phase-labeled cuttingSteps, so the field being
+// exercised is always read from ITS OWN applicable-phase step -- an edit
+// to a field never has a chance to prove anything on a step where that
+// field is honestly UNKNOWN regardless of edit status.
 describe("deriveCuttingDemonstrationSteps -- editedFields provenance", () => {
   // Required test 1: unedited derivation is unaffected -- the default
   // (omitted) editedFields argument keeps every existing call site and
   // every genuinely unedited proposal deriving exactly as before.
-  it("1. defaults to INFERRED for every plan-level field when no editedFields are supplied -- unchanged from before this fix", () => {
-    const [step] = deriveCuttingDemonstrationSteps(cuttingPlan());
-    expect(step.payload.sectioning.provenance).toBe("INFERRED");
-    expect(step.payload.guideType.provenance).toBe("INFERRED");
-    expect(step.payload.structuralTechnique.provenance).toBe("INFERRED");
-    expect(step.payload.cuttingTechnique.provenance).toBe("INFERRED");
-    expect(step.payload.texturizingTechnique.provenance).toBe("INFERRED");
-    expect(step.payload.combingDirection.provenance).toBe("INFERRED");
-    expect(step.payload.overdirection.provenance).toBe("INFERRED");
+  it("1. defaults to INFERRED for every plan-level field (on its own applicable-phase step) when no editedFields are supplied", () => {
+    const [sectioningStep, guideStep, structuralStep, refinementStep] = deriveCuttingDemonstrationSteps(cuttingPlan());
+    expect(sectioningStep.payload.sectioning.provenance).toBe("INFERRED");
+    expect(guideStep.payload.guideType.provenance).toBe("INFERRED");
+    expect(structuralStep.payload.structuralTechnique.provenance).toBe("INFERRED");
+    expect(structuralStep.payload.cuttingTechnique.provenance).toBe("INFERRED");
+    expect(structuralStep.payload.combingDirection.provenance).toBe("INFERRED");
+    expect(structuralStep.payload.overdirection.provenance).toBe("INFERRED");
+    expect(refinementStep.payload.texturizingTechnique.provenance).toBe("INFERRED");
   });
 
   it("an explicitly empty editedFields set behaves identically to the default", () => {
@@ -182,52 +355,61 @@ describe("deriveCuttingDemonstrationSteps -- editedFields provenance", () => {
   });
 
   // Required test 5: professional edit provenance is retained/distinguishable.
-  it("5. tags a specifically-edited field PROFESSIONAL_OVERRIDE, and every non-edited field stays INFERRED", () => {
+  it("5. tags a specifically-edited field PROFESSIONAL_OVERRIDE on its own applicable-phase step, and every non-edited field stays INFERRED", () => {
     const plan = cuttingPlan({ sectioning: "horseshoe_crown" }); // the caller already merged this value in
-    const [step] = deriveCuttingDemonstrationSteps(plan, new Set(["sectioning"]));
+    const [sectioningStep, guideStep, structuralStep] = deriveCuttingDemonstrationSteps(plan, new Set(["sectioning"]));
 
-    expect(step.payload.sectioning).toEqual({ value: "horseshoe_crown", provenance: "PROFESSIONAL_OVERRIDE" });
-    // Untouched fields are unaffected by an edit to a DIFFERENT field.
-    expect(step.payload.guideType.provenance).toBe("INFERRED");
-    expect(step.payload.structuralTechnique.provenance).toBe("INFERRED");
-    expect(step.payload.cuttingTechnique.provenance).toBe("INFERRED");
+    expect(sectioningStep.payload.sectioning).toEqual({ value: "horseshoe_crown", provenance: "PROFESSIONAL_OVERRIDE" });
+    // Untouched fields, on their own applicable-phase steps, are unaffected
+    // by an edit to a DIFFERENT field.
+    expect(guideStep.payload.guideType.provenance).toBe("INFERRED");
+    expect(structuralStep.payload.structuralTechnique.provenance).toBe("INFERRED");
+    expect(structuralStep.payload.cuttingTechnique.provenance).toBe("INFERRED");
   });
 
   // Required test 4: multiple supported edits.
-  it("4. tags MULTIPLE edited fields PROFESSIONAL_OVERRIDE simultaneously, independently of each other", () => {
+  it("4. tags MULTIPLE edited fields PROFESSIONAL_OVERRIDE simultaneously, independently of each other, each on its own applicable-phase step", () => {
     const plan = cuttingPlan({ structuralTechnique: "one_length", cuttingTechnique: "blunt_line", guideline: "multiple_reference" });
-    const [step] = deriveCuttingDemonstrationSteps(plan, new Set(["structuralTechnique", "cuttingTechnique", "guideline"]));
+    const [, guideStep, structuralStep] = deriveCuttingDemonstrationSteps(plan, new Set(["structuralTechnique", "cuttingTechnique", "guideline"]));
 
-    expect(step.payload.structuralTechnique).toEqual({ value: "one_length", provenance: "PROFESSIONAL_OVERRIDE" });
-    expect(step.payload.cuttingTechnique).toEqual({ value: "blunt_line", provenance: "PROFESSIONAL_OVERRIDE" });
-    expect(step.payload.guideType).toEqual({ value: "multiple_reference", provenance: "PROFESSIONAL_OVERRIDE" });
-    // sectioning was NOT edited -- stays INFERRED.
-    expect(step.payload.sectioning.provenance).toBe("INFERRED");
+    expect(structuralStep.payload.structuralTechnique).toEqual({ value: "one_length", provenance: "PROFESSIONAL_OVERRIDE" });
+    expect(structuralStep.payload.cuttingTechnique).toEqual({ value: "blunt_line", provenance: "PROFESSIONAL_OVERRIDE" });
+    expect(guideStep.payload.guideType).toEqual({ value: "multiple_reference", provenance: "PROFESSIONAL_OVERRIDE" });
+    // sectioning was NOT edited -- stays INFERRED on its own applicable step.
+    const [sectioningStep] = deriveCuttingDemonstrationSteps(plan, new Set(["structuralTechnique", "cuttingTechnique", "guideline"]));
+    expect(sectioningStep.payload.sectioning.provenance).toBe("INFERRED");
   });
 
-  it("an edit to `distribution` marks BOTH derived fields (combingDirection and overdirection) PROFESSIONAL_OVERRIDE -- both are functions of the same one input", () => {
+  it("an edit to `distribution` marks BOTH derived fields (combingDirection and overdirection) PROFESSIONAL_OVERRIDE on the STRUCTURAL_CUTTING-phase step -- both are functions of the same one input", () => {
     const plan = cuttingPlan({ distribution: "natural_fall" });
-    const [step] = deriveCuttingDemonstrationSteps(plan, new Set(["distribution"]));
+    const steps = deriveCuttingDemonstrationSteps(plan, new Set(["distribution"]));
+    const structuralStep = steps.find((s) => s.payload.phase.value === "STRUCTURAL_CUTTING")!;
 
-    expect(step.payload.combingDirection).toEqual({
+    expect(structuralStep.payload.combingDirection).toEqual({
       value: "Comb the section to fall naturally, with no directional pull.",
       provenance: "PROFESSIONAL_OVERRIDE",
     });
-    expect(step.payload.overdirection).toEqual({ value: false, provenance: "PROFESSIONAL_OVERRIDE" });
+    expect(structuralStep.payload.overdirection).toEqual({ value: false, provenance: "PROFESSIONAL_OVERRIDE" });
   });
 
-  it("an edited texturizingTechnique is PROFESSIONAL_OVERRIDE; an edit to an UNRELATED field never turns an absent texturizingTechnique into a fabricated value", () => {
-    const withTexturizing = deriveCuttingDemonstrationSteps(cuttingPlan({ texturizingTechnique: "channel_cutting" }), new Set(["texturizingTechnique"]))[0];
-    expect(withTexturizing.payload.texturizingTechnique).toEqual({ value: "channel_cutting", provenance: "PROFESSIONAL_OVERRIDE" });
+  it("an edited texturizingTechnique is PROFESSIONAL_OVERRIDE on the REFINEMENT_TEXTURIZING-phase step; an edit to an UNRELATED field never turns an absent texturizingTechnique into a fabricated value", () => {
+    const withTexturizing = deriveCuttingDemonstrationSteps(cuttingPlan({ texturizingTechnique: "channel_cutting" }), new Set(["texturizingTechnique"]));
+    const refinementStep = withTexturizing.find((s) => s.payload.phase.value === "REFINEMENT_TEXTURIZING")!;
+    expect(refinementStep.payload.texturizingTechnique).toEqual({ value: "channel_cutting", provenance: "PROFESSIONAL_OVERRIDE" });
 
-    const stillAbsent = deriveCuttingDemonstrationSteps(cuttingPlan({ texturizingTechnique: undefined }), new Set(["sectioning"]))[0];
-    expect(stillAbsent.payload.texturizingTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
+    const stillAbsentSteps = deriveCuttingDemonstrationSteps(
+      cuttingPlan({ texturizingTechnique: undefined, cuttingSteps: realisticCuttingSteps(false) }),
+      new Set(["sectioning"]),
+    );
+    for (const step of stillAbsentSteps) {
+      expect(step.payload.texturizingTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
+    }
   });
 
   it("editedFields naming an unrelated/unsupported field name never affects any real field -- fails closed, never crashes", () => {
-    const [step] = deriveCuttingDemonstrationSteps(cuttingPlan(), new Set(["not_a_real_field", "cuttingSteps"]));
-    expect(step.payload.sectioning.provenance).toBe("INFERRED");
-    expect(step.payload.structuralTechnique.provenance).toBe("INFERRED");
+    const [sectioningStep, , structuralStep] = deriveCuttingDemonstrationSteps(cuttingPlan(), new Set(["not_a_real_field", "cuttingSteps"]));
+    expect(sectioningStep.payload.sectioning.provenance).toBe("INFERRED");
+    expect(structuralStep.payload.structuralTechnique.provenance).toBe("INFERRED");
   });
 
   it("every PROFESSIONAL_OVERRIDE-tagged step payload is still structurally valid", () => {

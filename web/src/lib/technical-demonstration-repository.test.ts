@@ -173,11 +173,12 @@ suite("technical-demonstration-repository (real Postgres)", () => {
 
       const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
 
-      for (const step of outcome.steps) {
-        const sectioning = step.payload.sectioning as { value: unknown; provenance: unknown };
-        expect(sectioning.value).toBe("horseshoe_crown"); // the professional's real edited value
-        expect(sectioning.value).not.toBe("diagonal_back"); // the stale frozen baseline must never appear
-      }
+      // Stage 2.5.a: `sectioning` is phase-scoped -- only the
+      // PREPARATION_AND_SECTIONING-phase step ("Mapping and sectioning",
+      // step 1 of this fixture) genuinely carries it.
+      const sectioning = outcome.steps[0].payload.sectioning as { value: unknown; provenance: unknown };
+      expect(sectioning.value).toBe("horseshoe_crown"); // the professional's real edited value
+      expect(sectioning.value).not.toBe("diagonal_back"); // the stale frozen baseline must never appear
     });
 
     // Required test 5.
@@ -193,15 +194,16 @@ suite("technical-demonstration-repository (real Postgres)", () => {
 
       const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
 
-      for (const step of outcome.steps) {
-        const sectioning = step.payload.sectioning as { value: unknown; provenance: unknown };
-        const structuralTechnique = step.payload.structuralTechnique as { value: unknown; provenance: unknown };
-        expect(sectioning.provenance).toBe("PROFESSIONAL_OVERRIDE");
-        // A field that was NOT edited stays INFERRED -- the override tag
-        // is specific to the actually-edited field, never smeared across
-        // every plan-level field.
-        expect(structuralTechnique.provenance).toBe("INFERRED");
-      }
+      // Stage 2.5.a: each field is only genuinely present on its own
+      // applicable-phase step (step 1 = PREPARATION_AND_SECTIONING =
+      // sectioning; step 3 = STRUCTURAL_CUTTING = structuralTechnique).
+      const sectioning = outcome.steps[0].payload.sectioning as { value: unknown; provenance: unknown };
+      const structuralTechnique = outcome.steps[2].payload.structuralTechnique as { value: unknown; provenance: unknown };
+      expect(sectioning.provenance).toBe("PROFESSIONAL_OVERRIDE");
+      // A field that was NOT edited stays INFERRED -- the override tag
+      // is specific to the actually-edited field, never smeared across
+      // every plan-level field.
+      expect(structuralTechnique.provenance).toBe("INFERRED");
     });
 
     // Required test 4 -- multiple supported edits, same semantics as
@@ -225,15 +227,15 @@ suite("technical-demonstration-repository (real Postgres)", () => {
 
       const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
 
-      for (const step of outcome.steps) {
-        const structuralTechnique = step.payload.structuralTechnique as { value: unknown; provenance: unknown };
-        const combingDirection = step.payload.combingDirection as { value: unknown; provenance: unknown };
-        expect(structuralTechnique).toEqual({ value: "internal_layering", provenance: "PROFESSIONAL_OVERRIDE" }); // last edit wins
-        expect(combingDirection).toEqual({
-          value: "Comb the section to fall naturally, with no directional pull.",
-          provenance: "PROFESSIONAL_OVERRIDE",
-        });
-      }
+      // Stage 2.5.a: both fields are STRUCTURAL_CUTTING-phase-scoped --
+      // step 3 ("Bulk and shape control") of this fixture.
+      const structuralTechnique = outcome.steps[2].payload.structuralTechnique as { value: unknown; provenance: unknown };
+      const combingDirection = outcome.steps[2].payload.combingDirection as { value: unknown; provenance: unknown };
+      expect(structuralTechnique).toEqual({ value: "internal_layering", provenance: "PROFESSIONAL_OVERRIDE" }); // last edit wins
+      expect(combingDirection).toEqual({
+        value: "Comb the section to fall naturally, with no directional pull.",
+        provenance: "PROFESSIONAL_OVERRIDE",
+      });
     });
 
     // Required test 1 (repository level): a genuinely UNEDITED confirmed
@@ -245,10 +247,10 @@ suite("technical-demonstration-repository (real Postgres)", () => {
 
       const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
 
-      for (const step of outcome.steps) {
-        const sectioning = step.payload.sectioning as { value: unknown; provenance: unknown };
-        expect(sectioning).toEqual({ value: "diagonal_back", provenance: "INFERRED" });
-      }
+      // Stage 2.5.a: `sectioning` only genuinely appears on the
+      // PREPARATION_AND_SECTIONING-phase step (step 1 of this fixture).
+      const sectioning = outcome.steps[0].payload.sectioning as { value: unknown; provenance: unknown };
+      expect(sectioning).toEqual({ value: "diagonal_back", provenance: "INFERRED" });
     });
 
     // Required test 6: idempotency remains intact through this fix --
@@ -273,6 +275,172 @@ suite("technical-demonstration-repository (real Postgres)", () => {
       expect(second.plan.id).toBe(first.plan.id);
       const allPlans = await prisma.technicalDemonstrationPlan.findMany({ where: { ownerUserId, clientId, analysisProposalId: proposal.id } });
       expect(allPlans).toHaveLength(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Stage 2.5.a -- Cutting V1 professional execution step foundation.
+  // ---------------------------------------------------------------------
+  describe("Stage 2.5.a -- cutting execution foundation", () => {
+    // Required test 3 (real-DB level): steps are assigned to valid
+    // execution phases, and that assignment survives a real write.
+    it("3. persisted steps carry a valid execution phase, matching the source's own known phase labels", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      const phases = outcome.steps.map((s) => (s.payload.phase as { value: unknown; provenance: unknown }).value);
+      expect(phases).toEqual(["PREPARATION_AND_SECTIONING", "GUIDE_AND_STRUCTURE", "STRUCTURAL_CUTTING"]);
+    });
+
+    // Required test 15: provenance survives serialization/persistence.
+    // Reads back from a FRESH query (not the create() return value) --
+    // proves the round-trip through real Postgres JSONB, not just an
+    // in-memory object.
+    it("15. provenance survives real Postgres JSONB round-trip, for both phase-scoped and always-UNKNOWN fields", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const created = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      const reread = await listTechnicalDemonstrationStepsForPlan(ownerUserId, clientId, created.plan.id);
+      expect(reread).toHaveLength(created.steps.length);
+      for (let i = 0; i < reread.length; i += 1) {
+        expect(reread[i].payload).toEqual(created.steps[i].payload);
+      }
+      // Spot-check a phase-scoped field and an always-UNKNOWN field
+      // specifically, on the freshly re-read rows.
+      const sectioning = reread[0].payload.sectioning as { value: unknown; provenance: unknown };
+      expect(sectioning).toEqual({ value: "diagonal_back", provenance: "INFERRED" });
+      const styling = reread[0].payload.styling as { value: unknown; provenance: unknown };
+      expect(styling).toEqual({ value: null, provenance: "UNKNOWN" });
+    });
+
+    // Required test 23: existing production-style historical rows (from
+    // BEFORE this stage -- e.g. the real DRAFT created during manual
+    // production testing, missing every Stage 2.5.a field entirely, on
+    // the original "1.0.0-td1" schemaVersion) remain readable and
+    // uncorrupted. The repository's own read path
+    // (toTechnicalDemonstrationStepRecord) never re-validates a step's
+    // payload against the current cutting-specific shape -- proven here
+    // with a raw, deliberately OLD-shaped row inserted directly.
+    it("23. a pre-Stage-2.5.a historical step row (old schema, missing every new field) remains readable, uncorrupted, and unmodified", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+
+      const oldPlan = await prisma.technicalDemonstrationPlan.create({
+        data: {
+          id: randomUUID(),
+          ownerUserId,
+          clientId,
+          analysisProposalId: proposal.id,
+          analysisProposalConfirmedAt: new Date(proposal.confirmedAt as string),
+          vertical: "cutting",
+          status: "DRAFT",
+          planVersion: 1,
+          schemaVersion: "1.0.0-td1", // the real, original Stage 1 schema version
+          generatorVersion: "1.0.0-td1", // the real, original Stage 1 generator version
+          requestFingerprint: randomUUID(),
+        },
+      });
+      const oldShapedPayload = {
+        zones: { value: null, provenance: "UNKNOWN" },
+        elevation: { value: "0_deg_blunt", provenance: "OBSERVED" },
+        tool: { value: "shears", provenance: "OBSERVED" },
+        // Deliberately NO `phase`, `fingerAngle`, `subsectionThickness`,
+        // `toolOrientation`, `progression`, `stateBefore`, `stateAfter` --
+        // this is the exact real-production pre-2.5.a shape.
+        sectioning: { value: "diagonal_back", provenance: "INFERRED" },
+        guideType: { value: "stationary", provenance: "INFERRED" },
+        structuralTechnique: { value: "graduation", provenance: "INFERRED" },
+        cuttingTechnique: { value: "slice_cutting", provenance: "INFERRED" },
+        texturizingTechnique: { value: "point_cutting", provenance: "INFERRED" },
+        combingDirection: { value: "Comb the section overdirected toward the back of the head.", provenance: "INFERRED" },
+        overdirection: { value: true, provenance: "INFERRED" },
+        headBodyPositioning: { value: null, provenance: "UNKNOWN" },
+        fingerPosition: { value: null, provenance: "UNKNOWN" },
+        cuttingAngle: { value: null, provenance: "UNKNOWN" },
+        cuttingLine: { value: null, provenance: "UNKNOWN" },
+        subsectioning: { value: null, provenance: "UNKNOWN" },
+        zoneConnection: { value: null, provenance: "UNKNOWN" },
+        crossCheck: { value: null, provenance: "UNKNOWN" },
+        styling: { value: null, provenance: "UNKNOWN" },
+        constraints: [],
+      };
+      await prisma.technicalDemonstrationStep.create({
+        data: {
+          id: randomUUID(),
+          ownerUserId,
+          clientId,
+          planId: oldPlan.id,
+          vertical: "cutting",
+          stepNumber: 1,
+          stepSchemaVersion: "1.0.0-td1",
+          payload: oldShapedPayload,
+          explanation: "A real, pre-2.5.a production step.",
+        },
+      });
+
+      const rereadSteps = await listTechnicalDemonstrationStepsForPlan(ownerUserId, clientId, oldPlan.id);
+      expect(rereadSteps).toHaveLength(1);
+      expect(rereadSteps[0].stepSchemaVersion).toBe("1.0.0-td1");
+      // The exact old payload, byte-for-byte -- never migrated, never
+      // silently backfilled, never rejected.
+      expect(rereadSteps[0].payload).toEqual(oldShapedPayload);
+
+      const rereadPlan = await findTechnicalDemonstrationPlanForOwner(ownerUserId, oldPlan.id);
+      expect(rereadPlan?.generatorVersion).toBe("1.0.0-td1");
+      expect(rereadPlan?.status).toBe("DRAFT");
+    });
+
+    // Backward compatibility: the generatorVersion bump this stage
+    // introduces must never collide with, or mutate, an existing
+    // production DRAFT created under the OLD generator version -- a new
+    // derivation for the SAME confirmed proposal produces a genuinely
+    // separate, new plan (never touching the old one), exactly the same
+    // guarantee that already protects "proposal version N vs N+1" (test
+    // 4/25), applied here to a "same proposal, old vs new generator
+    // version" scenario.
+    it("re-deriving after the Stage 2.5.a generatorVersion bump creates a NEW, separate plan -- the old-generatorVersion DRAFT is never mutated or collided with", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+
+      const oldPlan = await prisma.technicalDemonstrationPlan.create({
+        data: {
+          id: randomUUID(),
+          ownerUserId,
+          clientId,
+          analysisProposalId: proposal.id,
+          analysisProposalConfirmedAt: new Date(proposal.confirmedAt as string),
+          vertical: "cutting",
+          status: "DRAFT",
+          planVersion: 1,
+          schemaVersion: "1.0.0-td1",
+          generatorVersion: "1.0.0-td1", // simulates the real production DRAFT from manual testing
+          requestFingerprint: randomUUID(), // a fingerprint that could only ever have been computed under the OLD generatorVersion
+        },
+      });
+
+      // The real, current code path -- uses the NEW generatorVersion
+      // internally (TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION).
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      expect(outcome.created).toBe(true); // a genuinely NEW plan, not a collision
+      expect(outcome.plan.id).not.toBe(oldPlan.id);
+      expect(outcome.plan.planVersion).toBe(2); // the old plan already occupies planVersion 1
+      expect(outcome.plan.generatorVersion).not.toBe("1.0.0-td1");
+
+      // The old plan is completely untouched.
+      const stillOld = await findTechnicalDemonstrationPlanForOwner(ownerUserId, oldPlan.id);
+      expect(stillOld?.status).toBe("DRAFT");
+      expect(stillOld?.generatorVersion).toBe("1.0.0-td1");
+      expect(stillOld?.planVersion).toBe(1);
+
+      const allPlans = await prisma.technicalDemonstrationPlan.findMany({ where: { ownerUserId, clientId, analysisProposalId: proposal.id } });
+      expect(allPlans).toHaveLength(2);
     });
   });
 
@@ -419,6 +587,14 @@ async function confirmedProposal(ownerUserId: string, clientId: string, analysis
   return confirmed;
 }
 
+// Stage 2.5.a note: `cuttingSteps` below uses the EXACT step "zone" label
+// strings cutting-plan-engine.ts's own generateTechnicalCutPlan really
+// emits ("Mapping and sectioning", "Baseline guideline", "Bulk and shape
+// control") -- real production shape, not an arbitrary HeadZone-named
+// stand-in, so this fixture correctly exercises the phase-scoped
+// propagation fix (see technical-demonstration-derivation.ts's own header
+// comment) rather than accidentally landing every step in the honest
+// "phase UNKNOWN" fallback.
 function cuttingPayload(): TechnicalCutPlan {
   return {
     structuralTechnique: "graduation",
@@ -429,9 +605,9 @@ function cuttingPayload(): TechnicalCutPlan {
     distribution: "overdirected_back",
     guideline: "stationary",
     cuttingSteps: [
-      { stepNumber: 1, zone: "nape", action: "Establish the guideline.", elevationAngle: "0_deg_blunt", toolRequired: "shears" },
-      { stepNumber: 2, zone: "sides", action: "Blend the sides.", elevationAngle: "45_deg_graduation", toolRequired: "shears" },
-      { stepNumber: 3, zone: "crown", action: "Connect the crown.", elevationAngle: "90_deg_uniform_layer", toolRequired: "shears" },
+      { stepNumber: 1, zone: "Mapping and sectioning", action: "Establish the guideline.", elevationAngle: "0_deg_blunt", toolRequired: "shears" },
+      { stepNumber: 2, zone: "Baseline guideline", action: "Blend the sides.", elevationAngle: "45_deg_graduation", toolRequired: "shears" },
+      { stepNumber: 3, zone: "Bulk and shape control", action: "Connect the crown.", elevationAngle: "90_deg_uniform_layer", toolRequired: "shears" },
     ],
     stylistExplanation: "Explain the sectioning.",
     clientExplanation: "Explain the shape.",

@@ -1,5 +1,5 @@
 import type { TechnicalCutPlan } from "@/lib/contracts";
-import type { CuttingDemonstrationStepPayload } from "@/lib/technical-demonstration-cutting-contracts";
+import { type CuttingDemonstrationStepPayload, type CuttingExecutionPhase } from "@/lib/technical-demonstration-cutting-contracts";
 import type { TechnicalDemonstrationProvenanceValue } from "@/lib/technical-demonstration-contracts";
 import { isHeadZone } from "@/lib/technical-visual-map-validators";
 
@@ -30,8 +30,95 @@ import { isHeadZone } from "@/lib/technical-visual-map-validators";
 // actually itemize as a step. This is the honest-over-complete choice the
 // Decision Lock asks for: representing "no step for this" as genuinely no
 // step, not as a fabricated one.
+//
+// STAGE 2.5.a GRANULARITY FIX (Stage 2.5 audit, root-cause section): real
+// production testing showed every step reporting the SAME plan-level
+// values (One Length / 0deg / Slice And Slide / ...) because the fields
+// below were previously copied UNCONDITIONALLY onto every derived step.
+// Proven cause: `structuralTechnique`, `cuttingTechnique`,
+// `texturizingTechnique`, `sectioning`, `guideType`, `combingDirection`,
+// and `overdirection` are all read from `plan.*` -- the ONE shared,
+// whole-haircut object -- never from `sourceStep.*`. A plan being globally
+// "One Length" does NOT mean every individual step's own action IS a
+// One Length cutting action (the Stage 2.5.a task's own example). Fixed
+// by scoping each of these seven fields to the specific execution PHASE
+// (see CuttingExecutionPhase, technical-demonstration-cutting-contracts.ts)
+// where that fact is genuinely true -- e.g. `texturizingTechnique` only
+// ever appears on a REFINEMENT_TEXTURIZING-phase step, never smeared onto
+// the STRUCTURAL_CUTTING-phase step merely because the plan happens to use
+// texturizing somewhere. `elevation`/`tool`/`zones` are deliberately NOT
+// touched by this fix -- they are read from `sourceStep.*` (this step's
+// OWN record), not `plan.*`, so they are already correctly step-scoped by
+// construction (see CuttingDemonstrationStepPayload's own field-by-field
+// doc comment for the full classification).
+//
+// STAGE 2.5.a ZONE/PHASE FIX (Stage 2.5 audit, "zone bug" section): the
+// cutting engine (cutting-plan-engine.ts) writes a workflow PHASE label
+// (e.g. "Mapping and sectioning") into `CuttingStep.zone` -- a field this
+// derivation must never reinterpret as an anatomical HeadZone (the
+// pre-existing `isHeadZone` guard below already, correctly, never does
+// this -- it simply never matches a phase-label string, which is exactly
+// why `zones` reports UNKNOWN for every real production step today, and
+// correctly continues to). What was actually missing is a genuinely
+// SEPARATE concept for "which phase is this" -- `phase` below, derived
+// from the SAME source string via its own dedicated, closed lookup
+// (PHASE_LABEL_LOOKUP), completely independent of the zones/isHeadZone
+// check. An unrecognized label resolves `phase` honestly to UNKNOWN, never
+// a guess -- and an UNKNOWN phase correctly cascades to UNKNOWN for every
+// phase-scoped field above, since we cannot honestly claim a plan-level
+// fact applies to a step whose own execution phase we don't even know.
 
-export const TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION = "1.0.0-td1";
+export const TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION = "1.1.0-td25a";
+
+// The cutting engine's own fixed, closed set of step "zone" labels
+// (cutting-plan-engine.ts's own generateTechnicalCutPlan -- the sole
+// producer of CuttingStep.zone in this codebase) -- a deterministic,
+// exhaustive lookup, never a heuristic/substring match. Any string not in
+// this table (including every synthetic test fixture that uses a real
+// HeadZone name instead of a phase label, and any future engine change)
+// honestly resolves to no phase at all, never a guess.
+const PHASE_LABEL_LOOKUP: Readonly<Record<string, CuttingExecutionPhase>> = {
+  "Mapping and sectioning": "PREPARATION_AND_SECTIONING",
+  "Baseline guideline": "GUIDE_AND_STRUCTURE",
+  "Bulk and shape control": "STRUCTURAL_CUTTING",
+  "Texture refinement": "REFINEMENT_TEXTURIZING",
+  "Cross-check and finish": "CROSS_CHECK_AND_FINISH",
+};
+
+function resolvePhase(sourceZoneLabel: string): TechnicalDemonstrationProvenanceValue<CuttingExecutionPhase> {
+  const phase = PHASE_LABEL_LOOKUP[sourceZoneLabel];
+  return phase ? { value: phase, provenance: "INFERRED" } : { value: null, provenance: "UNKNOWN" };
+}
+
+// Which execution phase(s) a given plan-level field is genuinely valid on.
+// The single source of truth for the granularity fix above -- every
+// plan-level field's own derivation below looks itself up here rather than
+// hand-repeating an inline phase check, so the applicability rule for a
+// given field is stated exactly once.
+const FIELD_APPLICABLE_PHASES = {
+  sectioning: ["PREPARATION_AND_SECTIONING"],
+  guideType: ["GUIDE_AND_STRUCTURE"],
+  structuralTechnique: ["STRUCTURAL_CUTTING"],
+  cuttingTechnique: ["STRUCTURAL_CUTTING"],
+  texturizingTechnique: ["REFINEMENT_TEXTURIZING"],
+  combingDirection: ["STRUCTURAL_CUTTING"],
+  overdirection: ["STRUCTURAL_CUTTING"],
+} as const satisfies Record<string, readonly CuttingExecutionPhase[]>;
+
+// Computes a phase-scoped field: UNKNOWN when the step's own resolved
+// phase is null (unrecognized source label) or not in `allowedPhases`;
+// otherwise defers to `compute` for the real value/provenance. `compute`
+// is a thunk (not a pre-computed value) so an inapplicable field never
+// even evaluates its own value expression -- there is nothing to
+// accidentally leak.
+function planScopedField<T>(
+  phase: CuttingExecutionPhase | null,
+  allowedPhases: readonly CuttingExecutionPhase[],
+  compute: () => TechnicalDemonstrationProvenanceValue<T>,
+): TechnicalDemonstrationProvenanceValue<T> {
+  if (phase === null || !(allowedPhases as readonly string[]).includes(phase)) return unknownValue();
+  return compute();
+}
 
 export interface DerivedCuttingDemonstrationStep {
   stepNumber: number;
@@ -94,32 +181,56 @@ export function deriveCuttingDemonstrationSteps(plan: TechnicalCutPlan, editedFi
 
   return sourceSteps.map((sourceStep, index) => {
     const zones = isHeadZone(sourceStep.zone) ? [sourceStep.zone] : [];
+    const phase = resolvePhase(sourceStep.zone);
+    const phaseValue = phase.value;
+
     const payload: CuttingDemonstrationStepPayload = {
       zones: zones.length > 0 ? observed(zones) : unknownValue(),
       elevation: observed(sourceStep.elevationAngle),
       tool: observed(sourceStep.toolRequired),
+      phase,
 
-      sectioning: inferredOrOverride(plan.sectioning, editedFields.has("sectioning")),
-      guideType: inferredOrOverride(plan.guideline, editedFields.has("guideline")),
-      structuralTechnique: inferredOrOverride(plan.structuralTechnique, editedFields.has("structuralTechnique")),
-      cuttingTechnique: inferredOrOverride(plan.cuttingTechnique, editedFields.has("cuttingTechnique")),
-      texturizingTechnique: plan.texturizingTechnique
-        ? inferredOrOverride(plan.texturizingTechnique, editedFields.has("texturizingTechnique"))
-        : unknownValue(),
+      sectioning: planScopedField(phaseValue, FIELD_APPLICABLE_PHASES.sectioning, () =>
+        inferredOrOverride(plan.sectioning, editedFields.has("sectioning")),
+      ),
+      guideType: planScopedField(phaseValue, FIELD_APPLICABLE_PHASES.guideType, () =>
+        inferredOrOverride(plan.guideline, editedFields.has("guideline")),
+      ),
+      structuralTechnique: planScopedField(phaseValue, FIELD_APPLICABLE_PHASES.structuralTechnique, () =>
+        inferredOrOverride(plan.structuralTechnique, editedFields.has("structuralTechnique")),
+      ),
+      cuttingTechnique: planScopedField(phaseValue, FIELD_APPLICABLE_PHASES.cuttingTechnique, () =>
+        inferredOrOverride(plan.cuttingTechnique, editedFields.has("cuttingTechnique")),
+      ),
+      texturizingTechnique: planScopedField(phaseValue, FIELD_APPLICABLE_PHASES.texturizingTechnique, () =>
+        plan.texturizingTechnique
+          ? inferredOrOverride(plan.texturizingTechnique, editedFields.has("texturizingTechnique"))
+          : unknownValue(),
+      ),
       // Both derived FROM `distribution` -- both carry PROFESSIONAL_OVERRIDE
       // together whenever `distribution` itself was the edited field, since
       // both values are deterministic functions of that one same input.
-      combingDirection: inferredOrOverride(COMBING_DIRECTION_BY_DISTRIBUTION[plan.distribution], editedFields.has("distribution")),
-      overdirection: inferredOrOverride(OVERDIRECTED_DISTRIBUTIONS.has(plan.distribution), editedFields.has("distribution")),
+      combingDirection: planScopedField(phaseValue, FIELD_APPLICABLE_PHASES.combingDirection, () =>
+        inferredOrOverride(COMBING_DIRECTION_BY_DISTRIBUTION[plan.distribution], editedFields.has("distribution")),
+      ),
+      overdirection: planScopedField(phaseValue, FIELD_APPLICABLE_PHASES.overdirection, () =>
+        inferredOrOverride(OVERDIRECTED_DISTRIBUTIONS.has(plan.distribution), editedFields.has("distribution")),
+      ),
 
       headBodyPositioning: unknownValue(),
       fingerPosition: unknownValue(),
+      fingerAngle: unknownValue(),
       cuttingAngle: unknownValue(),
       cuttingLine: unknownValue(),
       subsectioning: unknownValue(),
+      subsectionThickness: unknownValue(),
+      toolOrientation: unknownValue(),
+      progression: unknownValue(),
       zoneConnection: unknownValue(),
       crossCheck: unknownValue(),
       styling: unknownValue(),
+      stateBefore: unknownValue(),
+      stateAfter: unknownValue(),
 
       constraints,
     };
@@ -129,7 +240,10 @@ export function deriveCuttingDemonstrationSteps(plan: TechnicalCutPlan, editedFi
       payload,
       // Human-readable explanation, kept structurally separate from the
       // payload above -- the source step's own free-text `action`,
-      // verbatim, never parsed as a structured value.
+      // verbatim, never parsed as a structured value. This is the ACTION
+      // half of Stage 2.5.a's STATE BEFORE -> ACTION -> STATE AFTER triad
+      // (see CuttingDemonstrationStepPayload.stateBefore/stateAfter's own
+      // doc comment) -- already present since Stage 1, unchanged here.
       explanation: sourceStep.action,
     };
   });
