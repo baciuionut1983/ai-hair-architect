@@ -329,6 +329,29 @@ export async function findTechnicalDemonstrationPlanForOwner(
   });
 }
 
+// Stage 2 -- full version history for this exact owned (client, proposal,
+// vertical) scope, newest planVersion first. Mirrors listMapsForProposal
+// (technical-visual-map-repository.ts) exactly. Bare metadata only (no
+// steps) -- the same "history rows don't need full detail" precedent
+// listMapsForProposal's own list response already establishes; a caller
+// that needs one specific historical plan's steps uses
+// findTechnicalDemonstrationPlanForOwner + listTechnicalDemonstrationStepsForPlan
+// for that one plan.
+export async function listTechnicalDemonstrationPlansForProposal(
+  ownerUserId: string,
+  clientId: string,
+  analysisProposalId: string,
+  vertical: string,
+): Promise<TechnicalDemonstrationPlanRecord[]> {
+  return runTechnicalDemonstrationQuery(async () => {
+    const rows = await prisma.technicalDemonstrationPlan.findMany({
+      where: { ownerUserId, clientId, analysisProposalId, vertical },
+      orderBy: [{ planVersion: "desc" }, { id: "desc" }],
+    });
+    return rows.map(toTechnicalDemonstrationPlanRecord);
+  });
+}
+
 export async function listTechnicalDemonstrationStepsForPlan(
   ownerUserId: string,
   clientId: string,

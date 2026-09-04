@@ -10,6 +10,7 @@ import { ProposedLookDraftEditor } from "./proposed-look-draft-editor";
 import { ProposalHistoryList } from "./proposed-look-history";
 import { findExistingDraft, isConfirmedProposalPotentiallyStale } from "./proposed-look-logic";
 import { shouldShowConfirmConflictMessage } from "./proposed-look-section-logic";
+import { TechnicalDemonstrationPlanSection } from "./technical-demonstration-plan-section";
 import { TechnicalVisualMapSection } from "./technical-visual-map-section";
 import { useProposedLook, type ProposedLookActionOutcome } from "./use-proposed-look";
 
@@ -107,6 +108,19 @@ export function ProposedLookSection({
           isStale={isConfirmedProposalPotentiallyStale(analysisUpdatedAt, current.analysisSnapshotAt)}
         />
       ) : null}
+
+      {/* Technical Demonstration, Stage 2 -- rendered ONLY when a CONFIRMED
+          proposal exists, same "no confirmed proposal, no derivation
+          offered at all" rule as Technical Visual Map below. Positioned
+          BEFORE Technical Visual Map to match the intended product
+          narrative (Decision Lock: "Approved Look -> Technical Plan ->
+          [future Technical Demonstration] -> Result") -- this section
+          derives directly from the confirmed PROPOSAL, independent of
+          Technical Visual Map/Spatial Mapping/Photo Preview/Result Video
+          below, which are untouched by this stage. Keyed on `current.id`
+          for the exact same reason as Technical Visual Map: an old plan
+          from a superseded proposal can never masquerade as current. */}
+      {current ? <TechnicalDemonstrationPlanSection key={current.id} clientId={clientId} proposalId={current.id} /> : null}
 
       {/* Technical Visual Map, Stage 4 -- rendered ONLY when a CONFIRMED
           proposal exists (test #1/#2: no confirmed proposal means no map
