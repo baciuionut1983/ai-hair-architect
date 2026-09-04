@@ -144,13 +144,41 @@ describe("deriveCuttingDemonstrationSteps", () => {
     }
   });
 
-  it("tags this step's own directly-copied source fields (elevation/tool) as OBSERVED, with the exact source values, on every step regardless of phase", () => {
+  // Required test 7: tool behavior remains unchanged and genuinely varies
+  // per step.
+  it("7. tags `tool` OBSERVED with the exact source value on EVERY step regardless of phase -- it genuinely varies per step in real engine output", () => {
     const steps = deriveCuttingDemonstrationSteps(cuttingPlan());
-    for (const step of steps) {
-      expect(step.payload.elevation).toEqual({ value: "0_deg_blunt", provenance: "OBSERVED" });
-    }
     expect(steps[0].payload.tool).toEqual({ value: "tail-comb", provenance: "OBSERVED" });
     expect(steps[1].payload.tool).toEqual({ value: "straight-shear", provenance: "OBSERVED" });
+    expect(steps[2].payload.tool).toEqual({ value: "straight-shear", provenance: "OBSERVED" });
+  });
+
+  // RELEASE-BLOCKER FIX (Stage 2.5.a pre-push gate) -- required tests
+  // 1-6: `elevation` is deliberately NOT the same as `tool` -- real
+  // production testing proved it is the SAME uniform value on every step
+  // (the engine's own single plan-wide variable), so it must be
+  // phase-scoped just like the seven plan-level fields, tagged OBSERVED
+  // only where it is genuine cutting geometry (STRUCTURAL_CUTTING),
+  // UNKNOWN everywhere else.
+  it("1-6. tags `elevation` OBSERVED ONLY on the STRUCTURAL_CUTTING-phase step, honestly UNKNOWN on every other phase -- never a global value smeared across unrelated steps", () => {
+    const [sectioningStep, guideStep, structuralStep, refinementStep, crossCheckStep] = deriveCuttingDemonstrationSteps(cuttingPlan());
+
+    // 3. STRUCTURAL_CUTTING may expose elevation when semantically supported.
+    expect(structuralStep.payload.phase.value).toBe("STRUCTURAL_CUTTING");
+    expect(structuralStep.payload.elevation).toEqual({ value: "0_deg_blunt", provenance: "OBSERVED" });
+
+    // 1/2/4/5/6: every other phase does NOT inherit it -- honestly
+    // UNKNOWN, never a fallback guess. The exact "unacceptable result"
+    // the pre-push gate named -- a real, live trace of the actual engine
+    // proved every one of these was previously OBSERVED "0_deg_blunt" too.
+    expect(sectioningStep.payload.phase.value).toBe("PREPARATION_AND_SECTIONING");
+    expect(sectioningStep.payload.elevation).toEqual({ value: null, provenance: "UNKNOWN" }); // 1
+    expect(guideStep.payload.phase.value).toBe("GUIDE_AND_STRUCTURE");
+    expect(guideStep.payload.elevation).toEqual({ value: null, provenance: "UNKNOWN" }); // 2
+    expect(refinementStep.payload.phase.value).toBe("REFINEMENT_TEXTURIZING");
+    expect(refinementStep.payload.elevation).toEqual({ value: null, provenance: "UNKNOWN" }); // 4
+    expect(crossCheckStep.payload.phase.value).toBe("CROSS_CHECK_AND_FINISH");
+    expect(crossCheckStep.payload.elevation).toEqual({ value: null, provenance: "UNKNOWN" }); // 5, 6
   });
 
   // The zones-from-a-real-HeadZone-string mechanism, tested in isolation:
@@ -283,8 +311,12 @@ describe("deriveCuttingDemonstrationSteps", () => {
       expect(step.payload.texturizingTechnique).toEqual({ value: null, provenance: "UNKNOWN" });
       expect(step.payload.combingDirection).toEqual({ value: null, provenance: "UNKNOWN" });
       expect(step.payload.overdirection).toEqual({ value: null, provenance: "UNKNOWN" });
-      // elevation/tool are read from the step's OWN record, not phase-scoped.
-      expect(step.payload.elevation).toEqual({ value: "0_deg_blunt", provenance: "OBSERVED" });
+      // `elevation` is ALSO phase-scoped (release-blocker fix) -- an
+      // unknown phase means we cannot honestly claim this step's own
+      // recorded elevationAngle is the real STRUCTURAL_CUTTING geometry.
+      expect(step.payload.elevation).toEqual({ value: null, provenance: "UNKNOWN" });
+      // `tool` is NOT phase-scoped -- read unconditionally from the
+      // step's own record regardless of phase.
       expect(step.payload.tool).toEqual({ value: "shears", provenance: "OBSERVED" });
     });
 

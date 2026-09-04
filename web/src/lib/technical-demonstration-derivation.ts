@@ -46,11 +46,35 @@ import { isHeadZone } from "@/lib/technical-visual-map-validators";
 // where that fact is genuinely true -- e.g. `texturizingTechnique` only
 // ever appears on a REFINEMENT_TEXTURIZING-phase step, never smeared onto
 // the STRUCTURAL_CUTTING-phase step merely because the plan happens to use
-// texturizing somewhere. `elevation`/`tool`/`zones` are deliberately NOT
-// touched by this fix -- they are read from `sourceStep.*` (this step's
-// OWN record), not `plan.*`, so they are already correctly step-scoped by
-// construction (see CuttingDemonstrationStepPayload's own field-by-field
-// doc comment for the full classification).
+// texturizing somewhere. `tool`/`zones` are deliberately NOT touched by
+// this fix -- they are read from `sourceStep.*` (this step's OWN record)
+// AND the underlying source genuinely varies per step (see
+// CuttingDemonstrationStepPayload's own field-by-field doc comment).
+//
+// RELEASE-BLOCKER FIX (Stage 2.5.a pre-push gate): `elevation` was
+// INITIALLY left out of this same fix on the reasoning "it's read from
+// sourceStep.*, so it's already step-scoped" -- that reasoning checked
+// only WHERE the derivation reads from, not whether the upstream engine
+// genuinely VARIES the value per step. It does not:
+// cutting-plan-engine.ts's own generateTechnicalCutPlan sets
+// `elevationAngle: elevation` -- the identical single plan-level local
+// variable -- on every entry of the `cuttingSteps` array it builds, so a
+// real derived plan reports the SAME elevation on PREPARATION_AND_SECTIONING
+// and CROSS_CHECK_AND_FINISH as on STRUCTURAL_CUTTING (proven live during
+// the pre-push gate: real engine output traced end-to-end through real
+// derivation). Tagging that OBSERVED on every step was therefore
+// misleading -- it implied a genuine per-step fact where the true source
+// is one uniform, plan-wide value laundered through a step-shaped field.
+// Fixed the same way as the other seven: `elevation` is now phase-scoped
+// too (FIELD_APPLICABLE_PHASES.elevation), genuinely OBSERVED (still read
+// from sourceStep.elevationAngle, unchanged) only on the STRUCTURAL_CUTTING
+// step -- the one phase where this value is the actual cutting geometry
+// being executed -- and honestly UNKNOWN everywhere else, including
+// REFINEMENT_TEXTURIZING (today's data model has no independent evidence
+// that a refinement step's own elevation equals the structural cut's).
+// `tool` was separately re-verified live (comb / straight-shear /
+// texturizing-shear / finishing-comb, genuinely different per step) and
+// is intentionally left untouched.
 //
 // STAGE 2.5.a ZONE/PHASE FIX (Stage 2.5 audit, "zone bug" section): the
 // cutting engine (cutting-plan-engine.ts) writes a workflow PHASE label
@@ -103,6 +127,16 @@ const FIELD_APPLICABLE_PHASES = {
   texturizingTechnique: ["REFINEMENT_TEXTURIZING"],
   combingDirection: ["STRUCTURAL_CUTTING"],
   overdirection: ["STRUCTURAL_CUTTING"],
+  // RELEASE-BLOCKER FIX: elevation-angle is cutting geometry -- it
+  // describes the actual structural cutting action, the same phase
+  // structuralTechnique/cuttingTechnique/combingDirection/overdirection
+  // already live on, never a fact of preparation, guide placement, or
+  // cross-check/finish. Deliberately single-phase, not also
+  // GUIDE_AND_STRUCTURE or REFINEMENT_TEXTURIZING: today's data model has
+  // exactly one plan-wide elevation value with no independent per-phase
+  // evidence, so attributing it to more than the one phase it most
+  // directly describes would just re-smear it under a different name.
+  elevation: ["STRUCTURAL_CUTTING"],
 } as const satisfies Record<string, readonly CuttingExecutionPhase[]>;
 
 // Computes a phase-scoped field: UNKNOWN when the step's own resolved
@@ -186,7 +220,11 @@ export function deriveCuttingDemonstrationSteps(plan: TechnicalCutPlan, editedFi
 
     const payload: CuttingDemonstrationStepPayload = {
       zones: zones.length > 0 ? observed(zones) : unknownValue(),
-      elevation: observed(sourceStep.elevationAngle),
+      // RELEASE-BLOCKER FIX: still genuinely OBSERVED from this step's own
+      // record (unchanged source), but only ON the one phase where that
+      // record's elevation is real cutting-geometry fact -- see
+      // FIELD_APPLICABLE_PHASES.elevation's own comment.
+      elevation: planScopedField(phaseValue, FIELD_APPLICABLE_PHASES.elevation, () => observed(sourceStep.elevationAngle)),
       tool: observed(sourceStep.toolRequired),
       phase,
 

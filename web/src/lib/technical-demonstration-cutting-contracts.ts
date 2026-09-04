@@ -111,21 +111,27 @@ export function isValidCuttingExecutionPhaseSequence(phases: readonly (CuttingEx
 export interface CuttingDemonstrationStepPayload {
   // OBSERVED -- copied verbatim from this step's own source CuttingStep.zone.
   zones: TechnicalDemonstrationProvenanceValue<HeadZone[]>;
-  // OBSERVED -- copied verbatim from this step's own source CuttingStep.elevationAngle.
-  // Stage 2.5.a audit note: classified, deliberately left unchanged. Unlike
-  // the plan-level block below, this value is read from THIS STEP's own
-  // record (sourceStep.elevationAngle), not from the shared plan object --
-  // it is already correctly step-scoped by construction, even though
-  // Cutting V1's engine happens to set the same elevation on every step
-  // today (an engine limitation, honestly reported, not a derivation
-  // dishonesty -- see technical-demonstration-derivation.ts's own header
-  // comment on the plan-vs-step distinction this stage fixes).
+  // OBSERVED -- copied verbatim from this step's own source
+  // CuttingStep.elevationAngle, but ONLY on the STRUCTURAL_CUTTING-phase
+  // step. RELEASE-BLOCKER FIX, corrected from an earlier "already
+  // step-scoped by construction" classification that turned out to be
+  // wrong: being read from sourceStep.elevationAngle does NOT mean the
+  // value genuinely varies per step -- Cutting V1's engine sets the exact
+  // same plan-wide elevation on EVERY step's own record (proven live: real
+  // engine output traced through real derivation showed identical
+  // elevation on preparation/guide/structural/refinement/cross-check
+  // alike). Phase-scoped the same way as the seven plan-level fields
+  // below (see FIELD_APPLICABLE_PHASES.elevation, technical-demonstration-
+  // derivation.ts) -- UNKNOWN on every other phase, never a fabricated
+  // "no elevation" default and never a copy of the structural cut's own
+  // value onto an unrelated action.
   elevation: TechnicalDemonstrationProvenanceValue<TechnicalCutElevation>;
   // OBSERVED -- copied verbatim from this step's own source
-  // CuttingStep.toolRequired. Same classification as `elevation` above --
-  // already genuinely step-scoped (the engine DOES vary tool per step
-  // today: tail-comb / straight-shear / texturizer-shear / finishing-comb)
-  // -- left unchanged.
+  // CuttingStep.toolRequired, unconditionally, on every step -- unlike
+  // `elevation` above, `tool` genuinely varies per step in Cutting V1's
+  // real engine output today (tail-comb / straight-shear / texturizer-
+  // shear / finishing-comb), re-verified live during the elevation
+  // blocker fix -- never phase-gated, deliberately left unchanged.
   tool: TechnicalDemonstrationProvenanceValue<string>;
 
   // Stage 2.5.a -- the execution phase this step belongs to. INFERRED when
