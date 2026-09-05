@@ -210,6 +210,12 @@ describe("evaluateStepReadiness", () => {
       }
     });
 
+    it("Stage 2.5.e: a freshly-derived FINAL_CHECK step now carries a REAL, populated FINAL_OBSERVATION actionType (INFERRED) -- the geometry exclusion above is driven by this real value, not merely a phase-based fallback for an UNKNOWN actionType", () => {
+      const steps = baselineSteps();
+      const step5Payload = steps[4].payload as unknown as CuttingDemonstrationStepPayload;
+      expect(step5Payload.actionType).toEqual({ value: "FINAL_OBSERVATION", provenance: "INFERRED" });
+    });
+
     it("a professional-supplied real cutting-geometry value on FINAL_CHECK does not change the readiness outcome (still never required)", () => {
       const steps = baselineSteps();
       const step5 = steps[4];

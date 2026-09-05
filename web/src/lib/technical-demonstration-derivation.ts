@@ -136,8 +136,29 @@ export const DETERMINISTIC_ACTION_TYPE_BY_PHASE: Readonly<Partial<Record<Cutting
   REFINEMENT_TEXTURIZING: "TEXTURIZING_ACTION",
 };
 
+// Stage 2.5.e -- CROSS_CHECK_AND_FINISH is deliberately absent from
+// DETERMINISTIC_ACTION_TYPE_BY_PHASE above, and NOT added there, even
+// though a step being derived RIGHT NOW can safely default it to
+// FINAL_OBSERVATION (see resolveActionType below). The reason for the
+// asymmetry: DETERMINISTIC_ACTION_TYPE_BY_PHASE is also the read-time
+// backward-compatibility fallback resolveEffectiveActionType uses for
+// ALREADY-PERSISTED historical steps (current production V2 among them)
+// whose own stored content was produced by the OLD generator template --
+// one that mixed a real texturizing/cutting action into this exact phase's
+// own sentence (cutting-plan-engine.ts, pre-Stage-2.5.e). Adding
+// FINAL_OBSERVATION to that SHARED map would silently reinterpret that old,
+// genuinely-mixed content as if it had always been pure observation --
+// exactly the "do not silently reinterpret persisted historical plan
+// content as newly generated shape" rule this stage was explicitly told
+// to honor. A step being freshly derived right now, by contrast, is
+// GUARANTEED pure by the fixed generator template itself -- a genuinely
+// different, stronger guarantee that only applies going forward, which is
+// why it lives in resolveActionType's own dedicated logic instead.
 function resolveActionType(phase: CuttingExecutionPhase | null): TechnicalDemonstrationProvenanceValue<CuttingExecutionActionType> {
   if (phase === null) return { value: null, provenance: "UNKNOWN" };
+  if (phase === "CROSS_CHECK_AND_FINISH") {
+    return { value: "FINAL_OBSERVATION", provenance: "INFERRED" };
+  }
   const actionType = DETERMINISTIC_ACTION_TYPE_BY_PHASE[phase];
   return actionType ? { value: actionType, provenance: "INFERRED" } : { value: null, provenance: "UNKNOWN" };
 }
@@ -148,13 +169,19 @@ function resolveActionType(phase: CuttingExecutionPhase | null): TechnicalDemons
 // UNKNOWN/NOT_APPLICABLE) and its resolved phase, returns the value every
 // consumer should treat as authoritative: the real entry if one already
 // exists (a professional override always wins, whatever produced it),
-// otherwise the SAME deterministic fallback resolveActionType would have
-// produced for a brand new step on that phase. Returns `null` only when
-// genuinely nothing can be said honestly (GUIDE_AND_STRUCTURE/
-// CROSS_CHECK_AND_FINISH with no professional classification yet, or an
-// unrecognized phase) -- never guessed from free text, tool name, or an
-// LLM call. This is a pure, read-only computation -- it never mutates or
-// persists anything; a legacy step's own stored payload is never touched.
+// otherwise the deterministic fallback for the 3 phases where
+// DETERMINISTIC_ACTION_TYPE_BY_PHASE has a real, backward-compatible-safe
+// entry. Deliberately NOT the same as resolveActionType above for
+// CROSS_CHECK_AND_FINISH specifically -- see that map's own Stage 2.5.e
+// comment for exactly why: a step being derived fresh right now can
+// safely default to FINAL_OBSERVATION; a step that might be arbitrarily
+// old (this function's own real use case) cannot. Returns `null` only when
+// genuinely nothing can be said honestly (GUIDE_AND_STRUCTURE always, and
+// CROSS_CHECK_AND_FINISH for any step whose OWN actionType field isn't
+// already real -- historical or otherwise -- or an unrecognized phase) --
+// never guessed from free text, tool name, or an LLM call. This is a pure,
+// read-only computation -- it never mutates or persists anything; a
+// legacy step's own stored payload is never touched.
 export function resolveEffectiveActionType(
   actionTypeEntry: TechnicalDemonstrationProvenanceValue<CuttingExecutionActionType> | undefined,
   phase: CuttingExecutionPhase | null,

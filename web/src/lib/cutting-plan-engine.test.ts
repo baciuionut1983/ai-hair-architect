@@ -49,7 +49,7 @@ describe("cutting-plan-engine", () => {
     expect(plan.assumptions.length).toBeGreaterThanOrEqual(0);
     expect(plan.notes?.some((note) => note.includes("point cutting"))).toBe(true);
     expect(plan.confidence).toBeLessThanOrEqual(0.96);
-    expect(plan.version).toBe("1.0.0-m8");
+    expect(plan.version).toBe("1.1.0-m8");
   });
 
   // Regression coverage for the production complaint: real, provider-supplied
@@ -171,5 +171,93 @@ describe("cutting-plan-engine", () => {
     expect(plan.assumptions.some((assumption) => assumption.includes("neutral face balance"))).toBe(true);
     expect(plan.assumptions.some((assumption) => assumption.includes("balanced occipital"))).toBe(true);
     expect(plan.assumptions.some((assumption) => assumption.includes("regular growth pattern"))).toBe(true);
+  });
+
+  // Stage 2.5.e -- atomic execution steps. The final "Cross-check and
+  // finish" step's own action text must never mix a real cutting/
+  // texturizing action with the observation action, in EITHER branch (with
+  // or without a texturizing technique selected).
+  describe("Stage 2.5.e -- atomic final step (no mixed cutting + observation semantics)", () => {
+    function lastStep(plan: ReturnType<typeof generateTechnicalCutPlan>) {
+      return plan.cuttingSteps[plan.cuttingSteps.length - 1];
+    }
+
+    it("a plan WITH a texturizing technique: the final step never mentions the texturizing technique -- it already has its own dedicated Texture refinement step", () => {
+      const plan = generateTechnicalCutPlan({
+        goal: "reshape",
+        hairType: "medium",
+        density: "medium",
+        porosity: "medium",
+        targetShape: "blunt_perimeter_texturized", // selects slice_and_slide texturizing
+      });
+
+      expect(plan.texturizingTechnique).toBe("slice_and_slide");
+      const final = lastStep(plan);
+      expect(final.zone).toBe("Cross-check and finish");
+      expect(final.action).not.toMatch(/slice and slide/i);
+      expect(final.action).not.toMatch(/soften line weight/i);
+
+      // The texturizing action is represented exactly once, in its own
+      // dedicated step -- never duplicated into the final step too.
+      const texturizingSteps = plan.cuttingSteps.filter((s) => s.action.toLowerCase().includes("slice and slide"));
+      expect(texturizingSteps).toHaveLength(1);
+      expect(texturizingSteps[0].zone).toBe("Texture refinement");
+    });
+
+    it("the final step is pure observation language, for a texturizing plan", () => {
+      const plan = generateTechnicalCutPlan({
+        goal: "reshape",
+        hairType: "medium",
+        density: "medium",
+        porosity: "medium",
+        targetShape: "shag_mullet", // selects razor_texturizing
+      });
+      const final = lastStep(plan);
+      expect(final.action).toMatch(/cross-check/i);
+      expect(final.action).not.toMatch(/razor/i);
+      expect(final.action).not.toMatch(/\bcut\b/i);
+    });
+
+    it("a plan WITHOUT a texturizing technique also gets a pure-observation final step -- no cutting-adjacent language like 'refine perimeter' either", () => {
+      const plan = generateTechnicalCutPlan({
+        goal: "reshape",
+        hairType: "medium",
+        density: "medium",
+        porosity: "medium",
+      });
+      expect(plan.texturizingTechnique).toBeUndefined();
+      const final = lastStep(plan);
+      expect(final.zone).toBe("Cross-check and finish");
+      expect(final.action).not.toMatch(/refine/i);
+      expect(final.action).toMatch(/cross-check/i);
+    });
+
+    it("the final step's own action text is byte-identical whether or not a texturizing technique was selected -- one universal observation sentence, not a branch", () => {
+      const withTexturizing = lastStep(
+        generateTechnicalCutPlan({ goal: "reshape", hairType: "medium", density: "medium", porosity: "medium", targetShape: "pixie_crop" }),
+      );
+      const withoutTexturizing = lastStep(
+        generateTechnicalCutPlan({ goal: "reshape", hairType: "medium", density: "medium", porosity: "medium" }),
+      );
+      expect(withTexturizing.action).toBe(withoutTexturizing.action);
+    });
+
+    it("variable step count remains supported -- 4 steps without texturizing, 5 with it, and the final step is always last regardless of count", () => {
+      const withoutTexturizing = generateTechnicalCutPlan({ goal: "reshape", hairType: "medium", density: "medium", porosity: "medium" });
+      const withTexturizing = generateTechnicalCutPlan({
+        goal: "reshape",
+        hairType: "medium",
+        density: "medium",
+        porosity: "medium",
+        targetShape: "blunt_perimeter_texturized",
+      });
+      expect(withoutTexturizing.cuttingSteps).toHaveLength(4);
+      expect(withTexturizing.cuttingSteps).toHaveLength(5);
+      expect(lastStep(withoutTexturizing).zone).toBe("Cross-check and finish");
+      expect(lastStep(withTexturizing).zone).toBe("Cross-check and finish");
+      // stepNumbers stay contiguous/sequential regardless of count.
+      expect(withoutTexturizing.cuttingSteps.map((s) => s.stepNumber)).toEqual([1, 2, 3, 4]);
+      expect(withTexturizing.cuttingSteps.map((s) => s.stepNumber)).toEqual([1, 2, 3, 4, 5]);
+    });
   });
 });

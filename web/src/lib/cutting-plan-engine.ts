@@ -19,7 +19,17 @@ import type {
 import type { AnalysisEngineInput } from "./milestone2-types";
 import { calculateRecommendationConfidence, dedupe, readable } from "./recommendation-engine-shared";
 
-const TECHNICAL_PLAN_VERSION = "1.0.0-m8";
+// Stage 2.5.e (Technical Demonstration atomic-step fix) -- bumped from
+// 1.0.0-m8. The final "Cross-check and finish" step's own action text no
+// longer conditionally mentions the texturizing technique -- see the
+// cuttingSteps literal below for the exact fix and why. This is a real,
+// user-visible change to what generateTechnicalCutPlan produces for every
+// NEW plan going forward; a bump is the honest signal of that, mirroring
+// this codebase's own established discipline for every other generator/
+// derivation version constant. Never applied retroactively to any
+// already-confirmed AnalysisProposal -- those stay frozen with whatever
+// version they were actually generated under, forever.
+const TECHNICAL_PLAN_VERSION = "1.1.0-m8";
 const STYLIST_VALIDATION_DISCLAIMER =
   "Professional warning: this technical recommendation assists planning but must be validated by a licensed hairstylist at chair-side before the first cut.";
 
@@ -253,9 +263,25 @@ export function generateTechnicalCutPlan(input: AnalysisEngineInput): TechnicalC
     {
       stepNumber: 4,
       zone: "Cross-check and finish",
-      action: selection.texturizingTechnique
-        ? `Finish with ${readable(selection.texturizingTechnique)} to soften line weight, then cross-check symmetry at profile and frontal view.`
-        : "Cross-check dry and wet, refine perimeter, then validate symmetry at profile and frontal view.",
+      // Stage 2.5.e -- ATOMIC STEP FIX. This step's own action text is now
+      // a single, universal, PURE OBSERVATION sentence, used identically
+      // whether or not a texturizing technique was selected. Previously
+      // this branched on `selection.texturizingTechnique` to re-mention
+      // the texturizing technique here -- a genuine bug, not a stylistic
+      // choice: whenever texturizing IS present, it already has its own
+      // dedicated "Texture refinement" step (spliced in below), so
+      // mentioning it again here was pure duplication; and mentioning it
+      // at all made this step's own action mix a real cutting/texturizing
+      // action together with a genuinely separate observation action --
+      // exactly the "one step, two actions" problem the Stage 2.5.d
+      // actionType audit found. The non-texturizing branch had the same
+      // flaw in miniature ("refine perimeter" is itself a cutting-adjacent
+      // action, not an observation) -- also removed. This step now
+      // NEVER performs or implies a cutting action, in either branch --
+      // see technical-demonstration-derivation.ts's own Stage 2.5.e
+      // comment for why this is what makes FINAL_OBSERVATION safely
+      // derivable with certainty for newly-generated plans.
+      action: "Cross-check symmetry, inspect perimeter balance and silhouette, and compare frontal and profile views to confirm natural fall.",
       elevationAngle: elevation,
       toolRequired: "finishing-comb"
     }

@@ -41,7 +41,7 @@ describe("milestone8 integration", () => {
       { answers: ["No scalp sensitivity", "Hair is healthy"] }
     );
 
-    expect(withAnswers.technicalCutPlan?.version).toBe("1.0.0-m8");
+    expect(withAnswers.technicalCutPlan?.version).toBe("1.1.0-m8");
     expect(withAnswers.technicalCutPlan?.structuralTechnique).toBe("graduation");
     expect(withAnswers.technicalCutPlan?.stylistExplanation.length).toBeGreaterThan(0);
   });

@@ -378,9 +378,9 @@ describe("deriveCuttingDemonstrationSteps -- actionType derivation", () => {
     expect(steps[1].payload.actionType).toEqual({ value: null, provenance: "UNKNOWN" });
   });
 
-  it("CROSS_CHECK_AND_FINISH -> UNKNOWN -- never guessed between FINAL_OBSERVATION and CORRECTIVE_CUTTING", () => {
+  it("Stage 2.5.e: CROSS_CHECK_AND_FINISH -> FINAL_OBSERVATION (INFERRED) for a freshly-derived step -- safe now that the generator template guarantees this phase is always pure observation, never a guess between FINAL_OBSERVATION and CORRECTIVE_CUTTING (CORRECTIVE_CUTTING is never derived automatically, only ever a real professional decision)", () => {
     const steps = deriveCuttingDemonstrationSteps(cuttingPlan());
-    expect(steps[4].payload.actionType).toEqual({ value: null, provenance: "UNKNOWN" });
+    expect(steps[4].payload.actionType).toEqual({ value: "FINAL_OBSERVATION", provenance: "INFERRED" });
   });
 
   it("an unrecognized phase (null) also cascades to UNKNOWN actionType, same as every other phase-scoped field", () => {
@@ -395,7 +395,7 @@ describe("deriveCuttingDemonstrationSteps -- actionType derivation", () => {
     const steps = deriveCuttingDemonstrationSteps(cuttingPlan({ cuttingSteps: stepsWithDifferentText }));
     expect(steps[0].payload.actionType.value).toBe("SECTIONING_ACTION");
     expect(steps[1].payload.actionType).toEqual({ value: null, provenance: "UNKNOWN" }); // still UNKNOWN, text never overrides this
-    expect(steps[4].payload.actionType).toEqual({ value: null, provenance: "UNKNOWN" }); // still UNKNOWN, text never overrides this
+    expect(steps[4].payload.actionType.value).toBe("FINAL_OBSERVATION"); // still the phase-driven deterministic value, text never overrides this
   });
 
   it("no tool-based inference -- actionType is identical regardless of which tool the step requires", () => {
@@ -403,6 +403,17 @@ describe("deriveCuttingDemonstrationSteps -- actionType derivation", () => {
     const steps = deriveCuttingDemonstrationSteps(cuttingPlan({ cuttingSteps: stepsWithDifferentTools }));
     expect(steps[0].payload.actionType.value).toBe("SECTIONING_ACTION"); // still sectioning, even with a cutting tool listed
     expect(steps[1].payload.actionType).toEqual({ value: null, provenance: "UNKNOWN" }); // still UNKNOWN, tool never resolves the guide split
+  });
+
+  // Stage 2.5.e -- variable step count. actionType derivation is keyed
+  // purely by PHASE, never by position/count, so a 4-step (no texturizing)
+  // plan's own final step must derive identically to a 5-step plan's.
+  it("a 4-step (no texturizing) plan's final CROSS_CHECK_AND_FINISH step also derives FINAL_OBSERVATION -- actionType is phase-keyed, not position/count-keyed", () => {
+    const steps = deriveCuttingDemonstrationSteps(cuttingPlan({ texturizingTechnique: undefined, cuttingSteps: realisticCuttingSteps(false) }));
+    expect(steps).toHaveLength(4);
+    const finalStep = steps[steps.length - 1];
+    expect(finalStep.payload.phase.value).toBe("CROSS_CHECK_AND_FINISH");
+    expect(finalStep.payload.actionType).toEqual({ value: "FINAL_OBSERVATION", provenance: "INFERRED" });
   });
 });
 
