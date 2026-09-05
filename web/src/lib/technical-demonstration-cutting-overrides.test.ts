@@ -287,3 +287,74 @@ describe("resolveEffectiveCuttingStepPayload", () => {
     expect(isValidCuttingDemonstrationStepPayload(effective)).toBe(true);
   });
 });
+
+// Stage 2.5.d (round 2) -- UI/read-model compatibility fix. A step
+// persisted before `actionType` existed (current production V2) has no
+// stored value for the field at all -- resolveEffectiveCuttingStepPayload
+// must expose the SAME effective value readiness already derives, without
+// ever writing anything back to the caller-supplied baseline.
+describe("resolveEffectiveCuttingStepPayload -- actionType backward compatibility", () => {
+  function legacyStepPayload(stepIndex: number): CuttingDemonstrationStepPayload {
+    const derived = deriveCuttingDemonstrationSteps(cuttingPlan())[stepIndex].payload;
+    const legacy = { ...(derived as unknown as Record<string, unknown>) };
+    delete legacy.actionType; // simulate a step persisted before this field existed
+    return legacy as unknown as CuttingDemonstrationStepPayload;
+  }
+
+  it("legacy PREPARATION_AND_SECTIONING exposes effective SECTIONING_ACTION, Inferred", () => {
+    const effective = resolveEffectiveCuttingStepPayload(1, legacyStepPayload(0), []);
+    expect(effective.actionType).toEqual({ value: "SECTIONING_ACTION", provenance: "INFERRED" });
+  });
+
+  it("legacy STRUCTURAL_CUTTING exposes effective STRUCTURAL_CUTTING, Inferred", () => {
+    const effective = resolveEffectiveCuttingStepPayload(3, legacyStepPayload(2), []);
+    expect(effective.actionType).toEqual({ value: "STRUCTURAL_CUTTING", provenance: "INFERRED" });
+  });
+
+  it("legacy REFINEMENT_TEXTURIZING exposes effective TEXTURIZING_ACTION, Inferred", () => {
+    const effective = resolveEffectiveCuttingStepPayload(4, legacyStepPayload(3), []);
+    expect(effective.actionType).toEqual({ value: "TEXTURIZING_ACTION", provenance: "INFERRED" });
+  });
+
+  it("legacy GUIDE_AND_STRUCTURE exposes an honest UNKNOWN, never guessed", () => {
+    const effective = resolveEffectiveCuttingStepPayload(2, legacyStepPayload(1), []);
+    expect(effective.actionType).toEqual({ value: null, provenance: "UNKNOWN" });
+  });
+
+  it("legacy CROSS_CHECK_AND_FINISH exposes an honest UNKNOWN, never guessed", () => {
+    const effective = resolveEffectiveCuttingStepPayload(5, legacyStepPayload(4), []);
+    expect(effective.actionType).toEqual({ value: null, provenance: "UNKNOWN" });
+  });
+
+  it("never persists/mutates the legacy baseline -- the caller's own object still has no actionType key afterward", () => {
+    const legacy = legacyStepPayload(0);
+    const before = JSON.stringify(legacy);
+    resolveEffectiveCuttingStepPayload(1, legacy, []);
+    expect(JSON.stringify(legacy)).toBe(before);
+    expect("actionType" in legacy).toBe(false);
+  });
+
+  it("a real professional override on a legacy step still wins over the compatibility fallback", () => {
+    const now = new Date("2026-09-04T12:00:00.000Z");
+    const overrides: CuttingStepOverrideEntry[] = [toCuttingStepOverrideEntry({ op: "set_value", stepNumber: 2, field: "actionType", value: "GUIDE_OBSERVATION" }, now)];
+    const effective = resolveEffectiveCuttingStepPayload(2, legacyStepPayload(1), overrides);
+    expect(effective.actionType).toEqual({ value: "GUIDE_OBSERVATION", provenance: "PROFESSIONAL_OVERRIDE" });
+  });
+
+  it("reset_field on a legacy step's actionType reverts to the compatibility-resolved value, never to a literal absence", () => {
+    const now = new Date("2026-09-04T12:00:00.000Z");
+    const overrides: CuttingStepOverrideEntry[] = [
+      toCuttingStepOverrideEntry({ op: "set_value", stepNumber: 1, field: "actionType", value: "STRUCTURAL_CUTTING" }, now),
+      toCuttingStepOverrideEntry({ op: "reset_field", stepNumber: 1, field: "actionType" }, now),
+    ];
+    const effective = resolveEffectiveCuttingStepPayload(1, legacyStepPayload(0), overrides);
+    expect(effective.actionType).toEqual({ value: "SECTIONING_ACTION", provenance: "INFERRED" });
+  });
+
+  it("an already-present NOT_APPLICABLE actionType (a real professional decision) is left completely untouched, never overwritten by the fallback", () => {
+    const derived = deriveCuttingDemonstrationSteps(cuttingPlan())[0].payload;
+    const withNotApplicable = { ...derived, actionType: { value: null, provenance: "NOT_APPLICABLE" as const } };
+    const effective = resolveEffectiveCuttingStepPayload(1, withNotApplicable, []);
+    expect(effective.actionType).toEqual({ value: null, provenance: "NOT_APPLICABLE" });
+  });
+});

@@ -264,6 +264,21 @@ export function resolveCuttingStepFieldEditor(field: CuttingStepOverrideFieldNam
   return editor;
 }
 
+// Stage 2.5.d (round 2, UI/read-model compatibility fix) -- narrows the
+// generic 7-value actionType vocabulary down to the 2 professionally
+// meaningful choices for a GUIDE_AND_STRUCTURE or CROSS_CHECK_AND_FINISH
+// step specifically -- selecting STRUCTURAL_CUTTING as the action for a
+// guide step would be professionally meaningless. SECTIONING/STRUCTURAL_
+// CUTTING/TEXTURIZING phases keep the full generic list unchanged (their
+// own action is already deterministically certain -- there is nothing for
+// a professional to legitimately re-classify there, though the field
+// remains structurally editable like every other field, unrestricted).
+export function resolveActionTypeOptionsForPhase(phase: string | null): readonly string[] {
+  if (phase === "GUIDE_AND_STRUCTURE") return ["GUIDE_OBSERVATION", "GUIDE_CUTTING"];
+  if (phase === "CROSS_CHECK_AND_FINISH") return ["FINAL_OBSERVATION", "CORRECTIVE_CUTTING"];
+  return CUTTING_EXECUTION_ACTION_TYPES;
+}
+
 export function zoneOptionsForEditor(): readonly string[] {
   return HEAD_ZONES;
 }

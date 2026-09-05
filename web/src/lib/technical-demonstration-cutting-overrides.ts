@@ -8,8 +8,9 @@ import {
   TEXTURIZING_TECHNIQUES,
 } from "@/lib/proposal-validators";
 import { isHeadZone, isRecord } from "@/lib/technical-visual-map-validators";
-import type { TechnicalDemonstrationProvenanceValue } from "@/lib/technical-demonstration-contracts";
-import { isCuttingExecutionActionType, type CuttingDemonstrationStepPayload } from "@/lib/technical-demonstration-cutting-contracts";
+import { isProvenancePopulated, type TechnicalDemonstrationProvenanceValue } from "@/lib/technical-demonstration-contracts";
+import { isCuttingExecutionActionType, type CuttingDemonstrationStepPayload, type CuttingExecutionPhase } from "@/lib/technical-demonstration-cutting-contracts";
+import { resolveEffectiveActionType } from "@/lib/technical-demonstration-derivation";
 
 // Technical Demonstration, Stage 2.5.b -- the Cutting V1 professional
 // adjustment layer. Mirrors technical-visual-map-validators.ts's own
@@ -264,12 +265,48 @@ export function toCuttingStepOverrideEntry(input: CuttingStepOverrideInput, now:
 // override" -- a clean, unambiguous semantics matching the word "reset".
 // ---------------------------------------------------------------------------
 
+// UI/read-model compatibility fix (Stage 2.5.d, round 2) -- a step
+// persisted before `actionType` existed (current production V2) has no
+// stored value for it at all; without this, the effective payload
+// returned to the professional-facing read model (and thus the API/UI)
+// would silently omit what the readiness engine already knows how to
+// derive. Reuses resolveEffectiveActionType -- the ONE canonical
+// derivation source (technical-demonstration-derivation.ts) -- so this
+// can never independently drift from what readiness itself resolves.
+// Applied to `baseline` itself (never mutating the caller's own object --
+// a fresh shallow copy) BEFORE overrides are read, so `reset_field` also
+// correctly reverts to this same compatibility-resolved value, not to a
+// literal absence. A step whose stored value is already real (whether
+// PROFESSIONAL_OVERRIDE from an actual edit, or INFERRED from the current
+// derivation) is returned completely untouched.
+function withActionTypeCompatibilityFallback(baseline: CuttingDemonstrationStepPayload): CuttingDemonstrationStepPayload {
+  if (isProvenancePopulated(baseline.actionType)) return baseline;
+  const phaseEntry = baseline.phase;
+  const phase: CuttingExecutionPhase | null = isProvenancePopulated(phaseEntry) ? (phaseEntry.value as CuttingExecutionPhase) : null;
+  const fallbackActionType = resolveEffectiveActionType(baseline.actionType, phase);
+  if (fallbackActionType) {
+    return { ...baseline, actionType: { value: fallbackActionType, provenance: "INFERRED" } };
+  }
+  // No deterministic fallback exists (GUIDE_AND_STRUCTURE/CROSS_CHECK_AND_
+  // FINISH, or an unrecognized phase). A genuinely MISSING key (a step
+  // persisted before actionType existed at all -- current production V2)
+  // is normalized to an explicit, honest UNKNOWN entry, so every consumer
+  // of the effective payload always sees a real provenance-wrapped value,
+  // never `undefined` -- an already-present NOT_APPLICABLE entry (a real
+  // professional decision) is left completely untouched either way.
+  if (baseline.actionType === undefined) {
+    return { ...baseline, actionType: { value: null, provenance: "UNKNOWN" } };
+  }
+  return baseline;
+}
+
 export function resolveEffectiveCuttingStepPayload(
   stepNumber: number,
   baseline: CuttingDemonstrationStepPayload,
   overrides: readonly CuttingStepOverrideEntry[],
 ): CuttingDemonstrationStepPayload {
-  const effective: CuttingDemonstrationStepPayload = { ...baseline };
+  const resolvedBaseline = withActionTypeCompatibilityFallback(baseline);
+  const effective: CuttingDemonstrationStepPayload = { ...resolvedBaseline };
 
   for (const entry of overrides) {
     if (entry.stepNumber !== stepNumber) continue;
@@ -287,7 +324,7 @@ export function resolveEffectiveCuttingStepPayload(
       }
       case "reset_field": {
         (effective as unknown as Record<CuttingStepOverrideFieldName, unknown>)[entry.field] = (
-          baseline as unknown as Record<CuttingStepOverrideFieldName, unknown>
+          resolvedBaseline as unknown as Record<CuttingStepOverrideFieldName, unknown>
         )[entry.field];
         break;
       }

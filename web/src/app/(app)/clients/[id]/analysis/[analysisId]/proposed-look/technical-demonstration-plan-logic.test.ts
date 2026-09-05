@@ -8,6 +8,7 @@ import {
   isProvenanceNotApplicable,
   isProvenancePopulated,
   mapTechnicalDemonstrationPlanApiError,
+  resolveActionTypeOptionsForPhase,
   resolveCuttingStepFieldEditor,
   resolveReadinessTargetPlan,
   resolveStepConstraints,
@@ -174,6 +175,24 @@ describe("resolveReadinessTargetPlan", () => {
   it("returns null when neither exists", () => {
     expect(resolveReadinessTargetPlan(null, null)).toBeNull();
     expect(resolveReadinessTargetPlan(undefined, undefined)).toBeNull();
+  });
+});
+
+// Stage 2.5.d (round 2) -- narrows the actionType editor's own options for
+// the 2 phases with no deterministic classification.
+describe("resolveActionTypeOptionsForPhase", () => {
+  it("GUIDE_AND_STRUCTURE offers only GUIDE_OBSERVATION / GUIDE_CUTTING", () => {
+    expect(resolveActionTypeOptionsForPhase("GUIDE_AND_STRUCTURE")).toEqual(["GUIDE_OBSERVATION", "GUIDE_CUTTING"]);
+  });
+
+  it("CROSS_CHECK_AND_FINISH offers only FINAL_OBSERVATION / CORRECTIVE_CUTTING", () => {
+    expect(resolveActionTypeOptionsForPhase("CROSS_CHECK_AND_FINISH")).toEqual(["FINAL_OBSERVATION", "CORRECTIVE_CUTTING"]);
+  });
+
+  it("every other phase (and null) keeps the full 7-value generic vocabulary", () => {
+    for (const phase of ["PREPARATION_AND_SECTIONING", "STRUCTURAL_CUTTING", "REFINEMENT_TEXTURIZING", null]) {
+      expect(resolveActionTypeOptionsForPhase(phase)).toHaveLength(7);
+    }
   });
 });
 

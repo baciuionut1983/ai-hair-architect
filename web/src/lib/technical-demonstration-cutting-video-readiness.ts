@@ -6,7 +6,7 @@ import {
 } from "@/lib/technical-demonstration-contracts";
 import { CUTTING_EXECUTION_PHASES, type CuttingDemonstrationStepPayload, type CuttingExecutionActionType, type CuttingExecutionPhase } from "@/lib/technical-demonstration-cutting-contracts";
 import type { CuttingStepOverrideFieldName } from "@/lib/technical-demonstration-cutting-overrides";
-import { DETERMINISTIC_ACTION_TYPE_BY_PHASE } from "@/lib/technical-demonstration-derivation";
+import { resolveEffectiveActionType } from "@/lib/technical-demonstration-derivation";
 
 // Technical Demonstration, Stage 2.5.c -- the Technical Execution Video
 // READINESS GATE. Pure, deterministic, server-only domain logic: no I/O, no
@@ -189,22 +189,6 @@ const ACTION_TYPES_EXCLUDING_CUTTING_GEOMETRY: ReadonlySet<CuttingExecutionActio
   "GUIDE_OBSERVATION",
   "FINAL_OBSERVATION",
 ]);
-
-// Backward-compatibility read-time fallback (Stage 2.5.d): for a step
-// whose OWN stored/effective payload has no real actionType value at all
-// (current production V2 -- created before this field existed), the 3
-// phases where DETERMINISTIC_ACTION_TYPE_BY_PHASE already proves a real
-// technique is attached can still be safely inferred AT READ TIME, without
-// ever mutating the stored row. GUIDE_AND_STRUCTURE and
-// CROSS_CHECK_AND_FINISH are never inferred this way -- there is no
-// deterministic source for them (see that map's own header comment) --
-// they resolve to `null` here exactly like an explicit UNKNOWN would, and
-// isRuleApplicableForStep's own fallback then applies unchanged.
-function resolveEffectiveActionType(payload: CuttingDemonstrationStepPayload, phase: CuttingExecutionPhase): CuttingExecutionActionType | null {
-  const actionTypeEntry = payload.actionType;
-  if (isProvenancePopulated(actionTypeEntry)) return actionTypeEntry.value as CuttingExecutionActionType;
-  return DETERMINISTIC_ACTION_TYPE_BY_PHASE[phase] ?? null;
-}
 
 function isRuleApplicableForStep(rule: FieldReadinessRule, phase: CuttingExecutionPhase, effectiveActionType: CuttingExecutionActionType | null): boolean {
   if (effectiveActionType && ACTION_SENSITIVE_FIELDS.has(rule.field)) {
@@ -400,7 +384,7 @@ export function evaluateStepReadiness(step: TechnicalDemonstrationStepRecord): S
     };
   }
 
-  const effectiveActionType = resolveEffectiveActionType(payload, phase);
+  const effectiveActionType = resolveEffectiveActionType(payload.actionType, phase);
   const reasons: ReadinessBlockingReason[] = [];
 
   for (const rule of CUTTING_EXECUTION_VIDEO_READINESS_RULES) {

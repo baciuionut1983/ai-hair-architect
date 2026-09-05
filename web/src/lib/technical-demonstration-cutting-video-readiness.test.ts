@@ -630,3 +630,44 @@ describe("readiness integration -- backward compatibility for a payload with no 
     expect(finalBlocked).not.toContain("cuttingLine"); // FINAL_CHECK's own pre-existing exclusion, unaffected
   });
 });
+
+// Stage 2.5.d (round 2) -- read-model/readiness consistency. The plan
+// UI/API and the readiness engine must resolve a legacy step's effective
+// actionType through the SAME semantic rules -- proven here not merely by
+// sharing an imported function, but by an actual behavioral equivalence
+// check: readiness must treat a legacy (actionType-stripped) step
+// IDENTICALLY to the read-model's OWN resolved view of that same step.
+describe("read-model / readiness effective actionType consistency", () => {
+  function stripActionType(step: TechnicalDemonstrationStepRecord): TechnicalDemonstrationStepRecord {
+    const payload = { ...(step.payload as unknown as Record<string, unknown>) };
+    delete payload.actionType;
+    return { ...step, payload };
+  }
+
+  it("readiness produces an IDENTICAL result whether it evaluates the raw legacy step or the read model's own compatibility-resolved view of it, for every phase", () => {
+    for (const step of baselineSteps()) {
+      const legacyStep = stripActionType(step);
+      const readModelResolvedPayload = resolveEffectiveCuttingStepPayload(step.stepNumber, legacyStep.payload as unknown as CuttingDemonstrationStepPayload, []);
+      const readModelStep = toStepRecord(step.stepNumber, readModelResolvedPayload, step.explanation);
+
+      expect(evaluateStepReadiness(readModelStep)).toEqual(evaluateStepReadiness(legacyStep));
+    }
+  });
+
+  it("the read model's own resolved actionType.value for each phase matches exactly what readiness effectively treats the step as having", () => {
+    const steps = baselineSteps();
+    const expectedByStepNumber: Record<number, string | null> = {
+      1: "SECTIONING_ACTION",
+      2: null,
+      3: "STRUCTURAL_CUTTING",
+      4: "TEXTURIZING_ACTION",
+      5: null,
+    };
+    for (const step of steps) {
+      const legacyPayload = { ...(step.payload as unknown as Record<string, unknown>) };
+      delete legacyPayload.actionType;
+      const resolved = resolveEffectiveCuttingStepPayload(step.stepNumber, legacyPayload as unknown as CuttingDemonstrationStepPayload, []);
+      expect(resolved.actionType.value).toBe(expectedByStepNumber[step.stepNumber]);
+    }
+  });
+});

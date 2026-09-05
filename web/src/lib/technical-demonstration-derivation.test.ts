@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { CuttingStep, TechnicalCutPlan } from "@/lib/contracts";
-import { deriveCuttingDemonstrationSteps } from "@/lib/technical-demonstration-derivation";
+import { deriveCuttingDemonstrationSteps, resolveEffectiveActionType } from "@/lib/technical-demonstration-derivation";
 import { isValidCuttingDemonstrationStepPayload } from "@/lib/technical-demonstration-cutting-contracts";
 
 // Technical Demonstration, Stage 1 (+ Stage 2.5.a) -- pure derivation
@@ -403,6 +403,45 @@ describe("deriveCuttingDemonstrationSteps -- actionType derivation", () => {
     const steps = deriveCuttingDemonstrationSteps(cuttingPlan({ cuttingSteps: stepsWithDifferentTools }));
     expect(steps[0].payload.actionType.value).toBe("SECTIONING_ACTION"); // still sectioning, even with a cutting tool listed
     expect(steps[1].payload.actionType).toEqual({ value: null, provenance: "UNKNOWN" }); // still UNKNOWN, tool never resolves the guide split
+  });
+});
+
+// Stage 2.5.d (round 2) -- resolveEffectiveActionType, the ONE canonical
+// shared source both readiness and the professional-facing read model
+// resolve through. Pure function tests -- no derivation/plan fixtures
+// needed, just the raw provenance-entry + phase inputs every caller
+// actually passes.
+describe("resolveEffectiveActionType", () => {
+  it("a real, populated entry always wins, regardless of phase -- a professional override (or an already-derived value) is never overridden by the fallback", () => {
+    const entry = { value: "GUIDE_CUTTING" as const, provenance: "PROFESSIONAL_OVERRIDE" as const };
+    expect(resolveEffectiveActionType(entry, "GUIDE_AND_STRUCTURE")).toBe("GUIDE_CUTTING");
+    expect(resolveEffectiveActionType(entry, "STRUCTURAL_CUTTING")).toBe("GUIDE_CUTTING"); // even a "wrong" phase -- the real value still wins
+  });
+
+  it("an absent (undefined) entry falls back to the deterministic map for the 3 certain phases", () => {
+    expect(resolveEffectiveActionType(undefined, "PREPARATION_AND_SECTIONING")).toBe("SECTIONING_ACTION");
+    expect(resolveEffectiveActionType(undefined, "STRUCTURAL_CUTTING")).toBe("STRUCTURAL_CUTTING");
+    expect(resolveEffectiveActionType(undefined, "REFINEMENT_TEXTURIZING")).toBe("TEXTURIZING_ACTION");
+  });
+
+  it("an explicit UNKNOWN entry behaves identically to an absent one", () => {
+    const unknownEntry = { value: null, provenance: "UNKNOWN" as const };
+    expect(resolveEffectiveActionType(unknownEntry, "PREPARATION_AND_SECTIONING")).toBe("SECTIONING_ACTION");
+  });
+
+  it("an explicit NOT_APPLICABLE entry is itself a real professional decision -- respected as-is, never silently overwritten by the deterministic fallback even on a phase where one exists", () => {
+    const naEntry = { value: null, provenance: "NOT_APPLICABLE" as const };
+    expect(resolveEffectiveActionType(naEntry, "PREPARATION_AND_SECTIONING")).toBeNull();
+    expect(resolveEffectiveActionType(naEntry, "GUIDE_AND_STRUCTURE")).toBeNull();
+  });
+
+  it("returns null for GUIDE_AND_STRUCTURE / CROSS_CHECK_AND_FINISH with no real entry -- never guessed", () => {
+    expect(resolveEffectiveActionType(undefined, "GUIDE_AND_STRUCTURE")).toBeNull();
+    expect(resolveEffectiveActionType(undefined, "CROSS_CHECK_AND_FINISH")).toBeNull();
+  });
+
+  it("returns null for a null phase (unrecognized source label)", () => {
+    expect(resolveEffectiveActionType(undefined, null)).toBeNull();
   });
 });
 

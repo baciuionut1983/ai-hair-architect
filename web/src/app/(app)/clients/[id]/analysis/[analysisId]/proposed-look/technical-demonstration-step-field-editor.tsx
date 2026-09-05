@@ -25,6 +25,13 @@ export interface TechnicalDemonstrationStepFieldEditorProps {
   hasBeenOverridden: boolean;
   onSubmit: (submission: TechnicalDemonstrationStepFieldEditSubmission) => Promise<boolean>;
   onCancel: () => void;
+  // Stage 2.5.d (round 2) -- narrows a "select"-kind field's own generic
+  // options list for THIS specific step (used only for actionType, to
+  // offer the 2 phase-appropriate choices on a GUIDE/FINAL_CHECK step
+  // instead of the full 7-value vocabulary). Falls back to the field's own
+  // registered descriptor options when not supplied -- every other field
+  // is unaffected.
+  optionsOverride?: readonly string[];
 }
 
 // Technical Demonstration, Stage 2.5.b -- the ONE reusable inline editor for
@@ -42,8 +49,10 @@ export function TechnicalDemonstrationStepFieldEditor({
   hasBeenOverridden,
   onSubmit,
   onCancel,
+  optionsOverride,
 }: TechnicalDemonstrationStepFieldEditorProps) {
   const editor: CuttingStepFieldEditorDescriptor = resolveCuttingStepFieldEditor(field);
+  const selectOptions = optionsOverride ?? editor.options;
   const [textValue, setTextValue] = useState(typeof currentValue === "string" ? currentValue : "");
   const [selectValue, setSelectValue] = useState(typeof currentValue === "string" ? currentValue : "");
   const [boolValue, setBoolValue] = useState(currentValue === true ? "true" : currentValue === false ? "false" : "");
@@ -123,7 +132,7 @@ export function TechnicalDemonstrationStepFieldEditor({
       {editor.kind === "select" ? (
         <Select value={selectValue} onChange={(e) => setSelectValue(e.target.value)}>
           <option value="">Choose...</option>
-          {editor.options?.map((option) => (
+          {selectOptions?.map((option) => (
             <option key={option} value={option}>
               {humanizeEnumValue(option)}
             </option>

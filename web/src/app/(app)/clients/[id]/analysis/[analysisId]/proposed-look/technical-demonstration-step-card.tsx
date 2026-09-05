@@ -7,7 +7,13 @@ import type { TechnicalDemonstrationStepRecord } from "@/lib/technical-demonstra
 import type { CuttingDemonstrationStepPayload } from "@/lib/technical-demonstration-cutting-contracts";
 import type { CuttingStepOverrideFieldName } from "@/lib/technical-demonstration-cutting-overrides";
 
-import { CUTTING_STEP_FIELD_DESCRIPTORS, CUTTING_STEP_FIELD_EDITORS, resolveStepConstraints, resolveStepFieldRows } from "./technical-demonstration-plan-logic";
+import {
+  CUTTING_STEP_FIELD_DESCRIPTORS,
+  CUTTING_STEP_FIELD_EDITORS,
+  resolveActionTypeOptionsForPhase,
+  resolveStepConstraints,
+  resolveStepFieldRows,
+} from "./technical-demonstration-plan-logic";
 import { TechnicalDemonstrationProvenanceBadge } from "./technical-demonstration-provenance-badge";
 import { TechnicalDemonstrationStepFieldEditor, type TechnicalDemonstrationStepFieldEditSubmission } from "./technical-demonstration-step-field-editor";
 
@@ -54,6 +60,20 @@ export function TechnicalDemonstrationStepCard({ step, onEditField }: TechnicalD
 
   const payload = step.payload as unknown as CuttingDemonstrationStepPayload;
 
+  // Stage 2.5.d (round 2, UI/read-model compatibility fix) -- Execution
+  // action is a FIRST-CLASS field, never buried in the generic collapsed
+  // "not yet available" bucket alongside ~15 unrelated fields: extracted
+  // from whichever of the 3 generic buckets resolveStepFieldRows already
+  // classified it into, and rendered in its own dedicated, always-visible
+  // block instead. The 3 general lists below are filtered to exclude it,
+  // so it is never shown twice.
+  const actionTypeRow = populated.find((row) => row.key === "actionType") ?? null;
+  const actionTypeIsNotApplicable = notApplicable.includes("Execution action");
+  const populatedWithoutActionType = populated.filter((row) => row.key !== "actionType");
+  const notApplicableWithoutActionType = notApplicable.filter((label) => label !== "Execution action");
+  const unknownWithoutActionType = unknown.filter((label) => label !== "Execution action");
+  const stepPhase = payload.phase?.provenance !== "UNKNOWN" && payload.phase?.provenance !== "NOT_APPLICABLE" ? (payload.phase.value as string) : null;
+
   function isEditableField(field: string): field is CuttingStepOverrideFieldName {
     return EDITABLE_FIELD_SET.has(field);
   }
@@ -85,7 +105,7 @@ export function TechnicalDemonstrationStepCard({ step, onEditField }: TechnicalD
     );
   }
 
-  function editorFor(field: CuttingStepOverrideFieldName, label: string, currentValue: unknown, overridden: boolean) {
+  function editorFor(field: CuttingStepOverrideFieldName, label: string, currentValue: unknown, overridden: boolean, optionsOverride?: readonly string[]) {
     if (editingField !== field) return null;
     return (
       <TechnicalDemonstrationStepFieldEditor
@@ -95,6 +115,7 @@ export function TechnicalDemonstrationStepCard({ step, onEditField }: TechnicalD
         hasBeenOverridden={overridden}
         onSubmit={handleEditorSubmit}
         onCancel={() => setEditingField(null)}
+        optionsOverride={optionsOverride}
       />
     );
   }
@@ -107,9 +128,40 @@ export function TechnicalDemonstrationStepCard({ step, onEditField }: TechnicalD
 
       {step.explanation ? <p className="text-sm text-foreground">{step.explanation}</p> : null}
 
-      {populated.length > 0 ? (
+      <div className="flex flex-col gap-1 rounded-lg border border-border p-2.5">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-sm">
+          <dt className="text-muted">Execution action</dt>
+          <dd className="flex flex-wrap items-center justify-end gap-1.5 text-right font-medium text-foreground">
+            {actionTypeRow ? (
+              <>
+                {actionTypeRow.value}
+                <TechnicalDemonstrationProvenanceBadge provenance={actionTypeRow.provenance} />
+              </>
+            ) : (
+              "Not classified"
+            )}
+            {onEditField ? editButton("actionType") : null}
+          </dd>
+        </div>
+        {!actionTypeRow ? (
+          <p className="text-xs text-muted">
+            {actionTypeIsNotApplicable
+              ? "A professional determined this step genuinely has no applicable execution action."
+              : "Needs professional classification -- readiness cannot fully determine which technical fields apply to this step until this is set."}
+          </p>
+        ) : null}
+        {editorFor(
+          "actionType",
+          "Execution action",
+          actionTypeRow ? currentValueFor("actionType") : null,
+          hasBeenOverriddenFor("actionType"),
+          resolveActionTypeOptionsForPhase(stepPhase),
+        )}
+      </div>
+
+      {populatedWithoutActionType.length > 0 ? (
         <dl className="flex flex-col gap-1.5">
-          {populated.map((row) => {
+          {populatedWithoutActionType.map((row) => {
             const field = isEditableField(row.key) ? row.key : null;
             return (
               <div key={row.key} className="flex flex-col gap-1">
@@ -139,12 +191,12 @@ export function TechnicalDemonstrationStepCard({ step, onEditField }: TechnicalD
         </div>
       ) : null}
 
-      {notApplicable.length > 0 ? (
+      {notApplicableWithoutActionType.length > 0 ? (
         <details className="text-xs text-muted">
-          <summary className="cursor-pointer select-none">Marked not applicable for this step ({notApplicable.length})</summary>
+          <summary className="cursor-pointer select-none">Marked not applicable for this step ({notApplicableWithoutActionType.length})</summary>
           <p className="mt-1">A professional determined these details genuinely do not apply to this specific step.</p>
           <ul className="mt-2 flex flex-col gap-1.5 list-none p-0">
-            {notApplicable.map((label) => {
+            {notApplicableWithoutActionType.map((label) => {
               const field = UNKNOWN_LABEL_TO_FIELD[label] ?? null;
               return (
                 <li key={label} className="flex flex-col gap-1">
@@ -160,22 +212,16 @@ export function TechnicalDemonstrationStepCard({ step, onEditField }: TechnicalD
         </details>
       ) : null}
 
-      {unknown.length > 0 ? (
+      {unknownWithoutActionType.length > 0 ? (
         <details className="text-xs text-muted">
-          <summary className="cursor-pointer select-none">Not yet available for this step ({unknown.length})</summary>
+          <summary className="cursor-pointer select-none">Not yet available for this step ({unknownWithoutActionType.length})</summary>
           <p className="mt-1">
             The current approved data does not support these technical details yet -- nothing has been invented for
             them.
             {onEditField ? " A professional can complete or mark any of these below." : ""}
           </p>
-          {unknown.includes("Execution action") ? (
-            <p className="mt-1">
-              Readiness cannot fully determine which technical fields apply to this step until the execution action
-              is classified.
-            </p>
-          ) : null}
           <ul className="mt-2 flex flex-col gap-1.5 list-none p-0">
-            {unknown.map((label) => {
+            {unknownWithoutActionType.map((label) => {
               const field = UNKNOWN_LABEL_TO_FIELD[label] ?? null;
               return (
                 <li key={label} className="flex flex-col gap-1">

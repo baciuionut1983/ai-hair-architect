@@ -1,6 +1,6 @@
 import type { TechnicalCutPlan } from "@/lib/contracts";
 import { type CuttingDemonstrationStepPayload, type CuttingExecutionActionType, type CuttingExecutionPhase } from "@/lib/technical-demonstration-cutting-contracts";
-import type { TechnicalDemonstrationProvenanceValue } from "@/lib/technical-demonstration-contracts";
+import { isProvenanceNotApplicable, isProvenancePopulated, type TechnicalDemonstrationProvenanceValue } from "@/lib/technical-demonstration-contracts";
 import { isHeadZone } from "@/lib/technical-visual-map-validators";
 
 // Technical Demonstration, Stage 1 -- the deterministic derivation
@@ -114,14 +114,17 @@ function resolvePhase(sourceZoneLabel: string): TechnicalDemonstrationProvenance
   return phase ? { value: phase, provenance: "INFERRED" } : { value: null, provenance: "UNKNOWN" };
 }
 
-// Stage 2.5.d -- actionType derivation. Deterministic and exported (the
-// readiness relevance engine reuses this SAME map for its own read-time
-// backward-compatibility fallback -- see technical-demonstration-cutting-
-// video-readiness.ts's own resolveEffectiveActionType -- never a second,
-// competing definition of "which phases have a certain action"). Only the
-// 3 phases where FIELD_APPLICABLE_PHASES already proves a real technique
-// is attached get a real value; GUIDE_AND_STRUCTURE and
-// CROSS_CHECK_AND_FINISH are deliberately absent from this map -- the
+// Stage 2.5.d -- actionType derivation. Deterministic and exported -- the
+// ONE canonical source ("prefer one canonical derivation source" -- the
+// UI/read-model compatibility fix's own explicit requirement) both the
+// readiness engine (technical-demonstration-cutting-video-readiness.ts)
+// and the professional-facing read model (technical-demonstration-cutting-
+// overrides.ts's own resolveEffectiveCuttingStepPayload) resolve through,
+// via this file's own resolveEffectiveActionType below -- never two
+// independently-maintained compatibility mappings that could silently
+// drift apart. Only the 3 phases where FIELD_APPLICABLE_PHASES already
+// proves a real technique is attached get a real value; GUIDE_AND_STRUCTURE
+// and CROSS_CHECK_AND_FINISH are deliberately absent from this map -- the
 // domain contract has no field that distinguishes a real cut from a pure
 // observation/reference action on those two phases (a genuine, reported
 // domain contract gap -- see the Stage 2.5.d audit -- not guessed around
@@ -137,6 +140,34 @@ function resolveActionType(phase: CuttingExecutionPhase | null): TechnicalDemons
   if (phase === null) return { value: null, provenance: "UNKNOWN" };
   const actionType = DETERMINISTIC_ACTION_TYPE_BY_PHASE[phase];
   return actionType ? { value: actionType, provenance: "INFERRED" } : { value: null, provenance: "UNKNOWN" };
+}
+
+// UI/read-model compatibility fix (Stage 2.5.d, round 2) -- given a step's
+// OWN actionType entry (which may be genuinely absent -- a step persisted
+// before this field existed, e.g. current production V2 -- or honestly
+// UNKNOWN/NOT_APPLICABLE) and its resolved phase, returns the value every
+// consumer should treat as authoritative: the real entry if one already
+// exists (a professional override always wins, whatever produced it),
+// otherwise the SAME deterministic fallback resolveActionType would have
+// produced for a brand new step on that phase. Returns `null` only when
+// genuinely nothing can be said honestly (GUIDE_AND_STRUCTURE/
+// CROSS_CHECK_AND_FINISH with no professional classification yet, or an
+// unrecognized phase) -- never guessed from free text, tool name, or an
+// LLM call. This is a pure, read-only computation -- it never mutates or
+// persists anything; a legacy step's own stored payload is never touched.
+export function resolveEffectiveActionType(
+  actionTypeEntry: TechnicalDemonstrationProvenanceValue<CuttingExecutionActionType> | undefined,
+  phase: CuttingExecutionPhase | null,
+): CuttingExecutionActionType | null {
+  if (actionTypeEntry && isProvenancePopulated(actionTypeEntry)) return actionTypeEntry.value as CuttingExecutionActionType;
+  // An explicit NOT_APPLICABLE is itself a real professional decision --
+  // "immutable baseline preserved, professional override preserved
+  // separately" applies here exactly as everywhere else in this domain:
+  // the deterministic fallback below must never silently overwrite it,
+  // even on a phase where a fallback value would otherwise exist.
+  if (actionTypeEntry && isProvenanceNotApplicable(actionTypeEntry)) return null;
+  if (phase === null) return null;
+  return DETERMINISTIC_ACTION_TYPE_BY_PHASE[phase] ?? null;
 }
 
 // Which execution phase(s) a given plan-level field is genuinely valid on.
