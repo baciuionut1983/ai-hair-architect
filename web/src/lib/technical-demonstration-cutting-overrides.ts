@@ -9,7 +9,7 @@ import {
 } from "@/lib/proposal-validators";
 import { isHeadZone, isRecord } from "@/lib/technical-visual-map-validators";
 import type { TechnicalDemonstrationProvenanceValue } from "@/lib/technical-demonstration-contracts";
-import type { CuttingDemonstrationStepPayload } from "@/lib/technical-demonstration-cutting-contracts";
+import { isCuttingExecutionActionType, type CuttingDemonstrationStepPayload } from "@/lib/technical-demonstration-cutting-contracts";
 
 // Technical Demonstration, Stage 2.5.b -- the Cutting V1 professional
 // adjustment layer. Mirrors technical-visual-map-validators.ts's own
@@ -45,12 +45,26 @@ import type { CuttingDemonstrationStepPayload } from "@/lib/technical-demonstrat
 //     a professional silently editing/removing a safety constraint here
 //     would be a real safety regression, not a legitimate technical
 //     correction; this field intentionally has no override mechanism.
+//
+// `actionType` (Stage 2.5.d) is DELIBERATELY INCLUDED despite superficially
+// resembling `phase` -- the two are not analogous. `phase` is a WORKFLOW
+// POSITION the deterministic engine always knows with certainty (it gates
+// other fields' own applicability, so letting it be edited would be
+// gameable, per the exclusion above). `actionType` is a PROFESSIONAL
+// JUDGMENT about what real action occurred, which the deterministic
+// derivation can only sometimes know (see CuttingExecutionActionType's own
+// header comment) -- for GUIDE_AND_STRUCTURE and CROSS_CHECK_AND_FINISH
+// steps, a professional classification is the ONLY mechanism that can ever
+// resolve it honestly. This is exactly the same "AI/browser proposes,
+// deterministic server code resolves/validates" principle every other
+// override field in this list already embodies.
 // ---------------------------------------------------------------------------
 
 export const CUTTING_STEP_OVERRIDE_FIELD_NAMES = [
   "zones",
   "elevation",
   "tool",
+  "actionType",
   "sectioning",
   "guideType",
   "structuralTechnique",
@@ -107,6 +121,7 @@ const FIELD_VALUE_VALIDATORS: Record<CuttingStepOverrideFieldName, (value: unkno
   zones: (v) => Array.isArray(v) && v.length > 0 && v.every(isHeadZone),
   elevation: (v) => isOneOf(v, ELEVATION_OPTIONS),
   tool: isNonEmptyString,
+  actionType: (v) => isCuttingExecutionActionType(v),
   sectioning: (v) => isOneOf(v, SECTIONING_OPTIONS),
   guideType: (v) => isOneOf(v, GUIDELINE_OPTIONS),
   structuralTechnique: (v) => isOneOf(v, STRUCTURAL_TECHNIQUES),

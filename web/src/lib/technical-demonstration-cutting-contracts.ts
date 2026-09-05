@@ -108,6 +108,41 @@ export function isValidCuttingExecutionPhaseSequence(phases: readonly (CuttingEx
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Execution action type -- Stage 2.5.d's own core addition. Answers "what
+// PROFESSIONAL ACTION does this step actually perform" -- a genuinely
+// different question from `phase` (WHICH WORKFLOW STAGE is this) or a
+// technique field (HOW is the action carried out). The readiness relevance
+// audit found `phase` alone insufficient: a GUIDE_AND_STRUCTURE step could
+// be a pure observation/reference or a real cut, and a CROSS_CHECK_AND_FINISH
+// step could be a pure check or include a real corrective cut -- `phase`
+// cannot distinguish either pair, and no other existing structured field
+// does either.
+//
+// Deliberately a CLOSED, minimal vocabulary of 7 real values -- NOT 8.
+// "UNKNOWN" is intentionally NOT a member of this union, unlike a naive
+// reading of the audit's own illustrative list might suggest: every other
+// closed enum in this domain (TechnicalCutElevation, CuttingExecutionPhase,
+// etc.) represents "we don't know yet" via the wrapping
+// TechnicalDemonstrationProvenanceValue's own `provenance: "UNKNOWN"` tag
+// (`value: null`), never as an extra enum member mixed in with real values.
+// actionType follows the exact same discipline for consistency -- see
+// `actionType` on CuttingDemonstrationStepPayload below.
+export const CUTTING_EXECUTION_ACTION_TYPES = [
+  "SECTIONING_ACTION",
+  "STRUCTURAL_CUTTING",
+  "TEXTURIZING_ACTION",
+  "GUIDE_OBSERVATION",
+  "GUIDE_CUTTING",
+  "FINAL_OBSERVATION",
+  "CORRECTIVE_CUTTING",
+] as const;
+export type CuttingExecutionActionType = (typeof CUTTING_EXECUTION_ACTION_TYPES)[number];
+
+export function isCuttingExecutionActionType(value: unknown): value is CuttingExecutionActionType {
+  return typeof value === "string" && (CUTTING_EXECUTION_ACTION_TYPES as readonly string[]).includes(value);
+}
+
 export interface CuttingDemonstrationStepPayload {
   // OBSERVED -- copied verbatim from this step's own source CuttingStep.zone.
   zones: TechnicalDemonstrationProvenanceValue<HeadZone[]>;
@@ -145,6 +180,26 @@ export interface CuttingDemonstrationStepPayload {
   // source field) is exactly the confusion this field exists to resolve
   // without ever reinterpreting that label AS a zone.
   phase: TechnicalDemonstrationProvenanceValue<CuttingExecutionPhase>;
+
+  // Stage 2.5.d -- WHAT PROFESSIONAL ACTION this step performs (see
+  // CuttingExecutionActionType's own header comment for the full
+  // reasoning). INFERRED with certainty for the 3 phases where
+  // FIELD_APPLICABLE_PHASES already proves a real technique is attached
+  // (PREPARATION_AND_SECTIONING -> SECTIONING_ACTION, STRUCTURAL_CUTTING ->
+  // STRUCTURAL_CUTTING, REFINEMENT_TEXTURIZING -> TEXTURIZING_ACTION -- see
+  // DETERMINISTIC_ACTION_TYPE_BY_PHASE, technical-demonstration-
+  // derivation.ts). Honestly UNKNOWN for GUIDE_AND_STRUCTURE and
+  // CROSS_CHECK_AND_FINISH -- the domain contract has no field anywhere
+  // that distinguishes a real cut from a pure observation/reference action
+  // on those two phases (a genuine, reported domain contract gap, not
+  // guessed around here). RELEASE-BLOCKER-style discipline, same as every
+  // other field on this payload: PROFESSIONAL_OVERRIDE, never a generic
+  // INFERRED, whenever a professional explicitly classifies it via
+  // CuttingStepOverrideFieldName's own "actionType" entry -- this is the
+  // ONE mechanism that can ever resolve GUIDE_OBSERVATION/GUIDE_CUTTING or
+  // FINAL_OBSERVATION/CORRECTIVE_CUTTING; the deterministic derivation
+  // never produces those four values itself.
+  actionType: TechnicalDemonstrationProvenanceValue<CuttingExecutionActionType>;
 
   // INFERRED -- plan-level fields, propagated to a step ONLY when that
   // step's own resolved `phase` (above) is genuinely where this fact is
@@ -280,6 +335,7 @@ export function isValidCuttingDemonstrationStepPayload(value: unknown): value is
     isProvenanceValue(value.elevation, (c): c is TechnicalCutElevation => isOneOf(c, ELEVATION_OPTIONS)) &&
     isProvenanceString(value.tool) &&
     isProvenanceValue(value.phase, isCuttingExecutionPhase) &&
+    isProvenanceValue(value.actionType, isCuttingExecutionActionType) &&
     isProvenanceValue(value.sectioning, (c): c is TechnicalCutSectioning => isOneOf(c, SECTIONING_OPTIONS)) &&
     isProvenanceValue(value.guideType, (c): c is TechnicalCutGuideline => isOneOf(c, GUIDELINE_OPTIONS)) &&
     isProvenanceValue(value.structuralTechnique, (c): c is StructuralTechnique => isOneOf(c, STRUCTURAL_TECHNIQUES)) &&

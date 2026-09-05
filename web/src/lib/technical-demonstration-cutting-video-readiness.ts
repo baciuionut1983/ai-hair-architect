@@ -4,8 +4,9 @@ import {
   type TechnicalDemonstrationPlanRecord,
   type TechnicalDemonstrationStepRecord,
 } from "@/lib/technical-demonstration-contracts";
-import { CUTTING_EXECUTION_PHASES, type CuttingDemonstrationStepPayload, type CuttingExecutionPhase } from "@/lib/technical-demonstration-cutting-contracts";
+import { CUTTING_EXECUTION_PHASES, type CuttingDemonstrationStepPayload, type CuttingExecutionActionType, type CuttingExecutionPhase } from "@/lib/technical-demonstration-cutting-contracts";
 import type { CuttingStepOverrideFieldName } from "@/lib/technical-demonstration-cutting-overrides";
+import { DETERMINISTIC_ACTION_TYPE_BY_PHASE } from "@/lib/technical-demonstration-derivation";
 
 // Technical Demonstration, Stage 2.5.c -- the Technical Execution Video
 // READINESS GATE. Pure, deterministic, server-only domain logic: no I/O, no
@@ -57,20 +58,28 @@ export interface FieldReadinessRule {
 
 const ALL_PHASES: readonly CuttingExecutionPhase[] = CUTTING_EXECUTION_PHASES;
 
+// Stage 2.5.d note: both phase lists below are now FALLBACK DEFAULTS only,
+// used exclusively when a step's own effective actionType is UNKNOWN/
+// NOT_APPLICABLE (see resolveEffectiveActionType/isRuleApplicableForStep
+// further down, which check actionType FIRST and only consult these lists
+// when actionType gives no definitive verdict). They remain exactly as the
+// readiness relevance audit left them -- this is what guarantees byte-
+// identical behavior for any plan whose payload predates actionType
+// entirely (current production V2, still missing this field).
+
 // The four phases that involve an actual cutting/technical action, as
 // opposed to CROSS_CHECK_AND_FINISH's own pure-observation default. Used
 // only to scope the 5 explicitly FINAL_CHECK-exempted cutting-geometry
 // fields per the Stage 2.5.c decision lock's own named list.
 //
-// Kept for `fingerPosition`, `toolOrientation`, and `clientHeadPosition`
-// (still evaluated on PREPARATION_AND_SECTIONING) -- the readiness
-// relevance audit found NO deterministic structured signal (today) that
-// could exclude these three from a sectioning step: a sectioning
-// technique's own enum value (SECTIONING_OPTIONS) says nothing about
-// whether finger control or tool orientation materially matters for that
-// specific pattern. Per the fail-closed principle, they stay
-// CONDITIONALLY_REQUIRED there -- the professional resolves per step
-// (real value or explicit N/A), exactly as before this fix.
+// Kept for `clientHeadPosition` (still evaluated on PREPARATION_AND_SECTIONING,
+// and NOT one of the ACTION_SENSITIVE_FIELDS the actionType layer governs --
+// an explicitly open question per the Stage 2.5.d audit, not resolved by
+// this fix). `fingerPosition`/`toolOrientation` are ALSO listed here as
+// their own fallback default (still relevant when actionType is UNKNOWN),
+// but ARE part of ACTION_SENSITIVE_FIELDS -- once a step's effective
+// actionType resolves to a real value, that verdict takes priority over
+// this array for those two fields specifically.
 const CUTTING_ACTION_PHASES: readonly CuttingExecutionPhase[] = [
   "PREPARATION_AND_SECTIONING",
   "GUIDE_AND_STRUCTURE",
@@ -80,30 +89,17 @@ const CUTTING_ACTION_PHASES: readonly CuttingExecutionPhase[] = [
 
 // Readiness relevance audit fix -- `cuttingAngle`, `cuttingLine`, and
 // `fingerAngle` describe the geometry of an actual BLADE CUTTING ACTION.
-// Unlike `fingerPosition`/`toolOrientation`/`clientHeadPosition` above,
-// there IS a deterministic, structural guarantee that excludes
-// PREPARATION_AND_SECTIONING for these three specifically: FIELD_APPLICABLE_
-// PHASES (technical-demonstration-derivation.ts, unmodified) never
-// attaches a `structuralTechnique`/`cuttingTechnique` value to a
-// sectioning-phase step -- the deterministic derivation itself proves no
-// real cutting technique is EVER represented there. A pure sectioning step
-// (e.g. "Partition using 4 quadrant profile radial...") has categorically
-// nothing for these three fields to describe. This is not a professional
-// judgment call being made here -- it is a direct, provable consequence of
-// data that already exists, exactly as certain as FINAL_CHECK's own
-// existing exclusion.
-//
-// GUIDE_AND_STRUCTURE and REFINEMENT_TEXTURIZING are deliberately KEPT in
-// this list (unlike PREPARATION_AND_SECTIONING) -- the readiness relevance
-// audit found the domain contract does NOT currently distinguish
-// "guide established via a real cut" from "guide established by
-// marking/combing only" (no GUIDE_OBSERVATION/GUIDE_CUTTING discriminator
-// exists on CuttingDemonstrationStepPayload or anywhere upstream). Per the
-// explicit fail-closed instruction, an unprovable exclusion is never
-// applied -- these two phases keep the conservative (currently-required)
-// treatment for these three fields until a real domain contract addition
-// resolves the gap. See this file's own header comment / the Stage 2.5.c
-// relevance-fix report for the exact gap description.
+// Unlike `clientHeadPosition` above, there IS a deterministic, structural
+// guarantee that excludes PREPARATION_AND_SECTIONING for these three
+// specifically: FIELD_APPLICABLE_PHASES (technical-demonstration-
+// derivation.ts, unmodified) never attaches a `structuralTechnique`/
+// `cuttingTechnique` value to a sectioning-phase step -- the deterministic
+// derivation itself proves no real cutting technique is EVER represented
+// there. This remains the array's own fallback shape (still correct for
+// actionType-UNKNOWN legacy data); GUIDE_AND_STRUCTURE and
+// REFINEMENT_TEXTURIZING are kept in this list as the conservative
+// default for the same reason as CUTTING_ACTION_PHASES above -- the
+// actionType layer is what actually resolves them precisely now.
 const PHASES_WITH_PROVEN_CUTTING_GEOMETRY: readonly CuttingExecutionPhase[] = [
   "GUIDE_AND_STRUCTURE",
   "STRUCTURAL_CUTTING",
@@ -152,6 +148,72 @@ function isTechniqueExcludedForStep(field: CuttingStepOverrideFieldName, payload
     const techniqueEntry = payload[exclusion.techniqueField] as { value: unknown; provenance: string };
     return isProvenancePopulated(techniqueEntry) && exclusion.excludedForValues.includes(techniqueEntry.value as string);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2.5.d -- actionType as an AUTHORITATIVE relevance input. A real,
+// populated actionType value (professionally overridden, or deterministically
+// derived) settles relevance for the 5 blade-cutting-geometry fields
+// DEFINITIVELY, taking priority over the phase-based fallback tables above
+// -- in EITHER direction: it can newly EXCLUDE a field a phase-only rule
+// would have required (e.g. GUIDE_OBSERVATION on a GUIDE_AND_STRUCTURE
+// step), or newly REQUIRE one a phase-only rule would never have asked for
+// at all (e.g. CORRECTIVE_CUTTING on a CROSS_CHECK_AND_FINISH step -- the
+// ONE mechanism that can ever make a FINAL_CHECK step require cutting
+// geometry, exactly as the original Stage 2.5.c decision lock always said
+// was possible but had no way to express).
+//
+// Deliberately excludes `clientHeadPosition` -- the Stage 2.5.d audit left
+// its own sectioning/guide/final-check relevance as an explicitly open
+// question, not resolved by this fix; it continues to be governed purely
+// by its own phase-level rule, unaffected by actionType.
+// ---------------------------------------------------------------------------
+
+const ACTION_SENSITIVE_FIELDS: ReadonlySet<CuttingStepOverrideFieldName> = new Set([
+  "fingerPosition",
+  "fingerAngle",
+  "cuttingAngle",
+  "cuttingLine",
+  "toolOrientation",
+]);
+
+const ACTION_TYPES_REQUIRING_CUTTING_GEOMETRY: ReadonlySet<CuttingExecutionActionType> = new Set([
+  "STRUCTURAL_CUTTING",
+  "GUIDE_CUTTING",
+  "TEXTURIZING_ACTION",
+  "CORRECTIVE_CUTTING",
+]);
+
+const ACTION_TYPES_EXCLUDING_CUTTING_GEOMETRY: ReadonlySet<CuttingExecutionActionType> = new Set([
+  "SECTIONING_ACTION",
+  "GUIDE_OBSERVATION",
+  "FINAL_OBSERVATION",
+]);
+
+// Backward-compatibility read-time fallback (Stage 2.5.d): for a step
+// whose OWN stored/effective payload has no real actionType value at all
+// (current production V2 -- created before this field existed), the 3
+// phases where DETERMINISTIC_ACTION_TYPE_BY_PHASE already proves a real
+// technique is attached can still be safely inferred AT READ TIME, without
+// ever mutating the stored row. GUIDE_AND_STRUCTURE and
+// CROSS_CHECK_AND_FINISH are never inferred this way -- there is no
+// deterministic source for them (see that map's own header comment) --
+// they resolve to `null` here exactly like an explicit UNKNOWN would, and
+// isRuleApplicableForStep's own fallback then applies unchanged.
+function resolveEffectiveActionType(payload: CuttingDemonstrationStepPayload, phase: CuttingExecutionPhase): CuttingExecutionActionType | null {
+  const actionTypeEntry = payload.actionType;
+  if (isProvenancePopulated(actionTypeEntry)) return actionTypeEntry.value as CuttingExecutionActionType;
+  return DETERMINISTIC_ACTION_TYPE_BY_PHASE[phase] ?? null;
+}
+
+function isRuleApplicableForStep(rule: FieldReadinessRule, phase: CuttingExecutionPhase, effectiveActionType: CuttingExecutionActionType | null): boolean {
+  if (effectiveActionType && ACTION_SENSITIVE_FIELDS.has(rule.field)) {
+    if (ACTION_TYPES_REQUIRING_CUTTING_GEOMETRY.has(effectiveActionType)) return true;
+    if (ACTION_TYPES_EXCLUDING_CUTTING_GEOMETRY.has(effectiveActionType)) return false;
+  }
+  // No definitive actionType verdict for this field -- fall back to
+  // exactly the phase-based default, unchanged.
+  return rule.applicablePhases.includes(phase);
 }
 
 export const CUTTING_EXECUTION_VIDEO_READINESS_RULES: readonly FieldReadinessRule[] = [
@@ -280,6 +342,7 @@ function fieldLabelForMessage(field: CuttingStepOverrideFieldName): string {
     zones: "Zone(s)",
     elevation: "Elevation",
     tool: "Tool",
+    actionType: "Execution action",
     sectioning: "Sectioning",
     guideType: "Guide",
     structuralTechnique: "Structural technique",
@@ -337,10 +400,11 @@ export function evaluateStepReadiness(step: TechnicalDemonstrationStepRecord): S
     };
   }
 
+  const effectiveActionType = resolveEffectiveActionType(payload, phase);
   const reasons: ReadinessBlockingReason[] = [];
 
   for (const rule of CUTTING_EXECUTION_VIDEO_READINESS_RULES) {
-    if (!rule.applicablePhases.includes(phase)) continue; // not evaluated on this phase -- implicitly OPTIONAL here
+    if (!isRuleApplicableForStep(rule, phase, effectiveActionType)) continue; // not applicable for this step -- implicitly OPTIONAL here
     if (isTechniqueExcludedForStep(rule.field, payload)) continue; // this step's own technique identity says the field is not relevant here
 
     const entry = payload[rule.field] as { value: unknown; provenance: string } | undefined;

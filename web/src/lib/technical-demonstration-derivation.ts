@@ -1,5 +1,5 @@
 import type { TechnicalCutPlan } from "@/lib/contracts";
-import { type CuttingDemonstrationStepPayload, type CuttingExecutionPhase } from "@/lib/technical-demonstration-cutting-contracts";
+import { type CuttingDemonstrationStepPayload, type CuttingExecutionActionType, type CuttingExecutionPhase } from "@/lib/technical-demonstration-cutting-contracts";
 import type { TechnicalDemonstrationProvenanceValue } from "@/lib/technical-demonstration-contracts";
 import { isHeadZone } from "@/lib/technical-visual-map-validators";
 
@@ -112,6 +112,31 @@ const PHASE_LABEL_LOOKUP: Readonly<Record<string, CuttingExecutionPhase>> = {
 function resolvePhase(sourceZoneLabel: string): TechnicalDemonstrationProvenanceValue<CuttingExecutionPhase> {
   const phase = PHASE_LABEL_LOOKUP[sourceZoneLabel];
   return phase ? { value: phase, provenance: "INFERRED" } : { value: null, provenance: "UNKNOWN" };
+}
+
+// Stage 2.5.d -- actionType derivation. Deterministic and exported (the
+// readiness relevance engine reuses this SAME map for its own read-time
+// backward-compatibility fallback -- see technical-demonstration-cutting-
+// video-readiness.ts's own resolveEffectiveActionType -- never a second,
+// competing definition of "which phases have a certain action"). Only the
+// 3 phases where FIELD_APPLICABLE_PHASES already proves a real technique
+// is attached get a real value; GUIDE_AND_STRUCTURE and
+// CROSS_CHECK_AND_FINISH are deliberately absent from this map -- the
+// domain contract has no field that distinguishes a real cut from a pure
+// observation/reference action on those two phases (a genuine, reported
+// domain contract gap -- see the Stage 2.5.d audit -- not guessed around
+// here). A step on either of those two phases stays honestly UNKNOWN until
+// a professional explicitly classifies it via a real override.
+export const DETERMINISTIC_ACTION_TYPE_BY_PHASE: Readonly<Partial<Record<CuttingExecutionPhase, CuttingExecutionActionType>>> = {
+  PREPARATION_AND_SECTIONING: "SECTIONING_ACTION",
+  STRUCTURAL_CUTTING: "STRUCTURAL_CUTTING",
+  REFINEMENT_TEXTURIZING: "TEXTURIZING_ACTION",
+};
+
+function resolveActionType(phase: CuttingExecutionPhase | null): TechnicalDemonstrationProvenanceValue<CuttingExecutionActionType> {
+  if (phase === null) return { value: null, provenance: "UNKNOWN" };
+  const actionType = DETERMINISTIC_ACTION_TYPE_BY_PHASE[phase];
+  return actionType ? { value: actionType, provenance: "INFERRED" } : { value: null, provenance: "UNKNOWN" };
 }
 
 // Which execution phase(s) a given plan-level field is genuinely valid on.
@@ -227,6 +252,7 @@ export function deriveCuttingDemonstrationSteps(plan: TechnicalCutPlan, editedFi
       elevation: planScopedField(phaseValue, FIELD_APPLICABLE_PHASES.elevation, () => observed(sourceStep.elevationAngle)),
       tool: observed(sourceStep.toolRequired),
       phase,
+      actionType: resolveActionType(phaseValue),
 
       sectioning: planScopedField(phaseValue, FIELD_APPLICABLE_PHASES.sectioning, () =>
         inferredOrOverride(plan.sectioning, editedFields.has("sectioning")),

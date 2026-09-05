@@ -118,6 +118,47 @@ describe("isValidCuttingDemonstrationStepPayload", () => {
     expect(isValidCuttingDemonstrationStepPayload(withUnknownPhase)).toBe(true);
   });
 
+  // Stage 2.5.d -- new `actionType` field, same discipline as `phase`.
+  it("rejects a payload missing the new Stage 2.5.d `actionType` field entirely", () => {
+    const payload = validPayload() as unknown as Record<string, unknown>;
+    delete payload.actionType;
+    expect(isValidCuttingDemonstrationStepPayload(payload)).toBe(false);
+  });
+
+  it("rejects an out-of-vocabulary actionType value even when correctly provenance-wrapped", () => {
+    const payload = validPayload();
+    const malformed = { ...payload, actionType: { value: "NOT_A_REAL_ACTION", provenance: "INFERRED" } };
+    expect(isValidCuttingDemonstrationStepPayload(malformed)).toBe(false);
+  });
+
+  it("rejects the literal string 'UNKNOWN' as an actionType VALUE -- unknown-ness is represented via provenance, never as an 8th enum member", () => {
+    const payload = validPayload();
+    const malformed = { ...payload, actionType: { value: "UNKNOWN", provenance: "INFERRED" } };
+    expect(isValidCuttingDemonstrationStepPayload(malformed)).toBe(false);
+  });
+
+  it("accepts an UNKNOWN actionType (GUIDE_AND_STRUCTURE/CROSS_CHECK_AND_FINISH's own honest default)", () => {
+    const payload = validPayload();
+    const withUnknownActionType = { ...payload, actionType: { value: null, provenance: "UNKNOWN" } };
+    expect(isValidCuttingDemonstrationStepPayload(withUnknownActionType)).toBe(true);
+  });
+
+  it("accepts a professionally-overridden actionType for each of the 7 real values", () => {
+    const payload = validPayload();
+    for (const actionType of [
+      "SECTIONING_ACTION",
+      "STRUCTURAL_CUTTING",
+      "TEXTURIZING_ACTION",
+      "GUIDE_OBSERVATION",
+      "GUIDE_CUTTING",
+      "FINAL_OBSERVATION",
+      "CORRECTIVE_CUTTING",
+    ] as const) {
+      const withOverride = { ...payload, actionType: { value: actionType, provenance: "PROFESSIONAL_OVERRIDE" } };
+      expect(isValidCuttingDemonstrationStepPayload(withOverride)).toBe(true);
+    }
+  });
+
   it("rejects a payload missing any one of the new Stage 2.5.a execution fields", () => {
     for (const field of ["fingerAngle", "subsectionThickness", "toolOrientation", "progression", "stateBefore", "stateAfter"] as const) {
       const payload = validPayload() as unknown as Record<string, unknown>;

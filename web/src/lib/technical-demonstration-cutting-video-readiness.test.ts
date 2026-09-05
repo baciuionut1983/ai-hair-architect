@@ -416,19 +416,19 @@ describe("readiness relevance fix -- PREPARATION_AND_SECTIONING no longer over-r
     expect(evaluateStepReadiness(effectiveStep1).reasons.some((r) => r.field === "cuttingAngle")).toBe(false);
   });
 
-  it("fields with NO deterministic exclusion (fingerPosition, toolOrientation, clientHeadPosition) still block on sectioning -- fail-closed, unchanged", () => {
+  it("Stage 2.5.d superseded this: fingerPosition/toolOrientation are NOW excluded on sectioning too, via the automatically-derived actionType=SECTIONING_ACTION -- clientHeadPosition alone remains fail-closed (not one of ACTION_SENSITIVE_FIELDS, unresolved by this fix)", () => {
     const [step1] = baselineSteps();
     const blockedFields = evaluateStepReadiness(step1).reasons.map((r) => r.field);
-    expect(blockedFields).toContain("fingerPosition");
-    expect(blockedFields).toContain("toolOrientation");
+    expect(blockedFields).not.toContain("fingerPosition");
+    expect(blockedFields).not.toContain("toolOrientation");
     expect(blockedFields).toContain("clientHeadPosition");
   });
 
-  it("explicit N/A still satisfies the still-evaluated sectioning fields (fingerPosition, toolOrientation, clientHeadPosition)", () => {
+  it("explicit N/A still satisfies clientHeadPosition on sectioning -- the one field this fix leaves fail-closed there", () => {
     const [step1] = baselineSteps();
     const [effectiveStep1] = applyOverrideInputs(
       [step1],
-      (["fingerPosition", "toolOrientation", "clientHeadPosition"] as const).map((field) => ({
+      (["clientHeadPosition"] as const).map((field) => ({
         op: "mark_not_applicable" as const,
         stepNumber: 1,
         field,
@@ -530,5 +530,103 @@ describe("CUTTING_STEP_TECHNIQUE_RELEVANCE_EXCLUSIONS", () => {
       techniqueField: "texturizingTechnique",
       excludedForValues: ["slice_and_slide"],
     });
+  });
+});
+
+// Stage 2.5.d -- structured execution action contract. actionType is an
+// authoritative relevance input that can newly EXCLUDE fields a phase-only
+// rule would have required (GUIDE_OBSERVATION) or newly REQUIRE fields a
+// phase-only rule never asked for at all (CORRECTIVE_CUTTING on
+// FINAL_CHECK -- the one capability that genuinely did not exist before
+// this stage).
+describe("readiness integration -- actionType professional classification", () => {
+  const CUTTING_GEOMETRY_FIELDS = ["fingerPosition", "fingerAngle", "cuttingAngle", "cuttingLine", "toolOrientation"] as const;
+
+  it("GUIDE_OBSERVATION removes all 5 cutting-action blockers on a GUIDE_AND_STRUCTURE step", () => {
+    const steps = baselineSteps();
+    const [effectiveStep2] = applyOverrideInputs([steps[1]], [{ op: "set_value", stepNumber: 2, field: "actionType", value: "GUIDE_OBSERVATION" }]);
+    const blockedFields = evaluateStepReadiness(effectiveStep2).reasons.map((r) => r.field);
+    for (const field of CUTTING_GEOMETRY_FIELDS) {
+      expect(blockedFields).not.toContain(field);
+    }
+  });
+
+  it("GUIDE_CUTTING keeps requiring all 5 cutting-action fields -- explicit, explainable, same net effect as today's fail-closed default", () => {
+    const steps = baselineSteps();
+    const [effectiveStep2] = applyOverrideInputs([steps[1]], [{ op: "set_value", stepNumber: 2, field: "actionType", value: "GUIDE_CUTTING" }]);
+    const blockedFields = evaluateStepReadiness(effectiveStep2).reasons.map((r) => r.field);
+    for (const field of CUTTING_GEOMETRY_FIELDS) {
+      expect(blockedFields).toContain(field);
+    }
+  });
+
+  it("FINAL_OBSERVATION does not require cutting geometry -- matches the existing default, now explainable rather than merely assumed", () => {
+    const steps = baselineSteps();
+    const [effectiveStep5] = applyOverrideInputs([steps[4]], [{ op: "set_value", stepNumber: 5, field: "actionType", value: "FINAL_OBSERVATION" }]);
+    const blockedFields = evaluateStepReadiness(effectiveStep5).reasons.map((r) => r.field);
+    for (const field of CUTTING_GEOMETRY_FIELDS) {
+      expect(blockedFields).not.toContain(field);
+    }
+  });
+
+  it("CORRECTIVE_CUTTING newly REQUIRES cutting geometry on a CROSS_CHECK_AND_FINISH step -- a genuinely new capability, impossible before this stage", () => {
+    const steps = baselineSteps();
+    const [effectiveStep5] = applyOverrideInputs([steps[4]], [{ op: "set_value", stepNumber: 5, field: "actionType", value: "CORRECTIVE_CUTTING" }]);
+    const blockedFields = evaluateStepReadiness(effectiveStep5).reasons.map((r) => r.field);
+    for (const field of CUTTING_GEOMETRY_FIELDS) {
+      expect(blockedFields).toContain(field);
+    }
+  });
+
+  it("marking actionType NOT_APPLICABLE on a GUIDE step is never treated as a real classification -- falls back to fail-closed, exactly like UNKNOWN", () => {
+    const steps = baselineSteps();
+    const [effectiveStep2] = applyOverrideInputs([steps[1]], [{ op: "mark_not_applicable", stepNumber: 2, field: "actionType" }]);
+    const blockedFields = evaluateStepReadiness(effectiveStep2).reasons.map((r) => r.field);
+    for (const field of CUTTING_GEOMETRY_FIELDS) {
+      expect(blockedFields).toContain(field); // still fail-closed -- N/A never silently becomes "non-cutting"
+    }
+  });
+
+  it("a professional override on actionType participates in effective readiness without mutating the baseline step", () => {
+    const steps = baselineSteps();
+    const step2 = steps[1];
+    const before = JSON.stringify(step2);
+    const [effectiveStep2] = applyOverrideInputs([step2], [{ op: "set_value", stepNumber: 2, field: "actionType", value: "GUIDE_OBSERVATION" }]);
+    expect(evaluateStepReadiness(step2).reasons.some((r) => r.field === "cuttingLine")).toBe(true); // baseline unaffected
+    expect(evaluateStepReadiness(effectiveStep2).reasons.some((r) => r.field === "cuttingLine")).toBe(false); // effective view changed
+    expect(JSON.stringify(step2)).toBe(before);
+  });
+});
+
+// Backward compatibility -- current production V2 was created before
+// actionType existed; its own stored payload literally has no `actionType`
+// key at all (not UNKNOWN -- absent). Must never crash, and must fall back
+// to exactly the same behavior as an explicit UNKNOWN.
+describe("readiness integration -- backward compatibility for a payload with no actionType key at all", () => {
+  function stripActionType(step: TechnicalDemonstrationStepRecord): TechnicalDemonstrationStepRecord {
+    const payload = { ...(step.payload as unknown as Record<string, unknown>) };
+    delete payload.actionType;
+    return { ...step, payload };
+  }
+
+  it("does not crash for any of the 5 phases", () => {
+    for (const step of baselineSteps()) {
+      expect(() => evaluateStepReadiness(stripActionType(step))).not.toThrow();
+    }
+  });
+
+  it("SECTIONING/STRUCTURAL_CUTTING/TEXTURIZING still get the correct read-time fallback classification, identical to a plan that has the field", () => {
+    const steps = baselineSteps();
+    const withField = [1, 3, 4].map((n) => evaluateStepReadiness(steps[n - 1]).reasons.map((r) => r.field));
+    const withoutField = [1, 3, 4].map((n) => evaluateStepReadiness(stripActionType(steps[n - 1])).reasons.map((r) => r.field));
+    expect(withoutField).toEqual(withField);
+  });
+
+  it("GUIDE and FINAL_CHECK remain fail-closed -- identical to an explicit UNKNOWN, never more permissive just because the key is missing", () => {
+    const steps = baselineSteps();
+    const guideBlocked = evaluateStepReadiness(stripActionType(steps[1])).reasons.map((r) => r.field);
+    const finalBlocked = evaluateStepReadiness(stripActionType(steps[4])).reasons.map((r) => r.field);
+    expect(guideBlocked).toContain("cuttingLine");
+    expect(finalBlocked).not.toContain("cuttingLine"); // FINAL_CHECK's own pre-existing exclusion, unaffected
   });
 });

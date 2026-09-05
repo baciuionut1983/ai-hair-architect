@@ -353,6 +353,59 @@ describe("deriveCuttingDemonstrationSteps", () => {
   });
 });
 
+// Stage 2.5.d -- actionType derivation. Deterministic and certain for the
+// 3 phases where a real technique is always attached; honestly UNKNOWN for
+// GUIDE_AND_STRUCTURE/CROSS_CHECK_AND_FINISH -- never guessed from the
+// step's own free-text `action` or its `toolRequired`.
+describe("deriveCuttingDemonstrationSteps -- actionType derivation", () => {
+  it("PREPARATION_AND_SECTIONING -> SECTIONING_ACTION (INFERRED)", () => {
+    const steps = deriveCuttingDemonstrationSteps(cuttingPlan());
+    expect(steps[0].payload.actionType).toEqual({ value: "SECTIONING_ACTION", provenance: "INFERRED" });
+  });
+
+  it("STRUCTURAL_CUTTING -> STRUCTURAL_CUTTING (INFERRED)", () => {
+    const steps = deriveCuttingDemonstrationSteps(cuttingPlan());
+    expect(steps[2].payload.actionType).toEqual({ value: "STRUCTURAL_CUTTING", provenance: "INFERRED" });
+  });
+
+  it("REFINEMENT_TEXTURIZING -> TEXTURIZING_ACTION (INFERRED)", () => {
+    const steps = deriveCuttingDemonstrationSteps(cuttingPlan());
+    expect(steps[3].payload.actionType).toEqual({ value: "TEXTURIZING_ACTION", provenance: "INFERRED" });
+  });
+
+  it("GUIDE_AND_STRUCTURE -> UNKNOWN -- never guessed between GUIDE_OBSERVATION and GUIDE_CUTTING", () => {
+    const steps = deriveCuttingDemonstrationSteps(cuttingPlan());
+    expect(steps[1].payload.actionType).toEqual({ value: null, provenance: "UNKNOWN" });
+  });
+
+  it("CROSS_CHECK_AND_FINISH -> UNKNOWN -- never guessed between FINAL_OBSERVATION and CORRECTIVE_CUTTING", () => {
+    const steps = deriveCuttingDemonstrationSteps(cuttingPlan());
+    expect(steps[4].payload.actionType).toEqual({ value: null, provenance: "UNKNOWN" });
+  });
+
+  it("an unrecognized phase (null) also cascades to UNKNOWN actionType, same as every other phase-scoped field", () => {
+    const badZoneSteps = realisticCuttingSteps().map((s) => (s.stepNumber === 1 ? { ...s, zone: "not_a_real_phase_label" } : s));
+    const steps = deriveCuttingDemonstrationSteps(cuttingPlan({ cuttingSteps: badZoneSteps }));
+    expect(steps[0].payload.phase).toEqual({ value: null, provenance: "UNKNOWN" });
+    expect(steps[0].payload.actionType).toEqual({ value: null, provenance: "UNKNOWN" });
+  });
+
+  it("no text-based inference -- actionType is identical regardless of the step's own free-text action/explanation", () => {
+    const stepsWithDifferentText = realisticCuttingSteps().map((s) => ({ ...s, action: "completely unrelated free text mentioning cutting, guiding, and observing" }));
+    const steps = deriveCuttingDemonstrationSteps(cuttingPlan({ cuttingSteps: stepsWithDifferentText }));
+    expect(steps[0].payload.actionType.value).toBe("SECTIONING_ACTION");
+    expect(steps[1].payload.actionType).toEqual({ value: null, provenance: "UNKNOWN" }); // still UNKNOWN, text never overrides this
+    expect(steps[4].payload.actionType).toEqual({ value: null, provenance: "UNKNOWN" }); // still UNKNOWN, text never overrides this
+  });
+
+  it("no tool-based inference -- actionType is identical regardless of which tool the step requires", () => {
+    const stepsWithDifferentTools = realisticCuttingSteps().map((s) => ({ ...s, toolRequired: "straight-shear" }));
+    const steps = deriveCuttingDemonstrationSteps(cuttingPlan({ cuttingSteps: stepsWithDifferentTools }));
+    expect(steps[0].payload.actionType.value).toBe("SECTIONING_ACTION"); // still sectioning, even with a cutting tool listed
+    expect(steps[1].payload.actionType).toEqual({ value: null, provenance: "UNKNOWN" }); // still UNKNOWN, tool never resolves the guide split
+  });
+});
+
 // RELEASE-BLOCKER FIX -- professional edit provenance / effective payload.
 // `plan` is expected to already be the EFFECTIVE plan (baseline + edits
 // merged, via technical-visual-map-assembler.ts's own

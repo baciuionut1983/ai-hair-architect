@@ -8,7 +8,7 @@ import {
 } from "@/lib/proposal-validators";
 import { humanizeEnumValue } from "@/lib/humanize-enum-value";
 import type { TechnicalDemonstrationPlanRecord, TechnicalDemonstrationStepRecord } from "@/lib/technical-demonstration-contracts";
-import type { CuttingDemonstrationStepPayload } from "@/lib/technical-demonstration-cutting-contracts";
+import { CUTTING_EXECUTION_ACTION_TYPES, type CuttingDemonstrationStepPayload } from "@/lib/technical-demonstration-cutting-contracts";
 import { CUTTING_STEP_OVERRIDE_FIELD_NAMES, type CuttingStepOverrideFieldName } from "@/lib/technical-demonstration-cutting-overrides";
 import { isProvenanceNotApplicable, isProvenancePopulated } from "@/lib/technical-demonstration-contracts";
 import { HEAD_ZONES } from "@/lib/technical-visual-map-validators";
@@ -125,6 +125,7 @@ function formatBoolean(value: unknown): string {
 // review UI.
 export const CUTTING_STEP_FIELD_DESCRIPTORS: readonly StepFieldDescriptor[] = [
   { key: "phase", label: "Execution phase", formatValue: formatEnum },
+  { key: "actionType", label: "Execution action", formatValue: formatEnum },
   { key: "stateBefore", label: "State before", formatValue: formatText },
   { key: "zones", label: "Zone(s)", formatValue: joinZones },
   { key: "structuralTechnique", label: "Structural technique", formatValue: formatEnum },
@@ -220,6 +221,7 @@ export interface CuttingStepFieldEditorDescriptor {
 }
 
 export const CUTTING_STEP_FIELD_EDITORS: readonly CuttingStepFieldEditorDescriptor[] = [
+  { key: "actionType", kind: "select", options: CUTTING_EXECUTION_ACTION_TYPES },
   { key: "zones", kind: "zones" },
   { key: "elevation", kind: "select", options: ELEVATION_OPTIONS },
   { key: "tool", kind: "text" },

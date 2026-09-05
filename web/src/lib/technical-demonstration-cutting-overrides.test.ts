@@ -78,6 +78,32 @@ describe("isCuttingStepOverrideInput", () => {
     expect(isCuttingStepOverrideInput({ op: "set_value", stepNumber: 1, field: "crossCheck", value: false })).toBe(true);
   });
 
+  // Stage 2.5.d -- a professional can classify actionType for any step
+  // (DRAFT-only editability is enforced generically by applyOverridesToDraft,
+  // unrelated to this field), including the two cases the deterministic
+  // derivation can never resolve on its own.
+  it("accepts a valid set_value input for every one of the 7 real actionType values", () => {
+    for (const actionType of [
+      "SECTIONING_ACTION",
+      "STRUCTURAL_CUTTING",
+      "TEXTURIZING_ACTION",
+      "GUIDE_OBSERVATION",
+      "GUIDE_CUTTING",
+      "FINAL_OBSERVATION",
+      "CORRECTIVE_CUTTING",
+    ]) {
+      expect(isCuttingStepOverrideInput({ op: "set_value", stepNumber: 2, field: "actionType", value: actionType })).toBe(true);
+    }
+  });
+
+  it("rejects 'UNKNOWN' as an actionType override value -- it is a provenance state, never a settable value", () => {
+    expect(isCuttingStepOverrideInput({ op: "set_value", stepNumber: 2, field: "actionType", value: "UNKNOWN" })).toBe(false);
+  });
+
+  it("rejects an unrecognized actionType value", () => {
+    expect(isCuttingStepOverrideInput({ op: "set_value", stepNumber: 2, field: "actionType", value: "SOMETHING_ELSE" })).toBe(false);
+  });
+
   it("rejects a set_value input whose value doesn't match the field's own closed shape", () => {
     expect(isCuttingStepOverrideInput({ op: "set_value", stepNumber: 1, field: "elevation", value: "not_a_real_elevation" })).toBe(false);
     expect(isCuttingStepOverrideInput({ op: "set_value", stepNumber: 1, field: "zones", value: ["not_a_real_zone"] })).toBe(false);

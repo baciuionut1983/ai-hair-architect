@@ -168,6 +168,12 @@ export function TechnicalDemonstrationStepCard({ step, onEditField }: TechnicalD
             them.
             {onEditField ? " A professional can complete or mark any of these below." : ""}
           </p>
+          {unknown.includes("Execution action") ? (
+            <p className="mt-1">
+              Readiness cannot fully determine which technical fields apply to this step until the execution action
+              is classified.
+            </p>
+          ) : null}
           <ul className="mt-2 flex flex-col gap-1.5 list-none p-0">
             {unknown.map((label) => {
               const field = UNKNOWN_LABEL_TO_FIELD[label] ?? null;
