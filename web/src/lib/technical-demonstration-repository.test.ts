@@ -20,6 +20,7 @@ import {
   TechnicalDemonstrationStateError,
 } from "@/lib/technical-demonstration-repository";
 import type { CuttingStepOverrideInput } from "@/lib/technical-demonstration-cutting-overrides";
+import { TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION } from "@/lib/technical-demonstration-derivation";
 
 // Technical Demonstration, Stage 1 -- real Postgres, no mocks, mirroring
 // this codebase's own established convention for every domain-repository
@@ -445,6 +446,66 @@ suite("technical-demonstration-repository (real Postgres)", () => {
 
       const allPlans = await prisma.technicalDemonstrationPlan.findMany({ where: { ownerUserId, clientId, analysisProposalId: proposal.id } });
       expect(allPlans).toHaveLength(2);
+    });
+
+    // Stage 2.5.e.1 -- the SAME guarantee proven above for the Stage 2.5.a
+    // generatorVersion bump, now proven for the Stage 2.5.e.1 bump
+    // specifically, seeded with the REAL value production's own current V2
+    // DRAFT plan was created under ("1.1.0-td25a"). This is invariant C
+    // (the new generator version does not collide with the prior one) at
+    // the full create-function level, plus invariant D (idempotency
+    // resumes immediately after the one-time invalidation -- a second call
+    // under the now-current version returns the SAME newly-created plan,
+    // never a third).
+    it("re-deriving after the Stage 2.5.e.1 generatorVersion bump creates a NEW, separate plan once, then stays idempotent -- the old-generatorVersion DRAFT is never mutated or collided with", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+
+      const oldPlan = await prisma.technicalDemonstrationPlan.create({
+        data: {
+          id: randomUUID(),
+          ownerUserId,
+          clientId,
+          analysisProposalId: proposal.id,
+          analysisProposalConfirmedAt: new Date(proposal.confirmedAt as string),
+          vertical: "cutting",
+          status: "DRAFT",
+          planVersion: 1,
+          schemaVersion: "1.1.0-td25a",
+          generatorVersion: "1.1.0-td25a", // the real value production's own current V2 DRAFT was created under, pre-Stage-2.5.e.1
+          requestFingerprint: randomUUID(), // a fingerprint that could only ever have been computed under the OLD generatorVersion
+        },
+      });
+
+      // The real, current code path -- uses the NEW generatorVersion
+      // internally (TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION,
+      // imported here only to assert against, never to compute the
+      // fingerprint ourselves -- the repository's own real code path does
+      // that).
+      const firstOutcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      expect(firstOutcome.created).toBe(true); // invariant C: a genuinely NEW plan, not a collision with the old one
+      expect(firstOutcome.plan.id).not.toBe(oldPlan.id);
+      expect(firstOutcome.plan.planVersion).toBe(2); // the old plan already occupies planVersion 1
+      expect(firstOutcome.plan.generatorVersion).toBe(TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION);
+      expect(firstOutcome.plan.generatorVersion).not.toBe("1.1.0-td25a");
+
+      // The old plan is completely untouched.
+      const stillOld = await findTechnicalDemonstrationPlanForOwner(ownerUserId, oldPlan.id);
+      expect(stillOld?.status).toBe("DRAFT");
+      expect(stillOld?.generatorVersion).toBe("1.1.0-td25a");
+      expect(stillOld?.planVersion).toBe(1);
+
+      // Invariant D: a SECOND call under the now-current version is
+      // idempotent again -- it resolves to the SAME newly-created plan,
+      // never a third (V4).
+      const secondOutcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+      expect(secondOutcome.created).toBe(false);
+      expect(secondOutcome.plan.id).toBe(firstOutcome.plan.id);
+
+      const allPlans = await prisma.technicalDemonstrationPlan.findMany({ where: { ownerUserId, clientId, analysisProposalId: proposal.id } });
+      expect(allPlans).toHaveLength(2); // old (v1) + the one new plan (v2) -- never a third
     });
   });
 

@@ -92,7 +92,43 @@ import { isHeadZone } from "@/lib/technical-visual-map-validators";
 // phase-scoped field above, since we cannot honestly claim a plan-level
 // fact applies to a step whose own execution phase we don't even know.
 
-export const TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION = "1.1.0-td25a";
+// Stage 2.5.e.1 (fingerprint/version contract fix) -- bumped from
+// "1.1.0-td25a" to "1.2.0-td25e". This constant is the ONE generator
+// version that participates in the Technical Demonstration Plan creation
+// idempotency fingerprint (computeTechnicalDemonstrationPlanRequestFingerprint,
+// technical-demonstration-contracts.ts, via createTechnicalDemonstrationPlanFromProposal,
+// technical-demonstration-repository.ts) -- it is DISTINCT from
+// CUTTING_DEMONSTRATION_STEP_SCHEMA_VERSION (technical-demonstration-cutting-
+// contracts.ts, the persisted step-payload JSON SHAPE) and from
+// cutting-plan-engine.ts's own TECHNICAL_PLAN_VERSION (the upstream,
+// AnalysisProposal-side M8/M27 engine version) -- three genuinely separate
+// concerns that happened to share the same string value from Stage 2.5.a
+// onward, purely by coincidence of both changing in that same stage.
+//
+// Stage 2.5.e changed what deriveCuttingDemonstrationSteps below actually
+// produces for a CROSS_CHECK_AND_FINISH step (resolveActionType's new
+// FINAL_OBSERVATION default, downstream of cutting-plan-engine.ts's own
+// atomic-step fix) -- a real, semantic change to freshly-derived output,
+// while the persisted step SHAPE itself did not change (no new/removed
+// field) -- hence this constant moves, CUTTING_DEMONSTRATION_STEP_SCHEMA_VERSION
+// deliberately does not (bumping it would misrepresent a shape that is
+// actually unchanged). Mirrors the exact same MINOR-version judgment call
+// cutting-plan-engine.ts's own TECHNICAL_PLAN_VERSION already made for this
+// same underlying change ("1.0.0-m8" -> "1.1.0-m8"): a real, user-visible
+// behavior difference for every NEW derivation, not a patch-level detail.
+//
+// This bump is what makes createTechnicalDemonstrationPlanFromProposal's
+// own requestFingerprint genuinely differ for the SAME (owner, client,
+// confirmed proposal) the very first time it is called after this change
+// ships -- any plan already persisted under the OLD value (e.g. real
+// production's own current DRAFT) is completely unaffected: its own
+// stored generatorVersion/requestFingerprint are never rewritten (see
+// resolveEffectiveActionType above and technical-demonstration-repository.ts's
+// own read paths, neither of which ever touches a persisted row), and it
+// remains readable, and re-derivable-as-a-separate-newer-plan, exactly as
+// every prior generatorVersion bump (Stage 1 -> Stage 2.5.a) already
+// proved this mechanism does.
+export const TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION = "1.2.0-td25e";
 
 // The cutting engine's own fixed, closed set of step "zone" labels
 // (cutting-plan-engine.ts's own generateTechnicalCutPlan -- the sole
