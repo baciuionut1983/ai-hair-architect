@@ -61,12 +61,98 @@ const ALL_PHASES: readonly CuttingExecutionPhase[] = CUTTING_EXECUTION_PHASES;
 // opposed to CROSS_CHECK_AND_FINISH's own pure-observation default. Used
 // only to scope the 5 explicitly FINAL_CHECK-exempted cutting-geometry
 // fields per the Stage 2.5.c decision lock's own named list.
+//
+// Kept for `fingerPosition`, `toolOrientation`, and `clientHeadPosition`
+// (still evaluated on PREPARATION_AND_SECTIONING) -- the readiness
+// relevance audit found NO deterministic structured signal (today) that
+// could exclude these three from a sectioning step: a sectioning
+// technique's own enum value (SECTIONING_OPTIONS) says nothing about
+// whether finger control or tool orientation materially matters for that
+// specific pattern. Per the fail-closed principle, they stay
+// CONDITIONALLY_REQUIRED there -- the professional resolves per step
+// (real value or explicit N/A), exactly as before this fix.
 const CUTTING_ACTION_PHASES: readonly CuttingExecutionPhase[] = [
   "PREPARATION_AND_SECTIONING",
   "GUIDE_AND_STRUCTURE",
   "STRUCTURAL_CUTTING",
   "REFINEMENT_TEXTURIZING",
 ];
+
+// Readiness relevance audit fix -- `cuttingAngle`, `cuttingLine`, and
+// `fingerAngle` describe the geometry of an actual BLADE CUTTING ACTION.
+// Unlike `fingerPosition`/`toolOrientation`/`clientHeadPosition` above,
+// there IS a deterministic, structural guarantee that excludes
+// PREPARATION_AND_SECTIONING for these three specifically: FIELD_APPLICABLE_
+// PHASES (technical-demonstration-derivation.ts, unmodified) never
+// attaches a `structuralTechnique`/`cuttingTechnique` value to a
+// sectioning-phase step -- the deterministic derivation itself proves no
+// real cutting technique is EVER represented there. A pure sectioning step
+// (e.g. "Partition using 4 quadrant profile radial...") has categorically
+// nothing for these three fields to describe. This is not a professional
+// judgment call being made here -- it is a direct, provable consequence of
+// data that already exists, exactly as certain as FINAL_CHECK's own
+// existing exclusion.
+//
+// GUIDE_AND_STRUCTURE and REFINEMENT_TEXTURIZING are deliberately KEPT in
+// this list (unlike PREPARATION_AND_SECTIONING) -- the readiness relevance
+// audit found the domain contract does NOT currently distinguish
+// "guide established via a real cut" from "guide established by
+// marking/combing only" (no GUIDE_OBSERVATION/GUIDE_CUTTING discriminator
+// exists on CuttingDemonstrationStepPayload or anywhere upstream). Per the
+// explicit fail-closed instruction, an unprovable exclusion is never
+// applied -- these two phases keep the conservative (currently-required)
+// treatment for these three fields until a real domain contract addition
+// resolves the gap. See this file's own header comment / the Stage 2.5.c
+// relevance-fix report for the exact gap description.
+const PHASES_WITH_PROVEN_CUTTING_GEOMETRY: readonly CuttingExecutionPhase[] = [
+  "GUIDE_AND_STRUCTURE",
+  "STRUCTURAL_CUTTING",
+  "REFINEMENT_TEXTURIZING",
+];
+
+// Technique-VALUE-conditioned relevance -- a second, orthogonal layer on
+// top of the phase-level table above. Where the plan's own structured
+// technique identity (already real, deterministic, closed-vocabulary data
+// -- e.g. TEXTURIZING_TECHNIQUES) is specific enough to know a field is
+// NOT relevant for one particular technique value, that exclusion is
+// expressed here instead of broadening the phase-level rule for every
+// technique that phase can ever carry. Each entry encodes ONLY an
+// explicit, professionally-supplied decision (never an invented one) --
+// this table is deliberately short; a technique with no entry here simply
+// falls back to its field's own phase-level rule (fail-closed, unchanged).
+export interface CuttingStepTechniqueRelevanceExclusion {
+  field: CuttingStepOverrideFieldName;
+  // Which of the plan's own technique-identity fields this exclusion keys
+  // off of -- always one of the five real, closed-enum technique fields
+  // (never a free-text field, never a description).
+  techniqueField: "sectioning" | "guideType" | "structuralTechnique" | "cuttingTechnique" | "texturizingTechnique";
+  excludedForValues: readonly string[];
+  note: string;
+}
+
+export const CUTTING_STEP_TECHNIQUE_RELEVANCE_EXCLUSIONS: readonly CuttingStepTechniqueRelevanceExclusion[] = [
+  {
+    field: "cuttingLine",
+    techniqueField: "texturizingTechnique",
+    excludedForValues: ["slice_and_slide"],
+    note: "Professional decision lock (readiness relevance audit): slice-and-slide does not inherently follow or create a defined geometric cutting line the way a structural cut does -- never automatically relevant for this specific technique. toolOrientation/cuttingAngle/fingerPosition/fingerAngle remain independently CONDITIONALLY_REQUIRED for this technique (professional resolves each on its own merits).",
+  },
+  // Every other named technique (point_cutting, razor_texturizing,
+  // channel_cutting, debulking, and every STRUCTURAL_TECHNIQUES/
+  // CUTTING_TECHNIQUES value) has NO explicit professional relevance
+  // profile supplied yet -- deliberately absent rather than guessed. See
+  // this file's own header comment / the Stage 2.5.c relevance-fix report
+  // for the exact list of techniques still pending professional
+  // classification.
+];
+
+function isTechniqueExcludedForStep(field: CuttingStepOverrideFieldName, payload: CuttingDemonstrationStepPayload): boolean {
+  return CUTTING_STEP_TECHNIQUE_RELEVANCE_EXCLUSIONS.some((exclusion) => {
+    if (exclusion.field !== field) return false;
+    const techniqueEntry = payload[exclusion.techniqueField] as { value: unknown; provenance: string };
+    return isProvenancePopulated(techniqueEntry) && exclusion.excludedForValues.includes(techniqueEntry.value as string);
+  });
+}
 
 export const CUTTING_EXECUTION_VIDEO_READINESS_RULES: readonly FieldReadinessRule[] = [
   // --- Plan-level technique facts, code-backed REQUIRED on their own
@@ -120,11 +206,18 @@ export const CUTTING_EXECUTION_VIDEO_READINESS_RULES: readonly FieldReadinessRul
   // about on CROSS_CHECK_AND_FINISH. A professional may still supply real
   // values there (e.g. a genuine corrective cut inside a check step) --
   // doing so is simply never REQUIRED. ---
-  { field: "fingerPosition", applicablePhases: CUTTING_ACTION_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when finger position materially affects line/tension/geometry. Never evaluated on FINAL_CHECK by default (decision lock)." },
-  { field: "fingerAngle", applicablePhases: CUTTING_ACTION_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when finger angle materially affects geometry/length distribution/cutting line. Never evaluated on FINAL_CHECK by default (decision lock)." },
-  { field: "cuttingAngle", applicablePhases: CUTTING_ACTION_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when the cutting action's own angle materially affects the result. Never auto-derived from elevation/fingerAngle (decision lock: no deterministic domain rule for that exists). Never evaluated on FINAL_CHECK by default." },
-  { field: "cuttingLine", applicablePhases: CUTTING_ACTION_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when the cutting line determines the intended technical geometry. Never evaluated on FINAL_CHECK by default (decision lock)." },
-  { field: "toolOrientation", applicablePhases: CUTTING_ACTION_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when tool orientation is necessary for correct/safe reproduction. Never evaluated on FINAL_CHECK by default (decision lock)." },
+  { field: "fingerPosition", applicablePhases: CUTTING_ACTION_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when finger position materially affects line/tension/geometry. Never evaluated on FINAL_CHECK by default (decision lock). Still evaluated on PREPARATION_AND_SECTIONING -- no deterministic signal excludes it there yet (fail-closed)." },
+  // Readiness relevance audit fix -- fingerAngle/cuttingAngle/cuttingLine
+  // describe blade-cutting geometry, which the deterministic derivation
+  // proves is never attached to a sectioning-phase step (see
+  // PHASES_WITH_PROVEN_CUTTING_GEOMETRY's own header comment). Excluded
+  // from PREPARATION_AND_SECTIONING; unchanged everywhere else.
+  { field: "fingerAngle", applicablePhases: PHASES_WITH_PROVEN_CUTTING_GEOMETRY, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when finger angle materially affects geometry/length distribution/cutting line. Never evaluated on FINAL_CHECK or PREPARATION_AND_SECTIONING (decision lock; no cutting technique is ever attached to a sectioning step)." },
+  { field: "cuttingAngle", applicablePhases: PHASES_WITH_PROVEN_CUTTING_GEOMETRY, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when the cutting action's own angle materially affects the result. Never auto-derived from elevation/fingerAngle (decision lock: no deterministic domain rule for that exists). Never evaluated on FINAL_CHECK or PREPARATION_AND_SECTIONING." },
+  // Also technique-conditioned: see CUTTING_STEP_TECHNIQUE_RELEVANCE_EXCLUSIONS
+  // (slice_and_slide texturizing does not automatically require this field).
+  { field: "cuttingLine", applicablePhases: PHASES_WITH_PROVEN_CUTTING_GEOMETRY, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when the cutting line determines the intended technical geometry. Never evaluated on FINAL_CHECK or PREPARATION_AND_SECTIONING; also excluded for the slice_and_slide texturizing technique specifically (see CUTTING_STEP_TECHNIQUE_RELEVANCE_EXCLUSIONS)." },
+  { field: "toolOrientation", applicablePhases: CUTTING_ACTION_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when tool orientation is necessary for correct/safe reproduction. Never evaluated on FINAL_CHECK by default (decision lock). Still evaluated on PREPARATION_AND_SECTIONING -- no deterministic signal excludes it there yet (fail-closed)." },
 
   // NOTE: `headBodyPositioning` (deprecated) and `phase`/`constraints`
   // (not provenance-wrapped / structural) are DELIBERATELY absent from
@@ -248,6 +341,7 @@ export function evaluateStepReadiness(step: TechnicalDemonstrationStepRecord): S
 
   for (const rule of CUTTING_EXECUTION_VIDEO_READINESS_RULES) {
     if (!rule.applicablePhases.includes(phase)) continue; // not evaluated on this phase -- implicitly OPTIONAL here
+    if (isTechniqueExcludedForStep(rule.field, payload)) continue; // this step's own technique identity says the field is not relevant here
 
     const entry = payload[rule.field] as { value: unknown; provenance: string } | undefined;
     if (isProvenancePopulated(entry) || isProvenanceNotApplicable(entry)) continue; // satisfied

@@ -12,6 +12,7 @@ import {
 } from "@/lib/technical-demonstration-cutting-overrides";
 import {
   CUTTING_EXECUTION_VIDEO_READINESS_RULES,
+  CUTTING_STEP_TECHNIQUE_RELEVANCE_EXCLUSIONS,
   evaluatePlanReadiness,
   evaluateStepReadiness,
   resolveFieldReadinessRule,
@@ -383,5 +384,151 @@ describe("evaluatePlanReadiness", () => {
     const result = evaluatePlanReadiness(planPick("CONFIRMED"), []);
     expect(result.ready).toBe(true);
     expect(result.steps).toHaveLength(0);
+  });
+});
+
+// Readiness relevance audit fix -- the 5 cutting-geometry fields
+// previously used one shared "any phase except FINAL_CHECK" predicate,
+// which was provably wrong for a pure sectioning step (no cutting
+// technique is ever attached there) and unproven for guide/texturizing.
+// These tests prove the corrected, deliberately asymmetric behavior:
+// sectioning is fixed (deterministic), guide/most texturizing techniques
+// remain fail-closed (a real, reported domain contract gap), and exactly
+// one professionally-supplied technique-specific exclusion exists.
+
+describe("readiness relevance fix -- PREPARATION_AND_SECTIONING no longer over-requires blade-cutting geometry", () => {
+  it("a pure sectioning step does NOT block on cuttingAngle, cuttingLine, or fingerAngle", () => {
+    const [step1] = baselineSteps();
+    const result = evaluateStepReadiness(step1);
+    const blockedFields = result.reasons.map((r) => r.field);
+    expect(blockedFields).not.toContain("cuttingAngle");
+    expect(blockedFields).not.toContain("cuttingLine");
+    expect(blockedFields).not.toContain("fingerAngle");
+  });
+
+  it("these three fields are simply not evaluated on sectioning -- a real professional-supplied value there changes nothing", () => {
+    const [step1] = baselineSteps();
+    const [effectiveStep1] = applyOverrideInputs(
+      [step1],
+      [{ op: "set_value", stepNumber: 1, field: "cuttingAngle", value: "never required here" }],
+    );
+    expect(evaluateStepReadiness(step1).reasons.some((r) => r.field === "cuttingAngle")).toBe(false);
+    expect(evaluateStepReadiness(effectiveStep1).reasons.some((r) => r.field === "cuttingAngle")).toBe(false);
+  });
+
+  it("fields with NO deterministic exclusion (fingerPosition, toolOrientation, clientHeadPosition) still block on sectioning -- fail-closed, unchanged", () => {
+    const [step1] = baselineSteps();
+    const blockedFields = evaluateStepReadiness(step1).reasons.map((r) => r.field);
+    expect(blockedFields).toContain("fingerPosition");
+    expect(blockedFields).toContain("toolOrientation");
+    expect(blockedFields).toContain("clientHeadPosition");
+  });
+
+  it("explicit N/A still satisfies the still-evaluated sectioning fields (fingerPosition, toolOrientation, clientHeadPosition)", () => {
+    const [step1] = baselineSteps();
+    const [effectiveStep1] = applyOverrideInputs(
+      [step1],
+      (["fingerPosition", "toolOrientation", "clientHeadPosition"] as const).map((field) => ({
+        op: "mark_not_applicable" as const,
+        stepNumber: 1,
+        field,
+      })),
+    );
+    const blockedFields = evaluateStepReadiness(effectiveStep1).reasons.map((r) => r.field);
+    expect(blockedFields).not.toContain("fingerPosition");
+    expect(blockedFields).not.toContain("toolOrientation");
+    expect(blockedFields).not.toContain("clientHeadPosition");
+  });
+
+  it("STRUCTURAL_CUTTING and REFINEMENT_TEXTURIZING still evaluate cuttingAngle/fingerAngle -- the fix is scoped to sectioning only", () => {
+    const steps = baselineSteps();
+    for (const step of [steps[2], steps[3]]) {
+      const blockedFields = evaluateStepReadiness(step).reasons.map((r) => r.field);
+      expect(blockedFields).toContain("cuttingAngle");
+      expect(blockedFields).toContain("fingerAngle");
+    }
+  });
+});
+
+describe("readiness relevance fix -- GUIDE_AND_STRUCTURE stays fail-closed (real domain contract gap, not resolved by this fix)", () => {
+  it("still evaluates all 5 cutting-geometry fields plus clientHeadPosition by default -- no GUIDE_OBSERVATION/GUIDE_CUTTING discriminator exists in the current domain contract", () => {
+    const steps = baselineSteps();
+    const blockedFields = evaluateStepReadiness(steps[1]).reasons.map((r) => r.field); // GUIDE_AND_STRUCTURE
+    for (const field of ["fingerPosition", "fingerAngle", "cuttingAngle", "cuttingLine", "toolOrientation", "clientHeadPosition"]) {
+      expect(blockedFields).toContain(field);
+    }
+  });
+
+  it("professional resolution (real value or N/A) still works exactly as before -- fail-closed means conservative, not a hard, unresolvable block", () => {
+    const steps = baselineSteps();
+    const fields = ["fingerPosition", "fingerAngle", "cuttingAngle", "cuttingLine", "toolOrientation", "clientHeadPosition"] as const;
+    const [effectiveStep2] = applyOverrideInputs(
+      [steps[1]],
+      fields.map((field) => ({ op: "mark_not_applicable" as const, stepNumber: 2, field })),
+    );
+    const blockedFields = evaluateStepReadiness(effectiveStep2).reasons.map((r) => r.field);
+    for (const field of fields) {
+      expect(blockedFields).not.toContain(field);
+    }
+  });
+});
+
+describe("readiness relevance fix -- REFINEMENT_TEXTURIZING technique-conditioned exclusion", () => {
+  function texturizingStep(technique: TechnicalCutPlan["texturizingTechnique"]): TechnicalDemonstrationStepRecord {
+    const derived = deriveCuttingDemonstrationSteps(cuttingPlan({ texturizingTechnique: technique }))[3]; // REFINEMENT_TEXTURIZING
+    return toStepRecord(derived.stepNumber, derived.payload, derived.explanation);
+  }
+
+  it("slice_and_slide does NOT block on cuttingLine specifically (the one professionally-supplied exclusion)", () => {
+    const step = texturizingStep("slice_and_slide");
+    expect(evaluateStepReadiness(step).reasons.some((r) => r.field === "cuttingLine")).toBe(false);
+  });
+
+  it("slice_and_slide STILL evaluates toolOrientation, cuttingAngle, fingerPosition, fingerAngle -- only cuttingLine is excluded, nothing else", () => {
+    const step = texturizingStep("slice_and_slide");
+    const blockedFields = evaluateStepReadiness(step).reasons.map((r) => r.field);
+    for (const field of ["toolOrientation", "cuttingAngle", "fingerPosition", "fingerAngle"]) {
+      expect(blockedFields).toContain(field);
+    }
+  });
+
+  it("channel_cutting (no explicit profile supplied) falls back to the default, fail-closed treatment -- still evaluates all 5 geometry fields including cuttingLine", () => {
+    const step = texturizingStep("channel_cutting");
+    const blockedFields = evaluateStepReadiness(step).reasons.map((r) => r.field);
+    for (const field of ["fingerPosition", "fingerAngle", "cuttingAngle", "cuttingLine", "toolOrientation"]) {
+      expect(blockedFields).toContain(field);
+    }
+  });
+
+  it("the technique exclusion never fires when the technique itself is UNKNOWN -- fail-closed, never assumes slice_and_slide by omission", () => {
+    const steps = baselineSteps();
+    const step4 = steps[3];
+    const payloadWithUnknownTechnique = {
+      ...(step4.payload as unknown as CuttingDemonstrationStepPayload),
+      texturizingTechnique: { value: null, provenance: "UNKNOWN" as const },
+    };
+    const result = evaluateStepReadiness(toStepRecord(4, payloadWithUnknownTechnique));
+    expect(result.reasons.some((r) => r.field === "cuttingLine")).toBe(true);
+  });
+});
+
+describe("readiness relevance fix -- STRUCTURAL_CUTTING remains the strongest phase, unchanged", () => {
+  it("still evaluates all 5 cutting-geometry fields -- no per-technique profile has been supplied for this phase yet", () => {
+    const steps = baselineSteps();
+    const blockedFields = evaluateStepReadiness(steps[2]).reasons.map((r) => r.field); // STRUCTURAL_CUTTING
+    for (const field of ["fingerPosition", "fingerAngle", "cuttingAngle", "cuttingLine", "toolOrientation"]) {
+      expect(blockedFields).toContain(field);
+    }
+  });
+});
+
+describe("CUTTING_STEP_TECHNIQUE_RELEVANCE_EXCLUSIONS", () => {
+  it("contains exactly the one professionally-supplied exclusion -- never an invented one", () => {
+    expect(CUTTING_STEP_TECHNIQUE_RELEVANCE_EXCLUSIONS).toHaveLength(1);
+    expect(CUTTING_STEP_TECHNIQUE_RELEVANCE_EXCLUSIONS[0]).toMatchObject({
+      field: "cuttingLine",
+      techniqueField: "texturizingTechnique",
+      excludedForValues: ["slice_and_slide"],
+    });
   });
 });
