@@ -28,11 +28,16 @@ export interface TechnicalDemonstrationPlanViewProps {
   // never receives this prop, so its own step cards stay structurally
   // read-only, not just by convention.
   onEditField?: (submission: TechnicalDemonstrationStepFieldEditSubmission & { stepNumber: number }) => Promise<boolean>;
-  // Stage 2.5.c -- present ONLY for the CONFIRMED plan (the caller,
-  // technical-demonstration-plan-section.tsx, only ever fetches readiness
-  // for `current`, never for `draft`). `undefined` while still loading (or
-  // for a DRAFT/absent plan) -- this component simply renders nothing in
-  // that case, never a fabricated placeholder.
+  // Stage 2.5.c -- the server-computed Technical Execution Video readiness
+  // for THIS exact `plan` (DRAFT readiness visibility fix: the caller,
+  // technical-demonstration-plan-section.tsx, fetches it for whichever
+  // plan -- draft or confirmed -- is actually being passed in here, via
+  // resolveReadinessTargetPlan). `undefined` while still loading, or when
+  // there is no plan to ask about at all -- this component simply renders
+  // nothing in that case, never a fabricated placeholder. A DRAFT's own
+  // result is always `ready: false` (server-enforced, never assumed
+  // here) -- rendering it is exactly what lets a professional see the
+  // exact gaps BEFORE confirming, instead of discovering them after.
   readiness?: PlanReadinessResult;
 }
 

@@ -7,15 +7,29 @@ import type { PlanReadinessResult } from "@/lib/technical-demonstration-cutting-
 // useEffect style exactly (no SWR/React Query anywhere in this codebase).
 // Deliberately its OWN small hook, not folded into
 // useTechnicalDemonstrationPlan -- readiness is a separate, derived
-// concern (its own GET endpoint, its own "only meaningful for a CONFIRMED
-// plan" gating) with no write actions of its own, unlike that hook's own
-// deriveOrOpen/confirmPlan/applyOverrides.
+// concern (its own GET endpoint) with no write actions of its own, unlike
+// that hook's own deriveOrOpen/confirmPlan/applyOverrides.
 //
-// `planId` is null whenever there is no CONFIRMED plan to ask about (the
-// caller passes `current?.plan.id ?? null`) -- this hook then stays
-// "idle" and never fetches, matching the Stage 2.5.c core semantic lock:
-// only a CONFIRMED plan can ever be VIDEO_READY, so there is nothing
-// honest to compute for a DRAFT/absent plan.
+// `planId` is null whenever there is no plan to ask about at all -- this
+// hook then stays "idle" and never fetches. The caller (DRAFT readiness
+// visibility fix) resolves WHICH plan's id to pass via
+// resolveReadinessTargetPlan (technical-demonstration-plan-logic.ts) --
+// this hook itself has no opinion on DRAFT vs CONFIRMED; it fetches
+// whatever plan id it is given and renders the server's own answer
+// verbatim (a DRAFT's own answer is always `ready: false` with a
+// READINESS_PLAN_NOT_CONFIRMED reason, computed server-side by
+// evaluatePlanReadiness -- never assumed or special-cased here).
+//
+// `planUpdatedAt` (Stage 2.5.c DRAFT readiness visibility fix) -- an
+// additional effect dependency, independent of `planId`. A professional
+// edit (applyOverrides) never changes the plan's own id, only its
+// `updatedAt` (and its professionalOverrides) -- so without this, editing
+// a field would correctly trigger useTechnicalDemonstrationPlan's own
+// reload() but would NOT re-trigger THIS hook's effect (same planId as
+// before), leaving a stale readiness result on screen. Passing the
+// target plan's own `updatedAt` alongside its id means a genuine write
+// (which always bumps `updatedAt`) reliably refetches, while a reload
+// that changed nothing (e.g. after a failed edit) correctly does not.
 
 export type TechnicalExecutionVideoReadinessState =
   | { status: "idle" }
@@ -34,6 +48,7 @@ export function useTechnicalExecutionVideoReadiness(
   clientId: string,
   proposalId: string,
   planId: string | null,
+  planUpdatedAt?: string | null,
 ): TechnicalExecutionVideoReadinessState {
   const [fetchState, setFetchState] = useState<FetchState>({ status: "loading" });
 
@@ -68,7 +83,7 @@ export function useTechnicalExecutionVideoReadiness(
     return () => {
       cancelled = true;
     };
-  }, [clientId, proposalId, planId]);
+  }, [clientId, proposalId, planId, planUpdatedAt]);
 
   if (!planId) return { status: "idle" };
   return fetchState;

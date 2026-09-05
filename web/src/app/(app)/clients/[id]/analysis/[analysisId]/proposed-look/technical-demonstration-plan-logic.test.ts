@@ -9,6 +9,7 @@ import {
   isProvenancePopulated,
   mapTechnicalDemonstrationPlanApiError,
   resolveCuttingStepFieldEditor,
+  resolveReadinessTargetPlan,
   resolveStepConstraints,
   resolveStepFieldRows,
   resolveTechnicalDemonstrationPlanLoadStatus,
@@ -145,6 +146,34 @@ describe("shouldShowTechnicalDemonstrationConfirmConflictMessage", () => {
       message: "state error",
     };
     expect(shouldShowTechnicalDemonstrationConfirmConflictMessage(stateError)).toBeNull();
+  });
+});
+
+// Stage 2.5.c -- DRAFT readiness visibility fix. Draft always takes
+// priority over confirmed, mirroring EXACTLY the same priority
+// TechnicalDemonstrationPlanSection already uses to decide which plan's
+// own step list to render.
+describe("resolveReadinessTargetPlan", () => {
+  it("picks the draft when both a draft and a confirmed plan exist", () => {
+    const draftPlan = plan({ id: "plan-draft", status: "DRAFT" });
+    const confirmedPlan = plan({ id: "plan-confirmed", status: "CONFIRMED" });
+    expect(resolveReadinessTargetPlan(draftPlan, confirmedPlan)).toBe(draftPlan);
+  });
+
+  it("picks the confirmed plan when there is no draft", () => {
+    const confirmedPlan = plan({ id: "plan-confirmed", status: "CONFIRMED" });
+    expect(resolveReadinessTargetPlan(null, confirmedPlan)).toBe(confirmedPlan);
+    expect(resolveReadinessTargetPlan(undefined, confirmedPlan)).toBe(confirmedPlan);
+  });
+
+  it("picks the draft when there is no confirmed plan yet", () => {
+    const draftPlan = plan({ id: "plan-draft", status: "DRAFT" });
+    expect(resolveReadinessTargetPlan(draftPlan, null)).toBe(draftPlan);
+  });
+
+  it("returns null when neither exists", () => {
+    expect(resolveReadinessTargetPlan(null, null)).toBeNull();
+    expect(resolveReadinessTargetPlan(undefined, undefined)).toBeNull();
   });
 });
 

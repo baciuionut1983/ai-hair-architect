@@ -6,11 +6,15 @@ export interface TechnicalExecutionVideoReadinessSummaryProps {
 }
 
 // Technical Demonstration, Stage 2.5.c -- the smallest honest UI for the
-// Technical Execution Video readiness gate. Rendered ONLY alongside a
-// CONFIRMED plan (see technical-demonstration-plan-section.tsx, the only
-// caller) -- a DRAFT plan is never READY by construction (server-side
-// evaluatePlanReadiness's own unconditional check), so there is nothing
-// honest to show it there.
+// Technical Execution Video readiness gate. Rendered alongside whichever
+// plan (DRAFT or CONFIRMED) is currently being reviewed (see
+// technical-demonstration-plan-section.tsx, the only caller, and its own
+// resolveReadinessTargetPlan) -- a DRAFT plan is never READY by
+// construction (server-side evaluatePlanReadiness's own unconditional
+// check), but showing its exact blocking reasons here, BEFORE
+// confirmation, is the entire point of the DRAFT readiness visibility fix:
+// a professional can see and correct real gaps instead of confirming
+// blind and discovering them afterward.
 //
 // Deliberately READ-ONLY: no Generate/Create button anywhere in this file,
 // no disabled placeholder either -- Stage 2.5.c's own explicit "prefer NO

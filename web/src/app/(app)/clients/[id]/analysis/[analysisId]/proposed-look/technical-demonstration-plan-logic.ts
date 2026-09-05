@@ -289,3 +289,23 @@ export function shouldShowTechnicalDemonstrationConfirmConflictMessage(outcome: 
   }
   return null;
 }
+
+// Stage 2.5.c (DRAFT readiness visibility fix) -- which plan the Technical
+// Execution Video readiness section should be requested/rendered for: the
+// DRAFT awaiting professional review when one exists, otherwise the
+// CONFIRMED plan -- the EXACT same priority TechnicalDemonstrationPlanSection
+// already uses to decide WHICH plan's own step list to render (`draft ?
+// ... : current ? ... : ...`). Readiness must always describe the plan
+// actually on screen -- never a different, stale plan for the same
+// (client, proposal) scope (e.g. an older CONFIRMED plan still sitting
+// around while a newer DRAFT revision is what the professional is
+// currently reviewing). Returns the whole plan record (not just its id) so
+// the caller can also read `updatedAt` from the SAME object -- picking the
+// id from one plan and a timestamp from a different one would silently
+// point the readiness fetch at a moving target.
+export function resolveReadinessTargetPlan(
+  draftPlan: TechnicalDemonstrationPlanRecord | null | undefined,
+  confirmedPlan: TechnicalDemonstrationPlanRecord | null | undefined,
+): TechnicalDemonstrationPlanRecord | null {
+  return draftPlan ?? confirmedPlan ?? null;
+}

@@ -4,7 +4,7 @@ import { useState } from "react";
 
 import { Alert, Button, ErrorState, LoadingState } from "@/components/ui";
 
-import { shouldShowTechnicalDemonstrationConfirmConflictMessage } from "./technical-demonstration-plan-logic";
+import { resolveReadinessTargetPlan, shouldShowTechnicalDemonstrationConfirmConflictMessage } from "./technical-demonstration-plan-logic";
 import { TechnicalDemonstrationPlanHistoryList } from "./technical-demonstration-plan-history";
 import { TechnicalDemonstrationPlanView } from "./technical-demonstration-plan-view";
 import type { TechnicalDemonstrationStepFieldEditSubmission } from "./technical-demonstration-step-field-editor";
@@ -42,16 +42,26 @@ export function TechnicalDemonstrationPlanSection({ clientId, proposalId }: Tech
   const [openError, setOpenError] = useState<string | null>(null);
   const [confirmConflictMessage, setConfirmConflictMessage] = useState<string | null>(null);
 
-  // Stage 2.5.c -- called unconditionally (Rules of Hooks: never after an
-  // early return, even though it's only ever semantically meaningful once
-  // `state` is "ready" and a CONFIRMED plan exists). `confirmedPlanId`
-  // collapses to `null` for every other state, and the hook itself then
-  // stays "idle" (see use-technical-execution-video-readiness.ts),
-  // fetching nothing -- a DRAFT is never VIDEO_READY by construction, so
-  // there is nothing honest to ask readiness about until a real CONFIRMED
-  // plan exists.
-  const confirmedPlanId = state.status === "ready" ? (state.current?.plan.id ?? null) : null;
-  const readinessState = useTechnicalExecutionVideoReadiness(clientId, proposalId, confirmedPlanId);
+  // Stage 2.5.c (DRAFT readiness visibility fix) -- called unconditionally
+  // (Rules of Hooks: never after an early return). `readinessTargetPlan`
+  // is the SAME plan TechnicalDemonstrationPlanView is about to render
+  // below (draft takes priority over confirmed, see
+  // resolveReadinessTargetPlan's own header comment) -- readiness must
+  // always describe whatever plan is actually on screen, DRAFT included.
+  // A DRAFT's own server-computed answer is always `ready: false` with a
+  // READINESS_PLAN_NOT_CONFIRMED reason (the Stage 2.5.c core semantic
+  // lock -- unchanged, enforced server-side, never by this component) --
+  // but the professional can now see it, and every genuinely missing
+  // field alongside it, instead of confirming blind. `null` only when
+  // there is neither a draft nor a confirmed plan yet, in which case the
+  // hook itself stays "idle" (see use-technical-execution-video-readiness.ts).
+  const readinessTargetPlan = state.status === "ready" ? resolveReadinessTargetPlan(state.draft?.plan, state.current?.plan) : null;
+  const readinessState = useTechnicalExecutionVideoReadiness(
+    clientId,
+    proposalId,
+    readinessTargetPlan?.id ?? null,
+    readinessTargetPlan?.updatedAt ?? null,
+  );
   const readiness = readinessState.status === "ready" ? readinessState.readiness : undefined;
 
   if (state.status === "loading") {
@@ -119,6 +129,7 @@ export function TechnicalDemonstrationPlanSection({ clientId, proposalId }: Tech
           onConfirm={handleConfirm}
           confirmConflictMessage={confirmConflictMessage}
           onEditField={handleEditField}
+          readiness={readiness}
         />
       ) : current ? (
         <TechnicalDemonstrationPlanView key={current.plan.id} plan={current.plan} steps={current.effectiveSteps} readiness={readiness} />
