@@ -49,4 +49,13 @@ describe("computeTechnicalDemonstrationPlanRequestFingerprint", () => {
     const newVersionFingerprint = computeTechnicalDemonstrationPlanRequestFingerprint({ ...base, generatorVersion: "1.2.0-td25e" });
     expect(newVersionFingerprint).not.toBe(oldVersionFingerprint);
   });
+
+  // Same invariant, now for the Stage 2.5.f.2 (current re-derivation)
+  // generator version bump -- does not collide with the prior Stage
+  // 2.5.e.1 value production's own V3 was created under.
+  it("the Stage 2.5.f.2 generator version ('1.3.0-td25f2') never collides with the prior Stage 2.5.e.1 version ('1.2.0-td25e') for identical inputs", () => {
+    const oldVersionFingerprint = computeTechnicalDemonstrationPlanRequestFingerprint({ ...base, generatorVersion: "1.2.0-td25e" });
+    const newVersionFingerprint = computeTechnicalDemonstrationPlanRequestFingerprint({ ...base, generatorVersion: "1.3.0-td25f2" });
+    expect(newVersionFingerprint).not.toBe(oldVersionFingerprint);
+  });
 });

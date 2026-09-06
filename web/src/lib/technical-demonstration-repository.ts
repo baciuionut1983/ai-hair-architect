@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { Prisma, type TechnicalDemonstrationPlan as PrismaTechnicalDemonstrationPlanRow, type TechnicalDemonstrationStep as PrismaTechnicalDemonstrationStepRow } from "@prisma/client";
 
 import type { TechnicalCutPlan } from "@/lib/contracts";
+import { buildCuttingSteps } from "@/lib/cutting-plan-engine";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 import { isProposalStatus, isProposalVertical, isTechnicalCutPlanShape, type ProposalEditEntry } from "@/lib/proposal-validators";
 import { computeEffectiveTechnicalCutPlan, EDITABLE_TECHNIQUE_FIELDS } from "@/lib/technical-visual-map-assembler";
@@ -284,10 +285,48 @@ export async function createTechnicalDemonstrationPlanFromProposal(
       const editableFieldNames: readonly string[] = EDITABLE_TECHNIQUE_FIELDS;
       const editedFields = new Set(edits.map((edit) => edit.field).filter((field) => editableFieldNames.includes(field)));
 
+      // Stage 2.5.f.2 -- CURRENT RE-DERIVATION. effectivePlan.cuttingSteps
+      // is the proposal's own FROZEN per-step array (whatever text/tool/
+      // elevation cutting-plan-engine.ts happened to generate at Analysis
+      // time, under whatever engine version that was) -- reading it
+      // verbatim here (as every prior stage always did) is exactly why a
+      // Technical Demonstration Plan derived from an OLD confirmed
+      // proposal always inherited stale free text and stale per-step
+      // tool/elevation, even when the proposal's own STRUCTURED technique
+      // fields (structuralTechnique/cuttingTechnique/etc., read from
+      // effectivePlan.* everywhere else below, already correctly reflect
+      // professional edits). Per the Stage 2.5.f architectural audit:
+      // immutable source (the confirmed proposal) does not mean immutable
+      // DOWNSTREAM INTERPRETATION -- a NEW plan revision is entitled to
+      // re-run the CURRENT step generator against the proposal's own
+      // EFFECTIVE structured intent, producing fresh, internally-current
+      // text/tool/elevation, while the proposal row itself, and every
+      // ALREADY-persisted plan/step row, remain completely untouched
+      // (neither this function nor anything it calls ever performs an
+      // UPDATE on a TechnicalDemonstrationStep or AnalysisProposal row).
+      //
+      // Reuses buildCuttingSteps -- the ONE canonical generator (cutting-
+      // plan-engine.ts, Stage 2.5.f.1) -- never a second, competing
+      // implementation. Every other field on effectivePlan (warnings,
+      // contraindications, professionalReason, etc.) is passed through
+      // completely unchanged; only cuttingSteps itself is replaced.
+      const currentCuttingSteps = buildCuttingSteps({
+        structuralTechnique: effectivePlan.structuralTechnique,
+        cuttingTechnique: effectivePlan.cuttingTechnique,
+        texturizingTechnique: effectivePlan.texturizingTechnique,
+        sectioning: effectivePlan.sectioning,
+        elevation: effectivePlan.elevation,
+        distribution: effectivePlan.distribution,
+        guideline: effectivePlan.guideline,
+      });
+      const currentEffectivePlan: TechnicalCutPlan = { ...effectivePlan, cuttingSteps: currentCuttingSteps };
+
       // Pure derivation -- no I/O, no provider call. Runs against the
-      // EFFECTIVE plan (baseline + edits already merged above), never the
-      // raw frozen baseline alone.
-      const derivedSteps = deriveCuttingDemonstrationSteps(effectivePlan, editedFields);
+      // CURRENT effective plan (effectivePlan's own structured fields,
+      // with cuttingSteps freshly regenerated above) -- never the frozen
+      // proposal's own persisted cuttingSteps array, and never the raw,
+      // pre-edit baseline either.
+      const derivedSteps = deriveCuttingDemonstrationSteps(currentEffectivePlan, editedFields);
 
       for (const derivedStep of derivedSteps) {
         if (!isValidCuttingDemonstrationStepPayload(derivedStep.payload)) {

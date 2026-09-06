@@ -128,7 +128,25 @@ import { isHeadZone } from "@/lib/technical-visual-map-validators";
 // remains readable, and re-derivable-as-a-separate-newer-plan, exactly as
 // every prior generatorVersion bump (Stage 1 -> Stage 2.5.a) already
 // proved this mechanism does.
-export const TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION = "1.2.0-td25e";
+//
+// Stage 2.5.f.2 (current re-derivation) -- bumped again, "1.2.0-td25e" ->
+// "1.3.0-td25f2". createTechnicalDemonstrationPlanFromProposal
+// (technical-demonstration-repository.ts) no longer feeds this file's own
+// deriveCuttingDemonstrationSteps the confirmed proposal's FROZEN
+// cuttingSteps array verbatim -- it now calls buildCuttingSteps
+// (cutting-plan-engine.ts, Stage 2.5.f.1) fresh, against the proposal's
+// own EFFECTIVE structured intent (baseline + edits merged), producing
+// genuinely new per-step text/tool/elevation for every NEW plan. This is
+// a materially different generated baseline than every prior version
+// produced -- the same MINOR-version judgment call as the 2.5.e.1 bump
+// above, for the same reason (real behavior change, unchanged persisted
+// shape). CUTTING_DEMONSTRATION_STEP_SCHEMA_VERSION is, again, correctly
+// NOT bumped -- CuttingDemonstrationStepPayload's own field set is
+// unchanged. Exactly like every prior bump, this affects NEW creation
+// only: an already-persisted plan (V1/V2/V3, or any historical row) keeps
+// its own generatorVersion/requestFingerprint/step content forever,
+// completely unaffected by this or any future bump.
+export const TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION = "1.3.0-td25f2";
 
 // The cutting engine's own fixed, closed set of step "zone" labels
 // (cutting-plan-engine.ts's own generateTechnicalCutPlan -- the sole
