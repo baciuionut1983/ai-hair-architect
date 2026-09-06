@@ -8,6 +8,7 @@ import { resolveReadinessTargetPlan, shouldShowTechnicalDemonstrationConfirmConf
 import { TechnicalDemonstrationPlanHistoryList } from "./technical-demonstration-plan-history";
 import { TechnicalDemonstrationPlanView } from "./technical-demonstration-plan-view";
 import type { TechnicalDemonstrationStepFieldEditSubmission } from "./technical-demonstration-step-field-editor";
+import { useTechnicalDemonstrationCoherence } from "./use-technical-demonstration-coherence";
 import { useTechnicalDemonstrationPlan, type TechnicalDemonstrationPlanActionOutcome } from "./use-technical-demonstration-plan";
 import { useTechnicalExecutionVideoReadiness } from "./use-technical-execution-video-readiness";
 
@@ -63,6 +64,20 @@ export function TechnicalDemonstrationPlanSection({ clientId, proposalId }: Tech
     readinessTargetPlan?.updatedAt ?? null,
   );
   const readiness = readinessState.status === "ready" ? readinessState.readiness : undefined;
+
+  // Stage 2.5.g.2 -- Professional Coherence, VISIBILITY ONLY. Deliberately
+  // fetched for the EXACT SAME `readinessTargetPlan` (same id, same
+  // updatedAt dependency) readiness above already uses -- coherence and
+  // readiness must always describe the identical displayed plan, and
+  // reusing the same resolved target plan (rather than re-deriving it) is
+  // what guarantees that by construction, never by convention.
+  const coherenceState = useTechnicalDemonstrationCoherence(
+    clientId,
+    proposalId,
+    readinessTargetPlan?.id ?? null,
+    readinessTargetPlan?.updatedAt ?? null,
+  );
+  const coherence = coherenceState.status === "ready" ? coherenceState.coherence : undefined;
 
   if (state.status === "loading") {
     return <LoadingState label="Loading Technical Demonstration Plan..." />;
@@ -130,9 +145,16 @@ export function TechnicalDemonstrationPlanSection({ clientId, proposalId }: Tech
           confirmConflictMessage={confirmConflictMessage}
           onEditField={handleEditField}
           readiness={readiness}
+          coherence={coherence}
         />
       ) : current ? (
-        <TechnicalDemonstrationPlanView key={current.plan.id} plan={current.plan} steps={current.effectiveSteps} readiness={readiness} />
+        <TechnicalDemonstrationPlanView
+          key={current.plan.id}
+          plan={current.plan}
+          steps={current.effectiveSteps}
+          readiness={readiness}
+          coherence={coherence}
+        />
       ) : (
         <div className="flex flex-col gap-2">
           <Button type="button" onClick={handleOpen} loading={opening}>

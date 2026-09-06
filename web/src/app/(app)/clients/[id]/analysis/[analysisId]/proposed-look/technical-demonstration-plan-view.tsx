@@ -4,11 +4,13 @@ import { Alert, Button, Card } from "@/components/ui";
 import type { TechnicalDemonstrationPlanRecord, TechnicalDemonstrationStepRecord } from "@/lib/technical-demonstration-contracts";
 import type { PlanReadinessResult } from "@/lib/technical-demonstration-cutting-video-readiness";
 
+import { TechnicalDemonstrationCoherenceSummary } from "./technical-demonstration-coherence-summary";
 import { TechnicalDemonstrationPlanStatusBadge } from "./technical-demonstration-plan-status-badge";
 import { TechnicalDemonstrationStepCard } from "./technical-demonstration-step-card";
 import type { TechnicalDemonstrationStepFieldEditSubmission } from "./technical-demonstration-step-field-editor";
 import { TechnicalExecutionVideoReadinessSummary } from "./technical-execution-video-readiness-summary";
 import type { TechnicalDemonstrationPlanActionOutcome } from "./use-technical-demonstration-plan";
+import type { TechnicalDemonstrationCoherenceResult } from "./use-technical-demonstration-coherence";
 
 export interface TechnicalDemonstrationPlanViewProps {
   plan: TechnicalDemonstrationPlanRecord;
@@ -39,6 +41,13 @@ export interface TechnicalDemonstrationPlanViewProps {
   // here) -- rendering it is exactly what lets a professional see the
   // exact gaps BEFORE confirming, instead of discovering them after.
   readiness?: PlanReadinessResult;
+  // Stage 2.5.g.2 -- the server-computed Professional Coherence result for
+  // THIS exact `plan`, VISIBILITY ONLY. Same "undefined while loading / no
+  // plan to ask about" convention as `readiness` above, and always
+  // resolved for the SAME target plan (the caller passes the identical
+  // resolveReadinessTargetPlan result to both hooks) -- never a different,
+  // stale plan's own coherence shown alongside this one's steps.
+  coherence?: TechnicalDemonstrationCoherenceResult;
 }
 
 // Technical Demonstration, Stage 2 (+ Stage 2.5.b) -- the single plan view,
@@ -49,7 +58,7 @@ export interface TechnicalDemonstrationPlanViewProps {
 // DRAFT and CONFIRMED views only ever differ by whether onConfirm/
 // onEditField are supplied, so splitting them into two components would
 // just duplicate the step list rendering for no real benefit.
-export function TechnicalDemonstrationPlanView({ plan, steps, onConfirm, confirmConflictMessage, onEditField, readiness }: TechnicalDemonstrationPlanViewProps) {
+export function TechnicalDemonstrationPlanView({ plan, steps, onConfirm, confirmConflictMessage, onEditField, readiness, coherence }: TechnicalDemonstrationPlanViewProps) {
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
 
@@ -100,6 +109,8 @@ export function TechnicalDemonstrationPlanView({ plan, steps, onConfirm, confirm
       ) : null}
 
       {readiness ? <TechnicalExecutionVideoReadinessSummary readiness={readiness} /> : null}
+
+      {coherence ? <TechnicalDemonstrationCoherenceSummary coherence={coherence} /> : null}
     </Card>
   );
 }
