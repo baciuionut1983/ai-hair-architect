@@ -1,4 +1,5 @@
 import type {
+  CuttingStep,
   FaceShape,
   GrowthPattern,
   HairCondition,
@@ -238,67 +239,17 @@ export function generateTechnicalCutPlan(input: AnalysisEngineInput): TechnicalC
 
   const confidence = calculateRecommendationConfidence(missingData, warnings, contraindications);
 
-  const cuttingSteps = [
-    {
-      stepNumber: 1,
-      zone: "Mapping and sectioning",
-      action: `Partition using ${readable(sectioning)} with visual balance checkpoints.`,
-      elevationAngle: elevation,
-      toolRequired: "tail-comb"
-    },
-    {
-      stepNumber: 2,
-      zone: "Baseline guideline",
-      action: `Set a ${readable(guideline)} guideline and establish the structural shape with ${readable(selection.structuralTechnique)}.`,
-      elevationAngle: elevation,
-      toolRequired: "straight-shear"
-    },
-    {
-      stepNumber: 3,
-      zone: "Bulk and shape control",
-      action: `Use ${readable(selection.cuttingTechnique)} for perimeter control and ${readable(distribution)} distribution for silhouette correction.`,
-      elevationAngle: elevation,
-      toolRequired: selection.texturizingTechnique ? "texturizer-shear" : "straight-shear"
-    },
-    {
-      stepNumber: 4,
-      zone: "Cross-check and finish",
-      // Stage 2.5.e -- ATOMIC STEP FIX. This step's own action text is now
-      // a single, universal, PURE OBSERVATION sentence, used identically
-      // whether or not a texturizing technique was selected. Previously
-      // this branched on `selection.texturizingTechnique` to re-mention
-      // the texturizing technique here -- a genuine bug, not a stylistic
-      // choice: whenever texturizing IS present, it already has its own
-      // dedicated "Texture refinement" step (spliced in below), so
-      // mentioning it again here was pure duplication; and mentioning it
-      // at all made this step's own action mix a real cutting/texturizing
-      // action together with a genuinely separate observation action --
-      // exactly the "one step, two actions" problem the Stage 2.5.d
-      // actionType audit found. The non-texturizing branch had the same
-      // flaw in miniature ("refine perimeter" is itself a cutting-adjacent
-      // action, not an observation) -- also removed. This step now
-      // NEVER performs or implies a cutting action, in either branch --
-      // see technical-demonstration-derivation.ts's own Stage 2.5.e
-      // comment for why this is what makes FINAL_OBSERVATION safely
-      // derivable with certainty for newly-generated plans.
-      action: "Cross-check symmetry, inspect perimeter balance and silhouette, and compare frontal and profile views to confirm natural fall.",
-      elevationAngle: elevation,
-      toolRequired: "finishing-comb"
-    }
-  ];
-
-  if (selection.texturizingTechnique) {
-    cuttingSteps.splice(3, 0, {
-      stepNumber: 4,
-      zone: "Texture refinement",
-      action: `Apply ${readable(selection.texturizingTechnique)} only after the structural form is established.`,
-      elevationAngle: elevation,
-      toolRequired: "texturizer-shear"
-    });
-    cuttingSteps.forEach((step, index) => {
-      step.stepNumber = index + 1;
-    });
-  }
+  // Stage 2.5.f.1 -- extracted into buildCuttingSteps below (refactor only,
+  // zero behavior change; same values, same order, same conditional splice).
+  const cuttingSteps = buildCuttingSteps({
+    structuralTechnique: selection.structuralTechnique,
+    cuttingTechnique: selection.cuttingTechnique,
+    texturizingTechnique: selection.texturizingTechnique,
+    sectioning,
+    elevation,
+    distribution,
+    guideline
+  });
 
   const stylistExplanation =
     `Structural technique: ${readable(selection.structuralTechnique)}. Cutting technique: ${readable(selection.cuttingTechnique)}.` +
@@ -331,6 +282,95 @@ export function generateTechnicalCutPlan(input: AnalysisEngineInput): TechnicalC
     stylistValidationDisclaimer: STYLIST_VALIDATION_DISCLAIMER,
     version: TECHNICAL_PLAN_VERSION
   };
+}
+
+// Stage 2.5.f.1 (Technical Demonstration step-generator extraction) --
+// REFACTOR ONLY, zero behavior change. Extracted verbatim from
+// generateTechnicalCutPlan's own former inline cuttingSteps construction
+// (same object literals, same order, same conditional splice/renumber) so
+// this logic becomes independently callable/testable, ahead of Stage
+// 2.5.f.2 (NOT done here) which is expected to call this SAME function
+// again from technical-demonstration-repository.ts, against a CONFIRMED
+// proposal's own EFFECTIVE structured fields, instead of reading that
+// proposal's frozen cuttingSteps array verbatim -- see the Stage 2.5.f
+// audit's Audit 3/5 conclusions. Nothing about this stage changes what
+// generateTechnicalCutPlan produces for a fresh Analysis, and nothing here
+// is yet wired into Technical Demonstration Plan creation.
+//
+// Input type deliberately reuses TechnicalCutPlan's own 7 structural
+// fields via Pick -- these are exactly the fields both call sites (today's
+// generateTechnicalCutPlan, and Stage 2.5.f.2's future effective-proposal
+// caller) already have on hand, so no new bespoke input shape is
+// introduced. Pure: no I/O, no DB, no provider call, fully deterministic
+// for the same input.
+export function buildCuttingSteps(
+  selection: Pick<TechnicalCutPlan, "structuralTechnique" | "cuttingTechnique" | "texturizingTechnique" | "sectioning" | "elevation" | "distribution" | "guideline">
+): CuttingStep[] {
+  const { structuralTechnique, cuttingTechnique, texturizingTechnique, sectioning, elevation, distribution, guideline } = selection;
+
+  const cuttingSteps: CuttingStep[] = [
+    {
+      stepNumber: 1,
+      zone: "Mapping and sectioning",
+      action: `Partition using ${readable(sectioning)} with visual balance checkpoints.`,
+      elevationAngle: elevation,
+      toolRequired: "tail-comb"
+    },
+    {
+      stepNumber: 2,
+      zone: "Baseline guideline",
+      action: `Set a ${readable(guideline)} guideline and establish the structural shape with ${readable(structuralTechnique)}.`,
+      elevationAngle: elevation,
+      toolRequired: "straight-shear"
+    },
+    {
+      stepNumber: 3,
+      zone: "Bulk and shape control",
+      action: `Use ${readable(cuttingTechnique)} for perimeter control and ${readable(distribution)} distribution for silhouette correction.`,
+      elevationAngle: elevation,
+      toolRequired: texturizingTechnique ? "texturizer-shear" : "straight-shear"
+    },
+    {
+      stepNumber: 4,
+      zone: "Cross-check and finish",
+      // Stage 2.5.e -- ATOMIC STEP FIX. This step's own action text is now
+      // a single, universal, PURE OBSERVATION sentence, used identically
+      // whether or not a texturizing technique was selected. Previously
+      // this branched on `texturizingTechnique` to re-mention the
+      // texturizing technique here -- a genuine bug, not a stylistic
+      // choice: whenever texturizing IS present, it already has its own
+      // dedicated "Texture refinement" step (spliced in below), so
+      // mentioning it again here was pure duplication; and mentioning it
+      // at all made this step's own action mix a real cutting/texturizing
+      // action together with a genuinely separate observation action --
+      // exactly the "one step, two actions" problem the Stage 2.5.d
+      // actionType audit found. The non-texturizing branch had the same
+      // flaw in miniature ("refine perimeter" is itself a cutting-adjacent
+      // action, not an observation) -- also removed. This step now
+      // NEVER performs or implies a cutting action, in either branch --
+      // see technical-demonstration-derivation.ts's own Stage 2.5.e
+      // comment for why this is what makes FINAL_OBSERVATION safely
+      // derivable with certainty for newly-generated plans.
+      action: "Cross-check symmetry, inspect perimeter balance and silhouette, and compare frontal and profile views to confirm natural fall.",
+      elevationAngle: elevation,
+      toolRequired: "finishing-comb"
+    }
+  ];
+
+  if (texturizingTechnique) {
+    cuttingSteps.splice(3, 0, {
+      stepNumber: 4,
+      zone: "Texture refinement",
+      action: `Apply ${readable(texturizingTechnique)} only after the structural form is established.`,
+      elevationAngle: elevation,
+      toolRequired: "texturizer-shear"
+    });
+    cuttingSteps.forEach((step, index) => {
+      step.stepNumber = index + 1;
+    });
+  }
+
+  return cuttingSteps;
 }
 
 function selectTechnique(profile: TechnicalProfile): TechniqueSelection {

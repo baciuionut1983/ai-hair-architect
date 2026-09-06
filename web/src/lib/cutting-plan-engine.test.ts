@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { generateTechnicalCutPlan, shouldGenerateTechnicalCutPlan } from "./cutting-plan-engine";
+import { buildCuttingSteps, generateTechnicalCutPlan, shouldGenerateTechnicalCutPlan } from "./cutting-plan-engine";
 
 describe("cutting-plan-engine", () => {
   it("decides when to generate technical plan", () => {
@@ -258,6 +258,195 @@ describe("cutting-plan-engine", () => {
       // stepNumbers stay contiguous/sequential regardless of count.
       expect(withoutTexturizing.cuttingSteps.map((s) => s.stepNumber)).toEqual([1, 2, 3, 4]);
       expect(withTexturizing.cuttingSteps.map((s) => s.stepNumber)).toEqual([1, 2, 3, 4, 5]);
+    });
+  });
+
+  // Stage 2.5.f.1 -- buildCuttingSteps extraction characterization tests.
+  // Called DIRECTLY (no AnalysisEngineInput/profile involved at all), to
+  // prove the extracted function is genuinely independently unit-testable,
+  // and that its output is byte-identical to what the former inline logic
+  // produced. Deep-equality fixtures, not just isolated field checks, per
+  // this stage's own explicit requirement.
+  describe("Stage 2.5.f.1 -- buildCuttingSteps extraction (deep-equality characterization)", () => {
+    it("WITH a texturizing technique: exact 5-step fixture, deep-equal -- matches real production combo (One Length / Blunt Line / Slice And Slide / 0 Deg Blunt / Natural Fall / Visual Perimeter)", () => {
+      const steps = buildCuttingSteps({
+        structuralTechnique: "one_length",
+        cuttingTechnique: "blunt_line",
+        texturizingTechnique: "slice_and_slide",
+        sectioning: "4_quadrant_profile_radial",
+        elevation: "0_deg_blunt",
+        distribution: "natural_fall",
+        guideline: "visual_perimeter"
+      });
+
+      expect(steps).toEqual([
+        {
+          stepNumber: 1,
+          zone: "Mapping and sectioning",
+          action: "Partition using 4 quadrant profile radial with visual balance checkpoints.",
+          elevationAngle: "0_deg_blunt",
+          toolRequired: "tail-comb"
+        },
+        {
+          stepNumber: 2,
+          zone: "Baseline guideline",
+          action: "Set a visual perimeter guideline and establish the structural shape with one length.",
+          elevationAngle: "0_deg_blunt",
+          toolRequired: "straight-shear"
+        },
+        {
+          stepNumber: 3,
+          zone: "Bulk and shape control",
+          action: "Use blunt line for perimeter control and natural fall distribution for silhouette correction.",
+          elevationAngle: "0_deg_blunt",
+          toolRequired: "texturizer-shear"
+        },
+        {
+          stepNumber: 4,
+          zone: "Texture refinement",
+          action: "Apply slice and slide only after the structural form is established.",
+          elevationAngle: "0_deg_blunt",
+          toolRequired: "texturizer-shear"
+        },
+        {
+          stepNumber: 5,
+          zone: "Cross-check and finish",
+          action: "Cross-check symmetry, inspect perimeter balance and silhouette, and compare frontal and profile views to confirm natural fall.",
+          elevationAngle: "0_deg_blunt",
+          toolRequired: "finishing-comb"
+        }
+      ]);
+
+      // Cross-check: the full integrated pipeline (generateTechnicalCutPlan,
+      // which now calls this same function internally) produces the exact
+      // SAME steps for the real profile that yields this identical
+      // technique combination -- proving the extraction integrates
+      // correctly, not just that the standalone function is internally
+      // consistent.
+      const plan = generateTechnicalCutPlan({
+        goal: "reshape",
+        hairType: "medium",
+        density: "medium",
+        porosity: "medium",
+        targetShape: "blunt_perimeter_texturized"
+      });
+      expect(plan.cuttingSteps).toEqual(steps);
+    });
+
+    it("WITHOUT a texturizing technique: exact 4-step fixture, deep-equal", () => {
+      const steps = buildCuttingSteps({
+        structuralTechnique: "graduation",
+        cuttingTechnique: "slice_cutting",
+        texturizingTechnique: undefined,
+        sectioning: "diagonal_back",
+        elevation: "45_deg_graduation",
+        distribution: "overdirected_back",
+        guideline: "stationary"
+      });
+
+      expect(steps).toEqual([
+        {
+          stepNumber: 1,
+          zone: "Mapping and sectioning",
+          action: "Partition using diagonal back with visual balance checkpoints.",
+          elevationAngle: "45_deg_graduation",
+          toolRequired: "tail-comb"
+        },
+        {
+          stepNumber: 2,
+          zone: "Baseline guideline",
+          action: "Set a stationary guideline and establish the structural shape with graduation.",
+          elevationAngle: "45_deg_graduation",
+          toolRequired: "straight-shear"
+        },
+        {
+          stepNumber: 3,
+          zone: "Bulk and shape control",
+          action: "Use slice cutting for perimeter control and overdirected back distribution for silhouette correction.",
+          elevationAngle: "45_deg_graduation",
+          toolRequired: "straight-shear"
+        },
+        {
+          stepNumber: 4,
+          zone: "Cross-check and finish",
+          action: "Cross-check symmetry, inspect perimeter balance and silhouette, and compare frontal and profile views to confirm natural fall.",
+          elevationAngle: "45_deg_graduation",
+          toolRequired: "finishing-comb"
+        }
+      ]);
+
+      // Cross-check against the integrated pipeline for the equivalent
+      // minimal profile (targetShape alone selects this exact combo, with
+      // no other profile field present to trigger a further override).
+      const plan = generateTechnicalCutPlan({
+        goal: "reshape",
+        hairType: "medium",
+        density: "medium",
+        porosity: "medium",
+        targetShape: "graduated_bob"
+      });
+      expect(plan.cuttingSteps).toEqual(steps);
+    });
+
+    it("individual step identity: sectioning / guide / structural cutting / texturizing / final observation, each independently addressable", () => {
+      const steps = buildCuttingSteps({
+        structuralTechnique: "one_length",
+        cuttingTechnique: "blunt_line",
+        texturizingTechnique: "slice_and_slide",
+        sectioning: "4_quadrant_profile_radial",
+        elevation: "0_deg_blunt",
+        distribution: "natural_fall",
+        guideline: "visual_perimeter"
+      });
+
+      const [sectioningStep, guideStep, structuralStep, texturizingStep, finalStep] = steps;
+      expect(sectioningStep.zone).toBe("Mapping and sectioning");
+      expect(guideStep.zone).toBe("Baseline guideline");
+      expect(structuralStep.zone).toBe("Bulk and shape control");
+      expect(texturizingStep.zone).toBe("Texture refinement");
+      expect(finalStep.zone).toBe("Cross-check and finish");
+      expect(finalStep.action).toMatch(/cross-check/i);
+      expect(finalStep.action).not.toMatch(/slice and slide|blunt line|cut\b/i);
+    });
+
+    it("step order/count is a plain contiguous 1..N sequence, with and without texturizing", () => {
+      const withTexturizing = buildCuttingSteps({
+        structuralTechnique: "one_length",
+        cuttingTechnique: "blunt_line",
+        texturizingTechnique: "slice_and_slide",
+        sectioning: "4_quadrant_profile_radial",
+        elevation: "0_deg_blunt",
+        distribution: "natural_fall",
+        guideline: "visual_perimeter"
+      });
+      const withoutTexturizing = buildCuttingSteps({
+        structuralTechnique: "graduation",
+        cuttingTechnique: "slice_cutting",
+        texturizingTechnique: undefined,
+        sectioning: "diagonal_back",
+        elevation: "45_deg_graduation",
+        distribution: "overdirected_back",
+        guideline: "stationary"
+      });
+
+      expect(withTexturizing.map((s) => s.stepNumber)).toEqual([1, 2, 3, 4, 5]);
+      expect(withoutTexturizing.map((s) => s.stepNumber)).toEqual([1, 2, 3, 4]);
+    });
+
+    it("is a pure function -- calling it twice with the same input produces deep-equal (though distinct array instance) output", () => {
+      const input = {
+        structuralTechnique: "precision_layering" as const,
+        cuttingTechnique: "elevation_cutting" as const,
+        texturizingTechnique: "razor_texturizing" as const,
+        sectioning: "horseshoe_crown" as const,
+        elevation: "180_deg_overdirection" as const,
+        distribution: "shifting_line" as const,
+        guideline: "multiple_reference" as const
+      };
+      const first = buildCuttingSteps(input);
+      const second = buildCuttingSteps(input);
+      expect(first).toEqual(second);
+      expect(first).not.toBe(second);
     });
   });
 });
