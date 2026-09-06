@@ -44,6 +44,15 @@ export function mapTechnicalDemonstrationPlanApiError(status: number, code?: str
   if (status === 409 && code === "TECHNICAL_DEMONSTRATION_ILLEGAL_STATE_TRANSITION") {
     return "This plan is no longer a draft, so it can't be confirmed again.";
   }
+  // Stage 2.5.g.3 -- confirmation enforcement. Deliberately a short pointer
+  // to the ALREADY-rendered Professional Coherence section, never a
+  // reconstructed list of the individual blocker messages here -- those
+  // are the server's own structured findings, already shown verbatim in
+  // their own dedicated UI; this generic action-outcome message never
+  // duplicates or reinterprets them.
+  if (status === 409 && code === "TECHNICAL_PLAN_COHERENCE_BLOCKED") {
+    return "This plan has a deterministic coherence contradiction and can't be confirmed yet. See Professional Coherence below for the exact blocker(s).";
+  }
   if (status === 400 || status === 422) {
     return "This request could not be completed with the current data. Please review and try again.";
   }

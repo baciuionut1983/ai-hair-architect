@@ -57,6 +57,18 @@ const repositoryMock = vi.hoisted(() => {
       this.name = "TechnicalDemonstrationInvariantError";
     }
   }
+  class TechnicalDemonstrationCoherenceBlockedError extends Error {
+    readonly code = "TECHNICAL_PLAN_COHERENCE_BLOCKED";
+    readonly httpStatus = 409;
+    constructor(
+      readonly planId: string,
+      readonly planVersion: number,
+      readonly blockers: unknown[],
+    ) {
+      super(`Technical Demonstration Plan ${planId} cannot be confirmed: ${blockers.length} coherence blocker(s) detected.`);
+      this.name = "TechnicalDemonstrationCoherenceBlockedError";
+    }
+  }
   return {
     TechnicalDemonstrationPersistenceError,
     TechnicalDemonstrationDependencyError,
@@ -64,6 +76,7 @@ const repositoryMock = vi.hoisted(() => {
     TechnicalDemonstrationStateError,
     TechnicalDemonstrationConcurrencyError,
     TechnicalDemonstrationInvariantError,
+    TechnicalDemonstrationCoherenceBlockedError,
     findTechnicalDemonstrationPlanForOwner: vi.fn(),
     confirmTechnicalDemonstrationPlan: vi.fn(),
     listTechnicalDemonstrationStepsForPlan: vi.fn(),
@@ -230,6 +243,32 @@ describe("POST /api/v1/clients/[id]/analysis-proposals/[proposalId]/technical-de
     expect(body.error).toBe("TECHNICAL_DEMONSTRATION_CONFIRMATION_CONFLICT");
     expect(body.message).not.toContain("Technical Demonstration Plan could not be confirmed because of a concurrent confirmation");
     expect(body.message).toContain("Review the current confirmed plan");
+  });
+
+  // Stage 2.5.g.3 -- Professional Coherence enforcement at confirmation.
+  it("a deterministic coherence blocker rejects confirmation with a structured 409, never a generic string", async () => {
+    const blockers = [
+      {
+        code: "COHERENCE_PHASE_ACTION_TYPE_MISMATCH",
+        severity: "BLOCKER",
+        stepNumber: 3,
+        fields: ["phase", "actionType"],
+        message: 'Step 3\'s actionType "SECTIONING_ACTION" is not a valid action for its own "STRUCTURAL_CUTTING" phase.',
+        ruleVersion: "1.0.0-coh1",
+      },
+    ];
+    repositoryMock.confirmTechnicalDemonstrationPlan.mockRejectedValue(
+      new repositoryMock.TechnicalDemonstrationCoherenceBlockedError("plan-1", 3, blockers),
+    );
+
+    const response = await POST(postReq({ expectedCurrentConfirmedPlanId: null }), ctx());
+
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).toBe("TECHNICAL_PLAN_COHERENCE_BLOCKED");
+    expect(body.planId).toBe("plan-1");
+    expect(body.planVersion).toBe(3);
+    expect(body.blockers).toEqual(blockers);
   });
 
   it("returns 404 if the plan disappears between the ownership check and the confirm call (defensive, not a discovery oracle)", async () => {

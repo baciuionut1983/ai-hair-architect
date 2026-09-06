@@ -14,6 +14,7 @@ import {
   findTechnicalDemonstrationPlanForOwner,
   listTechnicalDemonstrationStepsForPlan,
   resolveEffectiveCuttingStepsForRecord,
+  TechnicalDemonstrationCoherenceBlockedError,
   TechnicalDemonstrationConcurrencyError,
   TechnicalDemonstrationDependencyError,
   TechnicalDemonstrationOverrideValidationError,
@@ -1009,6 +1010,164 @@ suite("technical-demonstration-repository (real Postgres)", () => {
       const { ownerUserId } = await createOwnerAndClient();
       const result = await confirmTechnicalDemonstrationPlan(ownerUserId, randomUUID(), null);
       expect(result).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Stage 2.5.g.3 -- Professional Coherence ENFORCEMENT at confirmation.
+  // Real Postgres, real evaluatePlanCoherence (the exact, unmodified
+  // Stage 2.5.g.1 engine) -- no new domain rule anywhere in this section.
+  // ---------------------------------------------------------------------
+  describe("Stage 2.5.g.3 -- Professional Coherence enforcement at confirmation", () => {
+    // Required tests 1, 2, 3, 4, 11: a real, deterministic phase/actionType
+    // blocker (created via a real professional override, exactly like the
+    // production mechanism) rejects confirmation, leaves the plan
+    // untouched, and carries structured blocker information.
+    it("1/2/3/4/11. a deterministic coherence blocker (via professional override) rejects confirmation, leaves the plan DRAFT with zero mutation, and carries structured blocker information", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      // Step 3 ("Bulk and shape control") is STRUCTURAL_CUTTING phase --
+      // overriding its own actionType to SECTIONING_ACTION is a real,
+      // deterministic phase/actionType contradiction (Stage 2.5.g.1's own
+      // proven BLOCKER rule, not a new rule).
+      await applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, [
+        { op: "set_value", stepNumber: 3, field: "actionType", value: "SECTIONING_ACTION" },
+      ]);
+      const beforeAttempt = await findTechnicalDemonstrationPlanForOwner(ownerUserId, outcome.plan.id);
+
+      let thrown: unknown;
+      try {
+        await confirmTechnicalDemonstrationPlan(ownerUserId, outcome.plan.id, null);
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(TechnicalDemonstrationCoherenceBlockedError);
+      const coherenceError = thrown as TechnicalDemonstrationCoherenceBlockedError;
+      // Item 4: structured, not a generic string.
+      expect(coherenceError.planId).toBe(outcome.plan.id);
+      expect(coherenceError.planVersion).toBe(outcome.plan.planVersion); // item 15: exact plan version evaluated
+      expect(coherenceError.blockers.length).toBeGreaterThan(0);
+      expect(coherenceError.blockers[0].code).toBe("COHERENCE_PHASE_ACTION_TYPE_MISMATCH");
+      expect(coherenceError.blockers[0].stepNumber).toBe(3);
+
+      // Items 2, 3: the plan is completely untouched by the failed attempt.
+      const afterAttempt = await findTechnicalDemonstrationPlanForOwner(ownerUserId, outcome.plan.id);
+      expect(afterAttempt?.status).toBe("DRAFT");
+      expect(afterAttempt?.confirmedAt).toBeNull();
+      expect(afterAttempt?.updatedAt).toBe(beforeAttempt?.updatedAt); // zero write occurred during the attempt
+    });
+
+    // Required tests 5, 7: the real, locked WARNING case (One Length +
+    // Elevation Cutting + 0 Deg Blunt) never blocks confirmation.
+    it("5/7. the real One Length + Elevation Cutting + 0 Deg Blunt combination is a WARNING only -- confirmation still succeeds", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const payload: TechnicalCutPlan = {
+        ...cuttingPayload(),
+        structuralTechnique: "one_length",
+        cuttingTechnique: "blunt_line",
+        elevation: "0_deg_blunt",
+      };
+      const draft = await createProposalForOwner(ownerUserId, clientId, analysis.id, "cutting", payload, evidenceSnapshot(), "1.0.0-m8");
+      const proposal = await confirmProposal(ownerUserId, draft.id, ownerUserId, null);
+      if (!proposal) throw new Error("expected confirmed proposal");
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      // Mirrors the exact real production edit: cuttingTechnique ->
+      // elevation_cutting, while elevation stays 0_deg_blunt (unedited).
+      await applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, [
+        { op: "set_value", stepNumber: 3, field: "cuttingTechnique", value: "elevation_cutting" },
+      ]);
+
+      const confirmed = await confirmTechnicalDemonstrationPlan(ownerUserId, outcome.plan.id, null);
+      expect(confirmed?.status).toBe("CONFIRMED");
+    });
+
+    // Required tests 6, 8: the real, locked REVIEW_ONLY case (STRUCTURAL_
+    // CUTTING + texturizer-shear) never blocks confirmation.
+    it("6/8. the real STRUCTURAL_CUTTING + texturizer-shear combination is REVIEW_ONLY -- confirmation still succeeds", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      await applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, [
+        { op: "set_value", stepNumber: 3, field: "tool", value: "texturizer-shear" },
+      ]);
+
+      const confirmed = await confirmTechnicalDemonstrationPlan(ownerUserId, outcome.plan.id, null);
+      expect(confirmed?.status).toBe("CONFIRMED");
+    });
+
+    // Required test 9: a real, UNEDITED plan's many genuinely UNKNOWN
+    // fields (stateBefore/stateAfter, most geometry fields, etc.) never
+    // fabricate a confirmation blocker.
+    it("9. a real, unedited plan's many genuinely UNKNOWN fields never fabricate a confirmation blocker", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      const confirmed = await confirmTechnicalDemonstrationPlan(ownerUserId, outcome.plan.id, null);
+      expect(confirmed?.status).toBe("CONFIRMED");
+    });
+
+    // Required test 10: an explicit professional NOT_APPLICABLE decision
+    // never fabricates a confirmation blocker either.
+    it("10. an explicit NOT_APPLICABLE override never fabricates a confirmation blocker", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      await applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, [
+        { op: "mark_not_applicable", stepNumber: 5, field: "cuttingLine" },
+      ]);
+
+      const confirmed = await confirmTechnicalDemonstrationPlan(ownerUserId, outcome.plan.id, null);
+      expect(confirmed?.status).toBe("CONFIRMED");
+    });
+
+    // Required tests 12, 13: once a professional override RESOLVES the
+    // exact same blocker that just rejected confirmation, a fresh attempt
+    // succeeds -- proving the server recomputes coherence fresh on every
+    // single call, never caching or remembering the earlier failure.
+    it("12/13. once a professional override resolves the blocker, a fresh confirm attempt succeeds -- the server recomputes coherence fresh each time", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+
+      await applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, [
+        { op: "set_value", stepNumber: 3, field: "actionType", value: "SECTIONING_ACTION" },
+      ]);
+      await expect(confirmTechnicalDemonstrationPlan(ownerUserId, outcome.plan.id, null)).rejects.toThrow(TechnicalDemonstrationCoherenceBlockedError);
+
+      // reset_field discards the bad override, reverting to the step's own
+      // correct, freshly-derived baseline actionType (STRUCTURAL_CUTTING).
+      await applyOverridesToDraft(ownerUserId, clientId, outcome.plan.id, [
+        { op: "reset_field", stepNumber: 3, field: "actionType" },
+      ]);
+
+      const confirmed = await confirmTechnicalDemonstrationPlan(ownerUserId, outcome.plan.id, null);
+      expect(confirmed?.status).toBe("CONFIRMED");
+    });
+
+    // Required test 16: an already-CONFIRMED plan's own DRAFT-only guard
+    // still fires FIRST -- coherence enforcement never even runs for a
+    // non-DRAFT plan, exactly the pre-existing, unmodified behavior.
+    it("16. an already-CONFIRMED plan's re-confirmation attempt still rejects via the EXISTING illegal-state-transition error, unaffected by coherence enforcement", async () => {
+      const { ownerUserId, clientId } = await createOwnerAndClient();
+      const analysis = await createAnalysis(ownerUserId, clientId);
+      const proposal = await confirmedProposal(ownerUserId, clientId, analysis.id);
+      const outcome = await createTechnicalDemonstrationPlanFromProposal(ownerUserId, clientId, proposal.id);
+      await confirmTechnicalDemonstrationPlan(ownerUserId, outcome.plan.id, null);
+
+      await expect(confirmTechnicalDemonstrationPlan(ownerUserId, outcome.plan.id, outcome.plan.id)).rejects.toThrow(TechnicalDemonstrationStateError);
     });
   });
 

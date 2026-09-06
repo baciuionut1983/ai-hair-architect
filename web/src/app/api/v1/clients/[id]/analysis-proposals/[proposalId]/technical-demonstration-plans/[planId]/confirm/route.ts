@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { resolveOwnedClient } from "@/lib/client-repository";
 import {
+  TechnicalDemonstrationCoherenceBlockedError,
   TechnicalDemonstrationConcurrencyError,
   TechnicalDemonstrationDependencyError,
   TechnicalDemonstrationInvariantError,
@@ -100,6 +101,18 @@ export async function POST(
             "Another Technical Demonstration Plan was confirmed for this proposal while this draft was open. Review the current confirmed plan before replacing it.",
         },
         { status: 409 },
+      );
+    }
+    if (error instanceof TechnicalDemonstrationCoherenceBlockedError) {
+      // Stage 2.5.g.3 -- structured, UI-usable blocker information, never
+      // a generic string: the exact same CoherenceFinding shape the
+      // Stage 2.5.g.2 visibility route already returns, so the client can
+      // reuse the identical rendering it already has for "Blocking
+      // contradictions" -- never a second, differently-shaped error
+      // representation for the same concept.
+      return NextResponse.json(
+        { error: error.code, planId: error.planId, planVersion: error.planVersion, blockers: error.blockers },
+        { status: error.httpStatus },
       );
     }
     if (error instanceof TechnicalDemonstrationDependencyError) {

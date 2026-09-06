@@ -117,6 +117,9 @@ describe("mapTechnicalDemonstrationPlanApiError", () => {
     expect(mapTechnicalDemonstrationPlanApiError(404)).toContain("no longer available");
     expect(mapTechnicalDemonstrationPlanApiError(409, "TECHNICAL_DEMONSTRATION_CONFIRMATION_CONFLICT")).toContain("Another Technical Demonstration Plan");
     expect(mapTechnicalDemonstrationPlanApiError(409, "TECHNICAL_DEMONSTRATION_ILLEGAL_STATE_TRANSITION")).toContain("no longer a draft");
+    // Stage 2.5.g.3 -- points to the already-rendered Professional
+    // Coherence section, never reconstructs the individual blocker messages.
+    expect(mapTechnicalDemonstrationPlanApiError(409, "TECHNICAL_PLAN_COHERENCE_BLOCKED")).toContain("Professional Coherence");
     expect(mapTechnicalDemonstrationPlanApiError(422)).toContain("could not be completed");
     expect(mapTechnicalDemonstrationPlanApiError(503)).toContain("temporarily unavailable");
     expect(mapTechnicalDemonstrationPlanApiError(0)).toBe("Something went wrong. Please try again.");

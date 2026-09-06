@@ -35,6 +35,7 @@ import {
   deriveCuttingDemonstrationSteps,
   TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION,
 } from "@/lib/technical-demonstration-derivation";
+import { evaluatePlanCoherence, type CoherenceFinding } from "@/lib/technical-demonstration-cutting-coherence";
 
 // Technical Demonstration, Stage 1 ("cutting plan foundation only") -- the
 // domain/repository layer. Deliberately mirrors
@@ -133,6 +134,33 @@ export class TechnicalDemonstrationConcurrencyError extends Error {
   constructor() {
     super("Technical Demonstration Plan could not be confirmed because of a concurrent confirmation.");
     this.name = "TechnicalDemonstrationConcurrencyError";
+  }
+}
+
+// Stage 2.5.g.3 -- Professional Coherence ENFORCEMENT at confirmation
+// time. Deliberately its own error class, never reusing
+// TechnicalDemonstrationStateError or TechnicalDemonstrationConcurrencyError
+// -- this is a genuinely different failure kind (a deterministic
+// structural contradiction in the plan's own EFFECTIVE content, not a
+// status/version mismatch) and callers need the structured `blockers`
+// array to render real, actionable reasons, exactly like
+// TechnicalDemonstrationOverrideValidationError's own "structured reasons,
+// not just a string" precedent. Only ever thrown for real BLOCKER
+// findings (evaluatePlanCoherence's own `blockers` array) -- warnings and
+// reviewItems NEVER reach this class, by construction (see
+// confirmTechnicalDemonstrationPlan below, which only inspects
+// `coherence.blockers`).
+export class TechnicalDemonstrationCoherenceBlockedError extends Error {
+  readonly code = "TECHNICAL_PLAN_COHERENCE_BLOCKED";
+  readonly httpStatus = 409;
+
+  constructor(
+    readonly planId: string,
+    readonly planVersion: number,
+    readonly blockers: CoherenceFinding[],
+  ) {
+    super(`Technical Demonstration Plan ${planId} cannot be confirmed: ${blockers.length} coherence blocker(s) detected.`);
+    this.name = "TechnicalDemonstrationCoherenceBlockedError";
   }
 }
 
@@ -530,6 +558,38 @@ export async function confirmTechnicalDemonstrationPlan(
         throw new TechnicalDemonstrationConcurrencyError();
       }
 
+      // Stage 2.5.g.3 -- Professional Coherence ENFORCEMENT. Recomputes
+      // coherence HERE, inside this same serializable transaction, against
+      // the plan's own real, currently-persisted EFFECTIVE state (baseline
+      // + whatever professionalOverrides are actually on this row RIGHT
+      // NOW) -- never a value the browser sent, never a value computed
+      // earlier in this request, never the Stage 2.5.g.2 visibility
+      // route's own (necessarily separate, earlier) GET result. This is
+      // what makes a stale client-side coherence snapshot structurally
+      // unable to bypass enforcement: even if the browser's own UI last
+      // saw a clean pass, the server re-derives the truth fresh, from the
+      // database, at the exact moment of confirmation.
+      //
+      // ONLY blockers can ever prevent confirmation (Stage 2.5.g decision
+      // lock) -- warnings and reviewItems are deliberately never inspected
+      // here. Uses the EXACT SAME, unmodified Stage 2.5.g.1 engine and the
+      // same resolveEffectiveCuttingStepsForRecord/toTechnicalDemonstrationStepRecord
+      // helpers every other read path already uses -- no new domain rule,
+      // no second implementation of "effective state".
+      const stepRows = await tx.technicalDemonstrationStep.findMany({
+        where: { planId: target.id, ownerUserId, clientId: target.clientId },
+        orderBy: { stepNumber: "asc" },
+      });
+      const targetRecord = toTechnicalDemonstrationPlanRecord(target);
+      const effectiveSteps = resolveEffectiveCuttingStepsForRecord(targetRecord, stepRows.map(toTechnicalDemonstrationStepRecord));
+      const coherence = evaluatePlanCoherence(effectiveSteps);
+      if (coherence.blockers.length > 0) {
+        // Thrown BEFORE any write below -- the transaction performs zero
+        // mutation on a blocked attempt; the plan remains exactly DRAFT,
+        // with its own confirmedAt/status/updatedAt completely untouched.
+        throw new TechnicalDemonstrationCoherenceBlockedError(target.id, target.planVersion, coherence.blockers);
+      }
+
       const now = new Date();
 
       if (existingConfirmed) {
@@ -667,7 +727,13 @@ async function runTechnicalDemonstrationQuery<T>(operation: () => Promise<T>): P
       error instanceof TechnicalDemonstrationValidationError ||
       error instanceof TechnicalDemonstrationOverrideValidationError ||
       error instanceof TechnicalDemonstrationStateError ||
-      error instanceof TechnicalDemonstrationInvariantError
+      error instanceof TechnicalDemonstrationInvariantError ||
+      // Stage 2.5.g.3 -- a real, deterministic domain rejection (a
+      // structural coherence contradiction), never a persistence fault.
+      // Without this, the generic fail-closed branch below would silently
+      // relabel it as a 503 "temporarily unavailable", hiding the real,
+      // actionable, structured blocker information from the caller.
+      error instanceof TechnicalDemonstrationCoherenceBlockedError
     ) {
       throw error;
     }
@@ -703,7 +769,11 @@ function isRetryableConcurrencyError(error: unknown): boolean {
     error instanceof TechnicalDemonstrationValidationError ||
     error instanceof TechnicalDemonstrationOverrideValidationError ||
     error instanceof TechnicalDemonstrationInvariantError ||
-    error instanceof TechnicalDemonstrationPersistenceError
+    error instanceof TechnicalDemonstrationPersistenceError ||
+    // Stage 2.5.g.3 -- a deterministic coherence rejection is never a
+    // transient conflict; retrying would just recompute the identical
+    // verdict against the same still-contradictory state.
+    error instanceof TechnicalDemonstrationCoherenceBlockedError
   ) {
     return false;
   }

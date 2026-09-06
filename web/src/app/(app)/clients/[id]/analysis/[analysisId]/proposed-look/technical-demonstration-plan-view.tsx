@@ -61,6 +61,16 @@ export interface TechnicalDemonstrationPlanViewProps {
 export function TechnicalDemonstrationPlanView({ plan, steps, onConfirm, confirmConflictMessage, onEditField, readiness, coherence }: TechnicalDemonstrationPlanViewProps) {
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  // Stage 2.5.g.3 -- smallest safe UX: disable Confirm when the server's
+  // own coherence result already shows a deterministic blocker. This is a
+  // CONVENIENCE only, never the authority -- handleConfirm still calls the
+  // real confirm endpoint, which recomputes coherence fresh, server-side,
+  // and rejects with the exact same structured error regardless of
+  // whether this button happened to be disabled (e.g. a stale `coherence`
+  // read, or any other path that could still trigger onConfirm). No rule
+  // is evaluated here -- `coherence.blockers` is the server's own answer,
+  // read verbatim.
+  const hasCoherenceBlockers = (coherence?.blockers.length ?? 0) > 0;
 
   async function handleConfirm() {
     if (!onConfirm) return;
@@ -100,9 +110,16 @@ export function TechnicalDemonstrationPlanView({ plan, steps, onConfirm, confirm
 
       {onConfirm ? (
         <div className="flex flex-col gap-2 border-t border-border pt-3">
-          <Button type="button" onClick={handleConfirm} loading={confirming}>
+          <Button type="button" onClick={handleConfirm} loading={confirming} disabled={hasCoherenceBlockers}>
             Confirm Technical Plan
           </Button>
+          {hasCoherenceBlockers ? (
+            <Alert variant="error">
+              This plan has a deterministic coherence contradiction and can&apos;t be confirmed yet. See Professional
+              Coherence below for the exact blocker(s) -- the server enforces this regardless of this button&apos;s
+              own state.
+            </Alert>
+          ) : null}
           {confirmConflictMessage ? <Alert variant="warning">{confirmConflictMessage}</Alert> : null}
           {confirmError ? <Alert variant="error">{confirmError}</Alert> : null}
         </div>
