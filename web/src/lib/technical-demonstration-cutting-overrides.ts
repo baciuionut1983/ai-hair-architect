@@ -118,7 +118,14 @@ function isNonEmptyString(value: unknown): boolean {
   return typeof value === "string" && value.length > 0;
 }
 
-const FIELD_VALUE_VALIDATORS: Record<CuttingStepOverrideFieldName, (value: unknown) => boolean> = {
+// Exported (Stage 2.5.h.2b) so the new Professional Technique Execution
+// Profile contract (technical-demonstration-execution-profile-contracts.ts)
+// can validate a REQUIRED_FIXED/PROFESSIONAL_CHOICE rule's own structured
+// value against this EXACT SAME per-field vocabulary -- never a second,
+// independently-maintained copy of "what is a valid elevation". Zero
+// behavior change here: the export keyword is the only edit, mirroring the
+// identical precedent ACTION_SENSITIVE_FIELDS already set in Stage 2.5.g.1.
+export const FIELD_VALUE_VALIDATORS: Record<CuttingStepOverrideFieldName, (value: unknown) => boolean> = {
   zones: (v) => Array.isArray(v) && v.length > 0 && v.every(isHeadZone),
   elevation: (v) => isOneOf(v, ELEVATION_OPTIONS),
   tool: isNonEmptyString,
