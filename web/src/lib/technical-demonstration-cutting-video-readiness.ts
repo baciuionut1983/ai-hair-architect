@@ -169,7 +169,15 @@ function isTechniqueExcludedForStep(field: CuttingStepOverrideFieldName, payload
 // by its own phase-level rule, unaffected by actionType.
 // ---------------------------------------------------------------------------
 
-const ACTION_SENSITIVE_FIELDS: ReadonlySet<CuttingStepOverrideFieldName> = new Set([
+// Stage 2.5.g.1 -- exported (was module-private) so the new Professional
+// Coherence rule engine (technical-demonstration-cutting-coherence.ts) can
+// reuse this EXACT same canonical partition rather than forking a second,
+// independently-maintained copy of "which action types exclude cutting
+// geometry" -- the Stage 2.5.g audit's own explicit requirement. Zero
+// behavior change here: the export keyword is the only edit: every
+// existing reader of this file (isRuleApplicableForStep, below) is
+// completely unaffected.
+export const ACTION_SENSITIVE_FIELDS: ReadonlySet<CuttingStepOverrideFieldName> = new Set([
   "fingerPosition",
   "fingerAngle",
   "cuttingAngle",
@@ -177,14 +185,14 @@ const ACTION_SENSITIVE_FIELDS: ReadonlySet<CuttingStepOverrideFieldName> = new S
   "toolOrientation",
 ]);
 
-const ACTION_TYPES_REQUIRING_CUTTING_GEOMETRY: ReadonlySet<CuttingExecutionActionType> = new Set([
+export const ACTION_TYPES_REQUIRING_CUTTING_GEOMETRY: ReadonlySet<CuttingExecutionActionType> = new Set([
   "STRUCTURAL_CUTTING",
   "GUIDE_CUTTING",
   "TEXTURIZING_ACTION",
   "CORRECTIVE_CUTTING",
 ]);
 
-const ACTION_TYPES_EXCLUDING_CUTTING_GEOMETRY: ReadonlySet<CuttingExecutionActionType> = new Set([
+export const ACTION_TYPES_EXCLUDING_CUTTING_GEOMETRY: ReadonlySet<CuttingExecutionActionType> = new Set([
   "SECTIONING_ACTION",
   "GUIDE_OBSERVATION",
   "FINAL_OBSERVATION",
