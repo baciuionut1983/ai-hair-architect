@@ -9,7 +9,13 @@ import {
 import { humanizeEnumValue } from "@/lib/humanize-enum-value";
 import type { TechnicalDemonstrationPlanRecord, TechnicalDemonstrationStepRecord } from "@/lib/technical-demonstration-contracts";
 import { CUTTING_EXECUTION_ACTION_TYPES, type CuttingDemonstrationStepPayload } from "@/lib/technical-demonstration-cutting-contracts";
-import { CUTTING_STEP_OVERRIDE_FIELD_NAMES, type CuttingStepOverrideFieldName } from "@/lib/technical-demonstration-cutting-overrides";
+import {
+  CUTTING_STEP_OVERRIDE_FIELD_NAMES,
+  resolveCuttingStepFieldSourceLevel,
+  type CuttingStepFieldSourceLevel,
+  type CuttingStepOverrideEntry,
+  type CuttingStepOverrideFieldName,
+} from "@/lib/technical-demonstration-cutting-overrides";
 import { isProvenanceNotApplicable, isProvenancePopulated } from "@/lib/technical-demonstration-contracts";
 import { HEAD_ZONES } from "@/lib/technical-visual-map-validators";
 import { HEAD_ZONE_LABELS } from "./technical-visual-map-logic";
@@ -78,7 +84,19 @@ export const TECHNICAL_DEMONSTRATION_PROVENANCE_LABELS: Record<string, string> =
   NOT_APPLICABLE: "Not applicable",
 };
 
-export function technicalDemonstrationProvenanceLabel(provenance: string): string {
+// Stage 2.5.g.4 -- `sourceLevel` is OPTIONAL and changes the label ONLY for
+// the one case that was genuinely ambiguous in production: a
+// PROFESSIONAL_OVERRIDE-tagged value whose provenance was baked into this
+// step's own stored baseline from an upstream, already-confirmed
+// AnalysisProposal edit (UPSTREAM_PROFESSIONAL) -- worded distinctly from a
+// genuine, currently-resettable Technical Demonstration Plan-level override
+// (LOCAL_PLAN_OVERRIDE, which keeps the existing "Professional override"
+// wording unchanged). Every other provenance value's label is completely
+// unaffected -- this is additive, not a rename.
+export function technicalDemonstrationProvenanceLabel(provenance: string, sourceLevel?: CuttingStepFieldSourceLevel): string {
+  if (provenance === "PROFESSIONAL_OVERRIDE" && sourceLevel === "UPSTREAM_PROFESSIONAL") {
+    return "Approved professional input";
+  }
   return TECHNICAL_DEMONSTRATION_PROVENANCE_LABELS[provenance] ?? provenance;
 }
 
@@ -89,6 +107,17 @@ export function technicalDemonstrationProvenanceLabel(provenance: string): strin
 // so every existing import site in this UI feature keeps working
 // verbatim.
 export { isProvenancePopulated, isProvenanceNotApplicable };
+
+// Stage 2.5.g.4 -- re-exported here (server/domain-owned in
+// technical-demonstration-cutting-overrides.ts, imported above), so
+// every UI file in this feature imports provenance-adjacent helpers from
+// this ONE colocated logic file, exactly like the re-export above. Never
+// a second, independently-maintained interpretation of override
+// precedence -- this UI layer never guesses source level from badge text
+// or any other presentation detail; it always calls this one, real,
+// server-owned function against the plan's own real professionalOverrides
+// array and the field's own real effective provenance.
+export { resolveCuttingStepFieldSourceLevel, type CuttingStepFieldSourceLevel, type CuttingStepOverrideEntry };
 
 // ---------------------------------------------------------------------------
 // Step field descriptors -- the ONE place the full Cutting V1 field list

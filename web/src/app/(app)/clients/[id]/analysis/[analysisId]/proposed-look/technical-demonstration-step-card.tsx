@@ -11,14 +11,26 @@ import {
   CUTTING_STEP_FIELD_DESCRIPTORS,
   CUTTING_STEP_FIELD_EDITORS,
   resolveActionTypeOptionsForPhase,
+  resolveCuttingStepFieldSourceLevel,
   resolveStepConstraints,
   resolveStepFieldRows,
+  type CuttingStepOverrideEntry,
 } from "./technical-demonstration-plan-logic";
 import { TechnicalDemonstrationProvenanceBadge } from "./technical-demonstration-provenance-badge";
 import { TechnicalDemonstrationStepFieldEditor, type TechnicalDemonstrationStepFieldEditSubmission } from "./technical-demonstration-step-field-editor";
 
 export interface TechnicalDemonstrationStepCardProps {
   step: TechnicalDemonstrationStepRecord;
+  // Stage 2.5.g.4 -- the OWNING plan's own real professionalOverrides
+  // array, always passed (for BOTH a DRAFT's editable card and a
+  // CONFIRMED/SUPERSEDED plan's read-only card) -- needed to correctly
+  // distinguish an UPSTREAM_PROFESSIONAL value (baked into this step's own
+  // stored baseline from a confirmed AnalysisProposal edit) from a genuine
+  // LOCAL_PLAN_OVERRIDE (a real entry in this exact array) for every
+  // provenance badge and every "Reset to original" affordance on this
+  // card. Never guessed from badge text or any other presentation detail --
+  // always the plan's own real, already-fetched data.
+  professionalOverrides: CuttingStepOverrideEntry[];
   // Stage 2.5.b -- present ONLY for a DRAFT plan's own steps; a CONFIRMED
   // (or SUPERSEDED) plan's step card never receives this prop, so it stays
   // fully read-only structurally, not just by convention (see
@@ -53,7 +65,7 @@ const UNKNOWN_LABEL_TO_FIELD: Record<string, CuttingStepOverrideFieldName> = Obj
 // only), every editable field row gets a small "Edit" affordance that opens
 // ONE inline editor at a time (progressive disclosure -- never a giant
 // whole-step form, never raw JSON).
-export function TechnicalDemonstrationStepCard({ step, onEditField }: TechnicalDemonstrationStepCardProps) {
+export function TechnicalDemonstrationStepCard({ step, professionalOverrides, onEditField }: TechnicalDemonstrationStepCardProps) {
   const { populated, notApplicable, unknown } = resolveStepFieldRows(step.payload);
   const constraints = resolveStepConstraints(step.payload);
   const [editingField, setEditingField] = useState<CuttingStepOverrideFieldName | null>(null);
@@ -83,9 +95,31 @@ export function TechnicalDemonstrationStepCard({ step, onEditField }: TechnicalD
     return entry?.value ?? null;
   }
 
-  function hasBeenOverriddenFor(field: CuttingStepOverrideFieldName): boolean {
+  // Stage 2.5.g.4 -- the ONE place this card decides which of the 3
+  // provenance levels a field's current effective value actually came
+  // from, always via the real, server-owned resolveCuttingStepFieldSourceLevel
+  // (never guessed from the badge's own text). A NOT_APPLICABLE field is
+  // always LOCAL_PLAN_OVERRIDE by construction (the deterministic
+  // derivation itself never produces NOT_APPLICABLE -- only a real
+  // mark_not_applicable override can), so it is handled directly here
+  // without a wasted lookup.
+  function sourceLevelFor(field: CuttingStepOverrideFieldName) {
     const entry = payload[field] as { provenance: string } | undefined;
-    return entry?.provenance === "PROFESSIONAL_OVERRIDE" || entry?.provenance === "NOT_APPLICABLE";
+    if (entry?.provenance === "NOT_APPLICABLE") return "LOCAL_PLAN_OVERRIDE" as const;
+    return resolveCuttingStepFieldSourceLevel(step.stepNumber, field, entry?.provenance ?? "UNKNOWN", professionalOverrides);
+  }
+
+  // "Reset to original" is only ever meaningful -- has anything to
+  // discard -- when a genuine, currently-active LOCAL Technical
+  // Demonstration Plan override exists for this exact (stepNumber, field).
+  // An UPSTREAM_PROFESSIONAL value (baked into this step's own stored
+  // baseline from an already-confirmed AnalysisProposal edit) is NOT
+  // resettable here by definition -- there is no local override to
+  // discard, and "resetting" it would just reproduce the identical
+  // baseline value, exactly the real production confusion this stage
+  // fixes (a real write, zero visible effect, three times in a row).
+  function hasBeenOverriddenFor(field: CuttingStepOverrideFieldName): boolean {
+    return sourceLevelFor(field) === "LOCAL_PLAN_OVERRIDE";
   }
 
   async function handleEditorSubmit(submission: TechnicalDemonstrationStepFieldEditSubmission): Promise<boolean> {
@@ -135,7 +169,7 @@ export function TechnicalDemonstrationStepCard({ step, onEditField }: TechnicalD
             {actionTypeRow ? (
               <>
                 {actionTypeRow.value}
-                <TechnicalDemonstrationProvenanceBadge provenance={actionTypeRow.provenance} />
+                <TechnicalDemonstrationProvenanceBadge provenance={actionTypeRow.provenance} sourceLevel={sourceLevelFor("actionType")} />
               </>
             ) : (
               "Not classified"
@@ -169,7 +203,7 @@ export function TechnicalDemonstrationStepCard({ step, onEditField }: TechnicalD
                   <dt className="text-muted">{row.label}</dt>
                   <dd className="flex flex-wrap items-center justify-end gap-1.5 text-right font-medium text-foreground">
                     {row.value}
-                    <TechnicalDemonstrationProvenanceBadge provenance={row.provenance} />
+                    <TechnicalDemonstrationProvenanceBadge provenance={row.provenance} sourceLevel={field ? sourceLevelFor(field) : undefined} />
                     {field ? editButton(field) : null}
                   </dd>
                 </div>

@@ -10,6 +10,7 @@ import {
   mapTechnicalDemonstrationPlanApiError,
   resolveActionTypeOptionsForPhase,
   resolveCuttingStepFieldEditor,
+  resolveCuttingStepFieldSourceLevel,
   resolveReadinessTargetPlan,
   resolveStepConstraints,
   resolveStepFieldRows,
@@ -18,7 +19,7 @@ import {
   technicalDemonstrationProvenanceLabel,
   zoneOptionsForEditor,
 } from "./technical-demonstration-plan-logic";
-import { CUTTING_STEP_OVERRIDE_FIELD_NAMES } from "@/lib/technical-demonstration-cutting-overrides";
+import { CUTTING_STEP_OVERRIDE_FIELD_NAMES, toCuttingStepOverrideEntry, type CuttingStepOverrideEntry } from "@/lib/technical-demonstration-cutting-overrides";
 import { getTechnicalDemonstrationPlanStatusBadgeVariant, getTechnicalDemonstrationPlanStatusLabel } from "./technical-demonstration-plan-status-badge";
 import { getTechnicalDemonstrationProvenanceBadgeVariant } from "./technical-demonstration-provenance-badge";
 import type { TechnicalDemonstrationPlanActionOutcome } from "./use-technical-demonstration-plan";
@@ -223,6 +224,74 @@ describe("provenance labels and badge variants", () => {
     // Distinct from every other provenance's own variant.
     expect(getTechnicalDemonstrationProvenanceBadgeVariant("PROFESSIONAL_OVERRIDE")).not.toBe(getTechnicalDemonstrationProvenanceBadgeVariant("OBSERVED"));
     expect(getTechnicalDemonstrationProvenanceBadgeVariant("PROFESSIONAL_OVERRIDE")).not.toBe(getTechnicalDemonstrationProvenanceBadgeVariant("INFERRED"));
+  });
+
+  // Stage 2.5.g.4 -- the ONE label affected by sourceLevel: an
+  // UPSTREAM_PROFESSIONAL value reads distinctly from a genuine local
+  // Technical Demonstration Plan override, without changing the badge's
+  // own color/variant (still a professional-sourced value either way).
+  it("PROFESSIONAL_OVERRIDE + UPSTREAM_PROFESSIONAL reads as an inherited, approved decision -- distinct wording from a local plan override, same badge variant", () => {
+    expect(technicalDemonstrationProvenanceLabel("PROFESSIONAL_OVERRIDE", "UPSTREAM_PROFESSIONAL")).toBe("Approved professional input");
+    expect(technicalDemonstrationProvenanceLabel("PROFESSIONAL_OVERRIDE", "UPSTREAM_PROFESSIONAL")).not.toBe(
+      technicalDemonstrationProvenanceLabel("PROFESSIONAL_OVERRIDE", "LOCAL_PLAN_OVERRIDE"),
+    );
+    expect(getTechnicalDemonstrationProvenanceBadgeVariant("PROFESSIONAL_OVERRIDE")).toBe("warning");
+  });
+
+  it("PROFESSIONAL_OVERRIDE + LOCAL_PLAN_OVERRIDE (or no sourceLevel at all) keeps the existing, unchanged label -- purely additive, never a rename", () => {
+    expect(technicalDemonstrationProvenanceLabel("PROFESSIONAL_OVERRIDE", "LOCAL_PLAN_OVERRIDE")).toBe("Professional override");
+    expect(technicalDemonstrationProvenanceLabel("PROFESSIONAL_OVERRIDE")).toBe("Professional override");
+  });
+
+  it("sourceLevel never affects any OTHER provenance's own label", () => {
+    expect(technicalDemonstrationProvenanceLabel("OBSERVED", "UPSTREAM_PROFESSIONAL")).toBe("Observed");
+    expect(technicalDemonstrationProvenanceLabel("INFERRED", "UPSTREAM_PROFESSIONAL")).toBe("Inferred");
+    expect(technicalDemonstrationProvenanceLabel("UNKNOWN", "UPSTREAM_PROFESSIONAL")).toBe("Not yet available");
+  });
+});
+
+// Stage 2.5.g.4 -- proves the real V4 root-cause scenario end to end using
+// the re-exported resolveCuttingStepFieldSourceLevel, exactly the function
+// the step card now calls to gate "Reset to original" and choose the
+// badge's own wording -- never a second, UI-local reimplementation of
+// override precedence.
+describe("resolveCuttingStepFieldSourceLevel (re-exported for the UI layer)", () => {
+  it("the real V4 Step 3 cuttingTechnique scenario: PROFESSIONAL_OVERRIDE baked into the baseline, zero LOCAL override -- UPSTREAM_PROFESSIONAL, Reset to original must not be offered", () => {
+    expect(resolveCuttingStepFieldSourceLevel(3, "cuttingTechnique", "PROFESSIONAL_OVERRIDE", [])).toBe("UPSTREAM_PROFESSIONAL");
+  });
+
+  it("the real V4 three-reset-attempts scenario: repeated reset_field entries never become a LOCAL override", () => {
+    const now = new Date("2026-09-06T13:00:00.000Z");
+    const overrides: CuttingStepOverrideEntry[] = [
+      toCuttingStepOverrideEntry({ op: "reset_field", stepNumber: 3, field: "cuttingTechnique" }, now),
+      toCuttingStepOverrideEntry({ op: "reset_field", stepNumber: 3, field: "cuttingTechnique" }, now),
+      toCuttingStepOverrideEntry({ op: "reset_field", stepNumber: 3, field: "cuttingTechnique" }, now),
+    ];
+    expect(resolveCuttingStepFieldSourceLevel(3, "cuttingTechnique", "PROFESSIONAL_OVERRIDE", overrides)).toBe("UPSTREAM_PROFESSIONAL");
+  });
+
+  it("a genuine local edit on that same field IS a LOCAL_PLAN_OVERRIDE, and Reset to original becomes meaningful again", () => {
+    const now = new Date("2026-09-06T13:00:00.000Z");
+    const overrides: CuttingStepOverrideEntry[] = [
+      toCuttingStepOverrideEntry({ op: "set_value", stepNumber: 3, field: "cuttingTechnique", value: "slice_cutting" }, now),
+    ];
+    expect(resolveCuttingStepFieldSourceLevel(3, "cuttingTechnique", "PROFESSIONAL_OVERRIDE", overrides)).toBe("LOCAL_PLAN_OVERRIDE");
+  });
+
+  it("after resetting that genuine local edit, the field returns to UPSTREAM_PROFESSIONAL (the inherited baseline) -- never further back to any frozen AnalysisProposal AI value", () => {
+    const now = new Date("2026-09-06T13:00:00.000Z");
+    const overrides: CuttingStepOverrideEntry[] = [
+      toCuttingStepOverrideEntry({ op: "set_value", stepNumber: 3, field: "cuttingTechnique", value: "slice_cutting" }, now),
+      toCuttingStepOverrideEntry({ op: "reset_field", stepNumber: 3, field: "cuttingTechnique" }, now),
+    ];
+    // The caller (resolveEffectiveCuttingStepPayload) has already resolved
+    // the post-reset effective provenance back to the stored baseline's
+    // own PROFESSIONAL_OVERRIDE tag -- this function classifies THAT.
+    expect(resolveCuttingStepFieldSourceLevel(3, "cuttingTechnique", "PROFESSIONAL_OVERRIDE", overrides)).toBe("UPSTREAM_PROFESSIONAL");
+  });
+
+  it("ordinary GENERATED_BASELINE fields (no professional involvement at any layer) are unaffected", () => {
+    expect(resolveCuttingStepFieldSourceLevel(1, "sectioning", "INFERRED", [])).toBe("GENERATED_BASELINE");
   });
 });
 

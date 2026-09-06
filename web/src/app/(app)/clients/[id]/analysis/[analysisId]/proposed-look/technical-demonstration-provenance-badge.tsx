@@ -1,6 +1,6 @@
 import { Badge, type BadgeVariant } from "@/components/ui";
 
-import { technicalDemonstrationProvenanceLabel } from "./technical-demonstration-plan-logic";
+import { technicalDemonstrationProvenanceLabel, type CuttingStepFieldSourceLevel } from "./technical-demonstration-plan-logic";
 
 // Technical Demonstration, Stage 2 -- the field-level provenance badge
 // (OBSERVED / INFERRED / UNKNOWN / PROFESSIONAL_OVERRIDE). This is what
@@ -27,10 +27,17 @@ export function getTechnicalDemonstrationProvenanceBadgeVariant(provenance: stri
   }
 }
 
-export function TechnicalDemonstrationProvenanceBadge({ provenance }: { provenance: string }) {
+// Stage 2.5.g.4 -- `sourceLevel` is optional and purely presentational: it
+// only ever changes the LABEL TEXT for the one genuinely ambiguous case
+// (see technicalDemonstrationProvenanceLabel's own header comment); the
+// badge's own color/variant is deliberately unchanged either way -- an
+// upstream-inherited professional value is still professional-sourced,
+// still worth the same visual weight, just worded so a professional never
+// expects "Reset to original" to do something it structurally cannot do.
+export function TechnicalDemonstrationProvenanceBadge({ provenance, sourceLevel }: { provenance: string; sourceLevel?: CuttingStepFieldSourceLevel }) {
   return (
     <Badge variant={getTechnicalDemonstrationProvenanceBadgeVariant(provenance)} className="text-[0.65rem]">
-      {technicalDemonstrationProvenanceLabel(provenance)}
+      {technicalDemonstrationProvenanceLabel(provenance, sourceLevel)}
     </Badge>
   );
 }

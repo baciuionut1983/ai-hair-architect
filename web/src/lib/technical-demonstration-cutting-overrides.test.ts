@@ -9,6 +9,7 @@ import {
   isCuttingStepOverrideEntryArray,
   isCuttingStepOverrideFieldName,
   isCuttingStepOverrideInput,
+  resolveCuttingStepFieldSourceLevel,
   resolveEffectiveCuttingStepPayload,
   toCuttingStepOverrideEntry,
   type CuttingStepOverrideEntry,
@@ -356,5 +357,77 @@ describe("resolveEffectiveCuttingStepPayload -- actionType backward compatibilit
     const withNotApplicable = { ...derived, actionType: { value: null, provenance: "NOT_APPLICABLE" as const } };
     const effective = resolveEffectiveCuttingStepPayload(1, withNotApplicable, []);
     expect(effective.actionType).toEqual({ value: null, provenance: "NOT_APPLICABLE" });
+  });
+});
+
+// Stage 2.5.g.4 -- Technical Plan provenance UX clarification. Reproduces
+// the exact real production scenario: a step's own STORED BASELINE already
+// carries PROFESSIONAL_OVERRIDE (an upstream AnalysisProposal edit baked in
+// at creation), with NO local Technical Demonstration Plan override on top
+// -- "Reset to original" must never be presented as available there, since
+// resolving it would be a real write with zero visible effect.
+describe("resolveCuttingStepFieldSourceLevel", () => {
+  it("GENERATED_BASELINE: plain INFERRED/OBSERVED provenance, no overrides at all", () => {
+    expect(resolveCuttingStepFieldSourceLevel(3, "cuttingTechnique", "INFERRED", [])).toBe("GENERATED_BASELINE");
+    expect(resolveCuttingStepFieldSourceLevel(3, "elevation", "OBSERVED", [])).toBe("GENERATED_BASELINE");
+  });
+
+  it("UPSTREAM_PROFESSIONAL: effective provenance is PROFESSIONAL_OVERRIDE, but no override entry exists for this (stepNumber, field) at all -- the real V4 Step 3 scenario", () => {
+    expect(resolveCuttingStepFieldSourceLevel(3, "cuttingTechnique", "PROFESSIONAL_OVERRIDE", [])).toBe("UPSTREAM_PROFESSIONAL");
+  });
+
+  it("UPSTREAM_PROFESSIONAL persists even after one or more reset_field entries -- a reset never becomes a 'local override in effect' itself, reproducing the exact real production case (3 real reset_field attempts, effective value never changed)", () => {
+    const now = new Date("2026-09-06T13:00:00.000Z");
+    const overrides: CuttingStepOverrideEntry[] = [
+      toCuttingStepOverrideEntry({ op: "reset_field", stepNumber: 3, field: "cuttingTechnique" }, now),
+      toCuttingStepOverrideEntry({ op: "reset_field", stepNumber: 3, field: "cuttingTechnique" }, now),
+      toCuttingStepOverrideEntry({ op: "reset_field", stepNumber: 3, field: "cuttingTechnique" }, now),
+    ];
+    expect(resolveCuttingStepFieldSourceLevel(3, "cuttingTechnique", "PROFESSIONAL_OVERRIDE", overrides)).toBe("UPSTREAM_PROFESSIONAL");
+  });
+
+  it("LOCAL_PLAN_OVERRIDE: a real, currently-active set_value override exists for this exact (stepNumber, field)", () => {
+    const now = new Date("2026-09-06T13:00:00.000Z");
+    const overrides: CuttingStepOverrideEntry[] = [
+      toCuttingStepOverrideEntry({ op: "set_value", stepNumber: 3, field: "cuttingTechnique", value: "slice_cutting" }, now),
+    ];
+    expect(resolveCuttingStepFieldSourceLevel(3, "cuttingTechnique", "PROFESSIONAL_OVERRIDE", overrides)).toBe("LOCAL_PLAN_OVERRIDE");
+  });
+
+  it("LOCAL_PLAN_OVERRIDE: a real, currently-active mark_not_applicable override", () => {
+    const now = new Date("2026-09-06T13:00:00.000Z");
+    const overrides: CuttingStepOverrideEntry[] = [toCuttingStepOverrideEntry({ op: "mark_not_applicable", stepNumber: 3, field: "cuttingTechnique" }, now)];
+    expect(resolveCuttingStepFieldSourceLevel(3, "cuttingTechnique", "NOT_APPLICABLE", overrides)).toBe("LOCAL_PLAN_OVERRIDE");
+  });
+
+  it("after a local override is itself reset (set_value then reset_field, in that order), the field reverts to whatever the stored baseline says -- UPSTREAM_PROFESSIONAL if the baseline itself was already professional-sourced, GENERATED_BASELINE otherwise", () => {
+    const now = new Date("2026-09-06T13:00:00.000Z");
+    const overrides: CuttingStepOverrideEntry[] = [
+      toCuttingStepOverrideEntry({ op: "set_value", stepNumber: 3, field: "cuttingTechnique", value: "slice_cutting" }, now),
+      toCuttingStepOverrideEntry({ op: "reset_field", stepNumber: 3, field: "cuttingTechnique" }, now),
+    ];
+    // Caller passes the EFFECTIVE provenance post-reset (resolveEffectiveCuttingStepPayload's
+    // own job) -- here simulating the real V4 case where the stored baseline is itself
+    // already PROFESSIONAL_OVERRIDE.
+    expect(resolveCuttingStepFieldSourceLevel(3, "cuttingTechnique", "PROFESSIONAL_OVERRIDE", overrides)).toBe("UPSTREAM_PROFESSIONAL");
+  });
+
+  it("last-entry-wins, exactly matching resolveEffectiveCuttingStepPayload's own precedence: set_value then reset_field then set_value again is LOCAL_PLAN_OVERRIDE", () => {
+    const now = new Date("2026-09-06T13:00:00.000Z");
+    const overrides: CuttingStepOverrideEntry[] = [
+      toCuttingStepOverrideEntry({ op: "set_value", stepNumber: 3, field: "cuttingTechnique", value: "slice_cutting" }, now),
+      toCuttingStepOverrideEntry({ op: "reset_field", stepNumber: 3, field: "cuttingTechnique" }, now),
+      toCuttingStepOverrideEntry({ op: "set_value", stepNumber: 3, field: "cuttingTechnique", value: "scissor_over_comb" }, now),
+    ];
+    expect(resolveCuttingStepFieldSourceLevel(3, "cuttingTechnique", "PROFESSIONAL_OVERRIDE", overrides)).toBe("LOCAL_PLAN_OVERRIDE");
+  });
+
+  it("overrides on a DIFFERENT step, or a DIFFERENT field on the same step, never affect this field's own source level", () => {
+    const now = new Date("2026-09-06T13:00:00.000Z");
+    const overrides: CuttingStepOverrideEntry[] = [
+      toCuttingStepOverrideEntry({ op: "set_value", stepNumber: 3, field: "tool", value: "straight-shear" }, now),
+      toCuttingStepOverrideEntry({ op: "set_value", stepNumber: 5, field: "cuttingTechnique", value: "blunt_line" }, now),
+    ];
+    expect(resolveCuttingStepFieldSourceLevel(3, "cuttingTechnique", "PROFESSIONAL_OVERRIDE", overrides)).toBe("UPSTREAM_PROFESSIONAL");
   });
 });

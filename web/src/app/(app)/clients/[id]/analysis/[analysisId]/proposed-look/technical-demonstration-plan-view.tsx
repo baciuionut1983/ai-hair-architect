@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { Alert, Button, Card } from "@/components/ui";
 import type { TechnicalDemonstrationPlanRecord, TechnicalDemonstrationStepRecord } from "@/lib/technical-demonstration-contracts";
+import type { CuttingStepOverrideEntry } from "@/lib/technical-demonstration-cutting-overrides";
 import type { PlanReadinessResult } from "@/lib/technical-demonstration-cutting-video-readiness";
 
 import { TechnicalDemonstrationCoherenceSummary } from "./technical-demonstration-coherence-summary";
@@ -101,7 +102,12 @@ export function TechnicalDemonstrationPlanView({ plan, steps, onConfirm, confirm
       {steps.length > 0 ? (
         <div className="flex flex-col gap-3">
           {steps.map((step) => (
-            <TechnicalDemonstrationStepCard key={step.id} step={step} onEditField={onEditField} />
+            <TechnicalDemonstrationStepCard
+              key={step.id}
+              step={step}
+              professionalOverrides={plan.professionalOverrides as CuttingStepOverrideEntry[]}
+              onEditField={onEditField}
+            />
           ))}
         </div>
       ) : (

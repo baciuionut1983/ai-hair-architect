@@ -333,3 +333,60 @@ export function resolveEffectiveCuttingStepPayload(
 
   return effective;
 }
+
+// ---------------------------------------------------------------------------
+// Field source level -- Stage 2.5.g.4 (Technical Plan provenance UX
+// clarification). A real production professional found "Reset to
+// original" writing successfully (a real professionalOverrides entry
+// persisted) yet the displayed value never changing -- root-caused to the
+// UI conflating two genuinely different things that both surface as
+// provenance "PROFESSIONAL_OVERRIDE" on the EFFECTIVE payload:
+//
+//   UPSTREAM_PROFESSIONAL -- the field's own STORED BASELINE (this step's
+//     payload row, written ONCE at plan creation by
+//     deriveCuttingDemonstrationSteps) already carries PROFESSIONAL_OVERRIDE,
+//     because the CONFIRMED AnalysisProposal itself had a professional edit
+//     for this field (technical-demonstration-derivation.ts's own
+//     inferredOrOverride). There is no Technical Demonstration Plan-level
+//     override sitting on top of a different original value -- "reset"
+//     against this step's own baseline reproduces the exact same value,
+//     because that IS the baseline.
+//   LOCAL_PLAN_OVERRIDE -- a genuine, currently-ACTIVE override exists on
+//     THIS plan for this exact (stepNumber, field): resolving it (reset_field)
+//     genuinely changes the effective value back to the step's own stored
+//     baseline (which may itself be GENERATED_BASELINE or
+//     UPSTREAM_PROFESSIONAL -- reset never reaches further back than that).
+//   GENERATED_BASELINE -- plain OBSERVED/INFERRED/UNKNOWN, no professional
+//     involvement at any layer.
+//
+// Fully derivable from data every caller already has (the field's own
+// effective provenance, already sent in every existing API response, plus
+// this plan's own professionalOverrides array, likewise already sent) --
+// no new persisted field, no migration, no new API shape. Mirrors
+// resolveEffectiveCuttingStepPayload's own "array order, LAST entry for
+// this (stepNumber, field) wins" rule exactly (a reset_field entry is
+// never itself a "local override in effect" -- it is what DISCARDS one) --
+// never a second, independently-maintained interpretation of override
+// precedence.
+export type CuttingStepFieldSourceLevel = "GENERATED_BASELINE" | "UPSTREAM_PROFESSIONAL" | "LOCAL_PLAN_OVERRIDE";
+
+export function resolveCuttingStepFieldSourceLevel(
+  stepNumber: number,
+  field: CuttingStepOverrideFieldName,
+  effectiveProvenance: string,
+  overrides: readonly CuttingStepOverrideEntry[],
+): CuttingStepFieldSourceLevel {
+  let lastMatching: CuttingStepOverrideEntry | undefined;
+  for (const entry of overrides) {
+    if (entry.stepNumber === stepNumber && entry.field === field) {
+      lastMatching = entry;
+    }
+  }
+  if (lastMatching && (lastMatching.op === "set_value" || lastMatching.op === "mark_not_applicable")) {
+    return "LOCAL_PLAN_OVERRIDE";
+  }
+  if (effectiveProvenance === "PROFESSIONAL_OVERRIDE") {
+    return "UPSTREAM_PROFESSIONAL";
+  }
+  return "GENERATED_BASELINE";
+}
