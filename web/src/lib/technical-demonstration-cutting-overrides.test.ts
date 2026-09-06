@@ -372,6 +372,26 @@ describe("resolveCuttingStepFieldSourceLevel", () => {
     expect(resolveCuttingStepFieldSourceLevel(3, "elevation", "OBSERVED", [])).toBe("GENERATED_BASELINE");
   });
 
+  // Stage 2.5.h.1 -- a field the new deterministic state-derivation engine
+  // populated (technical-demonstration-cutting-state-derivation.ts) is
+  // system-generated, never professional-sourced at either level -- it
+  // correctly falls into the SAME GENERATED_BASELINE bucket as a plain
+  // INFERRED/OBSERVED value, with zero change to this function itself. This
+  // is what "Stage 2.5.g.4 provenance behavior is unchanged" means in
+  // practice: the three-way classifier needed no new branch to handle the
+  // new provenance value correctly.
+  it("GENERATED_BASELINE: a DETERMINISTIC_DERIVATION-tagged field with no override entry", () => {
+    expect(resolveCuttingStepFieldSourceLevel(3, "stateAfter", "DETERMINISTIC_DERIVATION", [])).toBe("GENERATED_BASELINE");
+  });
+
+  it("LOCAL_PLAN_OVERRIDE still wins even when the field was previously DETERMINISTIC_DERIVATION-tagged", () => {
+    expect(
+      resolveCuttingStepFieldSourceLevel(3, "stateAfter", "DETERMINISTIC_DERIVATION", [
+        { op: "set_value", stepNumber: 3, field: "stateAfter", value: "professional text", source: "professional", setAt: "2026-01-01T00:00:00.000Z" },
+      ]),
+    ).toBe("LOCAL_PLAN_OVERRIDE");
+  });
+
   it("UPSTREAM_PROFESSIONAL: effective provenance is PROFESSIONAL_OVERRIDE, but no override entry exists for this (stepNumber, field) at all -- the real V4 Step 3 scenario", () => {
     expect(resolveCuttingStepFieldSourceLevel(3, "cuttingTechnique", "PROFESSIONAL_OVERRIDE", [])).toBe("UPSTREAM_PROFESSIONAL");
   });

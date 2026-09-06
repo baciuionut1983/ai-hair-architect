@@ -265,16 +265,21 @@ describe("GET .../technical-demonstration-plans/[planId]/readiness", () => {
 
     expect(response.status).toBe(200);
     const body = await response.json();
-    // Real, unmodified derived steps are always missing stateBefore/
-    // stateAfter (Stage 2.5.a's own honest "no source data yet" default) --
-    // so a genuinely CONFIRMED-but-unreviewed plan must NOT be reported
-    // ready.
+    // Real, unmodified derived steps are always missing `zones` -- no
+    // domain source has ever existed for it (Stage 2.5.a's own honest "no
+    // source data yet" default, and still true after Stage 2.5.h.1's
+    // deterministic state derivation, which never touches this field) -- so
+    // a genuinely CONFIRMED-but-unreviewed plan must NOT be reported ready.
+    // (stateBefore/stateAfter are deliberately NOT asserted here any more --
+    // Stage 2.5.h.1 now legitimately derives them for this fixture's own
+    // step 1, which is the intended, audited behavior change, not a
+    // regression.)
     expect(body.readiness.ready).toBe(false);
     expect(body.readiness.planLevelReasons).toHaveLength(0); // it IS confirmed -- the block is step-level
     expect(body.readiness.steps).toHaveLength(2);
     const step1 = body.readiness.steps.find((s: { stepNumber: number }) => s.stepNumber === 1);
     expect(step1.ready).toBe(false);
-    expect(step1.reasons.some((r: { field: string }) => r.field === "stateBefore")).toBe(true);
+    expect(step1.reasons.some((r: { field: string }) => r.field === "zones")).toBe(true);
   });
 
   it("propagates professionalOverrides into the effective readiness result (not the raw baseline)", async () => {

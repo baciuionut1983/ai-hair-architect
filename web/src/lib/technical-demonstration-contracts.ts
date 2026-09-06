@@ -78,9 +78,30 @@ export function isTechnicalDemonstrationPlanStatus(value: unknown): value is Tec
 //   (technical-demonstration-derivation.ts) never produces this tag itself
 //   -- like PROFESSIONAL_OVERRIDE, only a real professional decision ever
 //   does.
+// DETERMINISTIC_DERIVATION (Stage 2.5.h.1): a value computed at READ TIME by
+//   technical-demonstration-cutting-state-derivation.ts, by deterministically
+//   recombining OTHER already-approved structured fields on the same (or an
+//   adjacent) step -- e.g. `stateAfter` built from this step's own populated
+//   technique/tool fields, or `crossCheck` set true because this step's own
+//   effective actionType is FINAL_OBSERVATION. Deliberately DISTINCT from
+//   INFERRED (a value copied/mapped from a PLAN-LEVEL fact once, at creation
+//   time, and frozen into the stored baseline forever) -- a
+//   DETERMINISTIC_DERIVATION value is recomputed fresh on every read from
+//   whatever the CURRENT effective payload says, so it automatically tracks
+//   a later professional correction to the fields it was built from. Only
+//   ever written to a field that is still genuinely UNKNOWN -- it never
+//   overwrites a real value, a NOT_APPLICABLE decision, or any other
+//   provenance, professional or otherwise.
 // ---------------------------------------------------------------------------
 
-export const TECHNICAL_DEMONSTRATION_VALUE_PROVENANCES = ["OBSERVED", "INFERRED", "UNKNOWN", "PROFESSIONAL_OVERRIDE", "NOT_APPLICABLE"] as const;
+export const TECHNICAL_DEMONSTRATION_VALUE_PROVENANCES = [
+  "OBSERVED",
+  "INFERRED",
+  "UNKNOWN",
+  "PROFESSIONAL_OVERRIDE",
+  "NOT_APPLICABLE",
+  "DETERMINISTIC_DERIVATION",
+] as const;
 export type TechnicalDemonstrationValueProvenance = (typeof TECHNICAL_DEMONSTRATION_VALUE_PROVENANCES)[number];
 
 export function isTechnicalDemonstrationValueProvenance(value: unknown): value is TechnicalDemonstrationValueProvenance {

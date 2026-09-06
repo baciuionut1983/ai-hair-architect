@@ -24,6 +24,7 @@ import type { CuttingStepOverrideFieldName, CuttingStepOverrideInput } from "@/l
 import { TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION } from "@/lib/technical-demonstration-derivation";
 import { CUTTING_DEMONSTRATION_STEP_SCHEMA_VERSION } from "@/lib/technical-demonstration-cutting-contracts";
 import { evaluatePlanReadiness } from "@/lib/technical-demonstration-cutting-video-readiness";
+import { deriveEffectiveExecutionState } from "@/lib/technical-demonstration-cutting-state-derivation";
 
 // Technical Demonstration, Stage 1 -- real Postgres, no mocks, mirroring
 // this codebase's own established convention for every domain-repository
@@ -914,7 +915,14 @@ suite("technical-demonstration-repository (real Postgres)", () => {
 
       const steps = await listTechnicalDemonstrationStepsForPlan(ownerUserId, clientId, outcome.plan.id);
       const effectiveSteps = resolveEffectiveCuttingStepsForRecord(outcome.plan, steps);
-      expect(effectiveSteps).toEqual(steps); // no overrides -- effective === baseline
+      // Stage 2.5.h.1 -- with zero professional overrides, "effective" is no
+      // longer byte-identical to the raw baseline: deterministic execution-
+      // state derivation still runs (stateBefore/stateAfter/crossCheck),
+      // exactly as it does for every other plan. Reusing the real,
+      // unmodified deriveEffectiveExecutionState here (rather than hand-
+      // asserting its output) keeps this test tied to actual production
+      // behavior, never a second, independently-maintained expectation.
+      expect(effectiveSteps).toEqual(deriveEffectiveExecutionState(steps));
     });
   });
 

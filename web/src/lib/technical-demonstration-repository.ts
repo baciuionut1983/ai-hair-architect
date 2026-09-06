@@ -36,6 +36,7 @@ import {
   TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION,
 } from "@/lib/technical-demonstration-derivation";
 import { evaluatePlanCoherence, type CoherenceFinding } from "@/lib/technical-demonstration-cutting-coherence";
+import { deriveEffectiveExecutionState } from "@/lib/technical-demonstration-cutting-state-derivation";
 
 // Technical Demonstration, Stage 1 ("cutting plan foundation only") -- the
 // domain/repository layer. Deliberately mirrors
@@ -691,23 +692,34 @@ export async function applyOverridesToDraft(
 }
 
 // ---------------------------------------------------------------------------
-// Effective steps (baseline + professional overrides) for callers that need
-// the fully-resolved current state of a plan's steps without re-deriving
-// the merge themselves. Mirrors resolveEffectiveMapForRecord exactly.
-// ---------------------------------------------------------------------------
-
+// Effective steps (baseline + professional overrides + Stage 2.5.h.1
+// deterministic state derivation) for callers that need the fully-resolved
+// current state of a plan's steps without re-deriving the merge themselves.
+// Mirrors resolveEffectiveMapForRecord exactly. This is the ONE choke point
+// every reader (readiness route, coherence route, plan detail/create/current
+// routes, and the confirmation transaction's own coherence recheck) already
+// goes through -- deterministic derivation is added HERE, once, so every one
+// of those callers sees the same effective view with zero changes to any of
+// them.
+//
+// Order matters: professional overrides are resolved FIRST, deterministic
+// derivation runs SECOND, over the already-override-resolved steps -- this is
+// what guarantees a professional value (upstream-baked-in OR a genuine local
+// override) always wins and is never touched by deriveEffectiveExecutionState
+// (which only ever writes a field that is still genuinely UNKNOWN).
 export function resolveEffectiveCuttingStepsForRecord(
   plan: TechnicalDemonstrationPlanRecord,
   steps: TechnicalDemonstrationStepRecord[],
 ): TechnicalDemonstrationStepRecord[] {
   const overrides = plan.professionalOverrides as CuttingStepOverrideEntry[];
-  return steps.map((step) => ({
+  const overrideResolvedSteps = steps.map((step) => ({
     ...step,
     payload: resolveEffectiveCuttingStepPayload(step.stepNumber, step.payload as unknown as CuttingDemonstrationStepPayload, overrides) as unknown as Record<
       string,
       unknown
     >,
   }));
+  return deriveEffectiveExecutionState(overrideResolvedSteps);
 }
 
 // ---------------------------------------------------------------------------

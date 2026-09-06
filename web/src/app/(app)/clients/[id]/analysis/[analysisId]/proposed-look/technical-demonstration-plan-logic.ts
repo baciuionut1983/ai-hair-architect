@@ -82,6 +82,11 @@ export const TECHNICAL_DEMONSTRATION_PROVENANCE_LABELS: Record<string, string> =
   // apply here"), deliberately worded distinctly from "Not yet available"
   // (UNKNOWN) -- the professional actively decided this, it isn't a gap.
   NOT_APPLICABLE: "Not applicable",
+  // Stage 2.5.h.1 -- computed fresh, at read time, from this step's own
+  // other already-approved fields (never a professional decision, never the
+  // creation-time engine's own frozen INFERRED value) -- worded distinctly
+  // from both.
+  DETERMINISTIC_DERIVATION: "Deterministically derived",
 };
 
 // Stage 2.5.g.4 -- `sourceLevel` is OPTIONAL and changes the label ONLY for
