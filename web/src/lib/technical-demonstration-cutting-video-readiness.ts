@@ -198,10 +198,45 @@ export const ACTION_TYPES_EXCLUDING_CUTTING_GEOMETRY: ReadonlySet<CuttingExecuti
   "FINAL_OBSERVATION",
 ]);
 
+// Stage 2.5.h.2a -- READINESS OVERREQUIREMENT CORRECTION, narrowly scoped.
+// The Stage 2.5.h.2 domain-authority audit found that `subsectioning` and
+// `subsectionThickness` were being asked about on a FINAL_OBSERVATION step
+// even though this codebase's own closed contract for that action type
+// (CuttingExecutionActionType's own header comment; the single fixed
+// generator sentence for a CROSS_CHECK_AND_FINISH step) never performs any
+// subdivision of execution work at all -- a pure, whole-result inspection.
+// This mirrors the EXACT SAME principle ACTION_TYPES_EXCLUDING_CUTTING_
+// GEOMETRY already applies above, for the SAME reason (an observation-type
+// action structurally cannot need a fact that only makes sense during
+// subdivided execution), simply not yet extended to these two fields.
+//
+// Deliberately EXCLUDES `progression` and `zoneConnection`, despite both
+// superficially belonging to the same "how work is divided/moved through"
+// family -- each has its OWN existing, already-authored note in
+// CUTTING_EXECUTION_VIDEO_READINESS_RULES below that explicitly anticipates
+// exactly this action type: progression's own note says it "may also apply
+// to a systematic FINAL_CHECK inspection order"; zoneConnection's own note
+// says it applies to "a zone-connection/blend OR A ZONE-CONNECTION CHECK".
+// Removing either would contradict existing, already-reviewed domain
+// semantics, not extend them -- a materially different, NOT-yet-authorized
+// change this stage deliberately does not make.
+//
+// Deliberately scoped to FINAL_OBSERVATION ONLY, not GUIDE_OBSERVATION
+// (even though the identical "no subdivision occurs" reasoning plausibly
+// extends there too) -- this stage's own explicit authorization names only
+// FINAL_OBSERVATION; extending further is a separate, future decision, not
+// assumed here.
+export const SUBSECTIONING_RELATED_FIELDS: ReadonlySet<CuttingStepOverrideFieldName> = new Set(["subsectioning", "subsectionThickness"]);
+
+export const ACTION_TYPES_EXCLUDING_SUBSECTIONING_FIELDS: ReadonlySet<CuttingExecutionActionType> = new Set(["FINAL_OBSERVATION"]);
+
 function isRuleApplicableForStep(rule: FieldReadinessRule, phase: CuttingExecutionPhase, effectiveActionType: CuttingExecutionActionType | null): boolean {
   if (effectiveActionType && ACTION_SENSITIVE_FIELDS.has(rule.field)) {
     if (ACTION_TYPES_REQUIRING_CUTTING_GEOMETRY.has(effectiveActionType)) return true;
     if (ACTION_TYPES_EXCLUDING_CUTTING_GEOMETRY.has(effectiveActionType)) return false;
+  }
+  if (effectiveActionType && SUBSECTIONING_RELATED_FIELDS.has(rule.field) && ACTION_TYPES_EXCLUDING_SUBSECTIONING_FIELDS.has(effectiveActionType)) {
+    return false;
   }
   // No definitive actionType verdict for this field -- fall back to
   // exactly the phase-based default, unchanged.
@@ -240,8 +275,8 @@ export const CUTTING_EXECUTION_VIDEO_READINESS_RULES: readonly FieldReadinessRul
   // real value or marking NOT_APPLICABLE. Evaluated on every phase where
   // the professional's own notes did not name an explicit exemption. ---
   { field: "zones", applicablePhases: ALL_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when execution genuinely occurs in a specific zone; N/A for a genuinely global action (e.g. a whole-head FINAL_CHECK)." },
-  { field: "subsectioning", applicablePhases: ALL_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when the technique depends on subdivision into working subsections." },
-  { field: "subsectionThickness", applicablePhases: ALL_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when subsection size materially affects control/geometry/result." },
+  { field: "subsectioning", applicablePhases: ALL_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when the technique depends on subdivision into working subsections. Never evaluated on FINAL_OBSERVATION (Stage 2.5.h.2a): a pure whole-result inspection performs no subdivision of execution work." },
+  { field: "subsectionThickness", applicablePhases: ALL_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when subsection size materially affects control/geometry/result. Never evaluated on FINAL_OBSERVATION (Stage 2.5.h.2a): same reasoning as subsectioning above." },
   { field: "progression", applicablePhases: ALL_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when execution sequence/direction materially affects correct reproduction (may also apply to a systematic FINAL_CHECK inspection order)." },
   { field: "zoneConnection", applicablePhases: ALL_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only for a step whose action IS a zone-connection/blend or a zone-connection check." },
   { field: "styling", applicablePhases: ALL_PHASES, requirementClass: "CONDITIONALLY_REQUIRED", note: "Required only when the result cannot be correctly represented/evaluated without defining the finishing state. 'Natural fall / no additional styling' is a valid, explicit REAL VALUE here, never NOT_APPLICABLE -- it is itself a styling decision." },

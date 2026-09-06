@@ -528,6 +528,95 @@ describe("readiness relevance fix -- STRUCTURAL_CUTTING remains the strongest ph
   });
 });
 
+// Stage 2.5.h.2a -- READINESS OVERREQUIREMENT CORRECTION. Domain-authority
+// audit finding: subsectioning/subsectionThickness describe HOW execution
+// work is subdivided -- concepts with no meaning for FINAL_OBSERVATION, a
+// pure, whole-result inspection action that performs no subdivision at all
+// (mirrors the SAME existing principle ACTION_TYPES_EXCLUDING_CUTTING_
+// GEOMETRY already applies to the 5 blade-geometry fields for this exact
+// action type). Deliberately does NOT touch progression or zoneConnection
+// -- both have their OWN pre-existing note explicitly anticipating
+// FINAL_CHECK relevance (see CUTTING_EXECUTION_VIDEO_READINESS_RULES), so
+// removing either would contradict already-authored domain semantics
+// rather than extend them.
+describe("readiness relevance fix (Stage 2.5.h.2a) -- FINAL_OBSERVATION no longer over-requires subsectioning fields", () => {
+  function stepWithActionType(actionType: string): TechnicalDemonstrationStepRecord {
+    const step = baselineSteps()[4]; // CROSS_CHECK_AND_FINISH
+    const overridden = applyOverrideInputs([step], [{ op: "set_value", stepNumber: step.stepNumber, field: "actionType", value: actionType as never }]);
+    return overridden[0];
+  }
+
+  it("subsectioning is not blocked for a FINAL_OBSERVATION step", () => {
+    const result = evaluateStepReadiness(stepWithActionType("FINAL_OBSERVATION"));
+    expect(result.reasons.some((r) => r.field === "subsectioning")).toBe(false);
+  });
+
+  it("subsectionThickness is not blocked for a FINAL_OBSERVATION step", () => {
+    const result = evaluateStepReadiness(stepWithActionType("FINAL_OBSERVATION"));
+    expect(result.reasons.some((r) => r.field === "subsectionThickness")).toBe(false);
+  });
+
+  it("progression is deliberately NOT removed for FINAL_OBSERVATION -- its own note anticipates FINAL_CHECK inspection order", () => {
+    const result = evaluateStepReadiness(stepWithActionType("FINAL_OBSERVATION"));
+    expect(result.reasons.some((r) => r.field === "progression")).toBe(true);
+  });
+
+  it("zoneConnection is deliberately NOT removed for FINAL_OBSERVATION -- its own note anticipates a zone-connection check", () => {
+    const result = evaluateStepReadiness(stepWithActionType("FINAL_OBSERVATION"));
+    expect(result.reasons.some((r) => r.field === "zoneConnection")).toBe(true);
+  });
+
+  it("every other genuinely-relevant field for FINAL_OBSERVATION remains required -- only the two audited fields were removed", () => {
+    const result = evaluateStepReadiness(stepWithActionType("FINAL_OBSERVATION"));
+    const remaining = result.reasons.map((r) => r.field).sort();
+    // stateBefore/stateAfter/crossCheck are still UNKNOWN here because this
+    // test exercises the raw baseline (no Stage 2.5.h.1 deterministic
+    // derivation applied) -- exactly the pre-2.5.h.1 shape, isolating this
+    // stage's own change to subsectioning/subsectionThickness only.
+    expect(remaining).toEqual(["crossCheck", "observationView", "progression", "stateAfter", "stateBefore", "styling", "zoneConnection", "zones"].sort());
+  });
+
+  it("CORRECTIVE_CUTTING on the SAME CROSS_CHECK_AND_FINISH phase still requires subsectioning/subsectionThickness -- the exclusion is keyed on actionType, never on phase alone", () => {
+    const result = evaluateStepReadiness(stepWithActionType("CORRECTIVE_CUTTING"));
+    expect(result.reasons.some((r) => r.field === "subsectioning")).toBe(true);
+    expect(result.reasons.some((r) => r.field === "subsectionThickness")).toBe(true);
+  });
+
+  it("SECTIONING_ACTION, GUIDE_CUTTING, GUIDE_OBSERVATION, STRUCTURAL_CUTTING, and TEXTURIZING_ACTION are all completely unaffected", () => {
+    const steps = baselineSteps();
+    // Step 1 (SECTIONING_ACTION, PREPARATION_AND_SECTIONING).
+    expect(evaluateStepReadiness(steps[0]).reasons.some((r) => r.field === "subsectioning")).toBe(true);
+    expect(evaluateStepReadiness(steps[0]).reasons.some((r) => r.field === "subsectionThickness")).toBe(true);
+    // Step 2 (GUIDE_AND_STRUCTURE, actionType UNKNOWN by default derivation).
+    expect(evaluateStepReadiness(steps[1]).reasons.some((r) => r.field === "subsectioning")).toBe(true);
+    expect(evaluateStepReadiness(steps[1]).reasons.some((r) => r.field === "subsectionThickness")).toBe(true);
+    // Step 2 explicitly classified GUIDE_OBSERVATION.
+    const guideObservation = applyOverrideInputs([steps[1]], [{ op: "set_value", stepNumber: steps[1].stepNumber, field: "actionType", value: "GUIDE_OBSERVATION" }])[0];
+    expect(evaluateStepReadiness(guideObservation).reasons.some((r) => r.field === "subsectioning")).toBe(true);
+    expect(evaluateStepReadiness(guideObservation).reasons.some((r) => r.field === "subsectionThickness")).toBe(true);
+    // Step 2 explicitly classified GUIDE_CUTTING.
+    const guideCutting = applyOverrideInputs([steps[1]], [{ op: "set_value", stepNumber: steps[1].stepNumber, field: "actionType", value: "GUIDE_CUTTING" }])[0];
+    expect(evaluateStepReadiness(guideCutting).reasons.some((r) => r.field === "subsectioning")).toBe(true);
+    expect(evaluateStepReadiness(guideCutting).reasons.some((r) => r.field === "subsectionThickness")).toBe(true);
+    // Step 3 (STRUCTURAL_CUTTING).
+    expect(evaluateStepReadiness(steps[2]).reasons.some((r) => r.field === "subsectioning")).toBe(true);
+    expect(evaluateStepReadiness(steps[2]).reasons.some((r) => r.field === "subsectionThickness")).toBe(true);
+    // Step 4 (TEXTURIZING_ACTION).
+    expect(evaluateStepReadiness(steps[3]).reasons.some((r) => r.field === "subsectioning")).toBe(true);
+    expect(evaluateStepReadiness(steps[3]).reasons.some((r) => r.field === "subsectionThickness")).toBe(true);
+  });
+
+  it("evaluateStepReadiness never mutates the step or its payload -- this is a pure relevance decision, never data autofill", () => {
+    const step = stepWithActionType("FINAL_OBSERVATION");
+    const before = JSON.parse(JSON.stringify(step.payload));
+    evaluateStepReadiness(step);
+    expect(step.payload).toEqual(before);
+    const payload = step.payload as unknown as CuttingDemonstrationStepPayload;
+    expect(payload.subsectioning).toEqual({ value: null, provenance: "UNKNOWN" });
+    expect(payload.subsectionThickness).toEqual({ value: null, provenance: "UNKNOWN" });
+  });
+});
+
 describe("CUTTING_STEP_TECHNIQUE_RELEVANCE_EXCLUSIONS", () => {
   it("contains exactly the one professionally-supplied exclusion -- never an invented one", () => {
     expect(CUTTING_STEP_TECHNIQUE_RELEVANCE_EXCLUSIONS).toHaveLength(1);
