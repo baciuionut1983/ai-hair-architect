@@ -104,6 +104,7 @@ import { deriveCuttingDemonstrationSteps } from "@/lib/technical-demonstration-d
 import { resolveEffectiveCuttingStepPayload, toCuttingStepOverrideEntry, type CuttingStepOverrideInput } from "@/lib/technical-demonstration-cutting-overrides";
 import type { CuttingDemonstrationStepPayload } from "@/lib/technical-demonstration-cutting-contracts";
 import type { CuttingStep, TechnicalCutPlan } from "@/lib/contracts";
+import { TECHNICAL_DEMONSTRATION_COHERENCE_RULES_VERSION } from "@/lib/technical-demonstration-cutting-coherence";
 
 const OWNER = { id: "owner-1", email: "owner@example.com", role: "professional", locale: "en" };
 const CLIENT = {
@@ -131,7 +132,16 @@ function cuttingPlan(): TechnicalCutPlan {
   return {
     structuralTechnique: "one_length",
     cuttingTechnique: "blunt_line",
-    texturizingTechnique: "slice_and_slide",
+    // Stage 2.5.h.2d -- deliberately NOT "slice_and_slide": paired with
+    // this same structuralTechnique/elevation/distribution, that combination
+    // is now a professionally-proven coherence BLOCKER. This route test
+    // exercises the plan-detail/coherence read path generically, never the
+    // Slice-And-Slide rule itself (that has its own dedicated unit tests in
+    // technical-demonstration-cutting-coherence.test.ts) -- "point_cutting"
+    // keeps this fixture realistically texturizing-inclusive without
+    // silently baking the now-proven-incompatible pairing into every
+    // "clean baseline" assertion below.
+    texturizingTechnique: "point_cutting",
     sectioning: "4_quadrant_profile_radial",
     elevation: "0_deg_blunt",
     distribution: "natural_fall",
@@ -386,7 +396,7 @@ describe("GET .../technical-demonstration-plans/[planId]/coherence", () => {
   it("exposes the current coherence rules version", async () => {
     const response = await GET(getReq(), ctx());
     const body = await response.json();
-    expect(body.coherence.coherenceRulesVersion).toBe("1.0.0-coh1");
+    expect(body.coherence.coherenceRulesVersion).toBe(TECHNICAL_DEMONSTRATION_COHERENCE_RULES_VERSION);
   });
 
   it("fails closed with a no-store 503 when the repository reports persistence unavailable", async () => {

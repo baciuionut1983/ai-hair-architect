@@ -30,7 +30,19 @@ function cuttingPlan(overrides: Partial<TechnicalCutPlan> = {}): TechnicalCutPla
   return {
     structuralTechnique: "one_length",
     cuttingTechnique: "blunt_line",
-    texturizingTechnique: "slice_and_slide",
+    // Stage 2.5.h.2d -- deliberately NOT "slice_and_slide" as the shared
+    // baseline default: paired with this same structuralTechnique/
+    // cuttingTechnique/elevation/distribution, slice_and_slide is now the
+    // exact combination BLOCKER C (below) professionally proves invalid.
+    // Every OTHER test in this file is about a completely unrelated rule
+    // (phase/actionType, observation-geometry, the elevation-cutting
+    // warning, the texturizer-shear review item) and was never actually
+    // testing texturizing-technique compatibility -- "point_cutting" keeps
+    // the baseline realistically texturizing-inclusive (so those tests
+    // still exercise a real REFINEMENT_TEXTURIZING step) without silently
+    // encoding the now-proven-incompatible pairing into every unrelated
+    // test's own "clean" baseline.
+    texturizingTechnique: "point_cutting",
     sectioning: "4_quadrant_profile_radial",
     elevation: "0_deg_blunt",
     distribution: "natural_fall",
@@ -227,6 +239,90 @@ describe("evaluatePlanCoherence", () => {
     });
   });
 
+  describe("BLOCKER C -- Slice And Slide vs. the exact straight full-line structural profile (Stage 2.5.h.2d)", () => {
+    // The baseline's own default texturizingTechnique is now "point_cutting"
+    // (see cuttingPlan's own comment) -- this override restores the exact,
+    // professionally-confirmed-incompatible pairing for these tests only.
+    function withSliceAndSlide(steps: TechnicalDemonstrationStepRecord[]): TechnicalDemonstrationStepRecord[] {
+      return withOverride(steps, { op: "set_value", stepNumber: 4, field: "texturizingTechnique", value: "slice_and_slide" });
+    }
+
+    it("1. the exact incompatible profile (One Length + Blunt Line + 0° + no overdirection) + Slice And Slide -> BLOCKER", () => {
+      const result = evaluatePlanCoherence(withSliceAndSlide(baselineSteps()));
+      expect(result.pass).toBe(false);
+      expect(result.blockers).toHaveLength(1);
+      expect(result.blockers[0]).toMatchObject({
+        code: "COHERENCE_STRUCTURAL_TECHNIQUE_SLICE_AND_SLIDE_INCOMPATIBLE",
+        severity: "BLOCKER",
+        stepNumber: null,
+        fields: ["structuralTechnique", "cuttingTechnique", "elevation", "overdirection", "texturizingTechnique"],
+      });
+      expect(result.blockers[0].message).toContain("Slice And Slide");
+      expect(result.blockers[0].message).toContain("Step 4");
+      expect(result.blockers[0].message).toContain("Step 3");
+    });
+
+    it("2. the same structural profile WITHOUT Slice And Slide (real baseline default, point_cutting) never blocks", () => {
+      const result = evaluatePlanCoherence(baselineSteps());
+      expect(result.blockers.filter((b) => b.code === "COHERENCE_STRUCTURAL_TECHNIQUE_SLICE_AND_SLIDE_INCOMPATIBLE")).toHaveLength(0);
+    });
+
+    it("3. Slice And Slide paired with a DIFFERENT structural technique (graduated context) never invents a blocker -- the professional's own authority scopes Slice And Slide as valid there", () => {
+      const graduatedSteps = baselineSteps({ structuralTechnique: "graduation", cuttingTechnique: "slice_cutting", elevation: "45_deg_graduation" });
+      const result = evaluatePlanCoherence(withSliceAndSlide(graduatedSteps));
+      expect(result.blockers.filter((b) => b.code === "COHERENCE_STRUCTURAL_TECHNIQUE_SLICE_AND_SLIDE_INCOMPATIBLE")).toHaveLength(0);
+    });
+
+    it("3b. Slice And Slide with the SAME structural technique but overdirection=true never invents a blocker -- fails closed on the narrow, exact predicate only", () => {
+      const overdirectedSteps = baselineSteps({ distribution: "overdirected_back" });
+      const result = evaluatePlanCoherence(withSliceAndSlide(overdirectedSteps));
+      expect(result.blockers.filter((b) => b.code === "COHERENCE_STRUCTURAL_TECHNIQUE_SLICE_AND_SLIDE_INCOMPATIBLE")).toHaveLength(0);
+    });
+
+    it("4. a professional override changing the EFFECTIVE structural technique triggers/removes the finding accordingly", () => {
+      // Baseline structural step is one_length/blunt_line/0deg/no-overdirect
+      // by construction; overriding cuttingTechnique away from blunt_line
+      // must remove the finding even with Slice And Slide present.
+      const steps = withOverride(withSliceAndSlide(baselineSteps()), { op: "set_value", stepNumber: 3, field: "cuttingTechnique", value: "slice_cutting" });
+      const result = evaluatePlanCoherence(steps);
+      expect(result.blockers.filter((b) => b.code === "COHERENCE_STRUCTURAL_TECHNIQUE_SLICE_AND_SLIDE_INCOMPATIBLE")).toHaveLength(0);
+    });
+
+    it("5. the generated free-text explanation never affects this rule -- structured payload is the sole authority (reproduces the real V4 case: stale 'elevation cutting' text alongside structured Blunt Line)", () => {
+      const steps = withSliceAndSlide(baselineSteps()).map((s) =>
+        s.stepNumber === 3 ? { ...s, explanation: "Use elevation cutting for perimeter control and natural fall distribution for silhouette correction." } : s,
+      );
+      const result = evaluatePlanCoherence(steps);
+      expect(result.blockers.filter((b) => b.code === "COHERENCE_STRUCTURAL_TECHNIQUE_SLICE_AND_SLIDE_INCOMPATIBLE")).toHaveLength(1);
+    });
+
+    it("6. a required structural field marked NOT_APPLICABLE (never populated) never fabricates the match", () => {
+      const stepsWithUnpopulatedField = withOverride(withSliceAndSlide(baselineSteps()), { op: "mark_not_applicable", stepNumber: 3, field: "overdirection" });
+      const result = evaluatePlanCoherence(stepsWithUnpopulatedField);
+      expect(result.blockers.filter((b) => b.code === "COHERENCE_STRUCTURAL_TECHNIQUE_SLICE_AND_SLIDE_INCOMPATIBLE")).toHaveLength(0);
+    });
+
+    it("7. multi-step evaluation: the structural profile lives on Step 3 and Slice And Slide lives on a DIFFERENT step (Step 4) -- still detected", () => {
+      const result = evaluatePlanCoherence(withSliceAndSlide(baselineSteps()));
+      const finding = result.blockers.find((b) => b.code === "COHERENCE_STRUCTURAL_TECHNIQUE_SLICE_AND_SLIDE_INCOMPATIBLE");
+      expect(finding).toBeDefined();
+      expect(finding!.message).toMatch(/Step 4/);
+      expect(finding!.message).toMatch(/Step 3/);
+    });
+
+    it("10. a V4-shaped synthetic fixture flips from coherence PASS to BLOCKED solely because of this new rule", () => {
+      // Mirrors real V4's own effective shape exactly (Stage 2.5.h audit):
+      // Step 3 STRUCTURAL_CUTTING/one_length/blunt_line/0deg/no-overdirect,
+      // Step 4 TEXTURIZING_ACTION/slice_and_slide.
+      const v4Shaped = withSliceAndSlide(baselineSteps());
+      const before = evaluatePlanCoherence(baselineSteps()); // same shape, minus Slice And Slide
+      const after = evaluatePlanCoherence(v4Shaped);
+      expect(before.pass).toBe(true);
+      expect(after.pass).toBe(false);
+      expect(after.blockers.map((b) => b.code)).toEqual(["COHERENCE_STRUCTURAL_TECHNIQUE_SLICE_AND_SLIDE_INCOMPATIBLE"]);
+    });
+  });
+
   it("10. the engine evaluates the EFFECTIVE (post-override) value, never the raw baseline", () => {
     const baseline = baselineSteps();
     expect(evaluatePlanCoherence(baseline).blockers).toHaveLength(0); // raw baseline: no contradiction
@@ -272,7 +368,10 @@ describe("evaluatePlanCoherence", () => {
   it("15. does not affect Technical Demonstration generator/schema version constants -- they remain their own, separate values", () => {
     expect(TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION).toBe("1.3.0-td25f2");
     expect(CUTTING_DEMONSTRATION_STEP_SCHEMA_VERSION).toBe("1.1.0-td25a");
-    expect(TECHNICAL_DEMONSTRATION_COHERENCE_RULES_VERSION).toBe("1.0.0-coh1");
+    // Stage 2.5.h.2d -- bumped: a real new BLOCKER rule was added (see
+    // "BLOCKER C" below), the honest signal every other version constant
+    // in this domain already gives for a real behavior change.
+    expect(TECHNICAL_DEMONSTRATION_COHERENCE_RULES_VERSION).toBe("1.1.0-coh2");
   });
 
   it("every finding carries the current coherence rules version", () => {

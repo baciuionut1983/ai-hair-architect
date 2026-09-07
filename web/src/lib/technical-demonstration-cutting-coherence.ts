@@ -53,7 +53,16 @@ import { DETERMINISTIC_ACTION_TYPE_BY_PHASE, resolveEffectiveActionType } from "
 // even inspects the raw professionalOverrides array itself -- it only ever
 // reads the already-resolved effective payload.
 
-export const TECHNICAL_DEMONSTRATION_COHERENCE_RULES_VERSION = "1.0.0-coh1";
+// Stage 2.5.h.2d -- bumped from "1.0.0-coh1". A real, professionally-
+// reviewed BLOCKER rule was added below (Slice And Slide vs. the exact
+// straight full-line structural profile) -- a genuine behavior change to
+// what this engine can now find, exactly the same "real change -> bump"
+// discipline every other version constant in this domain already follows
+// (TECHNICAL_DEMONSTRATION_CUTTING_GENERATOR_VERSION,
+// CUTTING_DEMONSTRATION_STEP_SCHEMA_VERSION, ...). This constant does not
+// participate in any creation fingerprint -- it only ever tags each
+// CoherenceFinding's own `ruleVersion`, unchanged from before.
+export const TECHNICAL_DEMONSTRATION_COHERENCE_RULES_VERSION = "1.1.0-coh2";
 
 export type CoherenceSeverity = "BLOCKER" | "WARNING" | "REVIEW_ONLY";
 
@@ -232,6 +241,91 @@ function checkStructuralCuttingTexturizerShearReview(
 }
 
 // ---------------------------------------------------------------------------
+// BLOCKER C -- Slice And Slide vs. the exact straight full-line structural
+// profile. Stage 2.5.h.2c's own professional domain-authoring interview
+// (CLOSED authority): Slice And Slide belongs to a graduated-haircut
+// context (elevated/vertical sections, partially-open shear travelling
+// along the section) and is explicitly NOT applicable to the straight
+// full-line technique -- One Length + Blunt Line + Natural Fall + 0°
+// Elevation + No Overdirection. This is the FIRST cross-step coherence
+// rule in this file: every prior rule evaluates one step in isolation:
+// this one legitimately needs the whole plan, because
+// TEXTURIZING_ACTION/slice_and_slide and STRUCTURAL_CUTTING/one_length are
+// two DIFFERENT atomic steps in this domain's own step model (exactly the
+// V4 shape: Step 3 structural, Step 4 texturizing).
+//
+// NARROWEST professionally-justified predicate, deliberately NOT the
+// broader "Slice And Slide is incompatible with every One Length haircut"
+// (never authorized): all FOUR of structuralTechnique="one_length",
+// cuttingTechnique="blunt_line", elevation="0_deg_blunt", AND
+// overdirection=false must be populated and true together on the SAME
+// step before this rule even considers the plan's texturizing technique.
+// `tool` ("straight-shear") is deliberately EXCLUDED from the predicate --
+// `tool` is free text with no closed compatibility vocabulary anywhere in
+// this domain (see BLOCKER/REVIEW_ONLY precedent above: tool-based
+// reasoning is never stronger than REVIEW_ONLY in this file), so it can
+// never safely gate a BLOCKER-severity finding; the remaining four fields
+// already identify this exact profile without it. `combingDirection` is
+// ALSO deliberately excluded, even though "natural fall, no directional
+// pull" is part of the professional's own named profile -- its stored
+// value is a generated PROSE SENTENCE (COMBING_DIRECTION_BY_DISTRIBUTION,
+// technical-demonstration-derivation.ts), and matching against sentence
+// text would be exactly the "description/display-text matching" this
+// engine's own header comment already forbids; `overdirection` (a clean
+// boolean, deterministically derived from the SAME upstream `distribution`
+// fact) is the correct structured proxy for "no directional pull" and is
+// used instead.
+//
+// A one_length+blunt_line combination at a DIFFERENT elevation, or with
+// overdirection=true, is a different, unauthorized combination -- this
+// rule fails closed and does not fire for it (the professional's own
+// authority never covered that case; see Stage 2.5.h.2c.1's own explicit
+// "graduated contexts" carve-out for Slice And Slide).
+// ---------------------------------------------------------------------------
+
+const CODE_STRUCTURAL_TECHNIQUE_SLICE_AND_SLIDE_INCOMPATIBLE = "COHERENCE_STRUCTURAL_TECHNIQUE_SLICE_AND_SLIDE_INCOMPATIBLE";
+
+function isExactStraightFullLineZeroDegreeNoOverdirectionProfile(payload: CuttingDemonstrationStepPayload): boolean {
+  const structuralTechnique = payload.structuralTechnique;
+  const cuttingTechnique = payload.cuttingTechnique;
+  const elevation = payload.elevation;
+  const overdirection = payload.overdirection;
+  if (
+    !isProvenancePopulated(structuralTechnique) ||
+    !isProvenancePopulated(cuttingTechnique) ||
+    !isProvenancePopulated(elevation) ||
+    !isProvenancePopulated(overdirection)
+  ) {
+    return false; // any UNKNOWN/NOT_APPLICABLE relevant field -- never fabricate the match
+  }
+  return structuralTechnique.value === "one_length" && cuttingTechnique.value === "blunt_line" && elevation.value === "0_deg_blunt" && overdirection.value === false;
+}
+
+function checkStructuralTechniqueSliceAndSlideIncompatibility(effectiveSteps: readonly TechnicalDemonstrationStepRecord[]): CoherenceFinding | null {
+  const structuralStep = effectiveSteps.find((step) => isExactStraightFullLineZeroDegreeNoOverdirectionProfile(step.payload as unknown as CuttingDemonstrationStepPayload));
+  if (!structuralStep) return null;
+
+  const texturizingStep = effectiveSteps.find((step) => {
+    const texturizingTechnique = (step.payload as unknown as CuttingDemonstrationStepPayload).texturizingTechnique;
+    return isProvenancePopulated(texturizingTechnique) && texturizingTechnique.value === "slice_and_slide";
+  });
+  if (!texturizingStep) return null;
+
+  return {
+    code: CODE_STRUCTURAL_TECHNIQUE_SLICE_AND_SLIDE_INCOMPATIBLE,
+    severity: "BLOCKER",
+    // Plan-level, not tied to any ONE step (it spans two) -- both real step
+    // numbers are named in the message text instead, mirroring the exact
+    // `stepNumber: null` convention this domain already uses for plan-level
+    // findings elsewhere (e.g. ReadinessBlockingReason).
+    stepNumber: null,
+    fields: ["structuralTechnique", "cuttingTechnique", "elevation", "overdirection", "texturizingTechnique"],
+    message: `Slice And Slide (Step ${texturizingStep.stepNumber}) is not applicable to the selected straight full-line, 0° One Length + Blunt Line technique with no overdirection (Step ${structuralStep.stepNumber}) -- professionally confirmed incompatible.`,
+    ruleVersion: TECHNICAL_DEMONSTRATION_COHERENCE_RULES_VERSION,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Plan coherence -- pure, deterministic. Iterates effectiveSteps in the
 // given order and applies each rule at most once per step, so findings are
 // always emitted in a stable, deterministic order and never duplicated (an
@@ -260,6 +354,12 @@ export function evaluatePlanCoherence(effectiveSteps: readonly TechnicalDemonstr
     const structuralToolReview = checkStructuralCuttingTexturizerShearReview(step, payload);
     if (structuralToolReview) reviewItems.push(structuralToolReview);
   }
+
+  // Cross-step: evaluated once against the whole plan, not once per step
+  // (see BLOCKER C's own header comment for why this rule genuinely needs
+  // more than one step's own payload).
+  const sliceAndSlideIncompatibility = checkStructuralTechniqueSliceAndSlideIncompatibility(effectiveSteps);
+  if (sliceAndSlideIncompatibility) blockers.push(sliceAndSlideIncompatibility);
 
   return { pass: blockers.length === 0, blockers, warnings, reviewItems };
 }
