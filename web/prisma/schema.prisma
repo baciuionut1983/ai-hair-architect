@@ -184,6 +184,11 @@ model User {
   // "TechnicalDemonstrationPlan"/"TechnicalDemonstrationStep".
   technicalDemonstrationPlans       TechnicalDemonstrationPlan[]
   technicalDemonstrationSteps       TechnicalDemonstrationStep[]
+  // Stage 2.5.i.21b (Multi-View Client Capture). Virtual back-relation
+  // only -- produces no column or constraint on "User"; the FK lives on
+  // "CaptureSet"/"CaptureSetImage".
+  captureSets                       CaptureSet[]
+  captureSetImages                  CaptureSetImage[]
 }
 
 model Session {
@@ -265,6 +270,11 @@ model Client {
   // "TechnicalDemonstrationPlan"/"TechnicalDemonstrationStep".
   technicalDemonstrationPlans       TechnicalDemonstrationPlan[]
   technicalDemonstrationSteps       TechnicalDemonstrationStep[]
+  // Stage 2.5.i.21b (Multi-View Client Capture). Virtual back-relation
+  // only -- produces no column or constraint on "Client"; the FK lives on
+  // "CaptureSet"/"CaptureSetImage".
+  captureSets                       CaptureSet[]
+  captureSetImages                  CaptureSetImage[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -2371,4 +2381,114 @@ model VideoDemonstrationGeneration {
   @@index([ownerUserId, clientId])
   @@index([photoPreviewGenerationId, ownerUserId, clientId])
   @@index([status])
+}
+
+// Multi-View Client Capture, Stage 2.5.i.21b -- schema/migration + pure
+// repository only (see src/lib/capture-set-repository.ts). Locked at the
+// Stage 2.5.i.21a audit: a small, additive, HYBRID grouping layer over
+// already-existing ImageAsset rows -- it never duplicates image bytes,
+// storage, or metadata, and it creates NO provider/consent authority of
+// its own (Stage 2.5.i.20's external-provider consent gate remains
+// entirely separate; Stage 2.5.i.21a Section 7/11 "internal reuse !=
+// external provider consent"). No camera, no UI, no API route, no
+// quality/consent field exists on this model -- those are explicitly
+// out of scope for this stage.
+//
+// VERSIONING mirrors TechnicalVisualMap.mapVersion /
+// TechnicalVisualMap.supersededByMapId exactly (new row + integer
+// version counter + nullable supersededByCaptureSetId soft pointer,
+// historical rows never overwritten in place) -- the same pattern
+// already proven three times in this schema (TechnicalVisualMap,
+// TechnicalVisualMapSpatialBinding, TechnicalDemonstrationPlan).
+// "Current" for one client = the single row with
+// supersededByCaptureSetId IS NULL; "history" is simply every row for
+// that client ordered by captureSetVersion -- no separate "Visual
+// History" model exists (Stage 2.5.i.21a Section 6: derived by query,
+// never a new entity).
+model CaptureSet {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  // Identifies capture revisions within the locked (ownerUserId,
+  // clientId) scope -- one client may accumulate many capture sets over
+  // time (new session, replaced view). Historical rows are never
+  // overwritten.
+  captureSetVersion Int
+
+  // Nullable pointer to the capture set that superseded this one --
+  // mirrors TechnicalVisualMap.supersededByMapId exactly, including its
+  // own reasoning: a plain nullable column, NOT an enforced self-relation
+  // FK (no existing self-referencing relation to mirror in this schema,
+  // and a composite-key self-relation would add real complexity for a
+  // pointer the repository layer already guarantees references a sibling
+  // row in the exact same (ownerUserId, clientId) scope). No supersession
+  // behavior is performed by the schema itself; the repository layer owns
+  // that behavior.
+  supersededByCaptureSetId String?
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner  User              @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client Client            @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  images CaptureSetImage[]
+
+  @@unique([clientId, ownerUserId, captureSetVersion])
+  // Composite-FK-enabling uniqueness, mirrors TechnicalVisualMap's own
+  // @@unique([id, ownerUserId, clientId]) exactly -- lets CaptureSetImage
+  // below composite-FK back to this exact (id, ownerUserId, clientId)
+  // scope for defense-in-depth ownership enforcement.
+  @@unique([id, ownerUserId, clientId])
+  @@index([clientId, ownerUserId, createdAt, id])
+  @@index([ownerUserId, clientId, supersededByCaptureSetId])
+}
+
+// One (view, image) pair within one CaptureSet. Mirrors
+// TechnicalVisualMapSpatialBinding's own "child references its own
+// parent + a validated image pointer" shape, deliberately simplified --
+// no frozen dimension/geometry snapshot exists here, since this stage
+// carries no spatial/geometric authority at all, only a grouping +
+// semantic view label.
+model CaptureSetImage {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  // Composite-FK'd to CaptureSet[id, ownerUserId, clientId] below --
+  // never trusted as a bare, unscoped id.
+  captureSetId String
+
+  // Validated pointer, deliberately NOT a database FK to ImageAsset --
+  // mirrors the exact, already-established
+  // AnalysisProposal/TechnicalVisualMap/TechnicalVisualMapSpatialBinding.
+  // sourceImageAssetId precedent (Stage 2.5.i.21a's own explicit "soft
+  // pointer" decision, Section 10): a Capture Set must never block or
+  // complicate ImageAsset's own independent lifecycle (retention/soft-
+  // delete), and ImageAsset bytes/metadata are never duplicated here.
+  imageAssetId String
+
+  // Plain string, NOT a Postgres enum -- same reasoning as every other
+  // lifecycle/vocabulary string in this domain (vertical, status,
+  // viewLabel on TechnicalVisualMapSpatialBinding). Application-validated
+  // (src/lib/capture-set-validators.ts) to exactly one of FRONT | LEFT |
+  // BACK | RIGHT -- deliberately NOT a reuse of Technical Visual Map's
+  // own ViewLabel type (different value set, and would create a
+  // structural dependency this general-purpose client infrastructure
+  // must not carry -- Stage 2.5.i.21a Section 3, mirroring Stage
+  // 2.5.i.12's own "never import ViewLabel" precedent).
+  viewLabel String
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner      User       @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client     Client     @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  captureSet CaptureSet @relation(fields: [captureSetId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+
+  // Cardinality lock (Stage 2.5.i.21b §4): at most one image per view
+  // label within one Capture Set -- a real DB-level constraint, not only
+  // an application check.
+  @@unique([captureSetId, viewLabel])
+  @@index([captureSetId, ownerUserId, clientId])
 }
