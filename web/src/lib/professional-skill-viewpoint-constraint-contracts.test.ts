@@ -82,6 +82,15 @@ describe("Viewpoint Constraint contract (Stage 2.5.i.12, SYNTHETIC FIXTURES ONLY
     expect(classifyFramingSemantic("RESULTING_LINE_OR_FORM")).toBe("GEOMETRY_READABLE");
   });
 
+  it("11. Stage 2.5.i.19: SUBJECT_CONDITION_STATE classifies to the EXISTING ANATOMICAL_CONTEXT_VISIBLE framing, never a new one", () => {
+    expect(classifyFramingSemantic("SUBJECT_CONDITION_STATE")).toBe("ANATOMICAL_CONTEXT_VISIBLE");
+  });
+
+  it("12. Stage 2.5.i.19 introduces no new viewpoint vocabulary -- family and framing sets are byte-identical to before", () => {
+    expect(VIEWPOINT_FAMILIES).toEqual(["POSTERIOR"]);
+    expect(FRAMING_SEMANTICS).toEqual(["ANATOMICAL_CONTEXT_VISIBLE", "TECHNICAL_RELATIONSHIP_READABLE", "GEOMETRY_READABLE"]);
+  });
+
   it("the module exports no VideoInstruction, provider, or derivation-function concept", () => {
     const exported = Object.keys(viewpointConstraintModule);
     for (const forbidden of ["VideoInstruction", "isValidVideoInstruction", "Provider", "deriveViewpointConstraints", "compileVideoInstruction"]) {

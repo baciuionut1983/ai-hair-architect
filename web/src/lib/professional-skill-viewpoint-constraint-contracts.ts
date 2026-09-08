@@ -121,10 +121,21 @@ export function isFramingSemantic(value: unknown): value is FramingSemantic {
 
 // Pure, universal, exhaustive structural mapping -- see file header for
 // why this stays here rather than in the cutting-specific deriver.
+//
+// SUBJECT_CONDITION_STATE (Stage 2.5.i.18 audit, Stage 2.5.i.19 addition)
+// maps to the EXISTING ANATOMICAL_CONTEXT_VISIBLE value, never a new
+// FramingSemantic -- it is, like ANATOMICAL_CONTEXT and SUBJECT_POSITION_
+// STATE, fundamentally a fact about the subject's own current visible
+// context (here: material/condition rather than location or pose), and
+// the already-real POSTERIOR family already satisfies that framing (see
+// cutting-skill-viewpoint-constraint-deriver.ts's own FAMILY_FRAMING_
+// COMPATIBILITY table, unchanged). No new viewpoint vocabulary is
+// introduced by this addition.
 export function classifyFramingSemantic(category: DemonstrationRequirementCategory): FramingSemantic {
   switch (category) {
     case "ANATOMICAL_CONTEXT":
     case "SUBJECT_POSITION_STATE":
+    case "SUBJECT_CONDITION_STATE":
       return "ANATOMICAL_CONTEXT_VISIBLE";
     case "TOOL_TO_SUBJECT_RELATIONSHIP":
       return "TECHNICAL_RELATIONSHIP_READABLE";

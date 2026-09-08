@@ -278,12 +278,18 @@ describe("E. Coverage / fail-closed behavior", () => {
     }
   });
 
-  it("26. duplicate equivalent constraints normalize deterministically -- two real requirements sharing one framing merge into one constraint", () => {
+  it("26. duplicate equivalent constraints normalize deterministically -- multiple real requirements sharing one framing merge into one constraint", () => {
+    // Stage 2.5.i.19: distribution's own promoted SUBJECT_TO_REFERENCE_
+    // GEOMETRY requirement (also GEOMETRY_READABLE) joins elevation's and
+    // cuttingLineShape's on the real EXECUTE action -- 3 requirements
+    // merging into 1 constraint, not 2; the merging behavior itself
+    // (never one constraint per requirement) is what this test proves,
+    // and remains true regardless of exact count.
     const execute = findByAction(napeGuideGroups, "EXECUTE");
     const constraints = covered(deriveVC(execute, isEstablishCentralNapeGuideFact));
     const geometryConstraints = constraints.filter((c) => c.framingSemantic === "GEOMETRY_READABLE");
     expect(geometryConstraints.length).toBe(1);
-    expect(geometryConstraints[0].satisfiedDemonstrationRequirementIds.length).toBe(2);
+    expect(geometryConstraints[0].satisfiedDemonstrationRequirementIds.length).toBe(3);
   });
 
   it("27. rejects an invalid Demonstration Requirement", () => {

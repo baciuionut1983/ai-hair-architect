@@ -27,7 +27,7 @@ import { isValidSkillCondition, type SkillCondition } from "@/lib/professional-s
 //      contract's own shape (see WHAT THIS FILE IS NOT below).
 //
 // CATEGORY VOCABULARY -- deliberately kept small and vertical-agnostic in
-// NAME (Stage 2.5.i.9 §21/multi-vertical sanity check): none of the five
+// NAME (Stage 2.5.i.9 §21/multi-vertical sanity check): none of the six
 // values below names a cutting-specific concept (no "shear", "comb",
 // "elevation", "hair"). The cutting-specific CONTENT (which technique
 // facts map to which category, e.g. controlMethod -> TOOL_TO_SUBJECT_
@@ -36,6 +36,19 @@ import { isValidSkillCondition, type SkillCondition } from "@/lib/professional-s
 // universal-contract/vertical-deriver split already established between
 // professional-skill-atomic-action-contracts.ts (universal) and cutting-
 // skill-atomic-action-compiler.ts (cutting-specific), Stage 2.5.i.4/i.8.
+//
+// SUBJECT_CONDITION_STATE (Stage 2.5.i.18 audit, Stage 2.5.i.19 addition):
+// a provider-neutral requirement that a relevant SUBJECT condition/state
+// must be visibly represented (e.g. hair wet vs. dry) -- deliberately
+// distinct from ANATOMICAL_CONTEXT (a LOCATION/zone concept, e.g.
+// "center_nape") and from SUBJECT_POSITION_STATE (a POSE concept, e.g.
+// "tilted_forward_down"). Forcing a material/condition fact into either
+// of those would misrepresent it, per this domain's own repeated "do not
+// force-fit" discipline. Named generically (no "wet", no "hair" in the
+// category name itself) so a future color/makeup/nails vertical can
+// declare its own analogous condition-state parameter (e.g. a processing
+// state, a prepared-surface state) through the exact same category,
+// without this universal file ever naming a vertical-specific value.
 //
 // SUBJECT VALUE, deliberately NOT reference-only (unlike AtomicAction.
 // boundParameterNames, which is explicitly a NAME reference, never a
@@ -81,6 +94,7 @@ export const DEMONSTRATION_REQUIREMENT_CATEGORIES = [
   "RESULTING_LINE_OR_FORM",
   "ANATOMICAL_CONTEXT",
   "SUBJECT_POSITION_STATE",
+  "SUBJECT_CONDITION_STATE",
 ] as const;
 export type DemonstrationRequirementCategory = (typeof DEMONSTRATION_REQUIREMENT_CATEGORIES)[number];
 

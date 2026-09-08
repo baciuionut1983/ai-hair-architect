@@ -16,6 +16,9 @@ import {
 import { deriveDemonstrationRequirementsFromAtomicAction, type DemonstrationRequirementDerivationResult } from "@/lib/cutting-skill-demonstration-requirement-deriver";
 import { isValidDemonstrationRequirement, type DemonstrationRequirement } from "@/lib/professional-skill-demonstration-requirement-contracts";
 import type { AtomicAction } from "@/lib/professional-skill-atomic-action-contracts";
+import { deriveViewpointConstraintsFromDemonstrationRequirements } from "@/lib/cutting-skill-viewpoint-constraint-deriver";
+import { compileAtomicActionToVideoInstruction } from "@/lib/cutting-skill-video-instruction-compiler";
+import { isValidVideoInstruction, isVideoInstructionCoverageSatisfied, isVideoInstructionSourceConsistent } from "@/lib/professional-skill-video-instruction-contracts";
 
 const COMPILED_AT = "2026-09-08T00:00:00.000Z";
 const DERIVED_AT = "2026-09-08T00:00:00.000Z";
@@ -402,10 +405,226 @@ describe("B. SYNTHETIC / FAIL-CLOSED rejection tests", () => {
   });
 
   it("30. haircut-specific vocabulary never leaks into the universal category enum", () => {
+    // SUBJECT_CONDITION_STATE added Stage 2.5.i.19 -- itself a universal
+    // category name (no "wet", no "hair"), justified by real hairState
+    // authority; the assertion's own purpose (no cutting-specific term
+    // ever appears as a category) is unaffected.
     for (const requirement of allRealRequirements) {
-      expect(["TOOL_TO_SUBJECT_RELATIONSHIP", "SUBJECT_TO_REFERENCE_GEOMETRY", "RESULTING_LINE_OR_FORM", "ANATOMICAL_CONTEXT", "SUBJECT_POSITION_STATE"]).toContain(
-        requirement.category,
-      );
+      expect([
+        "TOOL_TO_SUBJECT_RELATIONSHIP",
+        "SUBJECT_TO_REFERENCE_GEOMETRY",
+        "RESULTING_LINE_OR_FORM",
+        "ANATOMICAL_CONTEXT",
+        "SUBJECT_POSITION_STATE",
+        "SUBJECT_CONDITION_STATE",
+      ]).toContain(requirement.category);
     }
+  });
+});
+
+// ===========================================================================
+// STAGE 2.5.i.19 -- VALUE REACHABILITY FIXES. Real authority only for the
+// positive cases; SYNTHETIC TEST FIXTURE -- NOT REAL PROFESSIONAL AUTHORITY
+// for every mangled/stripped negative case below.
+// ===========================================================================
+
+describe("Stage 2.5.i.19: SUBJECT_CONDITION_STATE (hairState) reachability", () => {
+  const napePosition = napeGuideActions.find((a) => a.actionKind === "POSITION")!;
+  const napeControl = napeGuideActions.find((a) => a.actionKind === "CONTROL")!;
+  const napeExecute = napeGuideActions.find((a) => a.actionKind === "EXECUTE")!;
+
+  it("1-2. valid authoritative hairState produces a SUBJECT_CONDITION_STATE requirement with a traceable WET value", () => {
+    for (const action of [napePosition, napeControl, napeExecute]) {
+      const requirements = requirementsOf(deriveNapeGuide(action));
+      const stateRequirement = requirements.find((r) => r.category === "SUBJECT_CONDITION_STATE");
+      expect(stateRequirement?.subjectValue).toBe("wet");
+      expect(stateRequirement?.subjectParameterNames).toContain("hairState");
+      expect(stateRequirement?.sourceAtomicActionId).toBe(action.atomicActionId);
+    }
+  });
+
+  it("3. no hairState bound -> no invented SUBJECT_CONDITION_STATE requirement", () => {
+    const strippedAction = { ...napeExecute, boundParameterNames: (napeExecute.boundParameterNames ?? []).filter((n) => n !== "hairState") };
+    const requirements = requirementsOf(deriveNapeGuide(strippedAction));
+    expect(requirements.some((r) => r.category === "SUBJECT_CONDITION_STATE")).toBe(false);
+  });
+
+  it("4. free text claiming 'wet' cannot manufacture state authority when the structured binding is absent", () => {
+    const strippedAction = {
+      ...napeExecute,
+      boundParameterNames: (napeExecute.boundParameterNames ?? []).filter((n) => n !== "hairState"),
+      presentationSummary: "SYNTHETIC prose: the hair is wet throughout this demonstration.",
+      presentationDetail: "SYNTHETIC: wet, always wet, definitely wet.",
+    };
+    const requirements = requirementsOf(deriveNapeGuide(strippedAction));
+    expect(requirements.some((r) => r.category === "SUBJECT_CONDITION_STATE")).toBe(false);
+  });
+
+  it("5. an UNRESOLVED hairState binding does not silently resolve to WET", () => {
+    const unresolvedInstance = {
+      ...ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL_INSTANCE,
+      parameterBindings: ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL_INSTANCE.parameterBindings.map((b) =>
+        b.parameterName === "hairState" ? { parameterName: "hairState", bindingState: "UNRESOLVED" as const, sourceReference: "SYNTHETIC: not yet confirmed" } : b,
+      ),
+    };
+    const result = deriveDemonstrationRequirementsFromAtomicAction(napeExecute, unresolvedInstance, ESTABLISH_CENTRAL_NAPE_GUIDE_EXECUTION_UNITS[0], isEstablishCentralNapeGuideFact, DERIVED_AT);
+    expect(requirementsOf(result).some((r) => r.category === "SUBJECT_CONDITION_STATE")).toBe(false);
+  });
+});
+
+describe("Stage 2.5.i.19: relationship value promotions (shearOrientation, guideStrandDirection, distribution)", () => {
+  const napeControl = napeGuideActions.find((a) => a.actionKind === "CONTROL")!;
+  const napeExecute = napeGuideActions.find((a) => a.actionKind === "EXECUTE")!;
+
+  it("6. shearOrientation = HORIZONTAL becomes reachable as its own requirement value", () => {
+    const requirements = requirementsOf(deriveNapeGuide(napeExecute));
+    const orientationRequirement = requirements.find((r) => r.category === "TOOL_TO_SUBJECT_RELATIONSHIP" && r.subjectValue === "horizontal");
+    expect(orientationRequirement).toBeDefined();
+    expect(orientationRequirement?.subjectParameterNames).toEqual(["shearOrientation"]);
+    // The existing tool requirement (straight_shear) is untouched -- both
+    // requirements coexist, neither replaces the other.
+    const toolRequirement = requirements.find((r) => r.category === "TOOL_TO_SUBJECT_RELATIONSHIP" && r.subjectValue === "straight_shear");
+    expect(toolRequirement?.subjectParameterNames).toEqual(["tool", "shearOrientation"]);
+  });
+
+  it("7. no shearOrientation bound -> no invented HORIZONTAL requirement", () => {
+    const strippedAction = { ...napeExecute, boundParameterNames: (napeExecute.boundParameterNames ?? []).filter((n) => n !== "shearOrientation") };
+    const requirements = requirementsOf(deriveNapeGuide(strippedAction));
+    expect(requirements.some((r) => r.category === "TOOL_TO_SUBJECT_RELATIONSHIP" && r.subjectValue === "horizontal")).toBe(false);
+  });
+
+  it("8. free text claiming an orientation cannot manufacture a requirement when the structured binding is absent", () => {
+    const strippedAction = {
+      ...napeExecute,
+      boundParameterNames: (napeExecute.boundParameterNames ?? []).filter((n) => n !== "shearOrientation"),
+      presentationSummary: "SYNTHETIC prose: the shear is held horizontally.",
+    };
+    const requirements = requirementsOf(deriveNapeGuide(strippedAction));
+    expect(requirements.some((r) => r.subjectValue === "horizontal")).toBe(false);
+  });
+
+  it("9. guideStrandDirection promotion uses structured authority only, never prose", () => {
+    const real = requirementsOf(deriveNapeGuide(napeControl));
+    const directionRequirement = real.find((r) => r.category === "TOOL_TO_SUBJECT_RELATIONSHIP" && r.subjectValue === "combed_down");
+    expect(directionRequirement?.subjectParameterNames).toEqual(["guideStrandDirection"]);
+
+    const mangled = { ...napeControl, presentationSummary: "SYNTHETIC prose: combed sideways, not down." };
+    const mangledRequirements = requirementsOf(deriveNapeGuide(mangled));
+    expect(mangledRequirements.find((r) => r.category === "TOOL_TO_SUBJECT_RELATIONSHIP" && r.subjectValue === "combed_down")).toBeDefined();
+    expect(mangledRequirements.some((r) => r.subjectValue === "combed sideways, not down")).toBe(false);
+  });
+
+  it("10. distribution promotion uses structured authority only, never prose", () => {
+    const real = requirementsOf(deriveNapeGuide(napeExecute));
+    const distributionRequirement = real.find((r) => r.category === "SUBJECT_TO_REFERENCE_GEOMETRY" && r.subjectValue === "natural_fall");
+    expect(distributionRequirement?.subjectParameterNames).toEqual(["distribution"]);
+
+    const mangled = { ...napeExecute, presentationDetail: "SYNTHETIC prose: heavily overdirected distribution." };
+    const mangledRequirements = requirementsOf(deriveNapeGuide(mangled));
+    expect(mangledRequirements.find((r) => r.category === "SUBJECT_TO_REFERENCE_GEOMETRY" && r.subjectValue === "natural_fall")).toBeDefined();
+  });
+});
+
+describe("Stage 2.5.i.19: real Central Nape Guide 8-fact matrix, end-to-end through VideoInstruction", () => {
+  const napePosition = napeGuideActions.find((a) => a.actionKind === "POSITION")!;
+  const napeControl = napeGuideActions.find((a) => a.actionKind === "CONTROL")!;
+  const napeExecute = napeGuideActions.find((a) => a.actionKind === "EXECUTE")!;
+
+  const executeRequirements = requirementsOf(deriveNapeGuide(napeExecute));
+  const executeVP = deriveViewpointConstraintsFromDemonstrationRequirements(executeRequirements, isEstablishCentralNapeGuideFact, DERIVED_AT);
+  const executeInstructionResult = compileAtomicActionToVideoInstruction(napeExecute, executeRequirements, executeVP, isEstablishCentralNapeGuideFact, COMPILED_AT);
+
+  const controlRequirements = requirementsOf(deriveNapeGuide(napeControl));
+  const controlVP = deriveViewpointConstraintsFromDemonstrationRequirements(controlRequirements, isEstablishCentralNapeGuideFact, DERIVED_AT);
+  const controlInstructionResult = compileAtomicActionToVideoInstruction(napeControl, controlRequirements, controlVP, isEstablishCentralNapeGuideFact, COMPILED_AT);
+
+  const positionRequirements = requirementsOf(deriveNapeGuide(napePosition));
+  const positionVP = deriveViewpointConstraintsFromDemonstrationRequirements(positionRequirements, isEstablishCentralNapeGuideFact, DERIVED_AT);
+  const positionInstructionResult = compileAtomicActionToVideoInstruction(napePosition, positionRequirements, positionVP, isEstablishCentralNapeGuideFact, COMPILED_AT);
+
+  it("13-14. i.13 VideoInstruction and i.14 compiler work unchanged -- all three real actions compile successfully with the now-complete fact set", () => {
+    expect(positionInstructionResult.status).toBe("COMPILED");
+    expect(controlInstructionResult.status).toBe("COMPILED");
+    expect(executeInstructionResult.status).toBe("COMPILED");
+  });
+
+  it("fact matrix: all 8 real Central Nape Guide facts reach COMPLETE status", () => {
+    expect(executeInstructionResult.status).toBe("COMPILED");
+    if (executeInstructionResult.status !== "COMPILED") throw new Error("expected COMPILED");
+    const instruction = executeInstructionResult.instruction;
+
+    // 1. wet hair -- now COMPLETE (was MISSING before this stage).
+    const wet = executeRequirements.find((r) => r.category === "SUBJECT_CONDITION_STATE");
+    expect(wet?.subjectValue).toBe("wet");
+    expect(instruction.sourceDemonstrationRequirementIds).toContain(wet!.demonstrationRequirementId);
+
+    // 2. posterior / center-nape anatomical context -- already COMPLETE.
+    const context = executeRequirements.find((r) => r.category === "ANATOMICAL_CONTEXT");
+    expect(context?.subjectValue).toBe("center_nape");
+    expect(instruction.sourceDemonstrationRequirementIds).toContain(context!.demonstrationRequirementId);
+
+    // 3. head forward/down -- derives on POSITION, referenced by POSITION's own instruction.
+    expect(positionInstructionResult.status).toBe("COMPILED");
+    const headPosition = positionRequirements.find((r) => r.category === "SUBJECT_POSITION_STATE");
+    expect(headPosition?.subjectValue).toBe("tilted_forward_down");
+
+    // 4. comb control -- derives on CONTROL.
+    const comb = controlRequirements.find((r) => r.category === "TOOL_TO_SUBJECT_RELATIONSHIP" && r.subjectValue === "comb");
+    expect(comb).toBeDefined();
+
+    // 5. 0 degree elevation -- already COMPLETE.
+    const elevation = executeRequirements.find((r) => r.category === "SUBJECT_TO_REFERENCE_GEOMETRY" && r.subjectValue === "0_deg_blunt");
+    expect(elevation).toBeDefined();
+    expect(instruction.sourceDemonstrationRequirementIds).toContain(elevation!.demonstrationRequirementId);
+
+    // 6. straight shear / tool -- already COMPLETE.
+    const tool = executeRequirements.find((r) => r.category === "TOOL_TO_SUBJECT_RELATIONSHIP" && r.subjectValue === "straight_shear");
+    expect(tool).toBeDefined();
+    expect(instruction.sourceDemonstrationRequirementIds).toContain(tool!.demonstrationRequirementId);
+
+    // 7. horizontal shear orientation -- now COMPLETE (was VALUE LOST before this stage).
+    const orientation = executeRequirements.find((r) => r.category === "TOOL_TO_SUBJECT_RELATIONSHIP" && r.subjectValue === "horizontal");
+    expect(orientation).toBeDefined();
+    expect(instruction.sourceDemonstrationRequirementIds).toContain(orientation!.demonstrationRequirementId);
+
+    // 8. straight guide/cutting line -- already COMPLETE.
+    const line = executeRequirements.find((r) => r.category === "RESULTING_LINE_OR_FORM" && r.subjectValue === "straight");
+    expect(line).toBeDefined();
+    expect(instruction.sourceDemonstrationRequirementIds).toContain(line!.demonstrationRequirementId);
+  });
+
+  it("15. requirement coverage remains fail-closed after the promotion -- every referenced requirement is genuinely covered", () => {
+    expect(executeInstructionResult.status).toBe("COMPILED");
+    if (executeInstructionResult.status !== "COMPILED") throw new Error("expected COMPILED");
+    expect(isValidVideoInstruction(executeInstructionResult.instruction)).toBe(true);
+    expect(isVideoInstructionCoverageSatisfied(executeInstructionResult.instruction, executeRequirements, executeVP.status === "COVERED" ? executeVP.constraints : [])).toBe(true);
+
+    // Negative: an artificially truncated constraint set (missing the new
+    // wet/orientation coverage) must fail closed, never silently pass.
+    if (executeVP.status === "COVERED") {
+      const truncated = executeVP.constraints.slice(1);
+      expect(isVideoInstructionCoverageSatisfied(executeInstructionResult.instruction, executeRequirements, truncated)).toBe(false);
+    }
+  });
+
+  it("16. cross-action provenance remains rejected after the promotion", () => {
+    expect(executeInstructionResult.status).toBe("COMPILED");
+    if (executeInstructionResult.status !== "COMPILED") throw new Error("expected COMPILED");
+    const occipitalLowerExecute = compileOccipitalActions(0).find((a) => a.actionKind === "EXECUTE")!;
+    const occipitalRequirements = requirementsOf(deriveOccipital(occipitalLowerExecute, 0));
+    const foreignReference = {
+      ...executeInstructionResult.instruction,
+      sourceDemonstrationRequirementIds: [...executeInstructionResult.instruction.sourceDemonstrationRequirementIds, occipitalRequirements[0].demonstrationRequirementId],
+    };
+    expect(isVideoInstructionSourceConsistent(foreignReference, [...executeRequirements, ...occipitalRequirements], executeVP.status === "COVERED" ? executeVP.constraints : [])).toBe(false);
+  });
+});
+
+describe("Stage 2.5.i.19: determinism", () => {
+  it("the same structured authority produces byte-identical Demonstration Requirements on repeated derivation", () => {
+    const napeExecute = napeGuideActions.find((a) => a.actionKind === "EXECUTE")!;
+    const first = requirementsOf(deriveNapeGuide(napeExecute));
+    const second = requirementsOf(deriveNapeGuide(napeExecute));
+    expect(second).toEqual(first);
   });
 });

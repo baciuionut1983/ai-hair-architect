@@ -76,10 +76,20 @@ import { type AtomicAction, type AtomicActionKind } from "@/lib/professional-ski
 // camera/professional input -- documented, not implemented, since no
 // such template is needed for the real content this stage compiles.
 
+// Stage 2.5.i.19: "hairState" added to EXECUTE's own optionalParams --
+// the Stage 2.5.i.18 audit found that wet/dry hair state (real, already-
+// bound authority on both real Skills) previously could never bind onto
+// the EXECUTE action at all, even though EXECUTE is the one action where
+// visibly-wet hair matters most (the cutting itself). Purely additive --
+// EXECUTE's own requiredParams and every other template are unchanged,
+// and this only ever resolves/derives a requirement where a real Skill
+// Instance actually binds hairState (fail-closed, same as every other
+// optional param here) -- never made globally required, since not every
+// vertical/action has wet/dry semantics.
 const ACTION_TEMPLATES: readonly { kind: AtomicActionKind; requiredParams: readonly string[]; optionalParams: readonly string[] }[] = [
   { kind: "POSITION", requiredParams: ["clientHeadPosition"], optionalParams: ["hairState"] },
   { kind: "CONTROL", requiredParams: ["controlMethod"], optionalParams: ["hairState", "guideStrandDirection", "distribution"] },
-  { kind: "EXECUTE", requiredParams: ["elevation", "cuttingTechnique", "structuralTechnique"], optionalParams: ["tool", "shearOrientation", "cuttingLineShape", "distribution", "overdirection"] },
+  { kind: "EXECUTE", requiredParams: ["elevation", "cuttingTechnique", "structuralTechnique"], optionalParams: ["hairState", "tool", "shearOrientation", "cuttingLineShape", "distribution", "overdirection"] },
 ];
 
 export interface AtomicActionCompilationSuccess<TFact extends string = string> {

@@ -29,11 +29,34 @@ import {
 // already-authorized structured fact in Stage 2.5.i.6/i.7's real content,
 // per Stage 2.5.i.9's own explicit rule list (its "REAL DERIVATION RULES"
 // section). No speculative rule for a fact neither real Skill uses is
-// included (e.g. no rule keyed on hairState alone, distribution alone,
-// structuralTechnique alone, or cuttingTechnique alone -- none of those
-// were named as an independent visibility trigger by the audit; where
-// they ARE relevant they ride along as SUPPORTING evidence on an already-
-// justified rule instead of inventing a sixth category).
+// included. `structuralTechnique`/`cuttingTechnique` remain unpromoted --
+// neither audit (i.9 or i.18) ever named them as an independent
+// visibility trigger, and no real Provider-facing gap was ever found for
+// them; they continue to ride along only as REQUIRED gating parameters on
+// the EXECUTE template (Stage 2.5.i.8), never as their own requirement.
+//
+// VALUE REACHABILITY CORRECTION (Stage 2.5.i.18 audit, Stage 2.5.i.19):
+// this file previously treated `hairState`, `shearOrientation`,
+// `guideStrandDirection`, and `distribution` as either absent entirely or
+// as mere SUPPORTING NAMES on another rule -- meaning their own resolved
+// VALUE was never captured anywhere (only referenced by name in
+// `subjectParameterNames`; see i.18's own precise trace). All four are
+// REAL, already-bound, already-authorized facts on the two real Skills
+// (fixedBinding present for each) -- promoting them to their own PRIMARY
+// rule below is not new professional authority, only a fix to this
+// file's own translation reachability, using the exact same mechanism
+// `cuttingLineShape`/`clientHeadPosition` already prove correct. Their
+// EXISTING supporting-name placement (below) is left byte-unchanged --
+// this is purely additive: each promoted fact now ALSO produces its own
+// independent requirement, alongside (never replacing) its prior
+// supporting-name reference.
+//
+// hairState specifically also required a Stage 2.5.i.8 companion fix
+// (added to EXECUTE's own optionalParams) -- previously `hairState` could
+// never bind onto the EXECUTE action at all, meaning even a promoted rule
+// here would never have fired on the one action where visibly-wet hair
+// matters most (the cutting itself). See cutting-skill-atomic-action-
+// compiler.ts's own updated header for that half of the fix.
 //
 // GATING: a rule only ever fires for a parameter name that is actually
 // present in THIS SPECIFIC Atomic Action's own `boundParameterNames` --
@@ -122,6 +145,15 @@ const DERIVATION_RULES: readonly DerivationRule[] = [
   { parameterName: "tool", category: "TOOL_TO_SUBJECT_RELATIONSHIP", supportingParameterNames: ["shearOrientation"] },
   { parameterName: "cuttingLineShape", category: "RESULTING_LINE_OR_FORM", supportingParameterNames: [] },
   { parameterName: "clientHeadPosition", category: "SUBJECT_POSITION_STATE", supportingParameterNames: [] },
+  // Stage 2.5.i.19 -- value-reachability promotions (see file header).
+  // Each is additive: it produces its own independent requirement (a
+  // distinct category+value dedup key, never colliding with the rules
+  // above) alongside, never instead of, its existing supporting-name
+  // reference.
+  { parameterName: "hairState", category: "SUBJECT_CONDITION_STATE", supportingParameterNames: [] },
+  { parameterName: "shearOrientation", category: "TOOL_TO_SUBJECT_RELATIONSHIP", supportingParameterNames: [] },
+  { parameterName: "guideStrandDirection", category: "TOOL_TO_SUBJECT_RELATIONSHIP", supportingParameterNames: [] },
+  { parameterName: "distribution", category: "SUBJECT_TO_REFERENCE_GEOMETRY", supportingParameterNames: [] },
 ];
 
 export type DemonstrationRequirementDerivationResult<TFact extends string = string> =
