@@ -242,7 +242,18 @@ export class VeoVideoDemonstrationProvider extends VideoDemonstrationProvider {
   }
 }
 
-function createDefaultVeoClient(apiKey: string): VeoVideoGenerationClient {
+// Exported (Stage 2.5.i.23) so a separate, sibling Veo caller (Technical
+// Execution Video -- technical-execution-video-veo-provider.ts) can reuse
+// this exact, already-hard-won request/response wiring (the 3 documented
+// real-test bug fixes below) without duplicating it. This function itself
+// is already fully generic -- it takes an already-built `instruction`
+// string as a plain parameter and contains no Result-Video-specific
+// semantics anywhere in its own body (the ONLY Result-Video-specific step,
+// assembleVeoVideoDemonstrationInstruction, happens in
+// VeoVideoDemonstrationProvider.submit() above, one call site removed from
+// here) -- exporting it is a pure additive change, zero behavior change for
+// every existing caller.
+export function createDefaultVeoClient(apiKey: string): VeoVideoGenerationClient {
   const ai = new GoogleGenAI({ apiKey });
 
   return {

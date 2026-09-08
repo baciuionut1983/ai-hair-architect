@@ -193,6 +193,10 @@ model User {
   // back-relation only -- produces no column or constraint on "User"; the
   // FK lives on "TechnicalExecutionGenerationRequest".
   technicalExecutionGenerationRequests TechnicalExecutionGenerationRequest[]
+  // Stage 2.5.i.23 (Technical Execution Video, concrete provider
+  // integration). Virtual back-relation only -- produces no column or
+  // constraint on "User"; the FK lives on "TechnicalExecutionVideoGeneration".
+  technicalExecutionVideoGenerations TechnicalExecutionVideoGeneration[]
 }
 
 model Session {
@@ -283,6 +287,10 @@ model Client {
   // back-relation only -- produces no column or constraint on "Client";
   // the FK lives on "TechnicalExecutionGenerationRequest".
   technicalExecutionGenerationRequests TechnicalExecutionGenerationRequest[]
+  // Stage 2.5.i.23 (Technical Execution Video, concrete provider
+  // integration). Virtual back-relation only -- produces no column or
+  // constraint on "Client"; the FK lives on "TechnicalExecutionVideoGeneration".
+  technicalExecutionVideoGenerations TechnicalExecutionVideoGeneration[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -2637,8 +2645,122 @@ model TechnicalExecutionGenerationRequest {
   client          Client          @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
   captureSet      CaptureSet      @relation(fields: [captureSetId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
   captureSetImage CaptureSetImage @relation(fields: [captureSetImageId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+  // Stage 2.5.i.23 (Technical Execution Video, concrete provider
+  // integration). Virtual back-relation only -- produces no column or
+  // constraint here; the FK lives on "TechnicalExecutionVideoGeneration".
+  technicalExecutionVideoGenerations TechnicalExecutionVideoGeneration[]
 
   @@index([ownerUserId, clientId, createdAt, id])
   @@index([captureSetId, ownerUserId, clientId])
   @@index([captureSetImageId, ownerUserId, clientId])
+  // Stage 2.5.i.23 prerequisite: TechnicalExecutionVideoGeneration needs a
+  // real composite FK to this exact sealed request (so a real provider
+  // generation's own binding is a real, enforced reference, never a
+  // silently-orphanable soft pointer -- mirrors CaptureSet's own and
+  // CaptureSetImage's own identical @@unique([id, ownerUserId, clientId])
+  // prerequisite-fix pattern exactly). Structurally safe regardless of
+  // existing data -- `id` is already this model's own primary key.
+  @@unique([id, ownerUserId, clientId])
+}
+
+// Stage 2.5.i.23 -- TECHNICAL EXECUTION VIDEO, CONCRETE PROVIDER
+// INTEGRATION. The durable, auditable generation job for the FIRST real
+// Technical Execution Video pilot (Establish Central Nape Guide only).
+// Deliberately a SEPARATE model from VideoDemonstrationGeneration (task
+// Section 11: "do not reuse the Result Video record if it would
+// semantically confuse final-result visualization with technical execution
+// demonstration") -- this row is anchored on a sealed
+// TechnicalExecutionGenerationRequest (consent/qualification/provenance
+// chain, Stage 2.5.i.22), never on a PhotoPreviewGeneration; there is no
+// analogous "animate an already-approved result image" semantic here at
+// all -- this is a technical-execution demonstration generated directly
+// from the Provider Adapter's (Stage 2.5.i.21) translated output.
+//
+// Mirrors VideoDemonstrationGeneration's own proven REQUESTED ->
+// PROCESSING -> COMPLETED | FAILED state machine and its own
+// providerOperationId / completionClaimedAt / requestFingerprint
+// conventions exactly (video-generation-execution-repository.ts's own
+// module header comment documents the full reasoning, reused unchanged
+// here) -- the single most important invariant is identical: once
+// providerOperationId is durably persisted, this row is never eligible for
+// a fresh submit again, only polling, until a terminal outcome is reached.
+//
+// generatedVideoAssetId points at the SAME, already-generic VideoAsset
+// model Result Video uses (task Section 11: "smallest representation" --
+// VideoAsset's own storage shape has no Result-Video-specific semantics of
+// its own, only durable video bytes + metadata, so reusing it here is safe
+// reuse of infrastructure, not of Result Video's own domain semantics).
+model TechnicalExecutionVideoGeneration {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  // The ONLY authority this model consults -- composite-FK'd to
+  // TechnicalExecutionGenerationRequest[id, ownerUserId, clientId], RESTRICT
+  // (never CASCADE, same historical-integrity precedent as every other
+  // composite FK in this domain). A real generation row must never survive
+  // its own sealed request being deleted, and must never silently orphan.
+  technicalExecutionGenerationRequestId String
+
+  // Plain strings, not Postgres enums -- same reasoning as every other
+  // provider/model field in this schema (operator-configurable without a
+  // migration).
+  provider String
+  model    String
+
+  // The exact, fully-assembled Veo rendering instruction text sent to the
+  // provider (technical-execution-video-veo-serializer.ts's own sole
+  // output) -- frozen here as a durable audit trail proving exactly what
+  // was requested, never regenerated or re-derived after the fact.
+  providerInstruction String @db.Text
+
+  // DB-level idempotency backstop, identical precedent to
+  // VideoDemonstrationGeneration.requestFingerprint -- computed from
+  // (ownerUserId, clientId, technicalExecutionGenerationRequestId,
+  // provider, model).
+  requestFingerprint String @db.VarChar(64)
+
+  // REQUESTED -> PROCESSING -> COMPLETED | FAILED. Identical shape and
+  // reasoning to VideoDemonstrationGeneration.status.
+  status String
+
+  // How many real provider SUBMIT attempts have been claimed for this row
+  // -- identical precedent to VideoDemonstrationGeneration.attemptCount.
+  attemptCount Int @default(0)
+
+  // Set ATOMICALLY, immediately after a real provider submit() call
+  // succeeds -- identical precedent to
+  // VideoDemonstrationGeneration.providerOperationId: once non-null, every
+  // recovery path must poll THIS operation, never submit a second one.
+  providerOperationId String?
+
+  generatedVideoAssetId String?
+
+  // Identical precedent to VideoDemonstrationGeneration.completionClaimedAt
+  // -- guards the "provider says done, now download/persist/complete"
+  // window against two concurrent callers.
+  completionClaimedAt DateTime? @db.Timestamp(6)
+
+  nextPollAt DateTime? @db.Timestamp(6)
+
+  errorCode     String?
+  errorMetadata Json?
+
+  requestedAt DateTime  @default(now()) @db.Timestamp(6)
+  submittedAt DateTime? @db.Timestamp(6)
+  startedAt   DateTime? @db.Timestamp(6)
+  completedAt DateTime? @db.Timestamp(6)
+  failedAt    DateTime? @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner                              User                                @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client                             Client                              @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  technicalExecutionGenerationRequest TechnicalExecutionGenerationRequest @relation(fields: [technicalExecutionGenerationRequestId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([requestFingerprint])
+  @@index([ownerUserId, clientId])
+  @@index([technicalExecutionGenerationRequestId, ownerUserId, clientId])
+  @@index([status])
 }
