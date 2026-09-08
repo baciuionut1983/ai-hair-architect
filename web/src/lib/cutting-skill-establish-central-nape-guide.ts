@@ -88,17 +88,17 @@ import type { ExecutionUnit } from "@/lib/professional-skill-execution-unit-cont
 // FUTURE improvement, not implemented here per this stage's own explicit
 // "do not improvise an architecture extension" instruction.
 //
-// ARCHITECTURE GAP, reported (does not block this pilot): ExecutionUnit
-// (Stage 2.5.i.3) was built BEFORE Skill Instance (Stage 2.5.i.5) existed
-// -- it carries `sourceSkillId`/`sourceSkillVersion` (Skill DEFINITION-
-// level provenance) but has no dedicated field naming a specific
-// SkillInstance.skillInstanceId. For a composition containing more than
-// one instance of the same Skill/version, this is a genuine traceability
-// gap. Worked around here, honestly and without any contract change, via
-// ExecutionUnit's own existing, uninterpreted `verticalPayload` field
-// (`resolvedFromSkillInstanceId`) -- this is a real, working reference
-// today, not a fabricated value; a dedicated typed field remains the
-// cleaner FUTURE fix, not implemented here.
+// ARCHITECTURE GAP -- CLOSED (Stage 2.5.i.6a): this pilot originally
+// worked around ExecutionUnit's missing Skill-Instance-level traceability
+// via its `verticalPayload` field (`resolvedFromSkillInstanceId`). Stage
+// 2.5.i.6a added a proper, typed, required `sourceSkillInstanceId` field
+// directly to the Execution Unit contract (replacing that same file's own
+// original `sourceSkillId`/`sourceSkillVersion` fields, now redundant --
+// the full chain remains reconstructible via the referenced Skill
+// Instance's own sourceSkillId/sourceSkillVersion). The Execution Unit
+// below now uses that field directly; `verticalPayload` is no longer
+// populated by this pilot at all, since it had no other legitimate
+// cutting-specific content.
 //
 // COMPOSITION: this pilot does NOT construct a ProfessionalComposition
 // record -- doing so would imply a real, composed client haircut session,
@@ -307,14 +307,10 @@ export const ESTABLISH_CENTRAL_NAPE_GUIDE_EXECUTION_UNITS: readonly ExecutionUni
       "The single stable-context execution scope covering the whole Skill: center-nape zone, wet hair, comb control, zero-degree elevation, horizontal straight-shear cut -- no zone, side, sub-phase, or control-method transition occurs within this Skill's own scope.",
     zoneId: "center_nape",
     laterality: "NOT_APPLICABLE",
-    sourceSkillId: ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL.skillId,
-    sourceSkillVersion: ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL.version,
-    // See file header, ARCHITECTURE GAP -- honest, contract-change-free
-    // reference to the exact Skill Instance this Execution Unit was
-    // derived from, using the existing, uninterpreted verticalPayload slot.
-    verticalPayload: {
-      resolvedFromSkillInstanceId: ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL_INSTANCE.skillInstanceId,
-    },
+    // Stage 2.5.i.6a -- the proper, typed traceability link (see file
+    // header, ARCHITECTURE GAP -- CLOSED). No verticalPayload workaround
+    // needed anymore.
+    sourceSkillInstanceId: ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL_INSTANCE.skillInstanceId,
     createdAt: "2026-09-08T00:00:00.000Z",
   },
 ];

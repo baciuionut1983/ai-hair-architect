@@ -1,5 +1,6 @@
 import { isRecord } from "@/lib/technical-visual-map-validators";
 import { isSkillEligibleForAuthority, isValidSkillCondition, type SkillCondition, type SkillDefinition } from "@/lib/professional-skill-contracts";
+import type { SkillInstance } from "@/lib/professional-skill-instance-contracts";
 
 // AI Hair Architect, Stage 2.5.i.3 -- EXECUTION UNIT, contract/foundation
 // only. Types + pure validators, no I/O, no database, no provider call, no
@@ -43,8 +44,23 @@ import { isSkillEligibleForAuthority, isValidSkillCondition, type SkillCondition
 // this stage's own task explicitly forbids "unless strictly necessary".
 // Also imports isSkillEligibleForAuthority directly: an Execution Unit
 // never carries its own independent authority; it inherits eligibility
-// from the SkillDefinition its own sourceSkillId/sourceSkillVersion names
-// (see isExecutionUnitEligibleForAuthority below).
+// from the SkillDefinition its own source Skill Instance names (see
+// isExecutionUnitEligibleForAuthority below).
+//
+// STAGE 2.5.i.6a -- EXECUTION UNIT -> SKILL INSTANCE TRACEABILITY. Imports
+// SkillInstance (type-only) to type isExecutionUnitConsistentWithSource
+// SkillInstance's own parameters -- a new, intentional, non-circular
+// dependency edge (professional-skill-instance-contracts.ts imports
+// nothing from this file). `sourceSkillInstanceId` REPLACES this file's
+// own original `sourceSkillId`/`sourceSkillVersion` fields (both existed
+// only because Stage 2.5.i.3 predated Skill Instance, Stage 2.5.i.5, by
+// two stages) -- keeping all three would be exactly the "redundant
+// authority fields" duplication this stage's own task explicitly forbids:
+// a Skill Instance already carries its own sourceSkillId/sourceSkillVersion
+// (professional-skill-instance-contracts.ts), so an Execution Unit needs
+// only ONE pointer (to the Instance) for the full chain (Skill Definition
+// -> Skill Instance -> Execution Unit) to be reconstructible, never two
+// independent, potentially-drifting sources of the same fact.
 //
 // WHAT THIS FILE IS NOT (Stage 2.5.i.3's own explicit boundary):
 //   - it contains ZERO real professional execution rules -- every example
@@ -231,11 +247,14 @@ export interface ExecutionUnit<TFact extends string = string> {
   // validates them (see isValidExecutionUnitSequence's acyclic check).
   prerequisiteExecutionUnitIds?: readonly string[];
 
-  // Provenance -- which Skill Definition (and exact frozen version) this
-  // Execution Unit was declared for. An Execution Unit never carries
-  // independent authority; see isExecutionUnitEligibleForAuthority.
-  sourceSkillId: string;
-  sourceSkillVersion: number;
+  // Provenance -- the exact Skill Instance this Execution Unit was
+  // derived from (Stage 2.5.i.6a). The full chain (Professional Authority
+  // -> Skill Definition/version -> Skill Instance -> Execution Unit) is
+  // reconstructible transitively via the referenced SkillInstance's own
+  // sourceSkillId/sourceSkillVersion -- never duplicated here. An
+  // Execution Unit never carries independent authority; see
+  // isExecutionUnitEligibleForAuthority.
+  sourceSkillInstanceId: string;
 
   // Vertical-specific execution context payload -- this contract has NO
   // opinion on its shape (mirrors TechnicalDemonstrationStepRecord.
@@ -280,8 +299,9 @@ export function isValidExecutionUnit<TFact extends string>(
     if ((value.prerequisiteExecutionUnitIds as string[]).includes(value.executionUnitId as string)) return false;
   }
 
-  if (typeof value.sourceSkillId !== "string" || value.sourceSkillId.length === 0) return false;
-  if (typeof value.sourceSkillVersion !== "number" || !Number.isInteger(value.sourceSkillVersion) || value.sourceSkillVersion < 1) return false;
+  // The source relation can never be hidden solely in verticalPayload --
+  // it is this structured, required field, always.
+  if (typeof value.sourceSkillInstanceId !== "string" || value.sourceSkillInstanceId.length === 0) return false;
 
   if (value.verticalPayload !== undefined) {
     if (isValidVerticalPayload) {
@@ -299,10 +319,13 @@ export function isValidExecutionUnit<TFact extends string>(
 // ---------------------------------------------------------------------------
 // Execution Unit sequence -- "one Skill Instance can conceptually produce
 // several Execution Units" (Stage 2.5.i.2 §15/§33). A sequence is never a
-// mixed-source bag: every unit in it must share the SAME (sourceSkillId,
-// sourceSkillVersion) pair -- exactly one Skill Instance's own procedure,
-// never several stitched together. Ordering must be a genuine, contiguous
-// 1..N sequence (mirrors SkillDefinition.procedure's own exact ordering
+// mixed-source bag: every unit in it must share the SAME
+// sourceSkillInstanceId (Stage 2.5.i.6a -- exactly one Skill Instance's own
+// derivation, never several stitched together, and never merely "the same
+// Skill+version" -- two separate instances of the same Skill/version, e.g.
+// reused twice within one Composition, must never be silently mixed into
+// one sequence either). Ordering must be a genuine, contiguous 1..N
+// sequence (mirrors SkillDefinition.procedure's own exact ordering
 // discipline), ids must be unique, and the prerequisiteExecutionUnitIds
 // graph must reference only ids that exist within this same sequence and
 // contain no cycle -- a dangling or circular dependency is rejected, never
@@ -312,8 +335,8 @@ export function isValidExecutionUnit<TFact extends string>(
 export function isValidExecutionUnitSequence<TFact extends string>(units: readonly ExecutionUnit<TFact>[]): boolean {
   if (units.length === 0) return false;
 
-  const firstSource = `${units[0].sourceSkillId}@${units[0].sourceSkillVersion}`;
-  if (!units.every((u) => `${u.sourceSkillId}@${u.sourceSkillVersion}` === firstSource)) return false;
+  const firstSourceInstance = units[0].sourceSkillInstanceId;
+  if (!units.every((u) => u.sourceSkillInstanceId === firstSourceInstance)) return false;
 
   const ids = units.map((u) => u.executionUnitId);
   if (new Set(ids).size !== ids.length) return false;
@@ -357,16 +380,40 @@ export function isValidExecutionUnitSequence<TFact extends string>(units: readon
 
 // ---------------------------------------------------------------------------
 // Authority -- an Execution Unit never carries independent authority; it
-// inherits eligibility from the SkillDefinition its own sourceSkillId/
-// sourceSkillVersion names. Same governance principle as
-// isSkillEligibleForAuthority/isExecutionProfileEligibleForAuthority: an
-// unreviewed or non-ACTIVE source Skill can never make its own Execution
-// Units eligible authority merely by this contract's own shape existing.
+// inherits eligibility from the SkillDefinition its source Skill Instance
+// itself points to. Same governance principle as isSkillEligibleFor
+// Authority/isExecutionProfileEligibleForAuthority: an unreviewed or
+// non-ACTIVE source Skill can never make its own Execution Units eligible
+// authority merely by this contract's own shape existing. The caller
+// resolves the SkillDefinition via the chain (sourceSkillInstanceId ->
+// Skill Instance -> sourceSkillId/sourceSkillVersion) -- this function's
+// own signature is unchanged by Stage 2.5.i.6a, since it already accepted
+// the resolved SkillDefinition-shaped object directly, never the raw id.
 // Not called from anywhere in production yet -- no Composition Engine, no
-// Skill Instance, no runtime Execution Unit activation exists (Stage
-// 2.5.i.3's own explicit boundary).
+// runtime Execution Unit activation exists (Stage 2.5.i.3's own explicit
+// boundary).
 // ---------------------------------------------------------------------------
 
 export function isExecutionUnitEligibleForAuthority(sourceSkill: Pick<SkillDefinition, "status" | "authorityType">): boolean {
   return isSkillEligibleForAuthority(sourceSkill);
+}
+
+// ---------------------------------------------------------------------------
+// Cross-check -- pure, no DB, no runtime lookup (Stage 2.5.i.6a's own
+// explicit boundary: "contract validation only"). Callable ONLY when the
+// caller already has both objects in hand (e.g. a future compiler holding
+// a Skill Instance and the Execution Units derived from it); this file
+// never fetches a Skill Instance itself. Confirms the Execution Unit's own
+// `sourceSkillInstanceId` genuinely names the given Skill Instance AND
+// that the two agree on `vertical` -- catching a cross-domain
+// contradiction (e.g. a cutting Execution Unit accidentally pointing at a
+// color Skill Instance) wherever domain information is actually available,
+// without this file needing to know anything about verticals itself.
+// ---------------------------------------------------------------------------
+
+export function isExecutionUnitConsistentWithSourceSkillInstance(
+  unit: Pick<ExecutionUnit, "sourceSkillInstanceId" | "vertical">,
+  instance: Pick<SkillInstance, "skillInstanceId" | "vertical">,
+): boolean {
+  return unit.sourceSkillInstanceId === instance.skillInstanceId && unit.vertical === instance.vertical;
 }

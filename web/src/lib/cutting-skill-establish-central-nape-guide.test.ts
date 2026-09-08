@@ -174,11 +174,14 @@ describe("A. REAL: Establish Central Nape Guide -- Execution Unit", () => {
     expect(isValidExecutionUnitSequence(ESTABLISH_CENTRAL_NAPE_GUIDE_EXECUTION_UNITS)).toBe(true);
   });
 
-  it("19. the Execution Unit traces back to the source Skill (definition-level) and to the exact Skill Instance (via verticalPayload)", () => {
+  it("19. the Execution Unit traces back to the exact Skill Instance via the proper typed field (Stage 2.5.i.6a) -- no verticalPayload workaround remains", () => {
     const eu = ESTABLISH_CENTRAL_NAPE_GUIDE_EXECUTION_UNITS[0];
-    expect(eu.sourceSkillId).toBe(ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL_INSTANCE.sourceSkillId);
-    expect(eu.sourceSkillVersion).toBe(ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL_INSTANCE.sourceSkillVersion);
-    expect(eu.verticalPayload?.resolvedFromSkillInstanceId).toBe(ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL_INSTANCE.skillInstanceId);
+    expect(eu.sourceSkillInstanceId).toBe(ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL_INSTANCE.skillInstanceId);
+    expect(eu.verticalPayload).toBeUndefined();
+    // The full chain remains reconstructible transitively: EU -> Instance
+    // -> Definition/version, never duplicated on the Execution Unit itself.
+    expect(ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL_INSTANCE.sourceSkillId).toBe(ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL.skillId);
+    expect(ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL_INSTANCE.sourceSkillVersion).toBe(ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL.version);
   });
 
   it("future Atomic Action compile readiness: every non-fixed-scope fact needed to compile this Skill's Execution Unit is present, structured, and provenance-tagged", () => {
@@ -227,12 +230,12 @@ describe("B. SYNTHETIC failure-path checks (not real professional authority)", (
     expect(isValidSkillInstance(mangled, isEstablishCentralNapeGuideFact)).toBe(false);
   });
 
-  it("rejects a synthetic second Execution Unit from a different source Skill mixed into this pilot's sequence", () => {
+  it("rejects a synthetic second Execution Unit from a different source Skill Instance mixed into this pilot's sequence", () => {
     const foreignUnit = {
       ...ESTABLISH_CENTRAL_NAPE_GUIDE_EXECUTION_UNITS[0],
       executionUnitId: "executionunit-synthetic-foreign",
       order: 2,
-      sourceSkillId: "skill-synthetic-unrelated",
+      sourceSkillInstanceId: "skillinstance-synthetic-unrelated",
     };
     expect(isValidExecutionUnitSequence([ESTABLISH_CENTRAL_NAPE_GUIDE_EXECUTION_UNITS[0], foreignUnit as never])).toBe(false);
   });

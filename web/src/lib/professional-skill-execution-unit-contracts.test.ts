@@ -5,6 +5,7 @@ import * as executionUnitModule from "@/lib/professional-skill-execution-unit-co
 import {
   EXECUTION_UNIT_LATERALITY_VALUES,
   findConflictingExecutionUnitParameterRules,
+  isExecutionUnitConsistentWithSourceSkillInstance,
   isExecutionUnitEligibleForAuthority,
   isExecutionUnitLaterality,
   isExecutionUnitParameterSemantic,
@@ -46,8 +47,7 @@ function baseUnit(overrides: Partial<ExecutionUnit<SyntheticFact>> = {}): Execut
     label: "SYNTHETIC Posterior/Lower",
     zoneId: "synthetic_zone_posterior_lower",
     laterality: "NOT_APPLICABLE",
-    sourceSkillId: "skill-synthetic-structural",
-    sourceSkillVersion: 1,
+    sourceSkillInstanceId: "skillinstance-synthetic-structural",
     createdAt: "2026-09-08T00:00:00.000Z",
     ...overrides,
   };
@@ -68,16 +68,16 @@ describe("Execution Unit contract (Stage 2.5.i.3, SYNTHETIC FIXTURES ONLY)", () 
     expect(isValidExecutionUnitSequence(units)).toBe(true);
   });
 
-  it("3. one synthetic Skill Instance (same sourceSkillId+version) conceptually produces several Execution Units; a mixed-source array is rejected", () => {
+  it("3. one synthetic Skill Instance (same sourceSkillInstanceId) conceptually produces several Execution Units; a mixed-instance array is rejected", () => {
     const sameSource = [
-      baseUnit({ executionUnitId: "eu-a", order: 1, sourceSkillId: "skill-synthetic-structural", sourceSkillVersion: 3 }),
-      baseUnit({ executionUnitId: "eu-b", order: 2, sourceSkillId: "skill-synthetic-structural", sourceSkillVersion: 3 }),
+      baseUnit({ executionUnitId: "eu-a", order: 1, sourceSkillInstanceId: "skillinstance-synthetic-structural" }),
+      baseUnit({ executionUnitId: "eu-b", order: 2, sourceSkillInstanceId: "skillinstance-synthetic-structural" }),
     ];
     expect(isValidExecutionUnitSequence(sameSource)).toBe(true);
 
     const mixedSource = [
-      baseUnit({ executionUnitId: "eu-a", order: 1, sourceSkillVersion: 3 }),
-      baseUnit({ executionUnitId: "eu-b", order: 2, sourceSkillVersion: 4 }),
+      baseUnit({ executionUnitId: "eu-a", order: 1, sourceSkillInstanceId: "skillinstance-synthetic-structural" }),
+      baseUnit({ executionUnitId: "eu-b", order: 2, sourceSkillInstanceId: "skillinstance-synthetic-other" }),
     ];
     expect(isValidExecutionUnitSequence(mixedSource)).toBe(false);
   });
@@ -151,10 +151,33 @@ describe("Execution Unit contract (Stage 2.5.i.3, SYNTHETIC FIXTURES ONLY)", () 
     expect(isValidExecutionUnit(withExtraneousActions, isSyntheticFact)).toBe(isValidExecutionUnit(without, isSyntheticFact));
   });
 
-  it("11. requires sourceSkillId + sourceSkillVersion provenance traceability", () => {
-    expect(isValidExecutionUnit(baseUnit({ sourceSkillId: "" }), isSyntheticFact)).toBe(false);
-    expect(isValidExecutionUnit(baseUnit({ sourceSkillVersion: 0 }), isSyntheticFact)).toBe(false);
-    expect(isValidExecutionUnit(baseUnit({ sourceSkillVersion: 1.5 }), isSyntheticFact)).toBe(false);
+  it("11. requires sourceSkillInstanceId provenance traceability -- malformed identity rejected", () => {
+    expect(isValidExecutionUnit(baseUnit({ sourceSkillInstanceId: "" }), isSyntheticFact)).toBe(false);
+    expect(isValidExecutionUnit({ ...baseUnit(), sourceSkillInstanceId: undefined }, isSyntheticFact)).toBe(false);
+    expect(isValidExecutionUnit({ ...baseUnit(), sourceSkillInstanceId: 12345 } as never, isSyntheticFact)).toBe(false);
+    // A well-formed, non-empty string identity is sufficient -- no
+    // additional shape (e.g. a UUID format) is imposed by this contract.
+    expect(isValidExecutionUnit(baseUnit({ sourceSkillInstanceId: "skillinstance-synthetic-other" }), isSyntheticFact)).toBe(true);
+  });
+
+  it("the source Skill Instance reference is universal, not cutting-specific -- validates identically for a synthetic color-vertical unit, with zero verticalPayload workaround needed", () => {
+    const colorUnit = baseUnit({
+      vertical: "synthetic_color",
+      zoneId: undefined,
+      sourceSkillInstanceId: "skillinstance-synthetic-color-formula",
+    });
+    expect(isValidExecutionUnit(colorUnit, isSyntheticFact)).toBe(true);
+    expect(colorUnit.verticalPayload).toBeUndefined();
+
+    expect(
+      isExecutionUnitConsistentWithSourceSkillInstance(colorUnit, { skillInstanceId: "skillinstance-synthetic-color-formula", vertical: "synthetic_color" }),
+    ).toBe(true);
+    expect(
+      isExecutionUnitConsistentWithSourceSkillInstance(colorUnit, { skillInstanceId: "skillinstance-synthetic-color-formula", vertical: "synthetic_treatment" }),
+    ).toBe(false);
+    expect(
+      isExecutionUnitConsistentWithSourceSkillInstance(colorUnit, { skillInstanceId: "skillinstance-synthetic-different", vertical: "synthetic_color" }),
+    ).toBe(false);
   });
 
   it("12. rejects non-contiguous ordering, duplicate ids, and cyclic prerequisites in a sequence", () => {
