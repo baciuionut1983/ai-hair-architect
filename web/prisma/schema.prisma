@@ -189,6 +189,10 @@ model User {
   // "CaptureSet"/"CaptureSetImage".
   captureSets                       CaptureSet[]
   captureSetImages                  CaptureSetImage[]
+  // Stage 2.5.i.22 (Technical Execution Generation Authorization). Virtual
+  // back-relation only -- produces no column or constraint on "User"; the
+  // FK lives on "TechnicalExecutionGenerationRequest".
+  technicalExecutionGenerationRequests TechnicalExecutionGenerationRequest[]
 }
 
 model Session {
@@ -275,6 +279,10 @@ model Client {
   // "CaptureSet"/"CaptureSetImage".
   captureSets                       CaptureSet[]
   captureSetImages                  CaptureSetImage[]
+  // Stage 2.5.i.22 (Technical Execution Generation Authorization). Virtual
+  // back-relation only -- produces no column or constraint on "Client";
+  // the FK lives on "TechnicalExecutionGenerationRequest".
+  technicalExecutionGenerationRequests TechnicalExecutionGenerationRequest[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -2430,9 +2438,13 @@ model CaptureSet {
   createdAt DateTime @default(now()) @db.Timestamp(6)
   updatedAt DateTime @updatedAt @db.Timestamp(6)
 
-  owner  User              @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  client Client            @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
-  images CaptureSetImage[]
+  owner    User              @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client   Client            @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  images   CaptureSetImage[]
+  // Stage 2.5.i.22 (Technical Execution Generation Authorization). Virtual
+  // back-relation only -- produces no column or constraint here; the FK
+  // lives on "TechnicalExecutionGenerationRequest".
+  technicalExecutionGenerationRequests TechnicalExecutionGenerationRequest[]
 
   @@unique([clientId, ownerUserId, captureSetVersion])
   // Composite-FK-enabling uniqueness, mirrors TechnicalVisualMap's own
@@ -2485,10 +2497,148 @@ model CaptureSetImage {
   owner      User       @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   client     Client     @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
   captureSet CaptureSet @relation(fields: [captureSetId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+  // Stage 2.5.i.22 (Technical Execution Generation Authorization). Virtual
+  // back-relation only -- produces no column or constraint here; the FK
+  // lives on "TechnicalExecutionGenerationRequest".
+  technicalExecutionGenerationRequests TechnicalExecutionGenerationRequest[]
 
   // Cardinality lock (Stage 2.5.i.21b §4): at most one image per view
   // label within one Capture Set -- a real DB-level constraint, not only
   // an application check.
   @@unique([captureSetId, viewLabel])
+  // Stage 2.5.i.22 prerequisite: TechnicalExecutionGenerationRequest needs
+  // a real composite FK to this exact image (so a sealed generation
+  // request's own image binding is a real, enforced reference, never a
+  // silently-orphanable soft pointer -- Stage 2.5.i.22 §16's own
+  // "historical integrity, no destructive cascade" requirement) --
+  // mirrors CaptureSet's own identical @@unique([id, ownerUserId,
+  // clientId]) prerequisite-fix pattern exactly. Structurally safe to add
+  // regardless of existing data, since `id` is already this model's own
+  // primary key (globally unique on its own); this only ever adds a
+  // redundant-but-harmless second uniqueness guarantee over columns that
+  // already co-occur uniquely per row.
+  @@unique([id, ownerUserId, clientId])
   @@index([captureSetId, ownerUserId, clientId])
+}
+
+// Technical Execution Generation Authorization + Image Qualification
+// Persistence Gate, Stage 2.5.i.22 -- schema/migration + pure repository
+// only (see src/lib/technical-execution-generation-repository.ts). One
+// row = one client-selected image, bound to exactly one purpose, for
+// exactly one future Provider Adapter (Stage 2.5.i.21) invocation.
+// NEVER professional/technique authority, NEVER a provider call, NEVER a
+// Capture Set/Visual History concept of its own -- it only ever proves
+// (or refuses to prove) that a specific generation attempt is safe to
+// hand to the Provider Adapter.
+//
+// LOCKED (Stage 2.5.i.20/i.21a): consent is PER_GENERATION, affirmative
+// only, never inherited from ImageAnalysis's own externalAiConsentGrantedAt
+// or from Capture Set existence -- both live on entirely different
+// models with zero relation to this one. Image-quality qualification is
+// PURPOSE-SPECIFIC (Stage 2.5.i.20 §8/§24): both consent and
+// qualification are snapshots frozen directly on THIS row, never a
+// global property of ImageAsset/CaptureSetImage, and never reusable
+// across a different purpose or a different generation request.
+//
+// SEALED = IMMUTABLE (Stage 2.5.i.22 §11): once `sealedAt` is set, the
+// repository layer refuses to change consent or qualification on this
+// row ever again (enforced at the repository layer, mirroring every
+// other DRAFT/CONFIRMED-style lifecycle lock already established in this
+// schema -- e.g. TechnicalVisualMap's own confirmedAt/status discipline).
+// The selected image/Capture Set/purpose binding is never mutable at
+// ALL, sealed or not -- no repository function exists to change them
+// after creation; changing the selected image means creating an entirely
+// NEW request row, never moving the old binding (Stage 2.5.i.22's own
+// explicit "reseal explicit, nu muta binding-ul vechi" rule).
+//
+// HISTORICAL INTEGRITY: a real, enforced composite FK to CaptureSetImage
+// (RESTRICT, never CASCADE) -- a sealed generation request remains a
+// valid historical record even after its own Capture Set is later
+// superseded by a newer one (Stage 2.5.i.22 §15/§Q); nothing here ever
+// re-resolves "the current Capture Set," only the exact frozen ids this
+// row was created with.
+model TechnicalExecutionGenerationRequest {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  // Plain string, NOT a Postgres enum -- same reasoning as every other
+  // lifecycle/vocabulary string in this domain. Application-validated
+  // (src/lib/technical-execution-generation-validators.ts) to exactly one
+  // real value today: TECHNICAL_EXECUTION_VIDEO. Deliberately an
+  // independently-declared vocabulary from Stage 2.5.i.21's own
+  // `generationIntent` ("TECHNICAL_EXECUTION_DEMONSTRATION") -- the two
+  // describe adjacent but distinct concepts (this is a CONSENT/
+  // AUTHORIZATION purpose; that is a PROVIDER-TRANSLATION intent), so
+  // this domain's own "reuse a value only when the meaning is identical"
+  // discipline calls for an independent name, not the same string.
+  purpose String
+
+  // Composite-FK'd to CaptureSet[id, ownerUserId, clientId] -- never
+  // trusted as a bare, unscoped id. Kept alongside captureSetImageId
+  // (rather than only reachable transitively through it) so "the
+  // selected image belongs to the selected Capture Set" is a real,
+  // structurally-checkable cross-reference, not an assumption.
+  captureSetId String
+
+  // Composite-FK'd to CaptureSetImage[id, ownerUserId, clientId] -- the
+  // ONE explicitly selected visual reference for this request. Never
+  // chosen by this model or by the Provider Adapter (Stage 2.5.i.20/i.22
+  // "Provider Adapter cannot select the image" rule) -- always supplied
+  // by an already-authorized caller at creation time.
+  captureSetImageId String
+
+  // Frozen snapshot of the selected CaptureSetImage's own imageAssetId,
+  // copied verbatim AT REQUEST-CREATION TIME -- deliberately NOT a
+  // database FK to ImageAsset, mirroring the exact, already-established
+  // CaptureSetImage.imageAssetId precedent (a generation request must
+  // never block or complicate ImageAsset's own independent retention
+  // lifecycle). Used as a structural cross-check against the live
+  // CaptureSetImage's own imageAssetId (readiness fails closed on any
+  // mismatch) -- never re-read live as the authoritative value.
+  imageAssetId String
+
+  // Consent -- mirrors ImageAnalysis's own externalAiConsentGrantedAt/
+  // externalAiConsentVersion precedent exactly, on this entirely
+  // separate model. Nullable; null means "not yet granted", never
+  // defaulted to a granted state. Affirmative only -- no inheritance
+  // from ImageAnalysis, from Capture Set existence, or from any other
+  // generation request.
+  consentGrantedAt DateTime? @db.Timestamp(6)
+  consentVersion   String?
+
+  // Qualification -- a purpose-specific snapshot living directly on THIS
+  // row (Stage 2.5.i.20 §8/§24), never a global ImageAsset/
+  // CaptureSetImage property. Plain strings, NOT Postgres enums, same
+  // reasoning as `purpose` above. `qualificationStatus` is
+  // application-validated to exactly one of NOT_EVALUATED | QUALIFIED |
+  // REJECTED (default state is NOT_EVALUATED, set at creation, never
+  // silently assumed QUALIFIED). `qualificationEvidenceSource`
+  // (nullable until first evaluated) is application-validated to one of
+  // MANUAL_USER_CONFIRMATION | PROFESSIONAL_CONFIRMATION |
+  // AUTOMATED_CHECK | SYSTEM_METADATA | HYBRID -- Stage 2.5.i.22 §10.
+  // `qualificationReason` is audit/presentation text ONLY -- like every
+  // other presentationSummary-shaped field in this domain, no validator
+  // anywhere ever reads it as technical authority.
+  qualificationStatus         String
+  qualificationEvidenceSource String?
+  qualificationReason         String? @db.VarChar(2000)
+  qualifiedAt                 DateTime? @db.Timestamp(6)
+
+  // Sealed state -- see file header. Null = not yet sealed (still
+  // mutable via the dedicated consent/qualification-recording repository
+  // functions); non-null = permanently immutable from this point on.
+  sealedAt DateTime? @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner           User            @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client          Client          @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  captureSet      CaptureSet      @relation(fields: [captureSetId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+  captureSetImage CaptureSetImage @relation(fields: [captureSetImageId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([ownerUserId, clientId, createdAt, id])
+  @@index([captureSetId, ownerUserId, clientId])
+  @@index([captureSetImageId, ownerUserId, clientId])
 }
