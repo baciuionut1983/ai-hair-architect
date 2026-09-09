@@ -154,6 +154,24 @@ const DERIVATION_RULES: readonly DerivationRule[] = [
   { parameterName: "shearOrientation", category: "TOOL_TO_SUBJECT_RELATIONSHIP", supportingParameterNames: [] },
   { parameterName: "guideStrandDirection", category: "TOOL_TO_SUBJECT_RELATIONSHIP", supportingParameterNames: [] },
   { parameterName: "distribution", category: "SUBJECT_TO_REFERENCE_GEOMETRY", supportingParameterNames: [] },
+  // Stage 2.5.i.25 -- PROCEDURAL PROGRESSION REACHABILITY. Both reuse the
+  // EXISTING SUBJECT_TO_REFERENCE_GEOMETRY category (already the home of
+  // "the subject's geometry relative to its reference", e.g. elevation) --
+  // no new category invented. Two DISTINCT rules, never merged into one,
+  // because they are two DISTINCT professional facts (task's own explicit
+  // "represent target thickness and guide-identifiability as distinct
+  // semantics" instruction, extended here to the reference-vs-visibility
+  // split):
+  //   - "guideReferenceMode" is the RELATIVE/PROGRESSIVE reference rule
+  //     itself (subjectValue authored as "previous_subsection" -- the
+  //     immediately preceding cut, never a fixed pointer back to the
+  //     original guide -- see cutting-skill-continue-central-nape-
+  //     construction.ts's own header for why this value is chosen).
+  //   - "guideIdentifiabilityCriterion" is the SEPARATE visibility
+  //     criterion ("if the guide cannot be identified, the subsection is
+  //     too thick") -- never conflated with the reference rule itself.
+  { parameterName: "guideReferenceMode", category: "SUBJECT_TO_REFERENCE_GEOMETRY", supportingParameterNames: [] },
+  { parameterName: "guideIdentifiabilityCriterion", category: "SUBJECT_TO_REFERENCE_GEOMETRY", supportingParameterNames: [] },
 ];
 
 export type DemonstrationRequirementDerivationResult<TFact extends string = string> =

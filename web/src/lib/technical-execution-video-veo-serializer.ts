@@ -6,6 +6,7 @@ import type {
 import { humanizeEnumValue } from "@/lib/humanize-enum-value";
 import type { DemonstrationRequirementCategory } from "@/lib/professional-skill-demonstration-requirement-contracts";
 import type { FramingSemantic, ViewpointFamily } from "@/lib/professional-skill-viewpoint-constraint-contracts";
+import type { AtomicActionIterationMode } from "@/lib/professional-skill-atomic-action-contracts";
 
 // AI Hair Architect, Stage 2.5.i.23 -- TECHNICAL EXECUTION VIDEO, VEO
 // PROVIDER SERIALIZER. Pure, deterministic: ProviderAdapterTranslationOutput
@@ -55,6 +56,26 @@ import type { FramingSemantic, ViewpointFamily } from "@/lib/professional-skill-
 // Stage 2.5.i.21) becomes exactly one instruction string, describing an
 // ordered sequence within a single continuous video -- never one instruction
 // per segment, never multiple provider requests.
+//
+// Stage 2.5.i.25 -- PROCEDURAL PROGRESSION REACHABILITY. A segment carrying
+// `iteration` (Stage 2.5.i.4's own already-existing, now-propagated bounded
+// repetition concept) is phrased as an explicit REPEATED step, never
+// invented here -- only the ALREADY-closed `iteration.mode` enum value is
+// translated into wording (ITERATION_MODE_PHRASES below), exactly like
+// every other closed vocabulary this file already phrases. This function
+// still never decides WHETHER something repeats, HOW MANY times, or WHEN
+// it stops -- it only renders what the Provider Adapter output already
+// says.
+//
+// DEMONSTRATION HINTS ARE NOT AUTHORITY (task Sections 3/12, required test
+// F/G): `demonstrationHints` is a SEPARATE, entirely optional second
+// parameter -- structurally incapable of being Professional Skill/
+// Execution Unit/Atomic Action authority, since nothing in the compile
+// chain (Skill -> ... -> ProviderAdapterTranslationOutput) ever produces
+// or carries it. It is rendered, when supplied, as its own clearly-labeled
+// sentence, never merged into or confused with the structured guide-
+// identifiability fact (which always comes from `requiredVisibleFacts`,
+// never from this parameter) -- test G proves this separation directly.
 
 const CATEGORY_PHRASES: Record<DemonstrationRequirementCategory, (value: string) => string> = {
   TOOL_TO_SUBJECT_RELATIONSHIP: (value) => `the tool-to-subject relationship: ${value}`,
@@ -75,6 +96,22 @@ const FRAMING_SEMANTIC_PHRASES: Record<FramingSemantic, string> = {
   GEOMETRY_READABLE: "keeping the resulting geometry/line clearly readable",
 };
 
+// Stage 2.5.i.25 -- translates the ALREADY-closed AtomicActionIteration
+// mode enum into wording; invents nothing beyond phrasing the given value.
+const ITERATION_MODE_PHRASES: Record<AtomicActionIterationMode, string> = {
+  OVER_ORDERED_SUBSECTIONS: "repeatedly, once for each successive subsection, in order",
+  UNTIL_EXECUTION_UNIT_COMPLETE: "repeatedly, continuing while the current professional conditions remain true",
+  FIXED_COUNT: "repeatedly, a fixed number of times",
+};
+
+// Stage 2.5.i.25 -- see file header ("demonstration hints are not
+// authority"). Every field here is optional and purely descriptive;
+// nothing here is ever read from a Skill/Execution Unit/Atomic Action.
+export interface TechnicalExecutionVeoDemonstrationHints {
+  subsectionSizeHint?: string;
+  repeatCountHint?: number;
+}
+
 function formatFactValue(value: ProviderAdapterSemanticFact["value"]): string {
   return typeof value === "string" ? humanizeEnumValue(value) : String(value);
 }
@@ -83,19 +120,42 @@ function formatFact(fact: ProviderAdapterSemanticFact): string {
   return CATEGORY_PHRASES[fact.category](formatFactValue(fact.value));
 }
 
-function formatSegment(segment: ProviderAdapterActionSegment, index: number): string {
+function formatSegment(segment: ProviderAdapterActionSegment, index: number, demonstrationHints?: TechnicalExecutionVeoDemonstrationHints): string {
   const facts = segment.requiredVisibleFacts.map(formatFact).join("; ");
   const framingPhrases = [...new Set(segment.framingSemantics.map((semantic) => FRAMING_SEMANTIC_PHRASES[semantic]))];
-  return `${index + 1}. Show ${facts} -- ${VIEWPOINT_FAMILY_PHRASES[segment.viewpointFamily]}, ${framingPhrases.join(", ")}.`;
+  const framingText = `${VIEWPOINT_FAMILY_PHRASES[segment.viewpointFamily]}, ${framingPhrases.join(", ")}`;
+
+  if (!segment.iteration) {
+    return `${index + 1}. Show ${facts} -- ${framingText}.`;
+  }
+
+  const repetitionPhrase = ITERATION_MODE_PHRASES[segment.iteration.mode];
+  const demonstrationSentence = formatDemonstrationHintSentence(demonstrationHints);
+  return `${index + 1}. Show, ${repetitionPhrase}: ${facts} -- ${framingText}.${demonstrationSentence}`;
+}
+
+// A separate, clearly-labeled sentence, never merged into the structured
+// facts above -- see file header's "demonstration hints are not
+// authority" note.
+function formatDemonstrationHintSentence(hints?: TechnicalExecutionVeoDemonstrationHints): string {
+  if (!hints || (hints.subsectionSizeHint === undefined && hints.repeatCountHint === undefined)) return "";
+  const parts: string[] = [];
+  if (hints.repeatCountHint !== undefined) parts.push(`approximately ${hints.repeatCountHint} repetitions`);
+  if (hints.subsectionSizeHint !== undefined) parts.push(`each subsection approximately ${hints.subsectionSizeHint}`);
+  return ` For this demonstration, render ${parts.join(", ")}.`;
 }
 
 // The sole export. Deterministic: the same ProviderAdapterTranslationOutput
-// always produces byte-identical output.
-export function assembleTechnicalExecutionVeoInstruction(output: ProviderAdapterTranslationOutput): string {
+// (and the same demonstrationHints, if supplied) always produces
+// byte-identical output.
+export function assembleTechnicalExecutionVeoInstruction(
+  output: ProviderAdapterTranslationOutput,
+  demonstrationHints?: TechnicalExecutionVeoDemonstrationHints,
+): string {
   const steps = [...output.segments]
     .slice()
     .sort((a, b) => a.order - b.order)
-    .map((segment, index) => formatSegment(segment, index))
+    .map((segment, index) => formatSegment(segment, index, demonstrationHints))
     .join("\n");
 
   const lines = [

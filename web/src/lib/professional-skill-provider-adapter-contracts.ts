@@ -1,5 +1,10 @@
 import { isRecord } from "@/lib/technical-visual-map-validators";
-import { isAtomicActionEvidenceStatus, type AtomicActionEvidenceStatus } from "@/lib/professional-skill-atomic-action-contracts";
+import {
+  isAtomicActionEvidenceStatus,
+  isValidAtomicActionIteration,
+  type AtomicActionEvidenceStatus,
+  type AtomicActionIteration,
+} from "@/lib/professional-skill-atomic-action-contracts";
 import { isDemonstrationRequirementCategory, type DemonstrationRequirement, type DemonstrationRequirementCategory } from "@/lib/professional-skill-demonstration-requirement-contracts";
 import { isFramingSemantic, isViewpointFamily, type FramingSemantic, type ViewpointConstraint, type ViewpointFamily } from "@/lib/professional-skill-viewpoint-constraint-contracts";
 import type { VideoInstruction } from "@/lib/professional-skill-video-instruction-contracts";
@@ -220,6 +225,13 @@ export interface ProviderAdapterActionSegment {
   viewpointFamily: ViewpointFamily;
   framingSemantics: readonly FramingSemantic[];
   sourceViewpointConstraintIds: readonly string[];
+  // Stage 2.5.i.25 -- PROCEDURAL PROGRESSION REACHABILITY. Reused directly
+  // from the source VideoInstruction's own `sourceIteration` -- never
+  // re-derived, never independently decided here (task Section 10: "must
+  // NOT invent repetition... translates already-authorized structured
+  // truth"). Still provider-independent: only a closed mode/count/note,
+  // never seconds, never a provider name.
+  iteration?: AtomicActionIteration;
 }
 
 export function isValidProviderAdapterActionSegment(value: unknown): value is ProviderAdapterActionSegment {
@@ -239,6 +251,8 @@ export function isValidProviderAdapterActionSegment(value: unknown): value is Pr
 
   if (!Array.isArray(value.sourceViewpointConstraintIds) || value.sourceViewpointConstraintIds.length === 0) return false;
   if (!value.sourceViewpointConstraintIds.every((id) => typeof id === "string" && id.length > 0)) return false;
+
+  if (value.iteration !== undefined && !isValidAtomicActionIteration(value.iteration)) return false;
 
   return true;
 }

@@ -1,7 +1,7 @@
 import { isSkillEligibleForAuthority, isValidSkillDefinition, type SkillDefinition } from "@/lib/professional-skill-contracts";
 import { isValidSkillInstance, type SkillInstance } from "@/lib/professional-skill-instance-contracts";
 import { isExecutionUnitConsistentWithSourceSkillInstance, isValidExecutionUnit, type ExecutionUnit } from "@/lib/professional-skill-execution-unit-contracts";
-import { type AtomicAction, type AtomicActionKind } from "@/lib/professional-skill-atomic-action-contracts";
+import { isValidAtomicActionIteration, type AtomicAction, type AtomicActionIteration, type AtomicActionKind } from "@/lib/professional-skill-atomic-action-contracts";
 
 // AI Hair Architect, Stage 2.5.i.8 -- CUTTING SKILL ATOMIC ACTION COMPILER.
 // The FIRST use of the Stage 2.5.i.4 Atomic Action contract with REAL
@@ -86,11 +86,52 @@ import { type AtomicAction, type AtomicActionKind } from "@/lib/professional-ski
 // Instance actually binds hairState (fail-closed, same as every other
 // optional param here) -- never made globally required, since not every
 // vertical/action has wet/dry semantics.
+// Stage 2.5.i.25 -- "guideIdentifiabilityCriterion" (CONTROL) and
+// "guideReferenceMode" (EXECUTE) added to optionalParams -- purely
+// additive, same precedent as the Stage 2.5.i.19 "hairState added to
+// EXECUTE" fix documented above. Neither existing real Skill (Central Nape
+// Guide, Occipital Transition) declares either parameter name, so
+// `resolved.has(...)` stays false for both on their own Execution Units --
+// their own compiled `boundParameterNames` are therefore byte-unchanged.
 const ACTION_TEMPLATES: readonly { kind: AtomicActionKind; requiredParams: readonly string[]; optionalParams: readonly string[] }[] = [
   { kind: "POSITION", requiredParams: ["clientHeadPosition"], optionalParams: ["hairState"] },
-  { kind: "CONTROL", requiredParams: ["controlMethod"], optionalParams: ["hairState", "guideStrandDirection", "distribution"] },
-  { kind: "EXECUTE", requiredParams: ["elevation", "cuttingTechnique", "structuralTechnique"], optionalParams: ["hairState", "tool", "shearOrientation", "cuttingLineShape", "distribution", "overdirection"] },
+  { kind: "CONTROL", requiredParams: ["controlMethod"], optionalParams: ["hairState", "guideStrandDirection", "distribution", "guideIdentifiabilityCriterion"] },
+  { kind: "EXECUTE", requiredParams: ["elevation", "cuttingTechnique", "structuralTechnique"], optionalParams: ["hairState", "tool", "shearOrientation", "cuttingLineShape", "distribution", "overdirection", "guideReferenceMode"] },
 ];
+
+// Stage 2.5.i.25 -- PROCEDURAL PROGRESSION REACHABILITY. A Skill author
+// declares "this Execution Unit's CONTROL/EXECUTE actions repeat" via a
+// small, cutting-scoped convention inside the ALREADY-generic, ALREADY-
+// uninterpreted `ExecutionUnit.verticalPayload` (mirrors
+// TechnicalDemonstrationStepRecord.payload's own established "unknown
+// here, narrowed by the matching vertical's own validator" precedent
+// exactly -- professional-skill-execution-unit-contracts.ts itself is
+// NEVER touched by this stage). The VALUE reused is the EXISTING, already-
+// universal `AtomicActionIteration` shape (Stage 2.5.i.4) -- nothing new
+// is invented, only read and threaded through. Central Nape Guide and
+// Occipital Transition's own Execution Units never set this key, so this
+// reader is a pure no-op for both -- their own compiled output is
+// unaffected.
+interface CuttingIterationPolicy {
+  actionKinds: readonly AtomicActionKind[];
+  iteration: AtomicActionIteration;
+}
+
+function isValidCuttingIterationPolicy(value: unknown): value is CuttingIterationPolicy {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  if (!Array.isArray(candidate.actionKinds) || candidate.actionKinds.length === 0) return false;
+  if (!candidate.actionKinds.every((k) => typeof k === "string")) return false;
+  if (!isValidAtomicActionIteration(candidate.iteration)) return false;
+  return true;
+}
+
+function resolveIterationForActionKind<TFact extends string>(executionUnit: ExecutionUnit<TFact>, kind: AtomicActionKind): AtomicActionIteration | undefined {
+  const policy = executionUnit.verticalPayload?.iterationPolicy;
+  if (policy === undefined) return undefined;
+  if (!isValidCuttingIterationPolicy(policy)) return undefined;
+  return policy.actionKinds.includes(kind) ? policy.iteration : undefined;
+}
 
 export interface AtomicActionCompilationSuccess<TFact extends string = string> {
   status: "COMPILED";
@@ -189,6 +230,11 @@ export function compileExecutionUnitToAtomicActions<TFact extends string>(
       boundParameterNames,
       // Verbatim passthrough -- never re-evaluated, never re-interpreted.
       precondition: executionUnit.applicabilityCondition,
+      // Stage 2.5.i.25 -- see resolveIterationForActionKind's own header
+      // comment. undefined for every Execution Unit that never declares a
+      // verticalPayload.iterationPolicy (Central Nape Guide, Occipital
+      // Transition -- byte-unchanged).
+      iteration: resolveIterationForActionKind(executionUnit, template.kind),
       // Presentation-to-presentation reuse only -- eu.label is itself
       // never technical authority, and neither is this.
       presentationSummary: `Compiled ${template.kind} action for ${executionUnit.label}`,

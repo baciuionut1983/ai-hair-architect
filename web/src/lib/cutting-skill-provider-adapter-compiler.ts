@@ -133,6 +133,10 @@ function buildSegment<TFact extends string>(
     viewpointFamily,
     framingSemantics,
     sourceViewpointConstraintIds: instruction.sourceViewpointConstraintIds,
+    // Stage 2.5.i.25 -- reused directly from the source VideoInstruction,
+    // never re-derived here (this file's own "translator, not a second
+    // deriver" discipline, extended to this new field).
+    iteration: instruction.sourceIteration,
   };
 }
 

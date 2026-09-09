@@ -39,7 +39,17 @@ export const TECHNICAL_EXECUTION_VEO_POLL_TIMEOUT_MS = 30_000;
 // reasoning (video-provider-veo.ts) -- no provider-reported duration exists
 // for a real Veo response; this is both the REQUESTED value and the value
 // reported back for metering.
-export const TECHNICAL_EXECUTION_VEO_REQUESTED_DURATION_SECONDS = 6;
+//
+// Stage 2.5.i.25 -- corrected 6 -> 8 (task Section 12). 8 is the current
+// Veo Lite maximum from the allowed discrete set (4/6/8 seconds, per the
+// Stage 2.5.i.24 audit's own re-verified Veo 3.1 API documentation), and
+// nothing about the current pilot's own usage (no reference images, no
+// extension, 720p default) forces a shorter value -- 6 was an unjustified
+// default inherited from Result Video's own constant, never independently
+// chosen for Technical Execution's own needs. This is a pure
+// provider/rendering configuration change -- it is NOT written into any
+// Professional Skill/Execution Unit/Atomic Action authority anywhere.
+export const TECHNICAL_EXECUTION_VEO_REQUESTED_DURATION_SECONDS = 8;
 
 export interface TechnicalExecutionVeoProviderOptions {
   apiKey: string;

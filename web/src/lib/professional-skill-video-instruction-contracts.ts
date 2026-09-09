@@ -1,5 +1,12 @@
 import { isRecord } from "@/lib/technical-visual-map-validators";
-import { ATOMIC_ACTION_EVIDENCE_STATUSES, isAtomicActionEvidenceStatus, type AtomicAction, type AtomicActionEvidenceStatus } from "@/lib/professional-skill-atomic-action-contracts";
+import {
+  ATOMIC_ACTION_EVIDENCE_STATUSES,
+  isAtomicActionEvidenceStatus,
+  isValidAtomicActionIteration,
+  type AtomicAction,
+  type AtomicActionEvidenceStatus,
+  type AtomicActionIteration,
+} from "@/lib/professional-skill-atomic-action-contracts";
 import { type DemonstrationRequirement } from "@/lib/professional-skill-demonstration-requirement-contracts";
 import { type ViewpointConstraint } from "@/lib/professional-skill-viewpoint-constraint-contracts";
 
@@ -137,6 +144,16 @@ export interface VideoInstruction {
   // Action itself already makes the identical claim -- see
   // isVideoInstructionObservationClaimSupported.
   evidenceStatus: AtomicActionEvidenceStatus;
+  // Stage 2.5.i.25 -- PROCEDURAL PROGRESSION REACHABILITY. Inherited
+  // VERBATIM from the source Atomic Action's own `iteration` (Stage
+  // 2.5.i.4's own already-existing, previously-unpropagated bounded
+  // repetition concept) -- never re-derived, never independently decided
+  // here. Absent whenever the source action does not repeat (e.g. a
+  // one-shot POSITION action), exactly mirroring `evidenceStatus`'s own
+  // "inherited, never supplied" discipline. This is STILL not a provider
+  // detail: `AtomicActionIteration` carries only a closed mode/count/note
+  // -- no seconds, no provider name, no prompt text.
+  sourceIteration?: AtomicActionIteration;
   // Distinct name from `createdAt` (SkillDefinition/ExecutionUnit/Skill
   // Instance) -- mirrors AtomicAction.compiledAt's own exact precedent:
   // this is a compilation-product timestamp, never an authored-record
@@ -161,6 +178,7 @@ export function isValidVideoInstruction(value: unknown): value is VideoInstructi
   if (!isNonEmptyStringArrayNoDuplicates(value.sourceViewpointConstraintIds)) return false;
 
   if (!isAtomicActionEvidenceStatus(value.evidenceStatus)) return false;
+  if (value.sourceIteration !== undefined && !isValidAtomicActionIteration(value.sourceIteration)) return false;
   if (typeof value.compiledAt !== "string" || value.compiledAt.length === 0) return false;
 
   return true;

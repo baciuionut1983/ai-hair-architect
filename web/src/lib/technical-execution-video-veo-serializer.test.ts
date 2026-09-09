@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { assembleTechnicalExecutionVeoInstruction } from "@/lib/technical-execution-video-veo-serializer";
+import { compileContinueCentralNapeConstructionProviderAdapterOutput } from "@/lib/cutting-skill-continue-central-nape-construction-provider-request";
 import { translateVideoInstructionSequenceToProviderAdapterOutput } from "@/lib/cutting-skill-provider-adapter-compiler";
 import type { ProviderAdapterTranslationOutput, ProviderAdapterTranslationRequest } from "@/lib/professional-skill-provider-adapter-contracts";
 
@@ -170,8 +171,9 @@ describe("technical-execution-video-veo-serializer (real Central Nape Guide pilo
     expect(again).toBe(instruction);
   });
 
-  it("H. stale/unrelated free text cannot affect the output -- the function has exactly one parameter, the typed ProviderAdapterTranslationOutput", () => {
-    expect(assembleTechnicalExecutionVeoInstruction.length).toBe(1);
+  it("H. stale/unrelated free text cannot affect the output -- the function has exactly two parameters, both strictly typed (ProviderAdapterTranslationOutput, and an optional, closed-shape demonstration-hints object with only subsectionSizeHint/repeatCountHint -- never a free-text channel), and omitting the second parameter is byte-identical to a prior call", () => {
+    expect(assembleTechnicalExecutionVeoInstruction.length).toBe(2);
+    expect(instruction).toBe(assembleTechnicalExecutionVeoInstruction(realOutput()));
   });
 
   it("I. static import boundary: this file never imports any forbidden stale-prose source", () => {
@@ -192,5 +194,78 @@ describe("technical-execution-video-veo-serializer (real Central Nape Guide pilo
 
   it("J. does not embed the visual reference image id into the instruction text -- the image is a separate attachment, never re-described in prose", () => {
     expect(instruction.includes(REAL_VISUAL_REFERENCE.imageAssetId)).toBe(false);
+  });
+});
+
+// ===========================================================================
+// Stage 2.5.i.25 -- PROCEDURAL PROGRESSION REACHABILITY: the serializer
+// correctly renders an iteration-bearing ProviderAdapterTranslationOutput
+// (real "Continue Central Nape Construction" content) as an explicit
+// repeated step, and demonstration hints (repeat count, subsection size)
+// remain a separate, optional, non-authority parameter.
+// ===========================================================================
+
+function realProgressionOutput() {
+  const result = compileContinueCentralNapeConstructionProviderAdapterOutput({
+    sealedRequestId: "sealed-request-progression-serializer-1",
+    visualReference: REAL_VISUAL_REFERENCE,
+    authorizationStatus: "VALIDATED",
+    visualReferenceQualification: "QUALIFIED",
+    compiledAt: COMPILED_AT,
+  });
+  if (result.status !== "TRANSLATED") throw new Error(`fixture setup error: expected TRANSLATED, got ${result.status}`);
+  return result.output;
+}
+
+describe("technical-execution-video-veo-serializer -- procedural progression (real Continue Central Nape Construction pilot)", () => {
+  const progressionInstruction = assembleTechnicalExecutionVeoInstruction(realProgressionOutput());
+
+  it("E. the iteration signal reaches the serializer: repeated steps are phrased as explicit repetition, never a single flat action", () => {
+    expect(progressionInstruction).toMatch(/repeatedly/i);
+    expect(progressionInstruction).toMatch(/while the current professional conditions remain true/i);
+  });
+
+  it("the one-shot POSITION step is NOT phrased as repeated", () => {
+    const stepLines = progressionInstruction.split("\n").filter((line) => /^\d+\.\s/.test(line));
+    expect(stepLines.length).toBe(3);
+    expect(stepLines[0]).not.toMatch(/repeatedly/i);
+    expect(stepLines[1]).toMatch(/repeatedly/i);
+    expect(stepLines[2]).toMatch(/repeatedly/i);
+  });
+
+  it("mentions the progressive guide reference and identifiability facts, both present and phrased", () => {
+    expect(progressionInstruction).toMatch(/previous subsection/i);
+    expect(progressionInstruction).toMatch(/must remain visually identifiable/i);
+  });
+
+  it("F. omitting demonstrationHints entirely never invents a subsection size or repeat count -- structurally absent from the output", () => {
+    expect(progressionInstruction).not.toMatch(/\bcm\b/i);
+    expect(progressionInstruction).not.toMatch(/repetitions/i);
+    expect(progressionInstruction).not.toMatch(/for this demonstration/i);
+  });
+
+  it("F/G. supplying demonstrationHints renders them as a SEPARATE sentence, distinct from the structured guide-identifiability fact", () => {
+    const withHints = assembleTechnicalExecutionVeoInstruction(realProgressionOutput(), { subsectionSizeHint: "1cm", repeatCountHint: 3 });
+    expect(withHints).toMatch(/for this demonstration, render approximately 3 repetitions, each subsection approximately 1cm/i);
+    // The structured, authority-derived fact is untouched by the hint text.
+    expect(withHints).toMatch(/must remain visually identifiable/i);
+    // The hint sentence and the structured fact are genuinely different
+    // substrings -- proving they were not merged into one.
+    const lowered = withHints.toLowerCase();
+    const hintSentenceIndex = lowered.indexOf("for this demonstration");
+    const identifiabilityIndex = lowered.indexOf("must remain visually identifiable");
+    expect(hintSentenceIndex).toBeGreaterThan(-1);
+    expect(identifiabilityIndex).toBeGreaterThan(-1);
+    expect(hintSentenceIndex).not.toBe(identifiabilityIndex);
+  });
+
+  it("AA. no provider-specific duration (seconds) ever appears in the instruction text -- rendering-layer only, never authority text", () => {
+    expect(progressionInstruction).not.toMatch(/\bseconds?\b/i);
+    expect(progressionInstruction).not.toMatch(/\b8s\b/i);
+    expect(progressionInstruction).not.toMatch(/veo|gemini|google/i);
+  });
+
+  it("X. deterministic and immune to stale free text: two independent compilations of the same real content produce byte-identical instructions", () => {
+    expect(assembleTechnicalExecutionVeoInstruction(realProgressionOutput())).toBe(progressionInstruction);
   });
 });

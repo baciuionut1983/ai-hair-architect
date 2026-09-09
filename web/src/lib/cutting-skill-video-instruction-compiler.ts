@@ -107,6 +107,13 @@ function inheritEvidenceStatus<TFact extends string>(atomicAction: AtomicAction<
   return atomicAction.observationCriterion?.evidenceStatus ?? "DEMONSTRATED_TARGET";
 }
 
+// Stage 2.5.i.25 -- inherited verbatim from the source Atomic Action, never
+// re-derived or independently decided here. Mirrors inheritEvidenceStatus's
+// own exact precedent.
+function inheritIteration<TFact extends string>(atomicAction: AtomicAction<TFact>) {
+  return atomicAction.iteration;
+}
+
 export function compileAtomicActionToVideoInstruction<TFact extends string>(
   atomicAction: AtomicAction<TFact>,
   demonstrationRequirements: readonly DemonstrationRequirement<TFact>[],
@@ -162,6 +169,7 @@ export function compileAtomicActionToVideoInstruction<TFact extends string>(
     sourceDemonstrationRequirementIds: normalizedRequirements.map((r) => r.demonstrationRequirementId).sort(),
     sourceViewpointConstraintIds: [...viewpointSatisfaction.constraints].map((c) => c.viewpointConstraintId).sort(),
     evidenceStatus: inheritEvidenceStatus(atomicAction),
+    sourceIteration: inheritIteration(atomicAction),
     compiledAt,
   };
 

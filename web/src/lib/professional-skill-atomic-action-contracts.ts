@@ -192,7 +192,7 @@ export interface AtomicActionIteration {
   note?: string;
 }
 
-function isValidAtomicActionIteration(value: unknown): value is AtomicActionIteration {
+export function isValidAtomicActionIteration(value: unknown): value is AtomicActionIteration {
   if (!isRecord(value)) return false;
   if (!isAtomicActionIterationMode(value.mode)) return false;
   const hasCount = "count" in value && value.count !== undefined;

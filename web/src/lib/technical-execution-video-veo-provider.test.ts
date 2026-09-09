@@ -70,7 +70,7 @@ describe("TechnicalExecutionVeoProvider", () => {
     if (outcome.done) {
       expect(outcome.videoBuffer.toString()).toBe("fake");
       expect(outcome.mimeType).toBe("video/mp4");
-      expect(outcome.durationSeconds).toBe(6);
+      expect(outcome.durationSeconds).toBe(8);
     }
   });
 
