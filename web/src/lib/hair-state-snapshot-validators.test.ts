@@ -45,8 +45,16 @@ describe("hair-state-snapshot-validators (pure contract)", () => {
     expect(isHairStateSnapshotStatus("REJECTED")).toBe(false);
   });
 
-  it("recognizes exactly 6 value sources, and CONFIRMED is deliberately not one of them", () => {
-    expect(HAIR_STATE_VALUE_SOURCES).toEqual(["not_yet_assessed", "observed", "inferred", "professional_input", "ai_proposed", "client_reported"]);
+  it("recognizes exactly 7 value sources (Stage 3 added 'reference_image'), and CONFIRMED is deliberately not one of them", () => {
+    expect(HAIR_STATE_VALUE_SOURCES).toEqual([
+      "not_yet_assessed",
+      "observed",
+      "inferred",
+      "professional_input",
+      "ai_proposed",
+      "client_reported",
+      "reference_image",
+    ]);
     for (const source of HAIR_STATE_VALUE_SOURCES) expect(isHairStateValueSource(source)).toBe(true);
     expect(isHairStateValueSource("confirmed")).toBe(false);
     expect(isHairStateValueSource("CONFIRMED")).toBe(false);

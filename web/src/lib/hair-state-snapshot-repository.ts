@@ -6,6 +6,14 @@ import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 import { assembleCurrentHairStateFromAnalysis, assembleTargetHairStateFromTechnicalVisualMap, HAIR_STATE_SNAPSHOT_ASSEMBLER_VERSION } from "@/lib/hair-state-snapshot-assembler";
 import { isHairStateSnapshotPayload, isHairStateSnapshotRole, type HairStateSnapshotPayload, type HairStateSnapshotRole } from "@/lib/hair-state-snapshot-validators";
 import { isTechnicalVisualMapPayload } from "@/lib/technical-visual-map-validators";
+import {
+  createEvidenceRowsForSnapshot,
+  HairStateSnapshotEvidenceDependencyError,
+  HairStateSnapshotEvidencePersistenceError,
+  HairStateSnapshotEvidenceValidationError,
+  type HairStateSnapshotEvidenceRecord,
+} from "@/lib/hair-state-snapshot-evidence-repository";
+import { defaultEvidenceRoleForSnapshotRole, type HairStateSnapshotEvidenceInput } from "@/lib/hair-state-snapshot-evidence-validators";
 
 // Professional Skill Engine, Stage 2 -- HAIR STATE SNAPSHOT domain/repository
 // layer. Mirrors technical-visual-map-repository.ts's own conventions
@@ -139,9 +147,19 @@ export interface HairStateSnapshotRecord {
   supersededAt: string | null;
   createdAt: string;
   updatedAt: string;
+  // Evidence is deliberately NOT embedded here -- see
+  // hair-state-snapshot-evidence-repository.ts's own
+  // listResolvedEvidenceForSnapshot for the dedicated, deterministic
+  // snapshot -> evidence set -> exact images -> view info retrieval path.
+  // Embedding it on every record returned from every read here would
+  // force an extra join on call sites that never asked for it, and would
+  // change this already-committed (Stage 2) record shape for no reason.
 }
 
-type HairStateSnapshotTransaction = Pick<Prisma.TransactionClient, "hairStateSnapshot" | "client" | "analysis" | "technicalVisualMap">;
+type HairStateSnapshotTransaction = Pick<
+  Prisma.TransactionClient,
+  "hairStateSnapshot" | "client" | "analysis" | "technicalVisualMap" | "hairStateSnapshotEvidence" | "imageAsset" | "captureSet" | "captureSetImage"
+>;
 
 // ---------------------------------------------------------------------------
 // createCurrentSnapshotFromAnalysis
@@ -152,7 +170,12 @@ type HairStateSnapshotTransaction = Pick<Prisma.TransactionClient, "hairStateSna
 // The baseline always comes from assembleCurrentHairStateFromAnalysis,
 // never anything else (mirrors createDraftFromConfirmedProposal's own
 // "never trust a caller-supplied payload" discipline).
-export async function createCurrentSnapshotFromAnalysis(ownerUserId: string, clientId: string, analysisId: string): Promise<HairStateSnapshotRecord> {
+export async function createCurrentSnapshotFromAnalysis(
+  ownerUserId: string,
+  clientId: string,
+  analysisId: string,
+  evidence?: readonly HairStateSnapshotEvidenceInput[],
+): Promise<HairStateSnapshotRecord & { evidence: readonly HairStateSnapshotEvidenceRecord[] }> {
   return runHairStateSnapshotQuery(() =>
     runSerializableTransaction(async (tx) => {
       const client = await tx.client.findFirst({ where: { id: clientId, ownerUserId, deletedAt: null }, select: { id: true } });
@@ -186,6 +209,7 @@ export async function createCurrentSnapshotFromAnalysis(ownerUserId: string, cli
         technicalVisualMapId: null,
         sourceImageAssetId: analysisRow.imageAssetId,
         generatorVersion: HAIR_STATE_SNAPSHOT_ASSEMBLER_VERSION,
+        evidence,
       });
     }),
   );
@@ -200,7 +224,12 @@ export async function createCurrentSnapshotFromAnalysis(ownerUserId: string, cli
 // technicalVisualMapId). Fails closed if the map is not CONFIRMED --
 // mirrors the Video Demonstration Decision Lock's own "authority must be
 // CONFIRMED right now" precedent exactly (video-generation-repository.ts).
-export async function createTargetSnapshotFromTechnicalVisualMap(ownerUserId: string, clientId: string, technicalVisualMapId: string): Promise<HairStateSnapshotRecord> {
+export async function createTargetSnapshotFromTechnicalVisualMap(
+  ownerUserId: string,
+  clientId: string,
+  technicalVisualMapId: string,
+  evidence?: readonly HairStateSnapshotEvidenceInput[],
+): Promise<HairStateSnapshotRecord & { evidence: readonly HairStateSnapshotEvidenceRecord[] }> {
   return runHairStateSnapshotQuery(() =>
     runSerializableTransaction(async (tx) => {
       const client = await tx.client.findFirst({ where: { id: clientId, ownerUserId, deletedAt: null }, select: { id: true } });
@@ -244,6 +273,7 @@ export async function createTargetSnapshotFromTechnicalVisualMap(ownerUserId: st
         technicalVisualMapId: mapRow.id,
         sourceImageAssetId: mapRow.sourceImageAssetId,
         generatorVersion: HAIR_STATE_SNAPSHOT_ASSEMBLER_VERSION,
+        evidence,
       });
     }),
   );
@@ -263,7 +293,8 @@ export async function createManualSnapshot(
   role: string,
   payload: unknown,
   provenance: { analysisId?: string | null; analysisProposalId?: string | null; technicalVisualMapId?: string | null; sourceImageAssetId?: string | null } = {},
-): Promise<HairStateSnapshotRecord> {
+  evidence?: readonly HairStateSnapshotEvidenceInput[],
+): Promise<HairStateSnapshotRecord & { evidence: readonly HairStateSnapshotEvidenceRecord[] }> {
   if (!isHairStateSnapshotRole(role)) {
     throw new HairStateSnapshotValidationError("HAIR_STATE_SNAPSHOT_INVALID_ROLE", `"${role}" is not a recognized Hair State Snapshot role.`);
   }
@@ -288,6 +319,7 @@ export async function createManualSnapshot(
         technicalVisualMapId: provenance.technicalVisualMapId ?? null,
         sourceImageAssetId: provenance.sourceImageAssetId ?? null,
         generatorVersion: null,
+        evidence,
       });
     }),
   );
@@ -392,9 +424,20 @@ interface CreateSnapshotRowInput {
   technicalVisualMapId: string | null;
   sourceImageAssetId: string | null;
   generatorVersion: string | null;
+  // Explicit evidence wins outright when provided (a caller may bind a
+  // whole CaptureSet, multiple TARGET references, etc.). When omitted AND
+  // sourceImageAssetId is non-null, exactly one evidence row is
+  // auto-derived from it -- the two can never diverge, because the
+  // derived row's own imageAssetId is always sourceImageAssetId itself.
+  // When both are absent, zero evidence rows are created (unchanged
+  // Stage 2 behavior).
+  evidence?: readonly HairStateSnapshotEvidenceInput[];
 }
 
-async function createSnapshotRow(tx: HairStateSnapshotTransaction, input: CreateSnapshotRowInput): Promise<HairStateSnapshotRecord> {
+async function createSnapshotRow(
+  tx: HairStateSnapshotTransaction,
+  input: CreateSnapshotRowInput,
+): Promise<HairStateSnapshotRecord & { evidence: readonly HairStateSnapshotEvidenceRecord[] }> {
   const maxVersion = await tx.hairStateSnapshot.aggregate({
     where: { ownerUserId: input.ownerUserId, clientId: input.clientId, role: input.role },
     _max: { snapshotVersion: true },
@@ -419,7 +462,14 @@ async function createSnapshotRow(tx: HairStateSnapshotTransaction, input: Create
       professionalAdjustments: Prisma.JsonNull,
     },
   });
-  return toHairStateSnapshotRecord(row);
+
+  const defaultRole = defaultEvidenceRoleForSnapshotRole(input.role);
+  const evidenceToCreate: readonly HairStateSnapshotEvidenceInput[] =
+    input.evidence ?? (input.sourceImageAssetId && defaultRole ? [{ evidenceKind: "IMAGE_ASSET", evidenceRole: defaultRole, imageAssetId: input.sourceImageAssetId }] : []);
+
+  const evidence = await createEvidenceRowsForSnapshot(tx, input.ownerUserId, input.clientId, row.id, input.role, evidenceToCreate);
+
+  return { ...toHairStateSnapshotRecord(row), evidence };
 }
 
 async function runHairStateSnapshotQuery<T>(operation: () => Promise<T>): Promise<T> {
@@ -434,7 +484,10 @@ async function runHairStateSnapshotQuery<T>(operation: () => Promise<T>): Promis
       error instanceof HairStateSnapshotValidationError ||
       error instanceof HairStateSnapshotStateError ||
       error instanceof HairStateSnapshotConcurrencyError ||
-      error instanceof HairStateSnapshotInvariantError
+      error instanceof HairStateSnapshotInvariantError ||
+      error instanceof HairStateSnapshotEvidencePersistenceError ||
+      error instanceof HairStateSnapshotEvidenceValidationError ||
+      error instanceof HairStateSnapshotEvidenceDependencyError
     ) {
       throw error;
     }
@@ -464,7 +517,10 @@ function isRetryableConcurrencyError(error: unknown): boolean {
     error instanceof HairStateSnapshotValidationError ||
     error instanceof HairStateSnapshotStateError ||
     error instanceof HairStateSnapshotConcurrencyError ||
-    error instanceof HairStateSnapshotInvariantError
+    error instanceof HairStateSnapshotInvariantError ||
+    error instanceof HairStateSnapshotEvidencePersistenceError ||
+    error instanceof HairStateSnapshotEvidenceValidationError ||
+    error instanceof HairStateSnapshotEvidenceDependencyError
   ) {
     return false;
   }

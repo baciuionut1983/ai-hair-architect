@@ -87,9 +87,21 @@ export function isHairStateSnapshotStatus(value: unknown): value is HairStateSna
 // baseline (mirrors ZoneValueSource's own "global_default": a real,
 // first-class value, never a disguised guess). Deliberately excludes
 // "confirmed" -- see file header.
+//
+// "reference_image" (Stage 3 addition): this fact's value was read from a
+// TARGET reference/inspiration image's own visual content -- NOT the
+// CURRENT observed photo (that's "observed"), NOT an AI text proposal
+// (that's "ai_proposed"), NOT a professional's own stated instruction
+// (that's "professional_input"). A "combination" TARGET (the task's own
+// explicit fifth case) needs no separate tag: each fact already carries
+// its own independent source, so a TARGET whose zones mix reference-image
+// facts with professional-override facts already represents that
+// combination honestly, one field at a time -- exactly as this per-fact
+// model was designed to do (see the file header's own "independently
+// declared, per-fact" reasoning).
 // ---------------------------------------------------------------------------
 
-export const HAIR_STATE_VALUE_SOURCES = ["not_yet_assessed", "observed", "inferred", "professional_input", "ai_proposed", "client_reported"] as const;
+export const HAIR_STATE_VALUE_SOURCES = ["not_yet_assessed", "observed", "inferred", "professional_input", "ai_proposed", "client_reported", "reference_image"] as const;
 export type HairStateValueSource = (typeof HAIR_STATE_VALUE_SOURCES)[number];
 
 export function isHairStateValueSource(value: unknown): value is HairStateValueSource {

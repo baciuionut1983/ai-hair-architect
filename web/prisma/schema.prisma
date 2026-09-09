@@ -201,6 +201,10 @@ model User {
   // back-relation only -- produces no column or constraint on "User"; the
   // FK lives on "HairStateSnapshot".
   hairStateSnapshots HairStateSnapshot[]
+  // Professional Skill Engine, Stage 3 (Visual Evidence Binding). Virtual
+  // back-relation only -- produces no column or constraint on "User"; the
+  // FK lives on "HairStateSnapshotEvidence".
+  hairStateSnapshotEvidence HairStateSnapshotEvidence[]
 }
 
 model Session {
@@ -299,6 +303,10 @@ model Client {
   // back-relation only -- produces no column or constraint on "Client";
   // the FK lives on "HairStateSnapshot".
   hairStateSnapshots HairStateSnapshot[]
+  // Professional Skill Engine, Stage 3 (Visual Evidence Binding). Virtual
+  // back-relation only -- produces no column or constraint on "Client";
+  // the FK lives on "HairStateSnapshotEvidence".
+  hairStateSnapshotEvidence HairStateSnapshotEvidence[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -1971,12 +1979,135 @@ model HairStateSnapshot {
 
   owner  User   @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   client Client @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  evidence HairStateSnapshotEvidence[]
 
   @@unique([ownerUserId, clientId, role, snapshotVersion])
   @@index([clientId, ownerUserId, createdAt, id])
   @@index([ownerUserId, clientId, role, status])
   @@index([analysisProposalId])
   @@index([technicalVisualMapId])
+}
+
+// AI Hair Architect, Stage 3 -- VISUAL EVIDENCE BINDING. Records EXACTLY
+// which real visual evidence (a single ImageAsset, or a whole multi-view
+// CaptureSet) supported one HairStateSnapshot -- never a second image-
+// history system: imageAssetId/captureSetId are validated soft pointers
+// to already-existing rows, never a copy of their bytes/metadata. Rows
+// here are immutable once created (no update function anywhere) and
+// referenced by id only, so replacing a client's CURRENT photos/Capture
+// Set (which never mutates old rows -- see capture-set-repository.ts's
+// own header) can never retroactively change what an old snapshot's
+// evidence pointed to.
+model HairStateSnapshotEvidence {
+  id                  String @id @default(uuid())
+  ownerUserId         String
+  clientId            String
+  hairStateSnapshotId String
+
+  // Closed vocabulary (hair-state-snapshot-evidence-validators.ts):
+  // IMAGE_ASSET | CAPTURE_SET. Exactly one of imageAssetId/captureSetId is
+  // populated, matching this value -- enforced by an application
+  // validator AND a raw CHECK constraint (see migration), never by
+  // convention alone.
+  evidenceKind String
+
+  // Closed vocabulary: PRIMARY_CAPTURE | TARGET_REFERENCE | RESULT_OBSERVED
+  // | RESULT_GENERATED_PREVIEW -- the honest, role-specific evidence
+  // distinction Stage 3 requires (never one opaque "source"). Validated
+  // against the parent snapshot's own `role` at the repository layer.
+  evidenceRole String
+
+  // Soft pointers -- same discipline as CaptureSetImage.imageAssetId /
+  // TechnicalVisualMap.sourceImageAssetId: a validated reference to an
+  // existing, owned row, never a duplicated copy of it.
+  imageAssetId String?
+  captureSetId String?
+
+  // CaptureSetViewLabel (FRONT|LEFT|BACK|RIGHT), reused verbatim from
+  // capture-set-validators.ts -- ONLY meaningful when evidenceKind is
+  // IMAGE_ASSET and that one image represents a specific view outside a
+  // CaptureSet. Never set when evidenceKind is CAPTURE_SET -- the
+  // referenced CaptureSet's own CaptureSetImage rows already carry
+  // per-image view labels; duplicating them here would be a second,
+  // competing truth.
+  viewLabel String?
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner             User              @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client            Client            @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  hairStateSnapshot HairStateSnapshot @relation(fields: [hairStateSnapshotId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@index([ownerUserId, clientId])
+  @@index([hairStateSnapshotId])
+  @@index([imageAssetId])
+  @@index([captureSetId])
+}
+
+// AI Hair Architect, Stage 3 -- PROFESSIONAL SKILL REGISTRY FOUNDATION.
+// The persisted form of professional-skill-contracts.ts's own
+// SkillDefinition<TFact> -- a reusable, professionally-governed
+// procedure, never a haircut template/goal. Global professional
+// authority, not client-scoped (mirrors the pure contract's own shape,
+// which carries no owner/client field at all -- this is shared technique
+// knowledge, not per-account client data). A row's `payload` is an
+// immutable, frozen snapshot of one version; only status/review/
+// supersession columns are ever mutated in place, never `payload` itself
+// (same discipline as every other DRAFT/ACTIVE/RETIRED-lifecycle model in
+// this schema).
+model ProfessionalSkillDefinition {
+  id String @id @default(uuid())
+
+  // Stable business key -- identifies "this skill", not "this exact
+  // revision" (SkillDefinition.skillId). version starts at 1, a distinct
+  // integer per revision -- a new version is always a new row, never an
+  // edit of an existing one.
+  skillId String
+  version Int
+
+  // Reuses SkillDefinition's own field name verbatim (never a renamed
+  // "domain" synonym for an identical concept) -- open string, same
+  // "no hardcoded vertical list" discipline as AnalysisProposal.vertical.
+  // Hair is the only real value today; the column itself is not
+  // hard-coded to it (future nails/makeup/color registries reuse this
+  // same table/column, not a redesign).
+  vertical String
+
+  name String
+
+  // Plain strings, application-validated against
+  // professional-skill-contracts.ts's own SKILL_DEFINITION_STATUSES /
+  // SKILL_AUTHORITY_TYPES -- same "no Postgres enum" convention as every
+  // sibling lifecycle field in this schema.
+  status        String
+  authorityType String
+
+  // The full, frozen SkillDefinition<TFact> object (parameters/procedure/
+  // applicabilityCondition/applicableZones/prerequisiteSkillIds/
+  // incompatibleSkillIds/rationale/description included) -- same
+  // "no Prisma-level structure beyond JSON" precedent as
+  // TechnicalVisualMap.payload / HairStateSnapshot.payload. The columns
+  // above are denormalized OUT of this JSON purely for indexed querying;
+  // payload remains the single source of truth for content.
+  payload Json
+
+  reviewedByUserId String?
+  reviewedAt       DateTime? @db.Timestamp(6)
+
+  // Set only once RETIRED and a successor version exists -- mirrors
+  // SkillDefinition.supersededBySkillId exactly: a plain nullable
+  // pointer to another ProfessionalSkillDefinition row's own id, NOT an
+  // enforced self-relation FK (same reasoning as every other
+  // superseded-pointer column in this schema).
+  supersededBySkillDefinitionId String?
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  @@unique([skillId, version])
+  @@index([vertical, status])
+  @@index([skillId, status])
 }
 
 // Technical Demonstration, Stage 1 (Decision Lock: "cutting plan

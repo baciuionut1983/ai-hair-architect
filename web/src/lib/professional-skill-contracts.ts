@@ -210,6 +210,10 @@ function isValidSkillProcedureStep(value: unknown, declaredParameterNames: Reado
 export const SKILL_DEFINITION_STATUSES = ["DRAFT", "ACTIVE", "RETIRED"] as const;
 export type SkillDefinitionStatus = (typeof SKILL_DEFINITION_STATUSES)[number];
 
+export function isSkillDefinitionStatus(value: unknown): value is SkillDefinitionStatus {
+  return typeof value === "string" && (SKILL_DEFINITION_STATUSES as readonly string[]).includes(value);
+}
+
 // PROFESSIONALLY_AUTHORED -- written directly by a reviewed professional
 //   process (this engagement's own audit -> authorize -> implement -> test
 //   -> release gate).
@@ -220,6 +224,10 @@ export type SkillDefinitionStatus = (typeof SKILL_DEFINITION_STATUSES)[number];
 //   never ACTIVE, and never eligible authority (isSkillEligibleForAuthority).
 export const SKILL_AUTHORITY_TYPES = ["PROFESSIONALLY_AUTHORED", "PROFESSIONALLY_REVIEWED", "MACHINE_DRAFTED"] as const;
 export type SkillAuthorityType = (typeof SKILL_AUTHORITY_TYPES)[number];
+
+export function isSkillAuthorityType(value: unknown): value is SkillAuthorityType {
+  return typeof value === "string" && (SKILL_AUTHORITY_TYPES as readonly string[]).includes(value);
+}
 
 // ---------------------------------------------------------------------------
 // The Skill Definition itself.
