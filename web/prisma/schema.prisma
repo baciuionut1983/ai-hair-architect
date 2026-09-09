@@ -197,6 +197,10 @@ model User {
   // integration). Virtual back-relation only -- produces no column or
   // constraint on "User"; the FK lives on "TechnicalExecutionVideoGeneration".
   technicalExecutionVideoGenerations TechnicalExecutionVideoGeneration[]
+  // Professional Skill Engine, Stage 2 (Hair State Snapshot). Virtual
+  // back-relation only -- produces no column or constraint on "User"; the
+  // FK lives on "HairStateSnapshot".
+  hairStateSnapshots HairStateSnapshot[]
 }
 
 model Session {
@@ -291,6 +295,10 @@ model Client {
   // integration). Virtual back-relation only -- produces no column or
   // constraint on "Client"; the FK lives on "TechnicalExecutionVideoGeneration".
   technicalExecutionVideoGenerations TechnicalExecutionVideoGeneration[]
+  // Professional Skill Engine, Stage 2 (Hair State Snapshot). Virtual
+  // back-relation only -- produces no column or constraint on "Client";
+  // the FK lives on "HairStateSnapshot".
+  hairStateSnapshots HairStateSnapshot[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -1856,6 +1864,119 @@ model TechnicalVisualMapSpatialBinding {
   @@index([clientId, ownerUserId, technicalVisualMapId])
   @@index([technicalVisualMapId, ownerUserId, clientId, sourceImageAssetId, viewLabel, spatialVersion])
   @@index([ownerUserId, clientId, technicalVisualMapId, sourceImageAssetId, viewLabel, status])
+}
+
+// Professional Skill Engine, Stage 2 -- HAIR STATE SNAPSHOT. The first real
+// data foundation for the AI Hairstylist Brain (Architecture Decision Lock,
+// Stage 1 of this same initiative): a client's hair/head state, described
+// (never named as a haircut) at a meaningful point in the professional
+// reasoning chain -- CURRENT (before), TARGET, or eventually RESULT
+// (after/observed). Mirrors TechnicalVisualMap's own shape/lifecycle
+// deliberately: DRAFT | CONFIRMED | SUPERSEDED, a version counter within a
+// locked authority scope, frozen JSON payload, professional-adjustment
+// array, confirmedAt/supersededAt set once and never edited afterward.
+//
+// DELIBERATELY A STANDALONE, CLIENT-SCOPED MODEL, unlike TechnicalVisualMap
+// (which is scoped under one AnalysisProposal): a client's own CURRENT
+// hair-state history is not tied to any one proposal -- it can exist
+// before any proposal is even drafted, and remains comparable across
+// however many proposals a client goes through over time. Version scope is
+// therefore (ownerUserId, clientId, role) only. `analysisId`/
+// `analysisProposalId`/`technicalVisualMapId`/`sourceImageAssetId` are all
+// nullable SOFT pointers -- informative provenance only, mirroring
+// TechnicalVisualMap.sourceImageAssetId's own established precedent
+// exactly, never part of the uniqueness/versioning scope, and never
+// creating a hard dependency that could block an unrelated Analysis/
+// AnalysisProposal/TechnicalVisualMap lifecycle operation.
+//
+// NEVER a second zone-truth system: the frozen `payload` JSON's own locked
+// shape (HairStateSnapshotPayload, hair-state-snapshot-validators.ts)
+// reuses TechnicalVisualMap's own six-HeadZone vocabulary and its own
+// ZoneLengthIntent/ZoneWeightIntent types directly for TARGET-relevant
+// direction facts -- this model adds only the descriptive CURRENT/RESULT
+// facts (relative length, fiber thickness, density, texture, condition,
+// perimeter relationship) TechnicalVisualMap has no representation of at
+// all, each with an honest "unspecified" default and a separate,
+// always-populated provenance source -- never a numeric measurement, same
+// discipline as TechnicalVisualMap.payload's own "no centimeters" rule.
+model HairStateSnapshot {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  // Plain string, not a Postgres enum -- same reasoning as every sibling
+  // lifecycle/vocabulary field in this schema. Application-validated
+  // (hair-state-snapshot-validators.ts) to exactly one of:
+  // CURRENT | TARGET | RESULT.
+  role String
+
+  // Plain string, not a Postgres enum. Application-validated to exactly
+  // one of: DRAFT | CONFIRMED | SUPERSEDED -- mirrors TechnicalVisualMap's
+  // own lifecycle exactly, including its own "no REJECTED state" reasoning.
+  status String
+
+  // Identifies snapshot revisions within the locked authority scope
+  // (ownerUserId, clientId, role) -- mirrors TechnicalVisualMap.mapVersion
+  // exactly. Historical rows are never overwritten.
+  snapshotVersion Int
+
+  // The frozen PAYLOAD SHAPE's own version, distinct from snapshotVersion
+  // (a revision counter) -- same "freeze what was actually used, even if
+  // the shape evolves later" reasoning as TechnicalVisualMap.schemaVersion.
+  schemaVersion String
+
+  // Frozen JSON -- HairStateSnapshotPayload (globalState + six-zone array).
+  // Same "no Prisma-level structure beyond JSON" precedent as
+  // TechnicalVisualMap.payload; the locked semantic shape is this domain's
+  // own application-level validator/assembler concern, not a schema one.
+  payload Json
+
+  // Nullable soft pointers -- provenance only, see model header. Which
+  // Analysis's own global observations informed a CURRENT snapshot;
+  // which confirmed AnalysisProposal a TARGET/RESULT snapshot is for;
+  // which confirmed TechnicalVisualMap a TARGET snapshot's own
+  // lengthIntent/weightIntent directions were frozen-copied from; which
+  // real photo (if any) is the visual basis.
+  analysisId           String?
+  analysisProposalId   String?
+  technicalVisualMapId String?
+  sourceImageAssetId   String?
+
+  // The deterministic assembler's own frozen version string, when this
+  // snapshot was produced by one (e.g. assembleCurrentHairStateFromAnalysis /
+  // assembleTargetHairStateFromTechnicalVisualMap) -- same discipline as
+  // TechnicalVisualMap.generatorVersion. Null for a snapshot authored
+  // directly by a professional with no deterministic assembler involved.
+  generatorVersion String?
+
+  // Nullable array, frozen-baseline + additive-adjustment architecture --
+  // mirrors TechnicalVisualMap.professionalAdjustments exactly: a
+  // professional's adjustment is layered on top here; it never mutates
+  // `payload`, the frozen baseline.
+  professionalAdjustments Json?
+
+  // Nullable pointer to the snapshot that superseded this one -- mirrors
+  // TechnicalVisualMap.supersededByMapId exactly, including its own
+  // reasoning: a plain nullable column, NOT an enforced self-relation FK.
+  supersededBySnapshotId String?
+
+  // Set once, on confirm -- never edited afterward (enforced at the
+  // repository layer, mirroring confirmedAt/supersededAt on
+  // TechnicalVisualMap).
+  confirmedAt  DateTime? @db.Timestamp(6)
+  supersededAt DateTime? @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner  User   @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client Client @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([ownerUserId, clientId, role, snapshotVersion])
+  @@index([clientId, ownerUserId, createdAt, id])
+  @@index([ownerUserId, clientId, role, status])
+  @@index([analysisProposalId])
+  @@index([technicalVisualMapId])
 }
 
 // Technical Demonstration, Stage 1 (Decision Lock: "cutting plan
