@@ -1,7 +1,9 @@
 import { recordAiUsageEvent } from "@/lib/ai-usage-repository";
 import { getTechnicalExecutionGenerationReadiness, findTechnicalExecutionGenerationRequestForOwner } from "@/lib/technical-execution-generation-repository";
 import { compileEstablishCentralNapeGuideProviderAdapterOutput } from "@/lib/cutting-skill-establish-central-nape-guide-provider-request";
-import { assembleTechnicalExecutionVeoInstruction } from "@/lib/technical-execution-video-veo-serializer";
+import { assembleTechnicalExecutionVeoInstruction, type TechnicalExecutionVeoDemonstrationHints } from "@/lib/technical-execution-video-veo-serializer";
+import type { ProviderAdapterVisualReference, AuthorizationPreconditionStatus, VisualReferenceQualificationStatus } from "@/lib/professional-skill-provider-adapter-contracts";
+import type { ProviderAdapterTranslationResult } from "@/lib/cutting-skill-provider-adapter-compiler";
 import {
   claimTechnicalExecutionVideoGenerationForCompletionProcessing,
   claimTechnicalExecutionVideoGenerationForSubmit,
@@ -111,6 +113,26 @@ export interface ExecuteTechnicalExecutionVideoGenerationDependencies {
   persistGeneratedVideo?: typeof persistGeneratedVideoDemonstrationAsset;
   beforeClaim?: () => Promise<void>;
   beforePersist?: () => Promise<void>;
+  // Stage 2.5.i.26 -- injectable ONLY so a future pilot targeting a
+  // DIFFERENT real Skill (e.g. Continue Central Nape Construction, Stage
+  // 2.5.i.25) can be exercised through this SAME, already-proven
+  // orchestrator, without hardcoding a second Skill into it permanently.
+  // Defaults to the EXACT i.23 behavior (compileEstablishCentralNapeGuideProviderAdapterOutput)
+  // -- every existing caller is unaffected, byte-identical, unless it
+  // explicitly overrides this.
+  compileProviderAdapterOutput?: (input: {
+    sealedRequestId: string;
+    visualReference: ProviderAdapterVisualReference;
+    authorizationStatus: AuthorizationPreconditionStatus;
+    visualReferenceQualification: VisualReferenceQualificationStatus;
+    compiledAt: string;
+  }) => ProviderAdapterTranslationResult;
+  // Stage 2.5.i.26 -- see technical-execution-video-veo-serializer.ts's own
+  // "demonstration hints are not authority" discipline: purely optional,
+  // purely descriptive, never read from any Skill/Execution Unit/Atomic
+  // Action. Defaults to undefined (no hint sentence rendered), identical to
+  // i.23's own prior behavior.
+  demonstrationHints?: TechnicalExecutionVeoDemonstrationHints;
 }
 
 // Entry point: idempotent to call repeatedly (same shape as
@@ -179,7 +201,8 @@ async function run(
     // (never re-selected) and the i.22 READY verdict itself as the
     // Provider Adapter's own precondition signals (task Section 7:
     // consuming the ALREADY-verified fact, never re-deciding it).
-    const compiled = compileEstablishCentralNapeGuideProviderAdapterOutput({
+    const compile = dependencies.compileProviderAdapterOutput ?? compileEstablishCentralNapeGuideProviderAdapterOutput;
+    const compiled = compile({
       sealedRequestId: sealedRequest.id,
       visualReference: { imageAssetId: sealedRequest.imageAssetId, classification: "VISUAL_REFERENCE_ONLY" },
       authorizationStatus: "VALIDATED",
@@ -190,7 +213,7 @@ async function run(
       return { outcome: "failed", code: "COMPILATION_FAILED", reason: compiled.reason };
     }
 
-    const instruction = assembleTechnicalExecutionVeoInstruction(compiled.output);
+    const instruction = assembleTechnicalExecutionVeoInstruction(compiled.output, dependencies.demonstrationHints);
 
     const created = await createTechnicalExecutionVideoGeneration({
       ownerUserId,

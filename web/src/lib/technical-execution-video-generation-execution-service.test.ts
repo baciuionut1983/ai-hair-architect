@@ -14,6 +14,7 @@ import {
 } from "@/lib/technical-execution-generation-repository";
 import { executeTechnicalExecutionVideoGeneration } from "@/lib/technical-execution-video-generation-execution-service";
 import { TechnicalExecutionVeoProvider } from "@/lib/technical-execution-video-veo-provider";
+import { compileContinueCentralNapeConstructionProviderAdapterOutput } from "@/lib/cutting-skill-continue-central-nape-construction-provider-request";
 import type { VeoPollResult, VeoSubmitResult, VeoVideoGenerationClient } from "@/lib/video-provider-veo";
 
 // AI Hair Architect, Stage 2.5.i.23 -- the FULL orchestrator, tested against
@@ -279,6 +280,33 @@ suite("technical-execution-video-generation-execution-service (real Central Nape
     const row = await prisma.technicalExecutionVideoGeneration.findFirstOrThrow({ where: { technicalExecutionGenerationRequestId: requestId } });
     const stepLines = row.providerInstruction.split("\n").filter((line) => /^\d+\.\s/.test(line));
     expect(stepLines.length).toBe(3);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Stage 2.5.i.26 -- injectable compiler plumbing: proves the second real
+  // pilot (Continue Central Nape Construction) can be exercised through
+  // this SAME, already-proven orchestrator via dependency injection, and
+  // that the injected instruction actually differs from the default
+  // (single-action) pilot -- i.e. the override genuinely takes effect,
+  // never silently ignored.
+  // ---------------------------------------------------------------------------
+
+  it("i.26: injecting compileProviderAdapterOutput routes to the progression compiler, and its providerInstruction contains repeated-step wording the default pilot never produces", async () => {
+    const { ownerUserId, requestId } = await createSealedRequest();
+    const client = fakeClient();
+
+    const result = await executeTechnicalExecutionVideoGeneration(requestId, ownerUserId, {
+      env: enabledEnv,
+      createProvider: (config) => new TechnicalExecutionVeoProvider(config, client),
+      compileProviderAdapterOutput: compileContinueCentralNapeConstructionProviderAdapterOutput,
+      demonstrationHints: { subsectionSizeHint: "1cm", repeatCountHint: 3 },
+    });
+
+    expect(result.outcome).toBe("submitted");
+    const row = await prisma.technicalExecutionVideoGeneration.findFirstOrThrow({ where: { technicalExecutionGenerationRequestId: requestId } });
+    expect(row.providerInstruction).toMatch(/repeatedly/i);
+    expect(row.providerInstruction).toMatch(/previous subsection/i);
+    expect(row.providerInstruction).toMatch(/for this demonstration, render approximately 3 repetitions, each subsection approximately 1cm/i);
   });
 
   // ---------------------------------------------------------------------------
