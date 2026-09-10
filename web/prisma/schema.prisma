@@ -213,6 +213,10 @@ model User {
   // Virtual back-relation only -- produces no column or constraint on
   // "User"; the FK lives on "ProfessionalExecutionPlan".
   professionalExecutionPlans           ProfessionalExecutionPlan[]
+  // Professional Skill Engine, Stage 7 (Technical Demonstration Scene
+  // Plan). Virtual back-relation only -- produces no column or constraint
+  // on "User"; the FK lives on "ProfessionalExecutionScenePlan".
+  professionalExecutionScenePlans      ProfessionalExecutionScenePlan[]
 }
 
 model Session {
@@ -323,6 +327,10 @@ model Client {
   // Virtual back-relation only -- produces no column or constraint on
   // "Client"; the FK lives on "ProfessionalExecutionPlan".
   professionalExecutionPlans           ProfessionalExecutionPlan[]
+  // Professional Skill Engine, Stage 7 (Technical Demonstration Scene
+  // Plan). Virtual back-relation only -- produces no column or constraint
+  // on "Client"; the FK lives on "ProfessionalExecutionScenePlan".
+  professionalExecutionScenePlans      ProfessionalExecutionScenePlan[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -2279,7 +2287,93 @@ model ProfessionalExecutionPlan {
   client                  Client                        @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
   sourceReasoningProposal ProfessionalReasoningProposal @relation(fields: [sourceReasoningProposalId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
+  // Professional Skill Engine, Stage 7. Real FK target -- this row's own
+  // `id` is already globally unique (@id).
+  scenePlans ProfessionalExecutionScenePlan[]
+
   @@index([ownerUserId, clientId, sourceReasoningProposalId, createdAt, id])
+  @@index([ownerUserId, clientId, status])
+}
+
+// Professional Skill Engine, Stage 7 -- TECHNICAL DEMONSTRATION SCENE
+// PLAN. The persisted, deterministic, provider-INDEPENDENT visual
+// compilation of ONE ProfessionalExecutionPlan (Stage 6) into ordered
+// scenes a future visual provider can demonstrate WITHOUT reinterpreting
+// professional intent. Named `ProfessionalExecutionScenePlan` (not
+// `TechnicalDemonstrationScenePlan`) deliberately, to keep it
+// structurally unambiguous that it derives ONLY from a
+// ProfessionalExecutionPlan (System B chain) and is NOT a variant of
+// System A's own `TechnicalDemonstrationPlan` / `TechnicalDemonstrationStep`
+// (rooted in AnalysisProposal -> TechnicalCutPlan) -- avoids exactly the
+// "competing professional authority" confusion Stage 7's own STOP
+// conditions warn against. See professional-execution-scene-contracts.ts's
+// own header.
+//
+// AUTHORITY IS ONE-WAY: ProfessionalExecutionPlan -> Scene Plan. The scene
+// plan NEVER overrides the execution plan; it only groups/splits its
+// already-approved atomic actions into visual scenes with attached
+// viewpoints/observables/verification/continuity.
+//
+// LIFECYCLE -- DRAFT | CONFIRMED | SUPERSEDED, no REJECTED, mirroring
+// ProfessionalExecutionPlan / TechnicalDemonstrationPlan for the identical
+// reason (a derived, deterministic compile of an already-approved parent,
+// not an independently-evaluated option). SEMANTIC SCENE IDENTITY
+// (scenePlanFingerprint / per-scene fingerprints inside the payload) is
+// deliberately SEPARATE from any future render attempt (Part W/S): a
+// render failure never invalidates the semantic scene version, and a
+// future system can regenerate only a failed scene.
+model ProfessionalExecutionScenePlan {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  sourceExecutionPlanId          String
+  // Pinned deterministic hash of the source ProfessionalExecutionPlan's
+  // own SEMANTIC content (Part B / Part W). A scene plan compiled from
+  // this content never silently starts using a changed execution plan --
+  // the validator recomputes this and rejects a mismatch.
+  sourceExecutionPlanFingerprint String @db.VarChar(64)
+
+  // DB-level idempotency backstop (Part S/T) -- deterministically derived
+  // from the source plan fingerprint + compiler version + schema version.
+  // The same execution plan re-compiled by the same compiler resolves to
+  // the SAME row instead of a duplicate.
+  scenePlanFingerprint String @db.VarChar(64)
+
+  compilerVersion String
+  schemaVersion   String
+
+  // The full ProfessionalExecutionScenePlan payload (professional-
+  // execution-scene-contracts.ts) -- one frozen JSON payload per row,
+  // mirroring ProfessionalExecutionPlan's own precedent. Per-scene
+  // fingerprints live inside this payload (Part S -- per-scene
+  // regeneration readiness), never as separate rows.
+  scenePlanPayload Json
+
+  // Plain string, not a Postgres enum -- application-validated to exactly
+  // one of: DRAFT | CONFIRMED | SUPERSEDED.
+  status String
+
+  // Plain string, not a Postgres enum -- one of:
+  // READY_FOR_PROFESSIONAL_REVIEW | PARTIAL | NEEDS_INPUT | BLOCKED.
+  // Denormalized from scenePlanPayload.readiness for cheap listing.
+  readiness String
+
+  confirmedByUserId String?
+  confirmedAt       DateTime? @db.Timestamp(6)
+
+  supersededByScenePlanId String?
+  supersededAt            DateTime? @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner               User                      @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client              Client                    @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  sourceExecutionPlan ProfessionalExecutionPlan @relation(fields: [sourceExecutionPlanId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([scenePlanFingerprint])
+  @@index([ownerUserId, clientId, sourceExecutionPlanId, createdAt, id])
   @@index([ownerUserId, clientId, status])
 }
 
