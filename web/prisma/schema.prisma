@@ -126,69 +126,69 @@ enum BillingWebhookEventStatus {
 }
 
 model User {
-  id                                String                             @id @default(uuid())
-  email                             String                             @unique
-  passwordHash                      String
-  role                              String
-  locale                            String
+  id                                   String                                @id @default(uuid())
+  email                                String                                @unique
+  passwordHash                         String
+  role                                 String
+  locale                               String
   // M26: null means unverified. No @default here on purpose -- every row
   // that exists before the M26 migration is explicitly backfilled to a
   // real, non-null timestamp by that migration itself; every row created
   // afterward starts genuinely null until the owner completes email
   // verification. A column default would blur that distinction.
-  emailVerifiedAt                   DateTime?
-  createdAt                         DateTime                           @default(now())
-  sessions                          Session[]
-  clients                           Client[]
-  analyses                          Analysis[]
-  consultations                     Consultation[]
-  appointments                      Appointment[]
-  notifications                     Notification[]
-  webhooks                          WebhookEndpoint[]
-  billingCustomers                  BillingCustomer[]
-  billingSubscriptions              BillingSubscription[]
-  billingPayments                   BillingPayment[]
-  billingCheckoutLocks              BillingCheckoutLock[]
-  imageAnalysisProviderAttempts     ImageAnalysisProviderAttempt[]
-  videoLessons                      VideoLesson[]
-  emailNotifications                EmailNotification[]
-  authTokens                        AuthToken[]
-  clientPhotos                      ClientPhoto[]
-  clientFormulas                    ClientFormula[]
-  clientTreatments                  ClientTreatment[]
-  analysisCorrections               AnalysisCorrection[]
-  consultationMessages              ConsultationMessage[]
-  professionalMemories              ProfessionalMemory[]               @relation("MemoryOwner")
-  professionalMemoryAudits          ProfessionalMemoryAudit[]          @relation("MemoryAuditActor")
-  voiceTranscripts                  VoiceTranscript[]
-  aiUsageEvents                     AiUsageEvent[]
+  emailVerifiedAt                      DateTime?
+  createdAt                            DateTime                              @default(now())
+  sessions                             Session[]
+  clients                              Client[]
+  analyses                             Analysis[]
+  consultations                        Consultation[]
+  appointments                         Appointment[]
+  notifications                        Notification[]
+  webhooks                             WebhookEndpoint[]
+  billingCustomers                     BillingCustomer[]
+  billingSubscriptions                 BillingSubscription[]
+  billingPayments                      BillingPayment[]
+  billingCheckoutLocks                 BillingCheckoutLock[]
+  imageAnalysisProviderAttempts        ImageAnalysisProviderAttempt[]
+  videoLessons                         VideoLesson[]
+  emailNotifications                   EmailNotification[]
+  authTokens                           AuthToken[]
+  clientPhotos                         ClientPhoto[]
+  clientFormulas                       ClientFormula[]
+  clientTreatments                     ClientTreatment[]
+  analysisCorrections                  AnalysisCorrection[]
+  consultationMessages                 ConsultationMessage[]
+  professionalMemories                 ProfessionalMemory[]                  @relation("MemoryOwner")
+  professionalMemoryAudits             ProfessionalMemoryAudit[]             @relation("MemoryAuditActor")
+  voiceTranscripts                     VoiceTranscript[]
+  aiUsageEvents                        AiUsageEvent[]
   // Phase 2 (AI Proposed Look). Virtual back-relation only -- produces no
   // column or constraint on "User"; the FK lives on "AnalysisProposal".
-  analysisProposals                 AnalysisProposal[]
+  analysisProposals                    AnalysisProposal[]
   // Technical Visual Map, Stage 1. Virtual back-relation only -- produces no
   // column or constraint on "User"; the FK lives on "TechnicalVisualMap".
-  technicalVisualMaps               TechnicalVisualMap[]
+  technicalVisualMaps                  TechnicalVisualMap[]
   // Technical Visual Map, Stage 5A. Virtual back-relation only -- produces
   // no column or constraint on "User"; the FK lives on
   // "TechnicalVisualMapSpatialBinding".
-  technicalVisualMapSpatialBindings TechnicalVisualMapSpatialBinding[]
+  technicalVisualMapSpatialBindings    TechnicalVisualMapSpatialBinding[]
   // Real AI Photo Preview, Stage 1. Virtual back-relation only -- produces
   // no column or constraint on "User"; the FK lives on
   // "PhotoPreviewGeneration".
-  photoPreviewGenerations           PhotoPreviewGeneration[]
+  photoPreviewGenerations              PhotoPreviewGeneration[]
   // Real AI Video Demonstration, Stage 1. Virtual back-relation only.
-  videoDemonstrationGenerations     VideoDemonstrationGeneration[]
-  videoAssets                       VideoAsset[]
+  videoDemonstrationGenerations        VideoDemonstrationGeneration[]
+  videoAssets                          VideoAsset[]
   // Technical Demonstration, Stage 1. Virtual back-relation only -- produces
   // no column or constraint on "User"; the FK lives on
   // "TechnicalDemonstrationPlan"/"TechnicalDemonstrationStep".
-  technicalDemonstrationPlans       TechnicalDemonstrationPlan[]
-  technicalDemonstrationSteps       TechnicalDemonstrationStep[]
+  technicalDemonstrationPlans          TechnicalDemonstrationPlan[]
+  technicalDemonstrationSteps          TechnicalDemonstrationStep[]
   // Stage 2.5.i.21b (Multi-View Client Capture). Virtual back-relation
   // only -- produces no column or constraint on "User"; the FK lives on
   // "CaptureSet"/"CaptureSetImage".
-  captureSets                       CaptureSet[]
-  captureSetImages                  CaptureSetImage[]
+  captureSets                          CaptureSet[]
+  captureSetImages                     CaptureSetImage[]
   // Stage 2.5.i.22 (Technical Execution Generation Authorization). Virtual
   // back-relation only -- produces no column or constraint on "User"; the
   // FK lives on "TechnicalExecutionGenerationRequest".
@@ -196,19 +196,23 @@ model User {
   // Stage 2.5.i.23 (Technical Execution Video, concrete provider
   // integration). Virtual back-relation only -- produces no column or
   // constraint on "User"; the FK lives on "TechnicalExecutionVideoGeneration".
-  technicalExecutionVideoGenerations TechnicalExecutionVideoGeneration[]
+  technicalExecutionVideoGenerations   TechnicalExecutionVideoGeneration[]
   // Professional Skill Engine, Stage 2 (Hair State Snapshot). Virtual
   // back-relation only -- produces no column or constraint on "User"; the
   // FK lives on "HairStateSnapshot".
-  hairStateSnapshots HairStateSnapshot[]
+  hairStateSnapshots                   HairStateSnapshot[]
   // Professional Skill Engine, Stage 3 (Visual Evidence Binding). Virtual
   // back-relation only -- produces no column or constraint on "User"; the
   // FK lives on "HairStateSnapshotEvidence".
-  hairStateSnapshotEvidence HairStateSnapshotEvidence[]
+  hairStateSnapshotEvidence            HairStateSnapshotEvidence[]
   // Professional Skill Engine, Stage 5 (Professional Reasoning). Virtual
   // back-relation only -- produces no column or constraint on "User"; the
   // FK lives on "ProfessionalReasoningProposal".
-  professionalReasoningProposals ProfessionalReasoningProposal[]
+  professionalReasoningProposals       ProfessionalReasoningProposal[]
+  // Professional Skill Engine, Stage 6 (Professional Execution Plan).
+  // Virtual back-relation only -- produces no column or constraint on
+  // "User"; the FK lives on "ProfessionalExecutionPlan".
+  professionalExecutionPlans           ProfessionalExecutionPlan[]
 }
 
 model Session {
@@ -248,53 +252,53 @@ model AuthToken {
 }
 
 model Client {
-  id                                String                             @id @default(uuid())
-  ownerUserId                       String
-  fullName                          String                             @db.VarChar(200)
-  email                             String?                            @db.VarChar(320)
-  phone                             String?                            @db.VarChar(40)
-  notes                             String?                            @db.VarChar(4000)
-  deletedAt                         DateTime?                          @db.Timestamp(6)
-  createdAt                         DateTime                           @default(now()) @db.Timestamp(6)
-  updatedAt                         DateTime                           @updatedAt @db.Timestamp(6)
-  owner                             User                               @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
-  analyses                          Analysis[]
-  consultations                     Consultation[]
-  appointments                      Appointment[]
-  clientPhotos                      ClientPhoto[]
-  clientFormulas                    ClientFormula[]
-  clientTreatments                  ClientTreatment[]
-  analysisCorrections               AnalysisCorrection[]
-  consultationMessages              ConsultationMessage[]
-  professionalMemories              ProfessionalMemory[]
-  voiceTranscripts                  VoiceTranscript[]
+  id                                   String                                @id @default(uuid())
+  ownerUserId                          String
+  fullName                             String                                @db.VarChar(200)
+  email                                String?                               @db.VarChar(320)
+  phone                                String?                               @db.VarChar(40)
+  notes                                String?                               @db.VarChar(4000)
+  deletedAt                            DateTime?                             @db.Timestamp(6)
+  createdAt                            DateTime                              @default(now()) @db.Timestamp(6)
+  updatedAt                            DateTime                              @updatedAt @db.Timestamp(6)
+  owner                                User                                  @relation(fields: [ownerUserId], references: [id], onDelete: Restrict)
+  analyses                             Analysis[]
+  consultations                        Consultation[]
+  appointments                         Appointment[]
+  clientPhotos                         ClientPhoto[]
+  clientFormulas                       ClientFormula[]
+  clientTreatments                     ClientTreatment[]
+  analysisCorrections                  AnalysisCorrection[]
+  consultationMessages                 ConsultationMessage[]
+  professionalMemories                 ProfessionalMemory[]
+  voiceTranscripts                     VoiceTranscript[]
   // Phase 2 (AI Proposed Look). Virtual back-relation only -- produces no
   // column or constraint on "Client"; the FK lives on "AnalysisProposal".
-  analysisProposals                 AnalysisProposal[]
+  analysisProposals                    AnalysisProposal[]
   // Technical Visual Map, Stage 1. Virtual back-relation only -- produces no
   // column or constraint on "Client"; the FK lives on "TechnicalVisualMap".
-  technicalVisualMaps               TechnicalVisualMap[]
+  technicalVisualMaps                  TechnicalVisualMap[]
   // Technical Visual Map, Stage 5A. Virtual back-relation only -- produces
   // no column or constraint on "Client"; the FK lives on
   // "TechnicalVisualMapSpatialBinding".
-  technicalVisualMapSpatialBindings TechnicalVisualMapSpatialBinding[]
+  technicalVisualMapSpatialBindings    TechnicalVisualMapSpatialBinding[]
   // Real AI Photo Preview, Stage 1. Virtual back-relation only -- produces
   // no column or constraint on "Client"; the FK lives on
   // "PhotoPreviewGeneration".
-  photoPreviewGenerations           PhotoPreviewGeneration[]
+  photoPreviewGenerations              PhotoPreviewGeneration[]
   // Real AI Video Demonstration, Stage 1. Virtual back-relation only.
-  videoDemonstrationGenerations     VideoDemonstrationGeneration[]
-  videoAssets                       VideoAsset[]
+  videoDemonstrationGenerations        VideoDemonstrationGeneration[]
+  videoAssets                          VideoAsset[]
   // Technical Demonstration, Stage 1. Virtual back-relation only -- produces
   // no column or constraint on "Client"; the FK lives on
   // "TechnicalDemonstrationPlan"/"TechnicalDemonstrationStep".
-  technicalDemonstrationPlans       TechnicalDemonstrationPlan[]
-  technicalDemonstrationSteps       TechnicalDemonstrationStep[]
+  technicalDemonstrationPlans          TechnicalDemonstrationPlan[]
+  technicalDemonstrationSteps          TechnicalDemonstrationStep[]
   // Stage 2.5.i.21b (Multi-View Client Capture). Virtual back-relation
   // only -- produces no column or constraint on "Client"; the FK lives on
   // "CaptureSet"/"CaptureSetImage".
-  captureSets                       CaptureSet[]
-  captureSetImages                  CaptureSetImage[]
+  captureSets                          CaptureSet[]
+  captureSetImages                     CaptureSetImage[]
   // Stage 2.5.i.22 (Technical Execution Generation Authorization). Virtual
   // back-relation only -- produces no column or constraint on "Client";
   // the FK lives on "TechnicalExecutionGenerationRequest".
@@ -302,19 +306,23 @@ model Client {
   // Stage 2.5.i.23 (Technical Execution Video, concrete provider
   // integration). Virtual back-relation only -- produces no column or
   // constraint on "Client"; the FK lives on "TechnicalExecutionVideoGeneration".
-  technicalExecutionVideoGenerations TechnicalExecutionVideoGeneration[]
+  technicalExecutionVideoGenerations   TechnicalExecutionVideoGeneration[]
   // Professional Skill Engine, Stage 2 (Hair State Snapshot). Virtual
   // back-relation only -- produces no column or constraint on "Client";
   // the FK lives on "HairStateSnapshot".
-  hairStateSnapshots HairStateSnapshot[]
+  hairStateSnapshots                   HairStateSnapshot[]
   // Professional Skill Engine, Stage 3 (Visual Evidence Binding). Virtual
   // back-relation only -- produces no column or constraint on "Client";
   // the FK lives on "HairStateSnapshotEvidence".
-  hairStateSnapshotEvidence HairStateSnapshotEvidence[]
+  hairStateSnapshotEvidence            HairStateSnapshotEvidence[]
   // Professional Skill Engine, Stage 5 (Professional Reasoning). Virtual
   // back-relation only -- produces no column or constraint on "Client";
   // the FK lives on "ProfessionalReasoningProposal".
-  professionalReasoningProposals ProfessionalReasoningProposal[]
+  professionalReasoningProposals       ProfessionalReasoningProposal[]
+  // Professional Skill Engine, Stage 6 (Professional Execution Plan).
+  // Virtual back-relation only -- produces no column or constraint on
+  // "Client"; the FK lives on "ProfessionalExecutionPlan".
+  professionalExecutionPlans           ProfessionalExecutionPlan[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -1591,12 +1599,12 @@ model AnalysisProposal {
   createdAt DateTime @default(now()) @db.Timestamp(6)
   updatedAt DateTime @updatedAt @db.Timestamp(6)
 
-  owner               User                 @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  client              Client               @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
-  analysis            Analysis             @relation(fields: [analysisId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+  owner                       User                         @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client                      Client                       @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  analysis                    Analysis                     @relation(fields: [analysisId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
   // Technical Visual Map, Stage 1. Virtual back-relation only -- produces no
   // column or constraint here; the FK lives on "TechnicalVisualMap".
-  technicalVisualMaps TechnicalVisualMap[]
+  technicalVisualMaps         TechnicalVisualMap[]
   // Technical Demonstration, Stage 1. Virtual back-relation only -- produces
   // no column or constraint here; the FK lives on
   // "TechnicalDemonstrationPlan".
@@ -1985,8 +1993,8 @@ model HairStateSnapshot {
   createdAt DateTime @default(now()) @db.Timestamp(6)
   updatedAt DateTime @updatedAt @db.Timestamp(6)
 
-  owner  User   @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  client Client @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  owner    User                        @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client   Client                      @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
   evidence HairStateSnapshotEvidence[]
 
   @@unique([ownerUserId, clientId, role, snapshotVersion])
@@ -2183,8 +2191,95 @@ model ProfessionalReasoningProposal {
   owner  User   @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   client Client @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
 
+  // Professional Skill Engine, Stage 6. Real composite-safe FK target --
+  // this row's own `id` is already globally unique (@id), so
+  // ProfessionalExecutionPlan can reference it directly.
+  executionPlans ProfessionalExecutionPlan[]
+
   @@unique([contextFingerprint, provider, model])
   @@index([ownerUserId, clientId, createdAt, id])
+  @@index([ownerUserId, clientId, status])
+}
+
+// Professional Skill Engine, Stage 6 -- PROFESSIONAL EXECUTION PLAN. The
+// persisted, versioned, professional-approvable bridge from a CONFIRMED
+// ProfessionalReasoningProposal (Stage 5) to a structured, parameterized,
+// deterministically-validatable execution sequence (Part B). Mirrors
+// ProfessionalReasoningProposal's own exact shape/CAS-confirm pattern one
+// layer further down the SAME chain (HairStateSnapshot -> HairStateDelta
+// -> ProfessionalReasoningProposal -> ProfessionalExecutionPlan) --
+// deliberately NOT TechnicalDemonstrationPlan's own chain (AnalysisProposal
+// -> TechnicalCutPlan): Stage 1's own Architecture Decision Lock already
+// settled that these are two separate, parallel, never-merged authorities
+// (see professional-execution-plan-contracts.ts's own header).
+//
+// LIFECYCLE -- DRAFT | CONFIRMED | SUPERSEDED, deliberately WITHOUT
+// REJECTED (unlike ProfessionalReasoningProposal's own four-value set):
+// once a Stage 5 proposal is CONFIRMED, compiling it into a plan is a
+// derived, deterministic act (Part R -- zero AI call), not an
+// independently-evaluated option with its own accept/decline decision --
+// exactly TechnicalDemonstrationPlan's own reasoning for omitting
+// REJECTED, reused here for the identical structural reason. A plan a
+// professional does not want is simply superseded by a newer compile/
+// edit, never marked REJECTED.
+//
+// READINESS is a SEPARATE axis from `status` (mirrors Stage 5's own
+// `reasoningStatus`-vs-`status` split): a plan can be legitimately
+// CONFIRMED while its own readiness is PARTIAL (Part M -- "a partial plan
+// is acceptable, do not pretend completeness"); approval never implies
+// full coverage.
+model ProfessionalExecutionPlan {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  currentSnapshotId      String
+  currentSnapshotVersion Int
+  targetSnapshotId       String
+  targetSnapshotVersion  Int
+
+  sourceReasoningProposalId           String
+  // Pinned copy of the source proposal's own contextFingerprint (Part B --
+  // "must remain historically reproducible... never silently start using
+  // a... changed... reasoning proposal") -- lets a caller detect drift
+  // without an extra join.
+  reasoningProposalContextFingerprint String @db.VarChar(64)
+
+  // The full ProfessionalExecutionPlan payload (professional-execution-
+  // plan-contracts.ts) -- one frozen JSON payload per row, mirroring
+  // HairStateSnapshot/ProfessionalReasoningProposal's own precedent, never
+  // a multi-table explosion.
+  planPayload Json
+
+  // Plain string, not a Postgres enum -- application-validated to exactly
+  // one of: DRAFT | CONFIRMED | SUPERSEDED.
+  status String
+
+  // Plain string, not a Postgres enum -- application-validated to exactly
+  // one of: READY_FOR_PROFESSIONAL_REVIEW | PARTIAL | NEEDS_SKILL |
+  // NEEDS_INPUT | BLOCKED. Denormalized from planPayload.readiness for
+  // cheap listing/filtering -- planPayload remains the single source of
+  // truth; this column is always written from it, never independently.
+  readiness String
+
+  // Part L -- additive, never-mutates-baseline override layer, mirrors
+  // TechnicalDemonstrationPlanRecord.professionalOverrides exactly.
+  professionalOverrides Json?
+
+  confirmedByUserId String?
+  confirmedAt       DateTime? @db.Timestamp(6)
+
+  supersededByPlanId String?
+  supersededAt       DateTime? @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner                   User                          @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client                  Client                        @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  sourceReasoningProposal ProfessionalReasoningProposal @relation(fields: [sourceReasoningProposalId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([ownerUserId, clientId, sourceReasoningProposalId, createdAt, id])
   @@index([ownerUserId, clientId, status])
 }
 
@@ -2546,12 +2641,12 @@ model VideoAsset {
   durationSeconds Float?
 
   storagePath        String
-  storageBackend     String?  @db.VarChar(16)
-  storageBucketAlias String?  @db.VarChar(64)
-  storageKey         String?  @db.VarChar(512)
-  storageVersionId   String?  @db.VarChar(1024)
-  storageEtag        String?  @db.VarChar(256)
-  contentSha256      String?  @db.Char(64)
+  storageBackend     String? @db.VarChar(16)
+  storageBucketAlias String? @db.VarChar(64)
+  storageKey         String? @db.VarChar(512)
+  storageVersionId   String? @db.VarChar(1024)
+  storageEtag        String? @db.VarChar(256)
+  contentSha256      String? @db.Char(64)
 
   createdAt DateTime @default(now()) @db.Timestamp(6)
 
@@ -2613,7 +2708,7 @@ model VideoDemonstrationGeneration {
   technicalVisualMapId        String
   mapVersion                  Int
   spatialBindingId            String
-  spatialVersion               Int
+  spatialVersion              Int
 
   // The Photo Preview's own generated image -- the actual image-to-video
   // starting frame (Decision Lock section E: Video animates an
@@ -2776,9 +2871,9 @@ model CaptureSet {
   createdAt DateTime @default(now()) @db.Timestamp(6)
   updatedAt DateTime @updatedAt @db.Timestamp(6)
 
-  owner    User              @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  client   Client            @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
-  images   CaptureSetImage[]
+  owner                                User                                  @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client                               Client                                @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  images                               CaptureSetImage[]
   // Stage 2.5.i.22 (Technical Execution Generation Authorization). Virtual
   // back-relation only -- produces no column or constraint here; the FK
   // lives on "TechnicalExecutionGenerationRequest".
@@ -2832,9 +2927,9 @@ model CaptureSetImage {
   createdAt DateTime @default(now()) @db.Timestamp(6)
   updatedAt DateTime @updatedAt @db.Timestamp(6)
 
-  owner      User       @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  client     Client     @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
-  captureSet CaptureSet @relation(fields: [captureSetId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+  owner                                User                                  @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client                               Client                                @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  captureSet                           CaptureSet                            @relation(fields: [captureSetId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
   // Stage 2.5.i.22 (Technical Execution Generation Authorization). Virtual
   // back-relation only -- produces no column or constraint here; the FK
   // lives on "TechnicalExecutionGenerationRequest".
@@ -2960,7 +3055,7 @@ model TechnicalExecutionGenerationRequest {
   // anywhere ever reads it as technical authority.
   qualificationStatus         String
   qualificationEvidenceSource String?
-  qualificationReason         String? @db.VarChar(2000)
+  qualificationReason         String?   @db.VarChar(2000)
   qualifiedAt                 DateTime? @db.Timestamp(6)
 
   // Sealed state -- see file header. Null = not yet sealed (still
@@ -2971,18 +3066,15 @@ model TechnicalExecutionGenerationRequest {
   createdAt DateTime @default(now()) @db.Timestamp(6)
   updatedAt DateTime @updatedAt @db.Timestamp(6)
 
-  owner           User            @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  client          Client          @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
-  captureSet      CaptureSet      @relation(fields: [captureSetId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
-  captureSetImage CaptureSetImage @relation(fields: [captureSetImageId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+  owner                              User                                @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client                             Client                              @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  captureSet                         CaptureSet                          @relation(fields: [captureSetId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
+  captureSetImage                    CaptureSetImage                     @relation(fields: [captureSetImageId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
   // Stage 2.5.i.23 (Technical Execution Video, concrete provider
   // integration). Virtual back-relation only -- produces no column or
   // constraint here; the FK lives on "TechnicalExecutionVideoGeneration".
   technicalExecutionVideoGenerations TechnicalExecutionVideoGeneration[]
 
-  @@index([ownerUserId, clientId, createdAt, id])
-  @@index([captureSetId, ownerUserId, clientId])
-  @@index([captureSetImageId, ownerUserId, clientId])
   // Stage 2.5.i.23 prerequisite: TechnicalExecutionVideoGeneration needs a
   // real composite FK to this exact sealed request (so a real provider
   // generation's own binding is a real, enforced reference, never a
@@ -2991,6 +3083,9 @@ model TechnicalExecutionGenerationRequest {
   // prerequisite-fix pattern exactly). Structurally safe regardless of
   // existing data -- `id` is already this model's own primary key.
   @@unique([id, ownerUserId, clientId])
+  @@index([ownerUserId, clientId, createdAt, id])
+  @@index([captureSetId, ownerUserId, clientId])
+  @@index([captureSetImageId, ownerUserId, clientId])
 }
 
 // Stage 2.5.i.23 -- TECHNICAL EXECUTION VIDEO, CONCRETE PROVIDER
@@ -3085,8 +3180,8 @@ model TechnicalExecutionVideoGeneration {
   createdAt DateTime @default(now()) @db.Timestamp(6)
   updatedAt DateTime @updatedAt @db.Timestamp(6)
 
-  owner                              User                                @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  client                             Client                              @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+  owner                               User                                @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client                              Client                              @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
   technicalExecutionGenerationRequest TechnicalExecutionGenerationRequest @relation(fields: [technicalExecutionGenerationRequestId, ownerUserId, clientId], references: [id, ownerUserId, clientId], onDelete: Restrict, onUpdate: Cascade)
 
   @@unique([requestFingerprint])

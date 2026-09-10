@@ -147,9 +147,21 @@ function isValidAtomicActionStateTransition(value: unknown): value is AtomicActi
 // Observation criterion -- typed, never a bare unwrapped fact. Required on
 // and exclusive to OBSERVE/VERIFY kinds. `evidenceStatus` is the direct
 // implementation of Stage 2.5.i.2's §22 finding (see file header).
-// ---------------------------------------------------------------------------
-
-export const ATOMIC_ACTION_EVIDENCE_STATUSES = ["DEMONSTRATED_TARGET", "RUNTIME_PROFESSIONAL_OBSERVATION"] as const;
+//
+// Stage 6 addition (additive only, the two original values are byte-
+// unchanged and keep their own exact original meaning): DETERMINISTIC_
+// STATE_CHECK -- the fact is computed entirely from already-structured
+// state (e.g. HairStateDelta/parameter data), no observation of any kind
+// required. FUTURE_VISION_VERIFICATION -- this fact will eventually be
+// confirmed by an automated vision check; Stage 6 only models the
+// verification CONTRACT, it never calls Vision itself (no code anywhere
+// reachable from a value tagged this way performs a real vision call).
+// Together with the pre-existing RUNTIME_PROFESSIONAL_OBSERVATION (a real
+// human professional confirms it live), this closes the exact 3-state
+// verification-method vocabulary Stage 6 needs, reusing this file's own
+// already-real AtomicActionObservationCriterion shape rather than
+// inventing a second, parallel verification concept.
+export const ATOMIC_ACTION_EVIDENCE_STATUSES = ["DEMONSTRATED_TARGET", "RUNTIME_PROFESSIONAL_OBSERVATION", "DETERMINISTIC_STATE_CHECK", "FUTURE_VISION_VERIFICATION"] as const;
 export type AtomicActionEvidenceStatus = (typeof ATOMIC_ACTION_EVIDENCE_STATUSES)[number];
 
 export function isAtomicActionEvidenceStatus(value: unknown): value is AtomicActionEvidenceStatus {
