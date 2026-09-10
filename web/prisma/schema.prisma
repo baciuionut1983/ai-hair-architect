@@ -205,6 +205,10 @@ model User {
   // back-relation only -- produces no column or constraint on "User"; the
   // FK lives on "HairStateSnapshotEvidence".
   hairStateSnapshotEvidence HairStateSnapshotEvidence[]
+  // Professional Skill Engine, Stage 5 (Professional Reasoning). Virtual
+  // back-relation only -- produces no column or constraint on "User"; the
+  // FK lives on "ProfessionalReasoningProposal".
+  professionalReasoningProposals ProfessionalReasoningProposal[]
 }
 
 model Session {
@@ -307,6 +311,10 @@ model Client {
   // back-relation only -- produces no column or constraint on "Client";
   // the FK lives on "HairStateSnapshotEvidence".
   hairStateSnapshotEvidence HairStateSnapshotEvidence[]
+  // Professional Skill Engine, Stage 5 (Professional Reasoning). Virtual
+  // back-relation only -- produces no column or constraint on "Client";
+  // the FK lives on "ProfessionalReasoningProposal".
+  professionalReasoningProposals ProfessionalReasoningProposal[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -2108,6 +2116,76 @@ model ProfessionalSkillDefinition {
   @@unique([skillId, version])
   @@index([vertical, status])
   @@index([skillId, status])
+}
+
+// AI Hair Architect, Professional Skill Engine Stage 5 -- PROFESSIONAL
+// REASONING PROPOSAL. The persisted, versioned, professional-approvable
+// output of AI-assisted reasoning over a HairStateDelta + candidate skill
+// set -- never authoritative until confirmed (mirrors AnalysisProposal's
+// own DRAFT/CONFIRMED/REJECTED/SUPERSEDED lifecycle, including REJECTED:
+// like AnalysisProposal, this is an independently-evaluated candidate a
+// professional can accept OR decline, not a derived artifact of an
+// already-confirmed parent).
+//
+// contextPayload freezes the EXACT ProfessionalReasoningContext (Part A)
+// the model saw -- reproducible/auditable per the task's own explicit
+// "what facts and skill versions did the AI see" requirement.
+// proposalPayload freezes the VALIDATED proposal only, never raw
+// unvalidated model output. provider/model/providerRequestId are real
+// provider metadata for a real call, or the fake provider's own name for
+// a mocked one -- recordAiUsageEvent (ai-usage-repository.ts) is only
+// ever invoked for a REAL provider call, never for a fake/mock (Stage 5's
+// own explicit "no paid events for mocked calls" rule); this table itself
+// stores every proposal regardless, since the DRAFT record is useful
+// audit trail either way.
+model ProfessionalReasoningProposal {
+  id          String @id @default(uuid())
+  ownerUserId String
+  clientId    String
+
+  currentSnapshotId      String
+  currentSnapshotVersion Int
+  targetSnapshotId       String
+  targetSnapshotVersion  Int
+
+  contextPayload     Json
+  // DB-level idempotency backstop -- an identical reasoning context sent
+  // to the same provider/model resolves to the SAME row rather than a
+  // second paid call (Part O's own explicit "consider deterministic
+  // request fingerprint/idempotency so identical reasoning requests can
+  // potentially be reused instead of paid twice").
+  contextFingerprint String @db.VarChar(64)
+
+  provider          String
+  model             String
+  providerRequestId String?
+
+  proposalPayload Json
+
+  // Plain string, NOT a Postgres enum -- same reasoning as every other
+  // lifecycle field in this schema. Application-validated to exactly one
+  // of: DRAFT | CONFIRMED | REJECTED | SUPERSEDED.
+  status String
+
+  confirmedByUserId String?
+  confirmedAt       DateTime? @db.Timestamp(6)
+  rejectedAt        DateTime? @db.Timestamp(6)
+
+  // Nullable pointer to the proposal that superseded this one -- mirrors
+  // AnalysisProposal.supersededByProposalId exactly: a plain nullable
+  // column, NOT an enforced self-relation FK.
+  supersededByProposalId String?
+  supersededAt           DateTime? @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner  User   @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client Client @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([contextFingerprint, provider, model])
+  @@index([ownerUserId, clientId, createdAt, id])
+  @@index([ownerUserId, clientId, status])
 }
 
 // Technical Demonstration, Stage 1 (Decision Lock: "cutting plan
