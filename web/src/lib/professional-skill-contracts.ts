@@ -230,6 +230,86 @@ export function isSkillAuthorityType(value: unknown): value is SkillAuthorityTyp
 }
 
 // ---------------------------------------------------------------------------
+// Skill Capability -- Stage 4 addition. The smallest structured vocabulary
+// that lets a deterministic selector ask "can this skill contribute to
+// this required state transformation?" without resorting to free-text/
+// name/description matching (Stage 4's own explicit fail-closed rule).
+//
+// Deliberately trimmed to EXACTLY what hair-state-delta.ts's own
+// HairStateDeltaTransformation categories can actually express, never the
+// task's own full illustrative list -- "creates movement" and "increases
+// layering" were considered and rejected: HairStateSnapshot's own file
+// header already deliberately excludes a separate movement/layering axis
+// (movement is HairTexture's own vocabulary; layering is already
+// expressible via weightIntent), so a capability kind with no
+// corresponding delta field to ever match against would be dead
+// vocabulary -- exactly the "invent false precision" this engagement
+// consistently refuses to do.
+//
+// TWO FAMILIES, both real and useful, kept structurally distinct:
+//   OUTCOME kinds (REDUCE_LENGTH/PRESERVE_LENGTH/INCREASE_LENGTH/
+//   REDUCE_WEIGHT/BUILD_WEIGHT/PRESERVE_WEIGHT/PRESERVE_PERIMETER/
+//   MODIFY_PERIMETER_RELATIONSHIP) -- these are what Stage 4's own
+//   candidate selector (hair-state-delta-skill-candidate-selector.ts)
+//   actually matches against HairStateDeltaEntry transformations.
+//   PROCEDURAL kinds (ESTABLISH_GUIDE/CONNECT_ZONES/CROSS_CHECK_VALIDATE/
+//   REFINE_ENDS) -- real, honest things a skill does, but NOT a state
+//   transformation a delta ever expresses on its own; declared now so
+//   real skills can describe themselves completely, but Stage 4's own
+//   selector never targets these directly (a future Stage 5+ composition/
+//   ordering engine is the intended consumer). ESTABLISH_GUIDE is the one
+//   exception matched by Stage 4 too, in the specific case of a
+//   newly-added (no prior CURRENT baseline) length requirement -- see the
+//   selector's own header for why.
+//
+// A skill may declare MULTIPLE capabilities (one skill, multiple
+// contributions) -- see file's own "multi-skill reality" precedent this
+// stage's own task requires.
+// ---------------------------------------------------------------------------
+
+export const SKILL_CAPABILITY_KINDS = [
+  "REDUCE_LENGTH",
+  "PRESERVE_LENGTH",
+  "INCREASE_LENGTH",
+  "REDUCE_WEIGHT",
+  "BUILD_WEIGHT",
+  "PRESERVE_WEIGHT",
+  "PRESERVE_PERIMETER",
+  "MODIFY_PERIMETER_RELATIONSHIP",
+  "ESTABLISH_GUIDE",
+  "CONNECT_ZONES",
+  "CROSS_CHECK_VALIDATE",
+  "REFINE_ENDS",
+] as const;
+export type SkillCapabilityKind = (typeof SKILL_CAPABILITY_KINDS)[number];
+
+export function isSkillCapabilityKind(value: unknown): value is SkillCapabilityKind {
+  return typeof value === "string" && (SKILL_CAPABILITY_KINDS as readonly string[]).includes(value);
+}
+
+export interface SkillCapability {
+  kind: SkillCapabilityKind;
+  // Vertical-specific zone strings (e.g. real HeadZone values for
+  // cutting) -- same "this contract does not interpret the strings
+  // itself" discipline as SkillDefinition.applicableZones. Omitted means
+  // "every zone this skill's own applicableZones already covers" (falls
+  // back to the skill-level list at match time -- see the selector); an
+  // explicit, narrower list here lets one skill declare capabilities that
+  // apply to different zone subsets.
+  zones?: readonly string[];
+}
+
+export function isValidSkillCapability(value: unknown): value is SkillCapability {
+  if (!isRecord(value)) return false;
+  if (!isSkillCapabilityKind(value.kind)) return false;
+  if (value.zones !== undefined) {
+    if (!Array.isArray(value.zones) || value.zones.length === 0) return false;
+    if (!value.zones.every((z) => typeof z === "string" && z.length > 0)) return false;
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // The Skill Definition itself.
 // ---------------------------------------------------------------------------
 
@@ -269,6 +349,13 @@ export interface SkillDefinition<TFact extends string = string> {
   // Optional, vertical-specific meaning (e.g. real HeadZone values for a
   // cutting skill) -- this contract does not interpret the strings itself.
   applicableZones?: readonly string[];
+  // Stage 4 addition -- structured "what can this skill contribute"
+  // declarations, see SkillCapability's own header above. Optional: a
+  // skill declaring none simply can never become a Stage 4 candidate
+  // match (never an error -- a skill may exist purely as a not-yet-
+  // capability-tagged record, or one whose only real contribution is
+  // procedural and out of Stage 4's own matching scope).
+  capabilities?: readonly SkillCapability[];
   // Declarative only -- no resolution/ordering logic lives here. A future
   // composition engine consults these; this contract only records them.
   prerequisiteSkillIds?: readonly string[];
@@ -331,6 +418,9 @@ export function isValidSkillDefinition<TFact extends string>(
   if (value.applicabilityCondition !== undefined && !isValidSkillCondition(value.applicabilityCondition, isValidFact)) return false;
   if (value.applicableZones !== undefined) {
     if (!Array.isArray(value.applicableZones) || !value.applicableZones.every((z) => typeof z === "string" && z.length > 0)) return false;
+  }
+  if (value.capabilities !== undefined) {
+    if (!Array.isArray(value.capabilities) || !value.capabilities.every(isValidSkillCapability)) return false;
   }
   if (value.prerequisiteSkillIds !== undefined) {
     if (!Array.isArray(value.prerequisiteSkillIds) || !value.prerequisiteSkillIds.every((id) => typeof id === "string" && id.length > 0)) return false;

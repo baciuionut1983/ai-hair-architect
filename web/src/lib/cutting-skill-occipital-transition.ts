@@ -186,6 +186,20 @@ export const OCCIPITAL_TRANSITION_SKILL: SkillDefinition<OccipitalTransitionFact
     },
   ],
   applicableZones: ["posterior_below_occipital", "occipital_and_above"],
+  // Stage 4 addition -- structured capability declaration, added
+  // additively. PRESERVE_LENGTH: the zero-degree/one-length relationship
+  // is explicitly maintained across both control-method contexts (this
+  // Skill's own rationale: "no new cutting technique is introduced").
+  // CONNECT_ZONES: this Skill's entire purpose is continuing posterior
+  // execution FROM the already-established central-nape guide INTO the
+  // occipital zone -- structurally connecting the two, never a separate,
+  // disconnected cut. Zones use the canonical HeadZone vocabulary
+  // ("nape", "occipital"), deliberately distinct from this Skill's own
+  // vertical-specific applicableZones above.
+  capabilities: [
+    { kind: "PRESERVE_LENGTH", zones: ["nape", "occipital"] },
+    { kind: "CONNECT_ZONES", zones: ["nape", "occipital"] },
+  ],
   createdAt: "2026-09-08T00:00:00.000Z",
 };
 

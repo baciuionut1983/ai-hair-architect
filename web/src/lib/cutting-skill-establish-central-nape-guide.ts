@@ -243,6 +243,21 @@ export const ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL: SkillDefinition<ExecutionRuleCo
     },
   ],
   applicableZones: ["center_nape"],
+  // Stage 4 addition -- structured capability declaration, added
+  // additively (this skill's own real, already-authorized content is
+  // unchanged). ESTABLISH_GUIDE: this Skill's own entire scope IS
+  // establishing the central-nape reference guide strand. PRESERVE_LENGTH:
+  // 0-degree blunt, one-length elevation is, by definition, a preserved
+  // (non-reducing, non-increasing) length relationship along the guide --
+  // this Skill never removes or adds length, it only establishes where
+  // the reference line IS. Zones use the canonical HeadZone vocabulary
+  // ("nape"), deliberately distinct from this Skill's own
+  // vertical-specific `applicableZones` ("center_nape") -- see
+  // professional-skill-contracts.ts's own SkillCapability header for why.
+  capabilities: [
+    { kind: "ESTABLISH_GUIDE", zones: ["nape"] },
+    { kind: "PRESERVE_LENGTH", zones: ["nape"] },
+  ],
   createdAt: "2026-09-08T00:00:00.000Z",
 };
 

@@ -230,6 +230,20 @@ export const CONTINUE_CENTRAL_NAPE_CONSTRUCTION_SKILL: SkillDefinition<ContinueC
     },
   ],
   applicableZones: ["posterior_below_occipital"],
+  // Stage 4 addition -- structured capability declaration, added
+  // additively. ESTABLISH_GUIDE: this Skill's own procedure repeats
+  // guide-strand construction across successive subsections (order 5:
+  // "the freshly cut subsection itself becomes the guide reference for
+  // the next"). PRESERVE_LENGTH: zero-degree, one-length elevation
+  // maintained throughout every repetition. CROSS_CHECK_VALIDATE: order 3
+  // is explicitly a guide-identifiability confirmation step. Zones use
+  // the canonical HeadZone vocabulary ("nape"), deliberately distinct
+  // from this Skill's own vertical-specific applicableZones above.
+  capabilities: [
+    { kind: "ESTABLISH_GUIDE", zones: ["nape"] },
+    { kind: "PRESERVE_LENGTH", zones: ["nape"] },
+    { kind: "CROSS_CHECK_VALIDATE", zones: ["nape"] },
+  ],
   createdAt: "2026-09-09T00:00:00.000Z",
 };
 
