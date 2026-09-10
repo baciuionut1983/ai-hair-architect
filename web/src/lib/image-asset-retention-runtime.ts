@@ -13,6 +13,7 @@ import {
   runImageAssetRetentionAutomationSweep,
   type RetentionAutomationSweepResult,
 } from "./image-asset-retention-automation";
+import { findHistoricallyReferencedImageAssetIds, type HistoricalImageReferenceDatabase } from "./image-asset-historical-reference-guard";
 import { deleteConfinedImageFileForRetention, getStoragePath } from "./image-storage";
 import { createObjectStorageAliasResolver } from "./object-storage-alias-resolver";
 import { classifyObjectStorageError, ObjectStorageError } from "./object-storage-errors";
@@ -62,6 +63,101 @@ const database: ImageAssetRetentionDatabase = {
       };
       return fn(wrapped);
     }),
+};
+
+// RETENTION SAFETY GATE, real wiring. One `findMany` per source named in
+// image-asset-historical-reference-guard.ts's own inventory comment --
+// each returns only the distinct referencing column value, filtered to
+// the candidate batch, non-null. No AI, no external call, plain indexed
+// Prisma reads. Exported (not just used internally) so a real-Postgres
+// test can exercise these exact queries directly against real rows in
+// each source table, rather than only re-testing the pure merge logic
+// with fakes.
+export const historicalReferenceDatabase: HistoricalImageReferenceDatabase = {
+  analysisByImageAssetId: async (ids) => {
+    const rows = await prisma.analysis.findMany({ where: { imageAssetId: { in: [...ids] } }, select: { imageAssetId: true }, distinct: ["imageAssetId"] });
+    return rows.map((r) => r.imageAssetId).filter((v): v is string => v !== null);
+  },
+  imageAnalysisByAssetId: async (ids) => {
+    const rows = await prisma.imageAnalysis.findMany({ where: { assetId: { in: [...ids] } }, select: { assetId: true }, distinct: ["assetId"] });
+    return rows.map((r) => r.assetId);
+  },
+  analysisProposalBySourceImageAssetId: async (ids) => {
+    const rows = await prisma.analysisProposal.findMany({
+      where: { sourceImageAssetId: { in: [...ids] } },
+      select: { sourceImageAssetId: true },
+      distinct: ["sourceImageAssetId"],
+    });
+    return rows.map((r) => r.sourceImageAssetId).filter((v): v is string => v !== null);
+  },
+  technicalVisualMapBySourceImageAssetId: async (ids) => {
+    const rows = await prisma.technicalVisualMap.findMany({
+      where: { sourceImageAssetId: { in: [...ids] } },
+      select: { sourceImageAssetId: true },
+      distinct: ["sourceImageAssetId"],
+    });
+    return rows.map((r) => r.sourceImageAssetId).filter((v): v is string => v !== null);
+  },
+  technicalVisualMapSpatialBindingBySourceImageAssetId: async (ids) => {
+    const rows = await prisma.technicalVisualMapSpatialBinding.findMany({
+      where: { sourceImageAssetId: { in: [...ids] } },
+      select: { sourceImageAssetId: true },
+      distinct: ["sourceImageAssetId"],
+    });
+    return rows.map((r) => r.sourceImageAssetId);
+  },
+  hairStateSnapshotBySourceImageAssetId: async (ids) => {
+    const rows = await prisma.hairStateSnapshot.findMany({
+      where: { sourceImageAssetId: { in: [...ids] } },
+      select: { sourceImageAssetId: true },
+      distinct: ["sourceImageAssetId"],
+    });
+    return rows.map((r) => r.sourceImageAssetId).filter((v): v is string => v !== null);
+  },
+  hairStateSnapshotEvidenceByImageAssetId: async (ids) => {
+    const rows = await prisma.hairStateSnapshotEvidence.findMany({
+      where: { imageAssetId: { in: [...ids] } },
+      select: { imageAssetId: true },
+      distinct: ["imageAssetId"],
+    });
+    return rows.map((r) => r.imageAssetId).filter((v): v is string => v !== null);
+  },
+  captureSetImageByImageAssetId: async (ids) => {
+    const rows = await prisma.captureSetImage.findMany({ where: { imageAssetId: { in: [...ids] } }, select: { imageAssetId: true }, distinct: ["imageAssetId"] });
+    return rows.map((r) => r.imageAssetId);
+  },
+  photoPreviewGenerationBySourceImageAssetId: async (ids) => {
+    const rows = await prisma.photoPreviewGeneration.findMany({
+      where: { sourceImageAssetId: { in: [...ids] } },
+      select: { sourceImageAssetId: true },
+      distinct: ["sourceImageAssetId"],
+    });
+    return rows.map((r) => r.sourceImageAssetId);
+  },
+  photoPreviewGenerationByGeneratedImageAssetId: async (ids) => {
+    const rows = await prisma.photoPreviewGeneration.findMany({
+      where: { generatedImageAssetId: { in: [...ids] } },
+      select: { generatedImageAssetId: true },
+      distinct: ["generatedImageAssetId"],
+    });
+    return rows.map((r) => r.generatedImageAssetId).filter((v): v is string => v !== null);
+  },
+  videoDemonstrationGenerationBySourceGeneratedImageAssetId: async (ids) => {
+    const rows = await prisma.videoDemonstrationGeneration.findMany({
+      where: { sourceGeneratedImageAssetId: { in: [...ids] } },
+      select: { sourceGeneratedImageAssetId: true },
+      distinct: ["sourceGeneratedImageAssetId"],
+    });
+    return rows.map((r) => r.sourceGeneratedImageAssetId);
+  },
+  technicalExecutionGenerationRequestByImageAssetId: async (ids) => {
+    const rows = await prisma.technicalExecutionGenerationRequest.findMany({
+      where: { imageAssetId: { in: [...ids] } },
+      select: { imageAssetId: true },
+      distinct: ["imageAssetId"],
+    });
+    return rows.map((r) => r.imageAssetId);
+  },
 };
 
 // Real S3 delete + confirm, mirroring storage-readiness-canary.ts's own
@@ -116,6 +212,8 @@ export async function runImageAssetRetentionPurgeForUser(
     now: () => new Date(),
     deleteS3Object: makeDeleteS3Object(),
     deleteLocalFile,
+    findHistoricallyReferencedImageAssetIds: (candidateImageAssetIds) =>
+      findHistoricallyReferencedImageAssetIds(historicalReferenceDatabase, candidateImageAssetIds),
     writeDryRunAuditEvent: async ({ eligibleCount, runId }) => {
       await writeOpsAuditEvent({
         actorUserId: input.ownerUserId,

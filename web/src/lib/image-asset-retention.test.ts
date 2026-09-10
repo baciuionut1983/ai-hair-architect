@@ -190,6 +190,7 @@ function baseInput(overrides: Partial<ImageAssetRetentionInput> = {}): ImageAsse
     now: fixedNow,
     deleteS3Object: vi.fn(async () => undefined),
     deleteLocalFile: vi.fn(async () => "deleted" as const),
+    findHistoricallyReferencedImageAssetIds: vi.fn(async () => new Set<string>()),
     writeDryRunAuditEvent: vi.fn(async () => undefined),
     ...overrides,
   };
@@ -435,6 +436,108 @@ describe("executeImageAssetRetentionPurge", () => {
     await executeImageAssetRetentionPurge(input);
     const after = { ...input, database: undefined, now: undefined, deleteS3Object: undefined, deleteLocalFile: undefined, writeDryRunAuditEvent: undefined };
     expect(after).toEqual(before);
+  });
+
+  // -------------------------------------------------------------------------
+  // RETENTION SAFETY GATE -- historical-evidence-aware purge.
+  // -------------------------------------------------------------------------
+
+  it("18. an unreferenced, time-eligible row still purges normally (empty-set gate is a no-op)", async () => {
+    const fake = fakeDatabase({ rows: [localRow()] });
+    const findHistoricallyReferencedImageAssetIds = vi.fn(async () => new Set<string>());
+    const result = await executeImageAssetRetentionPurge(
+      baseInput({ database: fake.database, dryRun: false, confirmationToken: "CONFIRM_IMAGE_ASSET_RETENTION_EXECUTION", findHistoricallyReferencedImageAssetIds }),
+    );
+    expect(result).toMatchObject({ eligibleCount: 1, purgedCount: 1, failedCount: 0 });
+    expect(fake.rows).toHaveLength(0);
+  });
+
+  it("19. a row reported as historically referenced is excluded from BOTH storage deletion and DB deletion, even though time-eligible", async () => {
+    const fake = fakeDatabase({ rows: [localRow({ id: "asset-protected" }), localRow({ id: "asset-free" })] });
+    const deleteLocalFile = vi.fn(async () => "deleted" as const);
+    const findHistoricallyReferencedImageAssetIds = vi.fn(async (ids: readonly string[]) => new Set(ids.filter((id) => id === "asset-protected")));
+
+    const result = await executeImageAssetRetentionPurge(
+      baseInput({
+        database: fake.database,
+        dryRun: false,
+        confirmationToken: "CONFIRM_IMAGE_ASSET_RETENTION_EXECUTION",
+        deleteLocalFile,
+        findHistoricallyReferencedImageAssetIds,
+      }),
+    );
+
+    expect(result).toMatchObject({ eligibleCount: 1, purgedCount: 1, failedCount: 0 });
+    expect(deleteLocalFile).not.toHaveBeenCalledWith(expect.objectContaining({ id: "asset-protected" }));
+    expect(deleteLocalFile).toHaveBeenCalledWith(expect.objectContaining({ id: "asset-free" }));
+    expect(fake.deletedRowIds).toEqual(["asset-free"]);
+    // The protected row survives, still soft-deleted (hidden from the
+    // user's current gallery), never resurrected to a non-deleted state.
+    const survivor = fake.rows.find((r) => r.id === "asset-protected");
+    expect(survivor).toBeDefined();
+    expect(survivor?.deletedAt).not.toBeNull();
+  });
+
+  it("20. fail-closed: a gate lookup failure aborts the whole run -- nothing is deleted, not storage, not the DB row", async () => {
+    const fake = fakeDatabase({ rows: [localRow()] });
+    const deleteLocalFile = vi.fn(async () => "deleted" as const);
+    const findHistoricallyReferencedImageAssetIds = vi.fn(async () => {
+      throw new Error("reference status indeterminate");
+    });
+
+    await expect(
+      executeImageAssetRetentionPurge(
+        baseInput({
+          database: fake.database,
+          dryRun: false,
+          confirmationToken: "CONFIRM_IMAGE_ASSET_RETENTION_EXECUTION",
+          deleteLocalFile,
+          findHistoricallyReferencedImageAssetIds,
+        }),
+      ),
+    ).rejects.toThrow();
+
+    expect(deleteLocalFile).not.toHaveBeenCalled();
+    expect(fake.rows).toHaveLength(1);
+    expect(fake.deletedRowIds).toEqual([]);
+  });
+
+  it("21. dry run reports the count AFTER the gate excludes protected rows, not the raw time-eligible count", async () => {
+    const fake = fakeDatabase({ rows: [localRow({ id: "asset-protected" }), localRow({ id: "asset-free" })] });
+    const findHistoricallyReferencedImageAssetIds = vi.fn(async (ids: readonly string[]) => new Set(ids.filter((id) => id === "asset-protected")));
+
+    const result = await executeImageAssetRetentionPurge(
+      baseInput({ database: fake.database, dryRun: true, findHistoricallyReferencedImageAssetIds }),
+    );
+
+    expect(result).toMatchObject({ dryRun: true, eligibleCount: 1, purgedCount: 0 });
+  });
+
+  it("22. the gate is consulted with exactly the time-eligible batch's own ids, never the whole table", async () => {
+    const fake = fakeDatabase({ rows: [localRow()] });
+    const findHistoricallyReferencedImageAssetIds = vi.fn(async () => new Set<string>());
+    await executeImageAssetRetentionPurge(
+      baseInput({ database: fake.database, dryRun: false, confirmationToken: "CONFIRM_IMAGE_ASSET_RETENTION_EXECUTION", findHistoricallyReferencedImageAssetIds }),
+    );
+    expect(findHistoricallyReferencedImageAssetIds).toHaveBeenCalledWith(["asset-local-1"]);
+  });
+
+  it("23. a still-protected row remains safely idempotent across repeated runs -- never errors, never gets purged while referenced", async () => {
+    const fake = fakeDatabase({ rows: [localRow({ id: "asset-protected" })] });
+    const findHistoricallyReferencedImageAssetIds = vi.fn(async (ids: readonly string[]) => new Set(ids));
+
+    for (let i = 0; i < 3; i += 1) {
+      const result = await executeImageAssetRetentionPurge(
+        baseInput({
+          database: fake.database,
+          dryRun: false,
+          confirmationToken: "CONFIRM_IMAGE_ASSET_RETENTION_EXECUTION",
+          findHistoricallyReferencedImageAssetIds,
+        }),
+      );
+      expect(result).toMatchObject({ eligibleCount: 0, purgedCount: 0, failedCount: 0 });
+    }
+    expect(fake.rows).toHaveLength(1);
   });
 
   it("throws ImageAssetRetentionError instances with safe, non-throwing constructors", () => {

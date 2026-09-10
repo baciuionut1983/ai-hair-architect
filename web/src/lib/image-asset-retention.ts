@@ -10,11 +10,27 @@ import { createHash, randomUUID } from "crypto";
 // transaction, since real object-storage I/O must never run inside an open
 // Postgres transaction (same discipline as M33's restore execution).
 //
+// RETENTION SAFETY GATE (added after Stage 3's own final verification
+// found this job was purely time-based, with zero awareness of whether a
+// time-eligible row is still required as historical evidence): before
+// EITHER phase touches a row, `input.findHistoricallyReferencedImageAssetIds`
+// (image-asset-historical-reference-guard.ts) is consulted once for the
+// whole time-eligible batch. Any row it reports as still referenced is
+// removed from BOTH phases entirely -- its storage object is never touched
+// and its DB row is never deleted, even though it already passed the pure
+// time check. It remains soft-deleted (hidden from the user's current
+// gallery, per the M36 DELETE route) but is retained as historical
+// evidence only, never silently restored to "current". Fail-closed: if
+// that lookup itself throws, this whole purge attempt throws with it --
+// "cannot determine reference status" must never be treated as "safe to
+// purge".
+//
 // Two-phase design, mirroring backup-m15-v2-restore-execution.ts:
-//   Phase 1 (no lock, real I/O): identify eligible rows, clear each row's
-//     real object (S3 delete + confirm, or local file delete + confirm).
-//     A row whose storage clear fails is excluded from Phase 2 entirely --
-//     it stays soft-deleted, still eligible, safely retryable next run.
+//   Phase 1 (no lock, real I/O): identify eligible rows, drop any that are
+//     still historically referenced, clear each REMAINING row's real
+//     object (S3 delete + confirm, or local file delete + confirm). A row
+//     whose storage clear fails is excluded from Phase 2 entirely -- it
+//     stays soft-deleted, still eligible, safely retryable next run.
 //   Phase 2 (advisory-locked, DB-only, no I/O): hard-delete only the rows
 //     whose storage was actually cleared (or was already absent), verify
 //     the affected count, record the run.
@@ -162,6 +178,12 @@ export interface ImageAssetRetentionInput {
   // throws -- a failed audit write must not fail an otherwise-successful
   // dry run.
   readonly writeDryRunAuditEvent: (input: { eligibleCount: number; runId: string }) => Promise<void>;
+  // RETENTION SAFETY GATE. Given the ids of the time-eligible batch,
+  // returns the subset still required as historical evidence by any
+  // governed record (image-asset-historical-reference-guard.ts owns the
+  // full source inventory). MUST throw rather than guess when reference
+  // status cannot be reliably determined -- see the module header.
+  readonly findHistoricallyReferencedImageAssetIds: (candidateImageAssetIds: readonly string[]) => Promise<ReadonlySet<string>>;
 }
 
 // Exported so callers that construct a real execution request (the
@@ -197,8 +219,12 @@ export async function executeImageAssetRetentionPurge(
 
   if (input.dryRun) {
     const eligible = await findEligibleRows(input.database, input.ownerUserId, startedAt);
+    // Fail-closed: if reference status cannot be determined, this throws
+    // and the dry run reports nothing rather than an optimistic guess.
+    const protectedIds = await input.findHistoricallyReferencedImageAssetIds(eligible.map((row) => row.id));
+    const purgeCandidateCount = eligible.filter((row) => !protectedIds.has(row.id)).length;
     const runId = randomUUID();
-    await input.writeDryRunAuditEvent({ eligibleCount: eligible.length, runId });
+    await input.writeDryRunAuditEvent({ eligibleCount: purgeCandidateCount, runId });
     return {
       runId,
       status: "dry_run_completed",
@@ -206,7 +232,7 @@ export async function executeImageAssetRetentionPurge(
       finishedAt: startedAt.toISOString(),
       replayed: false,
       dryRun: true,
-      eligibleCount: eligible.length,
+      eligibleCount: purgeCandidateCount,
       purgedCount: 0,
       failedCount: 0,
       failures: [],
@@ -214,7 +240,12 @@ export async function executeImageAssetRetentionPurge(
   }
 
   // --- Phase 1: real I/O, outside any transaction/lock ---
-  const eligible = await findEligibleRows(input.database, input.ownerUserId, startedAt);
+  const timeEligible = await findEligibleRows(input.database, input.ownerUserId, startedAt);
+  // RETENTION SAFETY GATE: consulted once, before any storage object is
+  // touched. Fail-closed -- a thrown error here aborts the whole purge
+  // attempt rather than proceeding as if nothing were referenced.
+  const protectedImageAssetIds = await input.findHistoricallyReferencedImageAssetIds(timeEligible.map((row) => row.id));
+  const eligible = timeEligible.filter((row) => !protectedImageAssetIds.has(row.id));
   const purgedIds: string[] = [];
   const failures: ImageAssetRetentionRowFailure[] = [];
 
