@@ -139,9 +139,30 @@ suite("professional-brain-orchestrator (real Postgres, zero AI / provider)", () 
     const delta = await computeDelta(ownerUserId, clientId);
     expect(delta.entries.some((e) => e.transformation === "PRESERVED" || e.transformation === "UNKNOWN")).toBe(true);
     const selection = await selectCandidateSkills(ownerUserId, clientId);
+    // Stage 8.5S1B: the registry now legitimately holds 6 real skills --
+    // Construct One-Length Perimeter's own real PRESERVE_LENGTH capability
+    // (zones: nape/occipital) honestly ALSO matches this same nape/
+    // occipital PRESERVED-length scenario, alongside the original 3. This
+    // list still proves the real invariant this test exists for: every
+    // candidate traces to a REAL, REGISTERED skillKey, never an invented
+    // one -- never that exactly 3 specific skills must be the only ones
+    // that ever match.
     for (const m of selection.candidateMatches) {
-      expect(["skill-cutting-establish-central-nape-guide", "skill-cutting-occipital-transition", "skill-cutting-continue-central-nape-construction"]).toContain(m.skillKey);
+      expect([
+        "skill-cutting-establish-central-nape-guide",
+        "skill-cutting-occipital-transition",
+        "skill-cutting-continue-central-nape-construction",
+        "skill-cutting-graduated",
+        "skill-cutting-one-length-perimeter",
+        "skill-cutting-slice-and-slide-refinement",
+      ]).toContain(m.skillKey);
     }
+    // Crown weight-reduction stays unresolved: neither the original 3 nor
+    // Graduated Cutting's own REDUCE_WEIGHT/BUILD_WEIGHT capabilities are
+    // zone-scoped to canonical "crown" via their own applicableZones
+    // (Graduated Cutting's vertical-specific zones are its own
+    // lower/upper/perimeter/cross-check labels, never the canonical
+    // HeadZone "crown") -- still an honest, correctly unresolved gap.
     expect(selection.unresolvedDeltas.some((d) => d.scope === "crown")).toBe(true);
   });
 

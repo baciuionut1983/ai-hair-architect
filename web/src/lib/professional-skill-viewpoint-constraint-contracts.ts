@@ -96,11 +96,30 @@ import { isDemonstrationRequirementCategory, type DemonstrationRequirementCatego
 
 // ---------------------------------------------------------------------------
 // Viewpoint family -- see file header for why this is independently
-// declared (never importing ViewLabel) and why only one real value exists
-// today.
+// declared (never importing ViewLabel) and why only one real value existed
+// before Stage 8.5S1B.
+//
+// STAGE 8.5S1B ADDITION -- ANTERIOR / LATERAL_LEFT / LATERAL_RIGHT /
+// SUPERIOR (G1 gap, first reported by the Stage 8.5S1A audit): Construct
+// One-Length Perimeter (real lateral-left/lateral-right Execution Units)
+// and Graduated Cutting (real crown/upper-head, front-of-scalp-adjacent
+// work) are the first real Skills whose own real content genuinely needs
+// a viewpoint family other than POSTERIOR -- exactly the trigger this
+// file's own original header named as the condition for growing this
+// vocabulary ("deferred until a real Skill actually needs a different
+// family"). Each new value is, like POSTERIOR, a genuinely cross-vertical
+// anatomical-direction term (not haircut vocabulary -- equally meaningful
+// for a color foil placement or a nail-region application), so all four
+// belong in this UNIVERSAL file. MINIMUM extension only: this addition
+// makes the vocabulary able to REPRESENT non-posterior observability; it
+// does NOT add a family-selection/preference mechanism -- see
+// cutting-skill-viewpoint-constraint-deriver.ts's own header for why
+// automatic selection among multiple satisfying families remains a
+// deliberately deferred, separately-scoped future addition (Stage
+// 2.5.i.12's own "preferredFamily" extension point, still not built).
 // ---------------------------------------------------------------------------
 
-export const VIEWPOINT_FAMILIES = ["POSTERIOR"] as const;
+export const VIEWPOINT_FAMILIES = ["POSTERIOR", "ANTERIOR", "LATERAL_LEFT", "LATERAL_RIGHT", "SUPERIOR"] as const;
 export type ViewpointFamily = (typeof VIEWPOINT_FAMILIES)[number];
 
 export function isViewpointFamily(value: unknown): value is ViewpointFamily {

@@ -86,8 +86,20 @@ const CATEGORY_PHRASES: Record<DemonstrationRequirementCategory, (value: string)
   SUBJECT_CONDITION_STATE: (value) => `the subject's visible condition: ${value}`,
 };
 
+// Stage 8.5S1B -- ANTERIOR/LATERAL_LEFT/LATERAL_RIGHT/SUPERIOR added
+// (G1 gap). This provider serializer is exactly the correct, designed
+// boundary for translating an anatomical-direction family into camera
+// phrasing (professional-skill-viewpoint-constraint-contracts.ts's own
+// header: "camera/timing/provider-specific rendering detail" lives only
+// downstream, never in the universal contract) -- each phrase names only
+// the real anatomical direction, mirrors POSTERIOR's own exact style, and
+// invents no cinematic technique beyond it.
 const VIEWPOINT_FAMILY_PHRASES: Record<ViewpointFamily, string> = {
   POSTERIOR: "from a posterior (back-of-head) viewpoint only -- never a front, side-profile, overhead, or orbiting camera",
+  ANTERIOR: "from an anterior (front-of-face) viewpoint only -- never a back, side-profile, overhead, or orbiting camera",
+  LATERAL_LEFT: "from a left-lateral (left-side profile) viewpoint only -- never a front, back, right-side, overhead, or orbiting camera",
+  LATERAL_RIGHT: "from a right-lateral (right-side profile) viewpoint only -- never a front, back, left-side, overhead, or orbiting camera",
+  SUPERIOR: "from a superior (overhead, top-down) viewpoint only -- never a front, back, side-profile, or orbiting camera",
 };
 
 const FRAMING_SEMANTIC_PHRASES: Record<FramingSemantic, string> = {

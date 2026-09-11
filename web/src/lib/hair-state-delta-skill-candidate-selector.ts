@@ -2,6 +2,7 @@ import { isSkillEligibleForAuthority, type SkillCapabilityKind, type SkillDefini
 import type { ProfessionalSkillDefinitionRecord } from "@/lib/professional-skill-registry-repository";
 import { evaluateSkillCondition, type SkillConditionFacts } from "@/lib/skill-condition-evaluator";
 import { computeHairStateDelta, type HairStateDelta, type HairStateDeltaEntry, type HairStateSnapshotDeltaInput } from "@/lib/hair-state-delta";
+import type { PreserveConstraintEntry } from "@/lib/technical-visual-map-validators";
 
 // AI Hair Architect, Professional Skill Engine Stage 4 -- DETERMINISTIC
 // CANDIDATE SELECTOR. Pure, deterministic, no I/O, no AI, no LLM. The
@@ -42,6 +43,17 @@ export interface SkillCandidateMatch {
   matchedCapability: SkillCapabilityKind;
   applicabilityResult: SkillCandidateApplicabilityResult;
   deterministicReason: string;
+  // Stage 8.5S1B -- PRESERVATION GATE, SMALL SAFE FOLLOW-UP (previous
+  // audit's own finding: Stage 4 selection did not reject a candidate
+  // deterministically known to violate an authoritative preservation
+  // constraint; Stage 6 remains the full, final authoritative preservation
+  // validator -- this is NOT a duplicate of it). Present ONLY when this
+  // match was moved out of candidateMatches into rejectedMatches because
+  // it directly, deterministically conflicts with a caller-supplied
+  // activePreserveConstraints entry for the SAME zone -- never present
+  // otherwise, and never used to express mere uncertainty (an UNKNOWN
+  // compatibility is never reported as a conflict here).
+  preserveConstraintConflict?: string;
 }
 
 export interface HairStateDeltaSkillSelectionResult {
@@ -159,10 +171,45 @@ function evaluateApplicability(skill: SkillDefinition, facts: SkillConditionFact
 // The selector.
 // ---------------------------------------------------------------------------
 
+// Stage 8.5S1B -- the ONE deterministic conflict this minimal, additive
+// follow-up recognizes: a capability that REDUCES WEIGHT offered for the
+// SAME zone an active, zone-scoped `preserve_density_sensitive_area`
+// constraint protects. This is the single cleanest, most directly
+// justified conflict in the existing PreserveConstraintType vocabulary
+// (technical-visual-map-validators.ts) -- exactly the real case this
+// stage's own Baciu-case audit surfaced (a client's confirmed
+// "avoid aggressive thinning" preservation concern). Deliberately NOT
+// extended to `preserve_hairline` or the non-zone-scoped constraint types
+// (preserve_perimeter_weight, preserve_identity, ...): those require a
+// professional judgment about which zones/capabilities they actually
+// conflict with that this file has no deterministic source for -- adding
+// them here would be exactly the "duplicate Stage 6's full authoritative
+// validator" scope-creep this stage's own task explicitly forbids.
+// Compatibility that cannot be determined this way is simply never
+// flagged -- absence of a known conflict, never an overclaimed
+// "compatible" result.
+function findDeterministicPreserveConflict(
+  capabilityKind: SkillCapabilityKind,
+  zone: HairStateDeltaEntry["scope"],
+  activePreserveConstraints: readonly PreserveConstraintEntry[],
+): string | undefined {
+  if (capabilityKind !== "REDUCE_WEIGHT") return undefined;
+  const conflict = activePreserveConstraints.find((c) => c.type === "preserve_density_sensitive_area" && c.zone === zone);
+  if (!conflict) return undefined;
+  return `An active "preserve_density_sensitive_area" constraint protects zone "${zone}"; a REDUCE_WEIGHT capability for the same zone is a direct, deterministic conflict.`;
+}
+
 export function selectCandidateSkillsForDelta(
   current: HairStateSnapshotDeltaInput,
   target: HairStateSnapshotDeltaInput,
   registry: readonly ProfessionalSkillDefinitionRecord[],
+  // Stage 8.5S1B addition -- optional, backward-compatible (every existing
+  // caller/test omitting this argument sees byte-identical behavior).
+  // Stage 6 remains the final, full authoritative preservation validator;
+  // this is a coarse, deterministic PRE-filter only -- see
+  // findDeterministicPreserveConflict's own header for its exact, narrow
+  // scope.
+  activePreserveConstraints: readonly PreserveConstraintEntry[] = [],
 ): HairStateDeltaSkillSelectionResult {
   const delta = computeHairStateDelta(current, target);
   const facts = deriveFacts(delta);
@@ -195,6 +242,7 @@ export function selectCandidateSkillsForDelta(
         if (!zoneAppliesToDelta(capability.zones, skill.applicableZones, entry.scope)) continue;
 
         const applicabilityResult = evaluateApplicability(skill, facts);
+        const preserveConstraintConflict = findDeterministicPreserveConflict(capability.kind, entry.scope, activePreserveConstraints);
         const match: SkillCandidateMatch = {
           deltaEntry: entry,
           skillDefinitionId: record.id,
@@ -202,10 +250,13 @@ export function selectCandidateSkillsForDelta(
           skillVersion: skill.version,
           matchedCapability: capability.kind,
           applicabilityResult,
-          deterministicReason: `Skill "${skill.skillId}" v${skill.version} declares capability ${capability.kind} for scope "${entry.scope}", required by ${entry.field}=${entry.target.value} (${entry.transformation}).`,
+          deterministicReason: preserveConstraintConflict
+            ? `Skill "${skill.skillId}" v${skill.version} declares capability ${capability.kind} for scope "${entry.scope}" (would otherwise be a candidate for ${entry.field}=${entry.target.value}, ${entry.transformation}), but ${preserveConstraintConflict}`
+            : `Skill "${skill.skillId}" v${skill.version} declares capability ${capability.kind} for scope "${entry.scope}", required by ${entry.field}=${entry.target.value} (${entry.transformation}).`,
+          ...(preserveConstraintConflict ? { preserveConstraintConflict } : {}),
         };
 
-        if (applicabilityResult === "APPLICABLE") {
+        if (applicabilityResult === "APPLICABLE" && !preserveConstraintConflict) {
           candidateMatches.push(match);
           matchedAnyApplicable = true;
         } else {

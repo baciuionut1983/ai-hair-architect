@@ -67,8 +67,23 @@ import { isValidDemonstrationRequirement, type DemonstrationRequirement } from "
 // contains -- it cannot add new certainty, and therefore cannot
 // "launder" untrusted content into a trusted viewpoint result.
 
+// STAGE 8.5S1B -- ANTERIOR/LATERAL_LEFT/LATERAL_RIGHT/SUPERIOR (G1 gap)
+// each get the SAME compatibility row as POSTERIOR: none of the three
+// FramingSemantic concepts ("is context visible", "is a tool/subject
+// relationship readable", "is a geometric relationship readable") depends
+// on WHICH side of the head is shown -- only WHICH anatomical region is
+// visible changes with the family, and that is handled elsewhere (by
+// zone/applicableZones), never by this table. Minimum, non-invented
+// extension -- see professional-skill-viewpoint-constraint-contracts.ts's
+// own header for the full G1 reasoning, including why automatic family
+// SELECTION (still always the array's first satisfying member, POSTERIOR)
+// is deliberately not implemented here.
 const FAMILY_FRAMING_COMPATIBILITY: Readonly<Record<ViewpointFamily, readonly FramingSemantic[]>> = {
   POSTERIOR: ["ANATOMICAL_CONTEXT_VISIBLE", "TECHNICAL_RELATIONSHIP_READABLE", "GEOMETRY_READABLE"],
+  ANTERIOR: ["ANATOMICAL_CONTEXT_VISIBLE", "TECHNICAL_RELATIONSHIP_READABLE", "GEOMETRY_READABLE"],
+  LATERAL_LEFT: ["ANATOMICAL_CONTEXT_VISIBLE", "TECHNICAL_RELATIONSHIP_READABLE", "GEOMETRY_READABLE"],
+  LATERAL_RIGHT: ["ANATOMICAL_CONTEXT_VISIBLE", "TECHNICAL_RELATIONSHIP_READABLE", "GEOMETRY_READABLE"],
+  SUPERIOR: ["ANATOMICAL_CONTEXT_VISIBLE", "TECHNICAL_RELATIONSHIP_READABLE", "GEOMETRY_READABLE"],
 };
 
 export type ViewpointSatisfactionResult =

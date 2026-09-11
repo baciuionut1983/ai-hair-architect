@@ -86,9 +86,24 @@ describe("Viewpoint Constraint contract (Stage 2.5.i.12, SYNTHETIC FIXTURES ONLY
     expect(classifyFramingSemantic("SUBJECT_CONDITION_STATE")).toBe("ANATOMICAL_CONTEXT_VISIBLE");
   });
 
-  it("12. Stage 2.5.i.19 introduces no new viewpoint vocabulary -- family and framing sets are byte-identical to before", () => {
-    expect(VIEWPOINT_FAMILIES).toEqual(["POSTERIOR"]);
+  it("12. Stage 2.5.i.19 introduces no new viewpoint vocabulary -- framing set is byte-identical to before", () => {
     expect(FRAMING_SEMANTICS).toEqual(["ANATOMICAL_CONTEXT_VISIBLE", "TECHNICAL_RELATIONSHIP_READABLE", "GEOMETRY_READABLE"]);
+  });
+
+  // Stage 8.5S1B (G1 gap): the FIRST real Skills (Construct One-Length
+  // Perimeter's own real lateral-left/lateral-right Execution Units,
+  // Graduated Cutting's own real crown/upper-head work) that genuinely
+  // need a viewpoint family other than POSTERIOR -- exactly the trigger
+  // this file's own original header named as the condition for growing
+  // this vocabulary. Supersedes test #12's own prior "byte-identical"
+  // claim for VIEWPOINT_FAMILIES specifically (framing stays unchanged,
+  // proven above).
+  it("13. Stage 8.5S1B adds ANTERIOR/LATERAL_LEFT/LATERAL_RIGHT/SUPERIOR to the viewpoint family vocabulary, each a real, recognized value", () => {
+    expect(VIEWPOINT_FAMILIES).toEqual(["POSTERIOR", "ANTERIOR", "LATERAL_LEFT", "LATERAL_RIGHT", "SUPERIOR"]);
+    for (const family of VIEWPOINT_FAMILIES) {
+      expect(isViewpointFamily(family)).toBe(true);
+    }
+    expect(isViewpointFamily("ORBITING")).toBe(false);
   });
 
   it("the module exports no VideoInstruction, provider, or derivation-function concept", () => {

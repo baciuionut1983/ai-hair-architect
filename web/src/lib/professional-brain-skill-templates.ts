@@ -19,6 +19,24 @@ import {
   CONTINUE_CENTRAL_NAPE_CONSTRUCTION_EXECUTION_UNITS,
   isContinueCentralNapeConstructionFact,
 } from "@/lib/cutting-skill-continue-central-nape-construction";
+import {
+  GRADUATED_CUTTING_SKILL,
+  GRADUATED_CUTTING_SKILL_INSTANCE,
+  GRADUATED_CUTTING_EXECUTION_UNITS,
+  isGraduatedCuttingFact,
+} from "@/lib/cutting-skill-graduated";
+import {
+  ONE_LENGTH_PERIMETER_SKILL,
+  ONE_LENGTH_PERIMETER_SKILL_INSTANCE,
+  ONE_LENGTH_PERIMETER_EXECUTION_UNITS,
+  isOneLengthPerimeterFact,
+} from "@/lib/cutting-skill-one-length-perimeter";
+import {
+  SLICE_AND_SLIDE_REFINEMENT_SKILL,
+  SLICE_AND_SLIDE_REFINEMENT_SKILL_INSTANCE,
+  SLICE_AND_SLIDE_REFINEMENT_EXECUTION_UNITS,
+  isSliceAndSlideRefinementFact,
+} from "@/lib/cutting-skill-slice-and-slide-refinement";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5A -- CANONICAL
 // PROFESSIONAL SKILL TEMPLATE REGISTRY. Pure, deterministic, no I/O, no
@@ -32,7 +50,14 @@ import {
 // NO professional content of its own (no new skill, no Butterfly/Bob/
 // Pixie, Part J).
 //
-// The registry is intentionally exactly these three skills. A real client
+// STAGE 8.5S1B -- three new real, approved skills added (Graduated
+// Cutting, Construct One-Length Perimeter, Slice-and-Slide Refinement),
+// exactly the same additive collection discipline: this file still
+// authors nothing of its own, it only imports the already-authored
+// constants from their own cutting-skill-*.ts files. The original three
+// skills are listed first, byte-unchanged, in their original order.
+//
+// The registry is intentionally exactly these six skills. A real client
 // whose target needs a capability none of them provides correctly yields
 // UNRESOLVED (Part AG) -- this module never widens the registry to reach
 // RENDER_READY.
@@ -56,17 +81,35 @@ export const PROFESSIONAL_BRAIN_SKILL_TEMPLATES: readonly ExecutionPlanSkillTemp
     executionUnits: CONTINUE_CENTRAL_NAPE_CONSTRUCTION_EXECUTION_UNITS,
     isValidFact: isContinueCentralNapeConstructionFact,
   },
+  {
+    skillDefinition: GRADUATED_CUTTING_SKILL,
+    skillInstance: GRADUATED_CUTTING_SKILL_INSTANCE,
+    executionUnits: GRADUATED_CUTTING_EXECUTION_UNITS,
+    isValidFact: isGraduatedCuttingFact,
+  },
+  {
+    skillDefinition: ONE_LENGTH_PERIMETER_SKILL,
+    skillInstance: ONE_LENGTH_PERIMETER_SKILL_INSTANCE,
+    executionUnits: ONE_LENGTH_PERIMETER_EXECUTION_UNITS,
+    isValidFact: isOneLengthPerimeterFact,
+  },
+  {
+    skillDefinition: SLICE_AND_SLIDE_REFINEMENT_SKILL,
+    skillInstance: SLICE_AND_SLIDE_REFINEMENT_SKILL_INSTANCE,
+    executionUnits: SLICE_AND_SLIDE_REFINEMENT_EXECUTION_UNITS,
+    isValidFact: isSliceAndSlideRefinementFact,
+  },
 ];
 
 // Stage 4's deterministic candidate selector takes ProfessionalSkillDefinitionRecord[].
 // The DB registry table is empty in this repository, so the canonical
-// candidate registry is derived deterministically from the same three
-// real SkillDefinition constants -- their own `status: "ACTIVE"` +
+// candidate registry is derived deterministically from the same real
+// SkillDefinition constants -- their own `status: "ACTIVE"` +
 // `authorityType: "PROFESSIONALLY_AUTHORED"` make them eligible authority
 // (isSkillEligibleForAuthority), exactly as the Stage 4/5/6 tests already
 // rely on. Wiring the orchestrator to ALSO read the DB registry
 // (professional-skill-registry-repository.listSkillDefinitions) once the
-// three skills are seeded is a purely additive follow-up.
+// skills are seeded is a purely additive follow-up.
 function toRecord(skill: SkillDefinition): ProfessionalSkillDefinitionRecord {
   return {
     id: `registry-${skill.skillId}-v${skill.version}`,
@@ -90,5 +133,8 @@ export function buildCanonicalCandidateSkillRegistry(): readonly ProfessionalSki
     toRecord(ESTABLISH_CENTRAL_NAPE_GUIDE_SKILL),
     toRecord(OCCIPITAL_TRANSITION_SKILL),
     toRecord(CONTINUE_CENTRAL_NAPE_CONSTRUCTION_SKILL),
+    toRecord(GRADUATED_CUTTING_SKILL),
+    toRecord(ONE_LENGTH_PERIMETER_SKILL),
+    toRecord(SLICE_AND_SLIDE_REFINEMENT_SKILL),
   ];
 }
