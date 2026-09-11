@@ -117,9 +117,9 @@ function runStage678(skillId: string, skillVersion: number, zone: string, capabi
 }
 
 describe("B. Graduated Cutting -- real Stage 6/7/8 pass-through, zero AI", () => {
-  it("6. compiles through Stage 6 into a real ProfessionalExecutionPlan with every Execution Unit represented", () => {
+  it("6. [Stage 8.5S1B.R1: 3, not 4, Execution Units -- the generalized model] compiles through Stage 6 into a real ProfessionalExecutionPlan with every Execution Unit represented", () => {
     const { plan } = runStage678(GRADUATED_CUTTING_SKILL.skillId, GRADUATED_CUTTING_SKILL.version, "crown", "MODIFY_PERIMETER_RELATIONSHIP");
-    expect(plan.plannedUnits.length).toBe(4);
+    expect(plan.plannedUnits.length).toBe(3);
     for (const unit of plan.plannedUnits) {
       // Stage 6's own automatic VERIFY action is always appended.
       expect(unit.atomicActions.some((a) => a.actionKind === "VERIFY")).toBe(true);
@@ -127,10 +127,10 @@ describe("B. Graduated Cutting -- real Stage 6/7/8 pass-through, zero AI", () =>
     }
   });
 
-  it("7. Stage 6 preserves the real iteration policy on the graduation Execution Units -- one-cut-prevention survives compilation", () => {
+  it("7. Stage 6 preserves the real iteration policy on the generalized graduated execution-zone Execution Unit -- one-cut-prevention survives compilation", () => {
     const { plan } = runStage678(GRADUATED_CUTTING_SKILL.skillId, GRADUATED_CUTTING_SKILL.version, "crown", "MODIFY_PERIMETER_RELATIONSHIP");
-    const lower = plan.plannedUnits.find((u) => u.executionUnit.executionUnitId === "executionunit-cutting-graduated-lower-45")!;
-    const executeAction = lower.atomicActions.find((a) => a.actionKind === "EXECUTE")!;
+    const executionZone = plan.plannedUnits.find((u) => u.executionUnit.executionUnitId === "executionunit-cutting-graduated-execution-zone")!;
+    const executeAction = executionZone.atomicActions.find((a) => a.actionKind === "EXECUTE")!;
     expect(executeAction.iteration?.mode).toBe("UNTIL_EXECUTION_UNIT_COMPLETE");
   });
 
@@ -185,9 +185,9 @@ describe("B. Graduated Cutting -- real Stage 6/7/8 pass-through, zero AI", () =>
 });
 
 describe("C. Construct One-Length Perimeter -- real Stage 6/7/8 pass-through, zero AI", () => {
-  it("11. compiles through Stage 6 into a real ProfessionalExecutionPlan with all 6 Execution Units, including left/right laterality", () => {
+  it("11. [Stage 8.5S1B.R1: 5, not 6, Execution Units -- posterior below/above-occipital merged] compiles through Stage 6 into a real ProfessionalExecutionPlan with all 5 Execution Units, including left/right laterality", () => {
     const { plan } = runStage678(ONE_LENGTH_PERIMETER_SKILL.skillId, ONE_LENGTH_PERIMETER_SKILL.version, "nape", "PRESERVE_PERIMETER");
-    expect(plan.plannedUnits.length).toBe(6);
+    expect(plan.plannedUnits.length).toBe(5);
     const lateralities = plan.plannedUnits.map((u) => u.executionUnit.laterality);
     expect(lateralities).toContain("LEFT");
     expect(lateralities).toContain("RIGHT");

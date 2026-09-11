@@ -76,6 +76,18 @@ import type { ExecutionUnit } from "@/lib/professional-skill-execution-unit-cont
 // honestly): exact hand/finger geometry beyond what Ionuț specified is
 // never invented; no numeric working-depth constant; no claim that
 // refinement "removes as much weight as possible."
+//
+// STAGE 8.5S1B.R1 CORRECTION: `tool`, `elevation`, and `hairState` were
+// each declared with a real, OPEN parameter (multiple allowedValues) --
+// correctly parameterized -- but bound at Skill-Instance level with
+// FIXED_FROM_AUTHORITY, which structurally claims "this is the one
+// authoritative universal value," contradicting their own parameter
+// descriptions ("never a fixed value of this Skill's own" /
+// "depending on case"). Corrected to PROFESSIONAL_CHOICE: a real,
+// open, case-dependent choice, never Ionuț's own stated universal law
+// (unlike `controlMethod`="fingers" and `strandControl`/`scissorControl`,
+// which ARE his own stated, definitive technique and stay
+// FIXED_FROM_AUTHORITY).
 
 const SLICE_AND_SLIDE_REFINEMENT_VERTICAL = "cutting";
 const SLICE_AND_SLIDE_REFINEMENT_AUTHORITY_SOURCE = "Professional authority -- Ionuț's approved corrected definition, Stage 8.5S1A.1 correction + Stage 8.5S1B implementation authorization (2026-09-11).";
@@ -225,6 +237,21 @@ function fixedBinding(parameterName: string, value: string | boolean | number): 
   return { parameterName, bindingState: "FIXED_FROM_AUTHORITY", value, sourceReference: SLICE_AND_SLIDE_REFINEMENT_AUTHORITY_SOURCE };
 }
 
+function professionalChoiceBinding(
+  parameterName: string,
+  value: string | boolean | number,
+  allowedOptions: readonly (string | boolean | number)[],
+): SkillInstanceParameterBinding<ExecutionRuleConditionFact> {
+  return {
+    parameterName,
+    bindingState: "PROFESSIONAL_CHOICE",
+    value,
+    allowedOptions,
+    confirmedByUserId: "professional-ionut-2026-09-11",
+    confirmedAt: "2026-09-11T00:00:00.000Z",
+  };
+}
+
 export const SLICE_AND_SLIDE_REFINEMENT_SKILL_INSTANCE: SkillInstance<ExecutionRuleConditionFact> = {
   skillInstanceId: "skillinstance-cutting-slice-and-slide-refinement-pilot",
   vertical: SLICE_AND_SLIDE_REFINEMENT_VERTICAL,
@@ -243,12 +270,14 @@ export const SLICE_AND_SLIDE_REFINEMENT_SKILL_INSTANCE: SkillInstance<ExecutionR
     fixedBinding("controlMethod", "fingers"),
     fixedBinding("strandControl", "index_middle_finger_fingers_downward"),
     fixedBinding("scissorControl", "partially_open_tip_toward_strand_horizontal_blade_partial_closure_slide"),
-    fixedBinding("tool", "straight_shear"),
     fixedBinding("cuttingTechnique", REFINEMENT_CUTTING_TECHNIQUE),
     fixedBinding("texturizingTechnique", REFINEMENT_TEXTURIZING_TECHNIQUE),
     fixedBinding("structuralTechnique", REFINEMENT_STRUCTURAL_TECHNIQUE),
-    fixedBinding("elevation", REFINEMENT_ELEVATION_DEFAULT),
-    fixedBinding("hairState", "dry"),
+    // Stage 8.5S1B.R1 correction -- open, case-dependent choices, never
+    // one fixed universal value (see file header).
+    professionalChoiceBinding("tool", "straight_shear", ["straight_shear", "texturizer_shear"]),
+    professionalChoiceBinding("elevation", REFINEMENT_ELEVATION_DEFAULT, ELEVATION_OPTIONS),
+    professionalChoiceBinding("hairState", "dry", ["wet", "dry"]),
     // DEMONSTRATION_SPECIFIC -- see file header.
     {
       parameterName: "workingDepth",

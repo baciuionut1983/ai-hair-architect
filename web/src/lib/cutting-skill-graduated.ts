@@ -7,105 +7,116 @@ import type { ExecutionUnit, ExecutionUnitParameterRule } from "@/lib/profession
 
 // AI Hair Architect, Stage 8.5S1B -- REAL PROFESSIONAL AUTHORITY CONTENT,
 // NOT a synthetic fixture. Authored directly from Ionuț's professional
-// definition (STAGE 8.5S1A.1 correction + this stage's own verbatim
-// professional input). ZERO Composition Engine, ZERO automatic Skill
-// selection, ZERO wiring into Technical Demonstration Plan/readiness/
-// coherence/derivation/the generator -- exporting these constants has ZERO
-// runtime effect anywhere in the application today. Mirrors the exact
-// Stage 2.5.i.6/i.7/i.25 file convention (cutting-skill-establish-central-
-// nape-guide.ts / cutting-skill-occipital-transition.ts / cutting-skill-
-// continue-central-nape-construction.ts) throughout.
+// definition. Stage 8.5S1B.R1 CORRECTION (this revision): the original
+// S1B cut compiled "lower area / 45°" and "upper area / 90°" as TWO
+// separate, permanently fixed Execution Units, which read as -- and would
+// have compiled as -- a mandatory universal sequence every real use of
+// this Skill must follow. That is exactly the violation this correction
+// exists to fix: SKILL = reusable professional transformation, never one
+// fixed haircut recipe. See the "GENERALIZED EXECUTION MODEL" section
+// below for the corrected shape. ZERO Composition Engine, ZERO automatic
+// Skill selection, ZERO wiring into Technical Demonstration Plan/
+// readiness/coherence/derivation/the generator -- exporting these
+// constants has ZERO runtime effect anywhere in the application today.
 //
 // SKILL: "Graduated Cutting" -- reusable structural cutting primitive.
 // Core rule, verbatim: "Any strand elevated out of its natural fall is
 // graduation." Elevation is a PARAMETER of this Skill, never a duplicate
-// independent Skill -- see the `elevation` SkillParameterDefinition below,
-// which declares the FULL real ELEVATION_OPTIONS menu (never narrowed to
-// one value, unlike the existing 3 pilots' single-locked-profile
-// parameters), because this Skill is NOT scoped to one locked profile: it
-// is explicitly reusable across zones/results/professional intent
-// ("Elevation depends on zone, target result, structure, professional
-// intent... Do NOT encode: zone X always = angle Y").
+// independent Skill, and -- corrected -- never a fixed zone-to-angle
+// recipe either: 45°/90°/180° are professionally valid EXAMPLE/working
+// values, not a mandatory sequence. A valid execution may use only one
+// elevation, a different single elevation, or a combination across
+// different real cases -- see GENERALIZED EXECUTION MODEL below.
+//
+// GENERALIZED EXECUTION MODEL (Stage 8.5S1B.R1): exactly 3 Execution
+// Units, each a genuinely stable-context professional segment -- never
+// per-elevation:
+//   EU1 "Establish Perimeter/Contour Guide" -- CONDITIONAL (carries a
+//     real `applicabilityCondition` on the new local fact
+//     `perimeterGuideRequired`; per Stage 6's own documented policy this
+//     EU still compiles as prepared guidance, but its condition honestly
+//     states it applies only "when the execution plan/target structure
+//     requires a perimeter or termination-length authority" -- e.g.
+//     longer hair -- never universally).
+//   EU2 "Graduated Execution Zone" -- the ONE reusable graduation
+//     segment. `elevation`, `handOrientation`, `clientHeadPosition`,
+//     `zone`, `tool`, `partingOrientation`, `distribution`,
+//     `overdirection` are ALL left unresolved at the Execution-Unit level
+//     (no REQUIRED_FIXED rule for any of them) -- per cutting-skill-
+//     atomic-action-compiler.ts's own precedence rule, this means each
+//     one resolves from whichever value a REAL case's own Skill Instance
+//     binds (PROFESSIONAL_CHOICE, from the full open allowedOptions set).
+//     THIS is "the execution plan decides WHERE and AT WHAT ELEVATION it
+//     is applied": a different real case is represented by authoring a
+//     DIFFERENT Skill Instance with different bindings, reusing this
+//     exact same Execution Unit -- never by editing this Skill
+//     Definition, and never by requiring a second, differently-angled
+//     Execution Unit to exist. `controlMethod` stays REQUIRED_FIXED
+//     "fingers" on this unit ONLY because Ionuț stated finger control for
+//     EVERY elevation he described (45°, 90°) -- a genuinely universal
+//     fact about elevated graduation work, not a per-angle assumption.
+//   EU3 "Cross-Check & Correction" -- fixes only what Ionuț stated
+//     unconditionally ("cross-check using wider horizontal sections");
+//     `elevation`/`handOrientation`/`zone` stay open (re-elevates
+//     "according to the relevant value for that area").
+// This pilot's own Skill Instance binds ONE representative elevation
+// (45°) purely as a demonstration value -- it is explicitly NOT the
+// Skill's own permanent truth; a sibling real case would author its own
+// Skill Instance binding 90°, 180°, or a different zone, reusing the
+// identical Execution Units unchanged (proven directly in this file's
+// own test suite, which compiles the SAME EU2 against a SECOND,
+// alternate Skill Instance binding a different elevation).
 //
 // TWO GUIDE CONCEPTS, KEPT STRUCTURALLY DISTINCT (Ionuț's own explicit
-// requirement): the PERIMETER/CONTOUR GUIDE (established first, for longer
-// hair, before internal graduation -- defines contour/termination
-// line/final perimeter length) is represented as its own Execution Unit
-// (EU1) using the real GUIDELINE_OPTIONS value "visual_perimeter" + a
-// new local `guideReferenceMode` value "contour_guide_reference". The
-// PROGRESSIVE GRADUATION GUIDE (a cut strand becomes the guide for the
-// next strand) reuses the exact "previous_subsection" value + relative
+// requirement, unchanged by this correction): the PERIMETER/CONTOUR GUIDE
+// (EU1, "visual_perimeter" + `guideReferenceMode` "contour_guide_reference")
+// versus the PROGRESSIVE GRADUATION GUIDE (EU2/EU3, "traveling" +
+// `guideReferenceMode` "previous_subsection", reusing the exact relative
 // rule already proven correct in cutting-skill-continue-central-nape-
-// construction.ts, with GUIDELINE_OPTIONS value "traveling". These are
-// two DIFFERENT real vocabulary values, never one ambiguous generic guide.
+// construction.ts). Two different real vocabulary values, never one
+// ambiguous generic guide.
 //
-// ELEVATION -> HAND/FINGER CONTROL, ANATOMY-CONDITIONAL (Ionuț's own
-// approved semantics): "For 45° work: fingers oriented upward, strand held
-// between index and middle finger, cutting on the palm-facing side. For
-// 90° work: fingers oriented downward, strand held between index and
-// middle finger, cutting on the back-of-hand side." Represented as ONE
-// closed `handOrientation` parameter combining orientation+cutting-side
-// into a single well-defined value per elevation family (mirrors this
-// domain's own established "one closed value for one whole professional
-// micro-fact" discipline, e.g. guideIdentifiabilityCriterion), bound via
-// REQUIRED_FIXED per Execution Unit -- the SKILL still supports the full
-// open elevation vocabulary (parameterization requirement); a given,
-// stable-context Execution Unit legitimately pins ONE elevation/hand-
-// geometry pairing for its own segment, exactly like Occipital
-// Transition's own real controlMethod-per-Execution-Unit precedent.
+// ELEVATION -> HAND/FINGER CONTROL, GUIDANCE NOT LAW (corrected): Ionuț's
+// own words -- "For 45° work: fingers oriented upward... cutting on the
+// palm-facing side. For 90° work: fingers oriented downward... cutting on
+// the back-of-hand side" -- are real professional knowledge, preserved in
+// `handOrientation`'s own description and in its 3 closed values, but are
+// now a PROFESSIONAL_CHOICE the real case's Skill Instance selects
+// (correlated with whichever elevation it also selects), never an
+// Execution-Unit-level law forcing exactly one hand geometry per unit.
 //
 // 180° (crown/upper, considerable weight reduction) IS a real, declared
-// `elevation` allowedValue (professionally approved, reusable by any
-// future Skill Instance) but this v1 pilot does NOT build a dedicated
-// Execution Unit demonstrating it: Ionuț did not specify distinct hand/
-// finger geometry for 180° the way he did for 45°/90°, and inventing one
-// would be exactly the "do not invent professional content" violation
-// this whole engagement refuses. A future Execution Unit for 180° can be
-// added, additively, once professionally specified -- v1 is not mutated
-// retroactively (see file footer note).
+// `elevation` allowedValue, fully representable by EU2/EU3 exactly like
+// 45°/90° (no separate Execution Unit needed, since none of the three is
+// per-angle anymore) -- but this pilot's own Skill Instance does not bind
+// 180° as its demonstration value, and no dedicated hand geometry is
+// invented for it: Ionuț did not specify distinct hand/finger geometry
+// for 180° the way he did for 45°/90°. UNKNOWN stays UNKNOWN; a real case
+// selecting 180° would bind `handOrientation` from the SAME 3 existing
+// values (most likely the fingers-downward/back-of-hand value already
+// used for elevated work above the occipital) or leave it UNRESOLVED,
+// never a fabricated fourth value.
 //
-// CROSS-CHECK (Ionuț's own approved rule): "If primary work used vertical
-// partings, cross-check using wider horizontal sections... correct
-// protruding longer ends." Represented as its own Execution Unit (EU4,
-// capability CROSS_CHECK_VALIDATE -- reused verbatim from Continue Central
-// Nape Construction's own precedent), with `partingOrientation` FIXED
-// "vertical" on the graduation Execution Units and FIXED "horizontal" on
-// the cross-check unit -- a single closed parameter, two real values,
-// never a second ambiguous concept.
+// CAPABILITY MODEL -- MG1 GAP, UNCHANGED BY THIS CORRECTION (task's own
+// explicit instruction: "Do NOT solve MG1... do NOT assign false
+// BUILD_WEIGHT or REDUCE_WEIGHT semantics"): graduation's real weight/
+// length effect genuinely depends on WHICH elevation a given Skill
+// Instance selects. The only OUTCOME capabilities truthfully universal
+// across every elevation choice are MODIFY_PERIMETER_RELATIONSHIP (any
+// strand elevated out of natural fall and cut necessarily creates an
+// interior-shorter-than-perimeter relationship) and REDUCE_LENGTH (the
+// graduated zone's own relativeLength shortens regardless of elevation).
+// BUILD_WEIGHT and REDUCE_WEIGHT are BOTH still declared (each
+// professionally real for a real subset of this Skill's own
+// parameterization) rather than silently picking one -- documented gap,
+// not resolved here, not faked.
 //
-// CAPABILITY MODEL -- MG1 GAP, EXPLICITLY REPORTED (task's own explicit
-// instruction: "Do NOT assign Graduation = BUILD_WEIGHT... DO NOT fake
-// it"): graduation's real weight/length effect genuinely depends on WHICH
-// elevation a given Skill Instance selects (Ionuț's own words: "180° ...
-// to reduce considerable weight" implies the converse at 45° -- weight is
-// relatively retained/built near the perimeter; 90°/180° progressively
-// remove it). `SkillCapability` is a STATIC, whole-skill declaration --
-// it cannot be conditioned on a parameter value. The only OUTCOME
-// capability truthfully universal across every elevation choice is
-// MODIFY_PERIMETER_RELATIONSHIP (any strand elevated out of natural fall
-// and cut necessarily creates an interior-shorter-than-perimeter
-// relationship -- this is the definitional core of graduation itself) and
-// REDUCE_LENGTH (the graduated zone's own relativeLength shortens
-// regardless of elevation). BUILD_WEIGHT and REDUCE_WEIGHT are BOTH
-// declared (each professionally real for a real subset of this Skill's
-// own parameterization) rather than silently picking one -- this is the
-// MG1 gap: the current static capability contract cannot express "which
-// one applies" without knowing the chosen elevation. Stage 5/6 (or a
-// future capability-parameter-conditioning extension, not built here)
-// must resolve which of the two actually applies for a real case. Not
-// faked as a single universal effect.
-//
-// CONNECT_ZONES is justified structurally, mirroring Occipital
-// Transition's own exact reasoning: this Skill's own Execution Unit chain
-// (EU1 -> EU2/EU3, both prerequisite on EU1) continues execution FROM the
-// established perimeter/contour guide INTO the graduated zones --
-// structurally connecting them, never a disconnected cut.
-//
-// PRESERVE_LENGTH is justified narrowly: the perimeter/contour guide
-// Execution Unit (EU1) establishes a reference line that, once cut, is
-// itself preserved going forward (exactly like One-Length's own identical
-// guide-establishment reasoning) -- not a claim about the graduated zones
-// themselves, which by definition change length.
+// CONNECT_ZONES is justified structurally: this Skill's own Execution
+// Unit chain (EU2/EU3 prerequisite on EU1, when EU1 applies) continues
+// execution FROM the established perimeter/contour guide INTO the
+// graduated zone -- structurally connecting them, never a disconnected
+// cut. PRESERVE_LENGTH is justified narrowly: EU1's own established
+// reference line, once cut, is itself preserved going forward.
 //
 // DOMAIN GAP, continuity note (first reported Stage 2.5.i.6, not
 // re-litigated): no dedicated wet/dry hair-state axis exists in the
@@ -113,10 +124,23 @@ import type { ExecutionUnit, ExecutionUnitParameterRule } from "@/lib/profession
 // parameter workaround as every real Skill before it.
 
 const GRADUATED_CUTTING_VERTICAL = "cutting";
-const GRADUATED_CUTTING_AUTHORITY_SOURCE = "Professional authority -- Ionuț's approved definition, Stage 8.5S1A.1 correction + Stage 8.5S1B implementation authorization (2026-09-11).";
+const GRADUATED_CUTTING_AUTHORITY_SOURCE = "Professional authority -- Ionuț's approved definition, Stage 8.5S1A.1 correction + Stage 8.5S1B/8.5S1B.R1 implementation authorization (2026-09-11).";
 
-export function isGraduatedCuttingFact(value: unknown): value is ExecutionRuleConditionFact {
-  return typeof value === "string" && (EXECUTION_RULE_CONDITION_FACTS as readonly string[]).includes(value);
+// Stage 8.5S1B.R1 -- one new, LOCALLY-SCOPED, informational fact naming
+// whether THIS real case requires a perimeter/contour guide before
+// graduation (e.g. longer hair needing an established final-length
+// authority). Purely informational, per Stage 6's own documented
+// non-filtering policy (professional-execution-plan-compiler.ts's own
+// header: an Execution Unit's applicabilityCondition is never evaluated
+// to decide inclusion/exclusion at compile time -- both/all Execution
+// Units of a matched Skill still compile as prepared professional
+// guidance; which one currently applies is for the professional
+// executing the plan to observe/decide live). Mirrors the exact
+// `aboveOccipitalThreshold` precedent (Stage 2.5.i.7) a third time.
+export type GraduatedCuttingFact = ExecutionRuleConditionFact | "perimeterGuideRequired";
+
+export function isGraduatedCuttingFact(value: unknown): value is GraduatedCuttingFact {
+  return value === "perimeterGuideRequired" || (typeof value === "string" && (EXECUTION_RULE_CONDITION_FACTS as readonly string[]).includes(value));
 }
 
 // Type-safe intermediate constants -- checked by the compiler against the
@@ -133,29 +157,41 @@ const GUIDE_ESTABLISHMENT_GUIDELINE: TechnicalCutGuideline = "visual_perimeter";
 const PROGRESSIVE_GRADUATION_GUIDELINE: TechnicalCutGuideline = "traveling";
 const GUIDE_ESTABLISHMENT_DISTRIBUTION: TechnicalCutDistribution = "natural_fall";
 
+// The full, open zone menu -- Ionuț's own three descriptive examples,
+// represented as SELECTABLE options a real case's Skill Instance picks
+// from (never as three separate permanent Execution Units), plus the
+// distinct value naming EU1's own non-graduated contour-establishment
+// scope.
+const GRADUATED_ZONE_VALUES = [
+  "perimeter_contour_establishment",
+  "lower_between_implantation_and_occipital",
+  "above_occipital_perpendicular_to_scalp",
+  "crown_superior_significant_reduction",
+] as const;
+
 void (STRUCTURAL_TECHNIQUES satisfies readonly StructuralTechnique[]);
 void (CUTTING_TECHNIQUES satisfies readonly CuttingTechnique[]);
 void (ELEVATION_OPTIONS satisfies readonly TechnicalCutElevation[]);
 void (DISTRIBUTION_OPTIONS satisfies readonly TechnicalCutDistribution[]);
 void (GUIDELINE_OPTIONS satisfies readonly TechnicalCutGuideline[]);
 
-export const GRADUATED_CUTTING_SKILL: SkillDefinition<ExecutionRuleConditionFact> = {
+export const GRADUATED_CUTTING_SKILL: SkillDefinition<GraduatedCuttingFact> = {
   skillId: "skill-cutting-graduated",
   version: 1,
   vertical: GRADUATED_CUTTING_VERTICAL,
   name: "Graduated Cutting",
   description:
-    "Constructs a graduated structure by elevating strands out of their natural fall to a professionally chosen degree, optionally preceded by establishing a perimeter/contour guide for longer hair, progressing subsection-by-subsection through the intended graduated area, and cross-checked in the opposing parting direction.",
+    "Constructs a graduated structure by elevating strands out of their natural fall to a professionally chosen degree, optionally preceded by establishing a perimeter/contour guide when the target structure requires a termination-length authority, progressing subsection-by-subsection through the intended graduated zone, and cross-checked in the opposing parting direction.",
   status: "ACTIVE",
   authorityType: "PROFESSIONALLY_AUTHORED",
   rationale:
-    "Professionally authorized by Ionuț (Stage 8.5S1A.1 correction + Stage 8.5S1B authorization): elevation out of natural fall IS graduation; elevation is a parameter, never a duplicate skill; effect depends on zone/target/structure, never a hardcoded zone-to-angle recipe. Scope: structural graduation construction + cross-check. Does NOT include final soft-integration refinement of terminations -- that is Slice-and-Slide Refinement's own, separate, later authority.",
+    "Professionally authorized by Ionuț: elevation out of natural fall IS graduation; elevation, zone, hand geometry, distribution/overdirection, and tool are all real case-dependent parameters, never a hardcoded zone-to-angle recipe or mandatory 45deg-then-90deg sequence (Stage 8.5S1B.R1 correction). Scope: structural graduation construction + cross-check. Does NOT include final soft-integration refinement of terminations -- that is Slice-and-Slide Refinement's own, separate, later authority.",
   parameters: [
     {
       name: "clientHeadPosition",
       valueKind: "enum",
       allowedValues: ["tilted_forward_down", "upright"],
-      description: "Client head position for the current execution segment -- forward-tilted for lower/posterior work, upright for upper/crown work.",
+      description: "Client head position for the current execution segment -- case-dependent on which zone is being worked (forward-tilted for lower/posterior work, upright for upper/crown work).",
     },
     {
       name: "hairState",
@@ -167,33 +203,40 @@ export const GRADUATED_CUTTING_SKILL: SkillDefinition<ExecutionRuleConditionFact
       name: "strandPreparation",
       valueKind: "enum",
       allowedValues: ["combed_root_to_tip_tensioned"],
-      description: "Before every cut: comb the strand from root to tip, remove slack, and control/tension it evenly.",
+      description: "Before every cut, without exception: comb the strand from root to tip, remove slack, and control/tension it evenly.",
     },
     {
       name: "guideIdentifiabilityCriterion",
       valueKind: "enum",
       allowedValues: ["must_remain_visually_identifiable"],
-      description: "The relevant prior guide (perimeter/contour guide or the previously cut subsection) must remain visually identifiable before the next cut proceeds.",
+      description: "The relevant prior guide (perimeter/contour guide or the previously cut subsection) must remain visually identifiable before the next cut proceeds -- a universal criterion, not case-dependent.",
     },
     {
       name: "controlMethod",
       valueKind: "enum",
       allowedValues: ["comb", "fingers"],
-      description: "Control method -- comb for the natural-fall perimeter/contour guide, fingers for elevated graduation work.",
+      description: "Control method -- comb for the natural-fall perimeter/contour guide; fingers for elevated graduation work, stated by Ionuț for every elevation he described (45deg and 90deg alike), never angle-specific.",
     },
     {
       name: "handOrientation",
       valueKind: "enum",
       allowedValues: ["comb_control_no_finger_hold", "fingers_upward_palm_facing_cut", "fingers_downward_back_of_hand_cut"],
       description:
-        "Combined finger orientation + cutting side, per Ionuț's own approved semantics: 45° work holds the strand between index and middle finger with fingers oriented upward, cutting on the palm-facing side; 90° work holds it the same way with fingers oriented downward, cutting on the back-of-hand side.",
+        "Combined finger orientation + cutting side. Real professional examples, per Ionuț: 45° work commonly holds the strand between index and middle finger with fingers oriented upward, cutting on the palm-facing side; 90° work commonly holds it the same way with fingers oriented downward, cutting on the back-of-hand side. A case-dependent PROFESSIONAL CHOICE correlated with the selected elevation, never a fixed law of one particular Execution Unit. No hand geometry is declared for 180 deg -- not professionally specified, left representable only via the existing 3 values or left unresolved.",
     },
     {
       name: "elevation",
       valueKind: "enum",
       allowedValues: [GUIDE_ESTABLISHMENT_ELEVATION, LOWER_GRADUATION_ELEVATION, UPPER_GRADUATION_ELEVATION, CONSIDERABLE_REDUCTION_ELEVATION],
       description:
-        "How far the strand is elevated out of its natural fall -- 0° for the natural-fall perimeter/contour guide; 45° commonly in the lower area between lower implantation and the occipital region; 90° perpendicular to the scalp, commonly above the occipital area; 180° in the crown/upper head for considerable weight reduction and more evident graduation. Zone-and-result-dependent, never a hardcoded zone-to-angle recipe.",
+        "How far the strand is elevated out of its natural fall -- 0° for the natural-fall perimeter/contour guide; 45°, 90°, and 180° are professionally valid EXAMPLE working values (45° commonly in the lower area between the lower implantation and the occipital region; 90° perpendicular to the scalp, commonly above the occipital area; 180° in the crown/upper head for considerable weight reduction and more evident graduation) -- never a mandatory sequence and never a hardcoded zone-to-angle recipe. A single real execution may use one selected elevation, or a professionally chosen combination across zones via separate Skill Instances of this same Skill.",
+    },
+    {
+      name: "zone",
+      valueKind: "enum",
+      allowedValues: GRADUATED_ZONE_VALUES,
+      description:
+        "Which real anatomical area this execution addresses -- an open, case-selected value (never a permanent per-Execution-Unit identity). 'perimeter_contour_establishment' is EU1's own non-graduated scope; the remaining three are Ionuț's own example graduated areas, each professionally correlated with (but not structurally forced to) a typical elevation.",
     },
     {
       name: "cuttingTechnique",
@@ -212,7 +255,12 @@ export const GRADUATED_CUTTING_SKILL: SkillDefinition<ExecutionRuleConditionFact
       valueKind: "enum",
       allowedValues: DISTRIBUTION_OPTIONS,
       description:
-        "Strand distribution during the cut. Natural fall / direct-from-position control expresses uniform progression/graduation; a redirected (overdirected) strand changes the resulting length relationship -- e.g. lateral hair pulled backward and cut to a shorter posterior guide falls longer laterally once returned to its natural position. A real geometry/control choice, never descriptive prose only.",
+        "Strand distribution during the cut -- a real, case-dependent geometry/control choice, never descriptive prose only. Natural fall / direct-from-position control expresses uniform progression/graduation; a redirected (overdirected) strand changes the resulting length relationship -- e.g. lateral hair pulled backward and cut to a shorter posterior guide falls longer laterally once returned to its natural position.",
+    },
+    {
+      name: "overdirection",
+      valueKind: "boolean",
+      description: "Whether the strand was intentionally redirected (overdirected) before cutting, rather than taken directly from its natural position -- a distinct yes/no fact from the specific `distribution` value, case-dependent, never assumed.",
     },
     {
       name: "guideType",
@@ -231,20 +279,21 @@ export const GRADUATED_CUTTING_SKILL: SkillDefinition<ExecutionRuleConditionFact
       name: "partingOrientation",
       valueKind: "enum",
       allowedValues: ["vertical", "horizontal"],
-      description: "Parting orientation -- vertical for primary graduation progression, horizontal for the cross-check pass in the opposing direction.",
+      description:
+        "Parting orientation. Ionuț's own framing is conditional (\"IF primary work used vertical partings, cross-check using wider horizontal sections\") -- vertical is a common, not a universally mandatory, primary orientation, so it is a case-dependent choice for graduation itself; the cross-check pass is unconditionally stated as horizontal, opposing whichever primary orientation was used.",
     },
     {
       name: "tool",
       valueKind: "enum",
-      allowedValues: ["straight_shear"],
-      description: "The tool used to execute every cut in this Skill.",
+      allowedValues: ["straight_shear", "texturizer_shear"],
+      description: "The tool used to execute the cut -- open to either real tool value; Ionuț did not restrict graduation to exactly one.",
     },
   ],
   procedure: [
     {
       order: 1,
       instruction:
-        "For longer hair, before constructing internal graduation, establish the authoritative perimeter/contour guide defining the haircut's contour, termination line, and final perimeter length, in natural fall with no elevation.",
+        "When the target structure requires a perimeter or termination-length authority (e.g. longer hair), establish that authoritative perimeter/contour guide first, in natural fall with no elevation, before constructing internal graduation. Otherwise this step does not apply.",
       referencedParameters: ["guideType", "guideReferenceMode", "elevation", "distribution", "cuttingTechnique"],
     },
     {
@@ -255,39 +304,33 @@ export const GRADUATED_CUTTING_SKILL: SkillDefinition<ExecutionRuleConditionFact
     {
       order: 3,
       instruction:
-        "In the lower graduated area (between the lower implantation and the occipital region), hold the strand between index and middle finger with fingers oriented upward, elevate it to approximately 45°, and cut on the palm-facing side.",
-      referencedParameters: ["controlMethod", "handOrientation", "elevation", "clientHeadPosition"],
+        "In the intended graduated zone, hold the strand between index and middle finger and elevate it to the professionally selected degree for that zone/result -- e.g. commonly around 45° in the lower area between the lower implantation and the occipital region, around 90° perpendicular to the scalp above it, or around 180° in the crown/upper head for considerable weight reduction. Hand orientation and cutting side follow the selected elevation.",
+      referencedParameters: ["controlMethod", "handOrientation", "elevation", "clientHeadPosition", "zone"],
     },
     {
       order: 4,
       instruction:
-        "In the upper graduated area (commonly above the occipital region), hold the strand between index and middle finger with fingers oriented downward, elevate it to approximately 90° perpendicular to the scalp, and cut on the back-of-hand side.",
-      referencedParameters: ["controlMethod", "handOrientation", "elevation", "clientHeadPosition"],
+        "Each freshly cut strand becomes the traveling guide for the next; progress strand-by-strand/subsection-by-subsection through the full intended zone, applying the selected elevation, distribution/overdirection, and control method for that zone. One cut does not complete the Skill.",
+      referencedParameters: ["guideReferenceMode", "partingOrientation", "distribution", "overdirection", "structuralTechnique"],
     },
     {
       order: 5,
       instruction:
-        "Each freshly cut strand becomes the traveling guide for the next; progress strand-by-strand/subsection-by-subsection through the full intended area using vertical partings, applying the required elevation, distribution/overdirection, and control method for that area. One cut does not complete the Skill.",
-      referencedParameters: ["guideReferenceMode", "partingOrientation", "distribution", "structuralTechnique"],
-    },
-    {
-      order: 6,
-      instruction:
-        "After the primary progression, cross-check using wider horizontal partings in the opposing direction, re-elevating according to the relevant angle for that area, and correct any protruding longer ends to align the intended structure.",
+        "After the primary progression, cross-check using wider horizontal partings in the direction opposing the primary parting, re-elevating according to the relevant angle for that area, and correct any protruding longer ends to align the intended structure.",
       referencedParameters: ["partingOrientation", "elevation", "controlMethod"],
     },
   ],
-  applicableZones: ["perimeter_contour_reference", "lower_graduated_area", "upper_graduated_area", "cross_check_area"],
+  applicableZones: ["perimeter_contour_reference", "graduated_execution_zone", "cross_check_area"],
   // Stage 4 addition -- see file header for full MG1 justification of
   // each kind below. MODIFY_PERIMETER_RELATIONSHIP and REDUCE_LENGTH are
-  // truthful across the whole elevation parameterization; BUILD_WEIGHT and
-  // REDUCE_WEIGHT are each truthful only for a real subset of it (the MG1
-  // gap, explicitly not silently resolved to one); CONNECT_ZONES and
+  // truthful across the whole elevation parameterization; BUILD_WEIGHT
+  // and REDUCE_WEIGHT are each truthful only for a real subset of it (the
+  // MG1 gap, explicitly not silently resolved to one); CONNECT_ZONES and
   // PRESERVE_LENGTH are justified structurally by the EU1 -> EU2/EU3
-  // guide-establishment-then-graduation chain. Zones use the canonical
-  // HeadZone vocabulary where scoped; left unscoped elsewhere, falling
-  // back to this Skill's own applicableZones per SkillCapability's own
-  // documented semantics.
+  // guide-establishment-then-graduation chain, when EU1 applies. Zones
+  // use the canonical HeadZone vocabulary where scoped; left unscoped
+  // elsewhere, falling back to this Skill's own applicableZones per
+  // SkillCapability's own documented semantics.
   capabilities: [
     { kind: "MODIFY_PERIMETER_RELATIONSHIP" },
     { kind: "REDUCE_LENGTH" },
@@ -299,26 +342,28 @@ export const GRADUATED_CUTTING_SKILL: SkillDefinition<ExecutionRuleConditionFact
   createdAt: "2026-09-11T00:00:00.000Z",
 };
 
-function fixedBinding(parameterName: string, value: string | boolean | number): SkillInstanceParameterBinding<ExecutionRuleConditionFact> {
+function fixedBinding(parameterName: string, value: string | boolean | number): SkillInstanceParameterBinding<GraduatedCuttingFact> {
   return { parameterName, bindingState: "FIXED_FROM_AUTHORITY", value, sourceReference: GRADUATED_CUTTING_AUTHORITY_SOURCE };
 }
 
 // PROFESSIONAL_CHOICE -- exactly the binding state this contract was
 // designed for (professional-skill-instance-contracts.ts's own header):
 // "a value IS selected, from a required, non-empty allowedOptions set,
-// always confirmedByUserId/confirmedAt-stamped." elevation/distribution
-// are NOT fixed at Skill-Instance level for the two graduation Execution
-// Units (EU2/EU3 fix their own, per file header) -- this binding is the
-// fallthrough used only by EU1 (elevation) is instead EU-level-fixed
-// there too; distribution/elevation reach the cross-check Execution Unit
-// (EU4) THROUGH this instance-level professional choice, since cross-check
-// re-elevates "according to the relevant value for that area" -- a real,
-// case-dependent professional choice, never a fixed universal one.
+// always confirmedByUserId/confirmedAt-stamped." Stage 8.5S1B.R1: this is
+// now the resolution path for EVERY genuinely case-dependent fact
+// (elevation, handOrientation, zone, clientHeadPosition, distribution,
+// overdirection, partingOrientation, tool) -- none of them is fixed at
+// Execution-Unit level anymore (see EU2/EU3 below). This pilot binds ONE
+// representative demonstration value per fact; a different real case is
+// represented by a DIFFERENT SkillInstance object binding different
+// values to these SAME open parameters against these SAME Execution
+// Units -- proven directly in this file's own test suite (a second,
+// alternate instance compiled against the identical EU2).
 function professionalChoiceBinding(
   parameterName: string,
   value: string | boolean | number,
   allowedOptions: readonly (string | boolean | number)[],
-): SkillInstanceParameterBinding<ExecutionRuleConditionFact> {
+): SkillInstanceParameterBinding<GraduatedCuttingFact> {
   return {
     parameterName,
     bindingState: "PROFESSIONAL_CHOICE",
@@ -329,7 +374,7 @@ function professionalChoiceBinding(
   };
 }
 
-export const GRADUATED_CUTTING_SKILL_INSTANCE: SkillInstance<ExecutionRuleConditionFact> = {
+export const GRADUATED_CUTTING_SKILL_INSTANCE: SkillInstance<GraduatedCuttingFact> = {
   skillInstanceId: "skillinstance-cutting-graduated-pilot",
   vertical: GRADUATED_CUTTING_VERTICAL,
   sourceSkillId: GRADUATED_CUTTING_SKILL.skillId,
@@ -337,118 +382,97 @@ export const GRADUATED_CUTTING_SKILL_INSTANCE: SkillInstance<ExecutionRuleCondit
   compositionId: "composition-cutting-graduated-pilot-placeholder",
   order: 1,
   parameterBindings: [
-    // Constant across the whole Skill -- bound once at instance level.
+    // Genuinely constant across the whole Skill, per Ionuț's own
+    // unconditional statements -- bound once at instance level.
     fixedBinding("hairState", "wet"),
     fixedBinding("strandPreparation", "combed_root_to_tip_tensioned"),
     fixedBinding("guideIdentifiabilityCriterion", "must_remain_visually_identifiable"),
     fixedBinding("structuralTechnique", GRADUATION_STRUCTURAL_TECHNIQUE),
-    fixedBinding("tool", "straight_shear"),
-    // Fallthrough for the cross-check Execution Unit (EU4), which
-    // deliberately does not fix elevation/distribution at EU level -- see
-    // file header ("re-elevates according to the relevant value for that
-    // area", a genuine case-dependent professional choice).
-    professionalChoiceBinding("elevation", UPPER_GRADUATION_ELEVATION, [GUIDE_ESTABLISHMENT_ELEVATION, LOWER_GRADUATION_ELEVATION, UPPER_GRADUATION_ELEVATION, CONSIDERABLE_REDUCTION_ELEVATION]),
+    // Case-dependent facts -- this pilot's own ONE representative
+    // demonstration choice, never this Skill's permanent truth. A sibling
+    // real case authors its own Skill Instance with different values
+    // here, reusing the identical Execution Units below unchanged.
+    professionalChoiceBinding("elevation", LOWER_GRADUATION_ELEVATION, [GUIDE_ESTABLISHMENT_ELEVATION, LOWER_GRADUATION_ELEVATION, UPPER_GRADUATION_ELEVATION, CONSIDERABLE_REDUCTION_ELEVATION]),
+    professionalChoiceBinding("handOrientation", "fingers_upward_palm_facing_cut", ["comb_control_no_finger_hold", "fingers_upward_palm_facing_cut", "fingers_downward_back_of_hand_cut"]),
+    professionalChoiceBinding("clientHeadPosition", "tilted_forward_down", ["tilted_forward_down", "upright"]),
+    professionalChoiceBinding("zone", "lower_between_implantation_and_occipital", GRADUATED_ZONE_VALUES),
     professionalChoiceBinding("distribution", GUIDE_ESTABLISHMENT_DISTRIBUTION, DISTRIBUTION_OPTIONS),
+    professionalChoiceBinding("overdirection", false, [true, false]),
+    professionalChoiceBinding("partingOrientation", "vertical", ["vertical", "horizontal"]),
+    professionalChoiceBinding("tool", "straight_shear", ["straight_shear", "texturizer_shear"]),
   ],
   createdAt: "2026-09-11T00:00:00.000Z",
 };
 
-function requiredFixedRule(parameterName: string, value: string | boolean | number, rationale: string): ExecutionUnitParameterRule<ExecutionRuleConditionFact> {
+function requiredFixedRule(parameterName: string, value: string | boolean | number, rationale: string): ExecutionUnitParameterRule<GraduatedCuttingFact> {
   return { parameterName, semantic: "REQUIRED_FIXED", fixedValue: value, rationale };
 }
 
-// EXECUTION UNIT COUNT DECISION: 4 -- one per genuinely stable-context
-// professional segment Ionuț's own approved definition names: establishing
-// the perimeter/contour guide (natural fall, comb), lower graduated area
-// (45°, fingers upward, palm-facing), upper graduated area (90°, fingers
-// downward, back-of-hand-facing), and the cross-check/correction pass
-// (opposing horizontal partings). Each boundary is a real "tool/control-
-// method transition" or "anatomical/geometric threshold" trigger, exactly
-// the Stage 2.5.i.2 Execution Unit boundary test already used by every
-// real Skill before this one -- never split per procedure sentence, never
-// collapsed into one unit hiding a real technical transition.
-export const GRADUATED_CUTTING_EXECUTION_UNITS: readonly ExecutionUnit<ExecutionRuleConditionFact>[] = [
+// EXECUTION UNIT COUNT DECISION (Stage 8.5S1B.R1, corrected): exactly 3 --
+// one per genuinely stable-context professional segment that is NOT
+// itself an elevation choice: establishing the perimeter/contour guide
+// (conditional), executing graduation in the intended zone (ONE reusable
+// segment, open to whichever elevation/zone/hand-geometry a real case
+// selects), and the cross-check/correction pass. Elevation is
+// deliberately NOT an Execution Unit boundary trigger -- unlike a real
+// tool/control-method transition (Occipital Transition's own precedent)
+// or a real anatomical threshold, "which angle was chosen for this case"
+// is professional CASE DATA, not a structural transition in the Skill's
+// own stable-context segmentation. Splitting one Execution Unit per
+// elevation would misrepresent a parameter choice as a permanent
+// procedural boundary -- exactly the over-specification this correction
+// removes.
+export const GRADUATED_CUTTING_EXECUTION_UNITS: readonly ExecutionUnit<GraduatedCuttingFact>[] = [
   {
     executionUnitId: "executionunit-cutting-graduated-perimeter-guide",
     vertical: GRADUATED_CUTTING_VERTICAL,
     order: 1,
-    label: "Establish Perimeter/Contour Guide (Longer Hair)",
+    label: "Establish Perimeter/Contour Guide (When Required)",
     description:
-      "For longer hair, before internal graduation is constructed: establish the authoritative perimeter/contour guide defining the haircut's contour, termination line, and final perimeter length -- in natural fall, comb control, zero elevation. This is the PERIMETER/CONTOUR guide, structurally distinct from the progressive graduation guide the following Execution Units use.",
+      "When the execution plan/target structure requires a perimeter or termination-length authority (e.g. longer hair), before internal graduation is constructed: establish the authoritative perimeter/contour guide defining the haircut's contour, termination line, and final perimeter length -- in natural fall, comb control, zero elevation. This is the PERIMETER/CONTOUR guide, structurally distinct from the progressive graduation guide the following Execution Unit uses. CONDITIONAL -- see applicabilityCondition; otherwise not applicable for this case.",
     zoneId: "perimeter_contour_reference",
     laterality: "NOT_APPLICABLE",
+    applicabilityCondition: { op: "equals", fact: "perimeterGuideRequired", value: true },
     parameterRules: [
-      requiredFixedRule("clientHeadPosition", "tilted_forward_down", "Posterior/nape-adjacent perimeter reference execution."),
       requiredFixedRule("controlMethod", "comb", "The natural-fall perimeter/contour guide is comb-controlled, mirroring the established central-nape guide precedent."),
       requiredFixedRule("handOrientation", "comb_control_no_finger_hold", "No finger-hold technique applies to a comb-controlled natural-fall guide cut."),
-      requiredFixedRule("elevation", GUIDE_ESTABLISHMENT_ELEVATION, "The perimeter/contour guide fixes the authoritative final length in natural fall -- zero elevation."),
+      requiredFixedRule("elevation", GUIDE_ESTABLISHMENT_ELEVATION, "The perimeter/contour guide fixes the authoritative final length in natural fall -- zero elevation, definitional to what a contour/perimeter guide is."),
       requiredFixedRule("cuttingTechnique", GUIDE_ESTABLISHMENT_CUTTING_TECHNIQUE, "A natural-fall reference line is a blunt-line cut."),
       requiredFixedRule("distribution", GUIDE_ESTABLISHMENT_DISTRIBUTION, "Natural fall, no redirection, for the authoritative perimeter reference."),
       requiredFixedRule("guideType", GUIDE_ESTABLISHMENT_GUIDELINE, "A fixed visual-perimeter guide, distinct from the traveling progressive graduation guide."),
       requiredFixedRule("guideReferenceMode", "contour_guide_reference", "This cut establishes the authoritative contour/perimeter reference itself."),
-      requiredFixedRule("partingOrientation", "horizontal", "The perimeter/contour reference is established via a horizontal parting, mirroring perimeter-construction precedent."),
+      requiredFixedRule("zone", "perimeter_contour_establishment", "This Execution Unit's own scope is establishing the contour/perimeter reference, not a graduated zone."),
+      requiredFixedRule("clientHeadPosition", "tilted_forward_down", "Posterior/nape-adjacent perimeter reference execution."),
     ],
     sourceSkillInstanceId: GRADUATED_CUTTING_SKILL_INSTANCE.skillInstanceId,
     createdAt: "2026-09-11T00:00:00.000Z",
   },
   {
-    executionUnitId: "executionunit-cutting-graduated-lower-45",
+    executionUnitId: "executionunit-cutting-graduated-execution-zone",
     vertical: GRADUATED_CUTTING_VERTICAL,
     order: 2,
-    label: "Lower Graduated Area -- 45°, Fingers Upward",
+    label: "Graduated Execution Zone",
     description:
-      "Between the lower implantation and the occipital region: strand elevated to approximately 45° out of natural fall, held between index and middle finger with fingers oriented upward, cut on the palm-facing side. Repeats subsection-by-subsection, each cut strand becoming the traveling guide for the next.",
-    zoneId: "lower_graduated_area",
+      "The ONE reusable graduation segment: elevate the strand out of natural fall to the professionally selected degree for the intended zone/result, held between index and middle finger, and repeat strand-by-strand through that zone, each cut becoming the traveling guide for the next. Elevation, hand orientation, zone, client head position, distribution/overdirection, tool, and parting orientation are ALL case-dependent (resolved from this Execution Unit's own source Skill Instance, never fixed here) -- a DIFFERENT real case reuses this identical Execution Unit with a DIFFERENT Skill Instance. Only finger control is stated as universal across every elevation Ionuț described.",
+    zoneId: "graduated_execution_zone",
     laterality: "NOT_APPLICABLE",
     prerequisiteExecutionUnitIds: ["executionunit-cutting-graduated-perimeter-guide"],
     parameterRules: [
-      requiredFixedRule("clientHeadPosition", "tilted_forward_down", "Lower/posterior-adjacent graduation execution."),
-      requiredFixedRule("controlMethod", "fingers", "Elevated graduation work is finger-controlled."),
-      requiredFixedRule("handOrientation", "fingers_upward_palm_facing_cut", "45° work: fingers oriented upward, cutting on the palm-facing side."),
-      requiredFixedRule("elevation", LOWER_GRADUATION_ELEVATION, "Commonly used in the lower area between the lower implantation and the occipital region."),
+      requiredFixedRule("controlMethod", "fingers", "Elevated graduation work is finger-controlled -- stated by Ionuț for every elevation (45deg and 90deg alike), never angle-specific."),
       requiredFixedRule("cuttingTechnique", GRADUATION_CUTTING_TECHNIQUE, "Elevated graduation cutting."),
       requiredFixedRule("guideType", PROGRESSIVE_GRADUATION_GUIDELINE, "Traveling guide -- each cut strand guides the next."),
       requiredFixedRule("guideReferenceMode", "previous_subsection", "Each subsection references the immediately preceding cut, never a fixed pointer to the original guide."),
-      requiredFixedRule("partingOrientation", "vertical", "Primary graduation progression uses vertical partings."),
+      // elevation / handOrientation / zone / clientHeadPosition /
+      // distribution / overdirection / tool / partingOrientation are
+      // DELIBERATELY absent here -- see file header. Each resolves from
+      // the source Skill Instance's own PROFESSIONAL_CHOICE binding.
     ],
     verticalPayload: {
       iterationPolicy: {
         actionKinds: ["CONTROL", "EXECUTE"],
         iteration: {
           mode: "UNTIL_EXECUTION_UNIT_COMPLETE",
-          note: "Repeat subsection-by-subsection through the full lower graduated area, each referencing the immediately preceding cut, while this Execution Unit's own conditions remain true. One cut does not complete the Skill.",
-        },
-      },
-    },
-    sourceSkillInstanceId: GRADUATED_CUTTING_SKILL_INSTANCE.skillInstanceId,
-    createdAt: "2026-09-11T00:00:00.000Z",
-  },
-  {
-    executionUnitId: "executionunit-cutting-graduated-upper-90",
-    vertical: GRADUATED_CUTTING_VERTICAL,
-    order: 3,
-    label: "Upper Graduated Area -- 90°, Fingers Downward",
-    description:
-      "Commonly above the occipital area: strand elevated to approximately 90°, perpendicular to the scalp, held between index and middle finger with fingers oriented downward, cut on the back-of-hand side. Repeats subsection-by-subsection, each cut strand becoming the traveling guide for the next.",
-    zoneId: "upper_graduated_area",
-    laterality: "NOT_APPLICABLE",
-    prerequisiteExecutionUnitIds: ["executionunit-cutting-graduated-perimeter-guide"],
-    parameterRules: [
-      requiredFixedRule("clientHeadPosition", "upright", "Upper/crown-adjacent graduation execution."),
-      requiredFixedRule("controlMethod", "fingers", "Elevated graduation work is finger-controlled."),
-      requiredFixedRule("handOrientation", "fingers_downward_back_of_hand_cut", "90° work: fingers oriented downward, cutting on the back-of-hand side."),
-      requiredFixedRule("elevation", UPPER_GRADUATION_ELEVATION, "Strand elevated perpendicular to the scalp, commonly above the occipital area."),
-      requiredFixedRule("cuttingTechnique", GRADUATION_CUTTING_TECHNIQUE, "Elevated graduation cutting."),
-      requiredFixedRule("guideType", PROGRESSIVE_GRADUATION_GUIDELINE, "Traveling guide -- each cut strand guides the next."),
-      requiredFixedRule("guideReferenceMode", "previous_subsection", "Each subsection references the immediately preceding cut, never a fixed pointer to the original guide."),
-      requiredFixedRule("partingOrientation", "vertical", "Primary graduation progression uses vertical partings."),
-    ],
-    verticalPayload: {
-      iterationPolicy: {
-        actionKinds: ["CONTROL", "EXECUTE"],
-        iteration: {
-          mode: "UNTIL_EXECUTION_UNIT_COMPLETE",
-          note: "Repeat subsection-by-subsection through the full upper graduated area, each referencing the immediately preceding cut, while this Execution Unit's own conditions remain true. One cut does not complete the Skill.",
+          note: "Repeat strand-by-strand/subsection-by-subsection through the full intended graduated zone, each referencing the immediately preceding cut, while this Execution Unit's own conditions remain true. One cut does not complete the Skill.",
         },
       },
     },
@@ -458,21 +482,24 @@ export const GRADUATED_CUTTING_EXECUTION_UNITS: readonly ExecutionUnit<Execution
   {
     executionUnitId: "executionunit-cutting-graduated-cross-check",
     vertical: GRADUATED_CUTTING_VERTICAL,
-    order: 4,
+    order: 3,
     label: "Cross-Check & Correction",
     description:
-      "After the full lower/upper progression: cross-check using wider horizontal partings in the direction opposing the primary vertical partings, re-elevating according to the relevant angle for that area, and correcting any protruding longer ends. Graduation is not complete after one cut -- completion requires full-area progression plus this cross-check.",
+      "After the primary graduation progression: cross-check using wider horizontal partings in the direction opposing the primary parting, re-elevating according to the relevant angle for that area, and correcting any protruding longer ends. Graduation is not complete after one cut -- completion requires full-zone progression plus this cross-check. Elevation/hand orientation/zone stay case-dependent, resolved from the source Skill Instance -- cross-check re-elevates \"according to the relevant value for that area\", never one fixed angle.",
     zoneId: "cross_check_area",
     laterality: "NOT_APPLICABLE",
-    prerequisiteExecutionUnitIds: ["executionunit-cutting-graduated-lower-45", "executionunit-cutting-graduated-upper-90"],
+    prerequisiteExecutionUnitIds: ["executionunit-cutting-graduated-execution-zone"],
     parameterRules: [
-      requiredFixedRule("clientHeadPosition", "upright", "Full-head cross-check execution."),
       requiredFixedRule("controlMethod", "fingers", "Cross-check on already-graduated (elevated) sections is finger-controlled."),
-      requiredFixedRule("handOrientation", "fingers_downward_back_of_hand_cut", "Cross-check re-elevation mirrors the upper-area hand geometry."),
       requiredFixedRule("cuttingTechnique", GRADUATION_CUTTING_TECHNIQUE, "Corrective cutting on already-elevated structure."),
       requiredFixedRule("guideType", PROGRESSIVE_GRADUATION_GUIDELINE, "Cross-check re-references the already-established traveling guide."),
       requiredFixedRule("guideReferenceMode", "previous_subsection", "Correction references the already-cut graduated structure."),
-      requiredFixedRule("partingOrientation", "horizontal", "Cross-check uses wider horizontal sections, opposing the primary vertical partings."),
+      requiredFixedRule("partingOrientation", "horizontal", "Cross-check unconditionally uses wider horizontal sections, opposing the primary parting -- Ionuț's own unconditional instruction, unlike the case-dependent primary orientation."),
+      requiredFixedRule("clientHeadPosition", "upright", "Full-zone cross-check execution."),
+      // elevation / handOrientation / zone / distribution / overdirection
+      // / tool stay case-dependent -- resolved from the source Skill
+      // Instance, re-elevating "according to the relevant value for that
+      // area" per Ionuț's own words.
     ],
     sourceSkillInstanceId: GRADUATED_CUTTING_SKILL_INSTANCE.skillInstanceId,
     createdAt: "2026-09-11T00:00:00.000Z",
