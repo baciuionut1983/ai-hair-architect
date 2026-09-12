@@ -158,6 +158,14 @@ export const historicalReferenceDatabase: HistoricalImageReferenceDatabase = {
     });
     return rows.map((r) => r.imageAssetId);
   },
+  professionalLearningEvidenceByImageAssetId: async (ids) => {
+    const rows = await prisma.professionalLearningEvidence.findMany({
+      where: { imageAssetId: { in: [...ids] } },
+      select: { imageAssetId: true },
+      distinct: ["imageAssetId"],
+    });
+    return rows.map((r) => r.imageAssetId).filter((v): v is string => v !== null);
+  },
 };
 
 // Real S3 delete + confirm, mirroring storage-readiness-canary.ts's own

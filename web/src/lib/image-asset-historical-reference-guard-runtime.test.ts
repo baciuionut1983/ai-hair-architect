@@ -9,8 +9,9 @@ import { createCurrentSnapshotFromAnalysis, createManualSnapshot } from "@/lib/h
 import { buildUnassessedGlobalEntry, buildUnassessedZoneEntry, type HairStateSnapshotPayload } from "@/lib/hair-state-snapshot-validators";
 import { HEAD_ZONES } from "@/lib/technical-visual-map-validators";
 import { historicalReferenceDatabase } from "@/lib/image-asset-retention-runtime";
+import { createLearningEvidence } from "@/lib/professional-learning-evidence-repository";
 
-// RETENTION SAFETY GATE -- real-Postgres proof that each of the 12 real
+// RETENTION SAFETY GATE -- real-Postgres proof that each of the 13 real
 // queries (image-asset-retention-runtime.ts's own historicalReferenceDatabase)
 // actually finds a real row in its own real table, by the real field name.
 // This is the one place a wrong column/table name or a missed null-filter
@@ -22,6 +23,7 @@ const owners = new Set<string>();
 suite("historicalReferenceDatabase (real Postgres)", () => {
   afterEach(async () => {
     const ownerUserIds = [...owners];
+    await prisma.professionalLearningEvidence.deleteMany({ where: { ownerUserId: { in: ownerUserIds } } });
     await prisma.technicalExecutionGenerationRequest.deleteMany({ where: { ownerUserId: { in: ownerUserIds } } });
     await prisma.videoDemonstrationGeneration.deleteMany({ where: { ownerUserId: { in: ownerUserIds } } });
     await prisma.photoPreviewGeneration.deleteMany({ where: { ownerUserId: { in: ownerUserIds } } });
@@ -235,7 +237,7 @@ suite("historicalReferenceDatabase (real Postgres)", () => {
     expect(found).toEqual([image.id]);
   });
 
-  it("9. an image with zero real references anywhere is found by none of the 12 sources", async () => {
+  it("9. an image with zero real references anywhere is found by none of the 13 sources", async () => {
     const { ownerUserId, clientId } = await createOwnerAndClient();
     const image = await createImageAsset(ownerUserId, clientId);
     const results = await Promise.all([
@@ -251,8 +253,24 @@ suite("historicalReferenceDatabase (real Postgres)", () => {
       historicalReferenceDatabase.photoPreviewGenerationByGeneratedImageAssetId([image.id]),
       historicalReferenceDatabase.videoDemonstrationGenerationBySourceGeneratedImageAssetId([image.id]),
       historicalReferenceDatabase.technicalExecutionGenerationRequestByImageAssetId([image.id]),
+      historicalReferenceDatabase.professionalLearningEvidenceByImageAssetId([image.id]),
     ]);
     expect(results.every((r) => r.length === 0)).toBe(true);
+  });
+
+  it("10. ProfessionalLearningEvidence.imageAssetId is found for a real IMAGE evidence row (Stage 8.5L2)", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const image = await createImageAsset(ownerUserId, clientId);
+    await createLearningEvidence(ownerUserId, {
+      evidenceType: "IMAGE",
+      vertical: "hair_cutting",
+      imageAssetId: image.id,
+      provenance: { channel: "upload" },
+      rightsClassification: "USER_OWNED_OR_AUTHORIZED",
+    });
+
+    const found = await historicalReferenceDatabase.professionalLearningEvidenceByImageAssetId([image.id, randomUUID()]);
+    expect(found).toEqual([image.id]);
   });
 });
 

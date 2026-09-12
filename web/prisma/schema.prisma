@@ -217,6 +217,10 @@ model User {
   // Plan). Virtual back-relation only -- produces no column or constraint
   // on "User"; the FK lives on "ProfessionalExecutionScenePlan".
   professionalExecutionScenePlans      ProfessionalExecutionScenePlan[]
+  // Professional Skill Engine, Stage 8.5L2 (Professional Learning Evidence
+  // Foundation). Virtual back-relation only -- produces no column or
+  // constraint on "User"; the FK lives on "ProfessionalLearningEvidence".
+  professionalLearningEvidence         ProfessionalLearningEvidence[]
 }
 
 model Session {
@@ -2742,12 +2746,40 @@ model VideoAsset {
   storageEtag        String? @db.VarChar(256)
   contentSha256      String? @db.Char(64)
 
+  // Stage 8.5L2 -- the provenance/trust-boundary discriminator the Stage
+  // 8.5L1 audit found missing here (ImageAsset's own `origin` field,
+  // added earlier, has no VideoAsset equivalent). Every row before this
+  // stage was created exclusively by the generation pipeline
+  // (VideoDemonstrationGeneration/TechnicalExecutionVideoGeneration --
+  // verified: no other prisma.videoAsset.create call exists anywhere in
+  // this repo), so the default keeps every existing row correctly
+  // classified with no backfill needed. "uploaded_source" is set ONLY by
+  // a future Learning Evidence video-upload path -- never by the
+  // generation pipeline -- so a teaching video can never be silently
+  // mistaken for (or promoted into) a generated Result Video, and vice
+  // versa. Plain string, not an enum -- same reasoning as ImageAsset.origin.
+  origin String @default("generated_output")
+
+  // Stage 8.5L2 -- the retention/deletion lifecycle gap the Stage 8.5L1
+  // audit found: ImageAsset has had deletedAt/retentionDeletesAt since
+  // M36; VideoAsset had neither. Nullable, additive, same semantics as
+  // ImageAsset's own pair (soft-delete marker, then an absolute grace-
+  // period expiry) -- no execution/purge engine reads these yet in this
+  // stage (Stage 8.5L2 Part 9 explicitly builds only the reference guard,
+  // never a purge job), so every existing row simply stays
+  // deletedAt=null/retentionDeletesAt=null (fully backward-compatible,
+  // matches its current de-facto "never deleted" behavior exactly).
+  deletedAt          DateTime? @db.Timestamp(6)
+  retentionDeletesAt DateTime? @db.Timestamp(6)
+
   createdAt DateTime @default(now()) @db.Timestamp(6)
 
   owner  User   @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   client Client @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
 
   @@index([ownerUserId, clientId])
+  @@index([deletedAt])
+  @@index([origin, retentionDeletesAt, id])
 }
 
 // Real AI Video Demonstration, Stage 1 -- the durable, auditable generation
@@ -3046,6 +3078,157 @@ model CaptureSetImage {
   // already co-occur uniquely per row.
   @@unique([id, ownerUserId, clientId])
   @@index([captureSetId, ownerUserId, clientId])
+}
+
+// AI Hair Architect, Professional Skill Engine Stage 8.5L2 -- PROFESSIONAL
+// LEARNING EVIDENCE FOUNDATION. The durable, owner-scoped, PRIVATE record
+// of raw professional teaching material a "Teach the AI" input becomes --
+// deliberately NOT professional knowledge itself (that remains
+// ProfessionalMemory today, and will be a future ProfessionalLearningDraft
+// / ProfessionalSkillDefinition promotion later). Never duplicates media
+// bytes: imageAssetId/captureSetId/videoAssetId are validated soft
+// pointers to already-existing, already-owned rows -- same discipline as
+// CaptureSetImage.imageAssetId / HairStateSnapshotEvidence's own asset
+// pointers -- exactly one of the three is populated, or none at all for
+// text-only evidence, enforced by the CHECK constraint added in this
+// stage's own migration (mirrors HairStateSnapshotEvidence's own kind/
+// pointer CHECK exactly).
+//
+// LEARNING EVIDENCE != USER CONTENT (Stage 8.5L2 Critical Rule): there is
+// deliberately no clientId on this model -- ownership is purely user-
+// scoped, narrower than ImageAsset/VideoAsset/CaptureSet (all client-
+// scoped). Teaching material is often generic professional knowledge with
+// no single client behind it (a manufacturer sheet, a trend reference, a
+// professional's own general technique note); when it DOES originate from
+// a specific client's real work, the underlying ImageAsset/CaptureSet/
+// VideoAsset row still carries its own clientId -- this table never
+// re-asserts or requires that scoping. No route from this table reaches
+// Academy, Marketplace, public profiles, social/feed, client galleries,
+// client history, search/discovery, Result Video, or Photo Preview --
+// none of those read it, and none exist to.
+//
+// `vertical` reuses ProfessionalSkillDefinition.vertical's own field name
+// and "open string, no hardcoded vertical list" discipline exactly (Stage
+// 8.5L2 Part 7) -- the existing domain vocabulary this stage was told to
+// reuse, not a new parallel concept.
+//
+// `visibilityScope` has exactly one real, application-validated value
+// today: PRIVATE_LEARNING_EVIDENCE (Stage 8.5L2 Part 4) -- default AND,
+// for this stage, the only accepted value.
+//
+// `status` is the EVIDENCE's own availability/authority lifecycle only
+// (ACTIVE | REVOKED | DELETED_SOURCE) -- never a professional-knowledge
+// approval workflow (no DRAFT/REVIEW/APPROVED here; that belongs to a
+// future ProfessionalLearningDraft / the existing ProfessionalSkillDefinition
+// review flow). `revokedAt` / `sourceMediaDeletedAt` are two independent
+// "why" timestamps behind a non-ACTIVE status (Stage 8.5L2 Part 10):
+// REVOKE (stop influencing future learning) is a different event from
+// DELETE SOURCE MEDIA (remove the original bytes) -- a row can be revoked
+// without its source media ever being deleted, and can later also have
+// its source media deleted; both are recorded, neither silently rewrites
+// history to pretend the evidence never existed.
+model ProfessionalLearningEvidence {
+  id          String @id @default(uuid())
+  ownerUserId String
+
+  // Application-validated closed vocabulary
+  // (professional-learning-evidence-validators.ts): TEXT |
+  // VOICE_TRANSCRIPT | IMAGE | IMAGE_SET | DIAGRAM | VIDEO |
+  // EXTERNAL_RESEARCH | MANUFACTURER_SOURCE | TREND_SOURCE. Plain string,
+  // not a Postgres enum -- same reasoning as every sibling lifecycle/
+  // vocabulary field introduced since Stage 3 (evidenceKind, evidenceRole,
+  // vertical, status...). The last three values are future-capable only in
+  // this stage -- no online-research/manufacturer/trend functionality
+  // exists yet; a row of one of those types can only ever carry text
+  // (originalText) and/or sourceMetadata, never an asset pointer.
+  evidenceType String
+
+  // Reuses ProfessionalSkillDefinition.vertical verbatim -- see model
+  // header. Hair is the only real value produced by the UI today; the
+  // column itself is not hard-coded to it.
+  vertical String
+
+  // Application-validated: currently exactly "PRIVATE_LEARNING_EVIDENCE".
+  // See model header.
+  visibilityScope String @default("PRIVATE_LEARNING_EVIDENCE")
+
+  // Application-validated: ACTIVE | REVOKED | DELETED_SOURCE. See model
+  // header for the revoke-vs-delete-source distinction.
+  status String @default("ACTIVE")
+
+  title String? @db.VarChar(200)
+
+  // Populated for TEXT/VOICE_TRANSCRIPT (the evidence content itself, or
+  // the transcript text -- mirrors VoiceTranscript.transcript /
+  // ProfessionalMemory.content's own VarChar(4000) cap exactly). May also
+  // carry a short professional note/summary for EXTERNAL_RESEARCH /
+  // MANUFACTURER_SOURCE / TREND_SOURCE. Always null for IMAGE/IMAGE_SET/
+  // DIAGRAM/VIDEO -- the asset pointer is the content.
+  originalText String? @db.VarChar(4000)
+
+  // Hash of originalText for text-backed evidence, computed the same way
+  // contentSha256 is computed elsewhere in this schema. Deliberately NEVER
+  // a duplicate copy of an asset's own contentSha256 for asset-backed
+  // evidence -- the referenced ImageAsset/VideoAsset row remains the
+  // single source of truth for that hash; duplicating it here would be a
+  // second, driftable copy. Null whenever there is no local text to hash.
+  contentSha256 String? @db.Char(64)
+
+  // Validated soft pointers -- same discipline as CaptureSetImage.imageAssetId
+  // / HairStateSnapshotEvidence's own asset pointers: a reference to an
+  // already-existing, already-owned row, never a duplicated copy of its
+  // bytes or metadata, and deliberately NOT a database FK (an evidence row
+  // must never block or complicate the referenced asset's own independent
+  // retention/soft-delete lifecycle). Exactly one of the three is set, or
+  // none for text-only evidence -- enforced by this stage's own migration
+  // CHECK constraint.
+  imageAssetId String?
+  captureSetId String?
+  videoAssetId String?
+
+  // Free-form, required -- how this evidence entered the system (input
+  // channel, capture context). Mirrors ProfessionalMemory.provenance's own
+  // Json-field, "do not prematurely model the full extraction provenance
+  // chain" reasoning (Stage 8.5L2 Part 6): in THIS stage, evidence always
+  // represents original source / provided material, never an AI
+  // observation or inference -- there is no field-level derived-fact
+  // provenance model here yet, only this one row's own origin.
+  provenance Json
+
+  // Optional, evidence-type-specific extra detail that does not warrant
+  // its own column yet (Stage 8.5L2 Part 17: an external URL, a
+  // manufacturer/trend name, a capture device note). Deliberately generic
+  // rather than over-modeled now.
+  sourceMetadata Json?
+
+  // USER_OWNED_OR_AUTHORIZED | EXTERNAL_REFERENCE | UNKNOWN
+  // (professional-learning-evidence-validators.ts). No default -- the
+  // creator must state this explicitly rather than have a legally-
+  // sensitive field silently default to the most permissive value.
+  rightsClassification String
+
+  // Nullable, soft, NOT an enforced self-relation FK -- same discipline as
+  // every other superseded/parent pointer in this schema (e.g.
+  // CaptureSet.supersededByCaptureSetId). Reserved for a future derived-
+  // evidence relationship (Stage 8.5L2 Part 3); nothing in this stage ever
+  // sets it.
+  parentEvidenceId String?
+
+  createdByUserId String
+
+  revokedAt            DateTime? @db.Timestamp(6)
+  sourceMediaDeletedAt DateTime? @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner User @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([ownerUserId, status, createdAt, id])
+  @@index([ownerUserId, evidenceType])
+  @@index([imageAssetId])
+  @@index([captureSetId])
+  @@index([videoAssetId])
 }
 
 // Technical Execution Generation Authorization + Image Qualification

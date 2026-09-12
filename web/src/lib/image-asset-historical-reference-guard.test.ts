@@ -25,13 +25,20 @@ function fakeDb(overrides: Partial<HistoricalImageReferenceDatabase> = {}): Hist
     photoPreviewGenerationByGeneratedImageAssetId: empty,
     videoDemonstrationGenerationBySourceGeneratedImageAssetId: empty,
     technicalExecutionGenerationRequestByImageAssetId: empty,
+    professionalLearningEvidenceByImageAssetId: empty,
     ...overrides,
   };
 }
 
 describe("findHistoricallyReferencedImageAssetIds", () => {
-  it("declares exactly 12 real reference sources", () => {
-    expect(HISTORICAL_IMAGE_REFERENCE_SOURCES).toHaveLength(12);
+  it("declares exactly 13 real reference sources", () => {
+    expect(HISTORICAL_IMAGE_REFERENCE_SOURCES).toHaveLength(13);
+  });
+
+  it("a reference from ProfessionalLearningEvidence alone protects the id (Stage 8.5L2)", async () => {
+    const db = fakeDb({ professionalLearningEvidenceByImageAssetId: async (ids) => ids.filter((id) => id === "img-evidence") });
+    const result = await findHistoricallyReferencedImageAssetIds(db, ["img-evidence", "img-unrelated"]);
+    expect([...result]).toEqual(["img-evidence"]);
   });
 
   it("returns an empty set for an empty candidate list without calling any source", async () => {

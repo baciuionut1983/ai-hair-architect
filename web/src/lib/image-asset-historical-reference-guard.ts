@@ -23,6 +23,10 @@
 //     the RESULT/preview image itself; still a real ImageAsset row)
 //   VideoDemonstrationGeneration.sourceGeneratedImageAssetId (soft pointer, required)
 //   TechnicalExecutionGenerationRequest.imageAssetId     (soft pointer, frozen snapshot)
+//   ProfessionalLearningEvidence.imageAssetId            (soft pointer, Stage 8.5L2 --
+//     covers both IMAGE and DIAGRAM evidenceType rows; an evidence-referenced
+//     image must never be silently purged out from under private teaching
+//     material)
 // EXCLUDED, deliberately: ClientPhoto (a genuinely separate, older system --
 // `imageUrl` is a plain string, no relation to ImageAsset at all);
 // VideoAsset (no deletedAt/retentionDeletesAt column anywhere on this model
@@ -60,6 +64,7 @@ export interface HistoricalImageReferenceDatabase {
   readonly photoPreviewGenerationByGeneratedImageAssetId: (imageAssetIds: readonly string[]) => Promise<readonly string[]>;
   readonly videoDemonstrationGenerationBySourceGeneratedImageAssetId: (imageAssetIds: readonly string[]) => Promise<readonly string[]>;
   readonly technicalExecutionGenerationRequestByImageAssetId: (imageAssetIds: readonly string[]) => Promise<readonly string[]>;
+  readonly professionalLearningEvidenceByImageAssetId: (imageAssetIds: readonly string[]) => Promise<readonly string[]>;
 }
 
 export const HISTORICAL_IMAGE_REFERENCE_SOURCES = [
@@ -75,6 +80,7 @@ export const HISTORICAL_IMAGE_REFERENCE_SOURCES = [
   "PhotoPreviewGeneration.generatedImageAssetId",
   "VideoDemonstrationGeneration.sourceGeneratedImageAssetId",
   "TechnicalExecutionGenerationRequest.imageAssetId",
+  "ProfessionalLearningEvidence.imageAssetId",
 ] as const;
 
 // Returns the SUBSET of candidateImageAssetIds that are still referenced
@@ -101,6 +107,7 @@ export async function findHistoricallyReferencedImageAssetIds(
     db.photoPreviewGenerationByGeneratedImageAssetId(ids),
     db.videoDemonstrationGenerationBySourceGeneratedImageAssetId(ids),
     db.technicalExecutionGenerationRequestByImageAssetId(ids),
+    db.professionalLearningEvidenceByImageAssetId(ids),
   ]);
 
   const referenced = new Set<string>();
