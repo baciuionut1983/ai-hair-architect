@@ -14,6 +14,7 @@ import {
   type LearningEvidenceSummary,
 } from "./teach-ai-learning-evidence-logic";
 import { describeVideoUploadProgress, uploadVideoViaMultipart, type VideoUploadProgressState } from "./teach-ai-video-multipart-upload-logic";
+import { LearningDraftReview } from "./teach-ai-learning-draft-review";
 
 type Action = "save_client_memory" | "save_professional_rule" | "mark_preference" | "save_outcome";
 
@@ -458,6 +459,14 @@ export function TeachAiPanel({ clientId }: { clientId: string }) {
               </li>
             ))}
           </ul>
+        ) : null}
+
+        {recentEvidence.length > 0 ? (
+          <div className="mt-2 space-y-2">
+            {recentEvidence.map((item) => (
+              <LearningDraftReview key={item.id} evidenceId={item.id} />
+            ))}
+          </div>
         ) : null}
       </div>
 

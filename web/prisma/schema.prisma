@@ -226,6 +226,11 @@ model User {
   // constraint on "User"; the FK lives on
   // "ProfessionalLearningUploadSession".
   professionalLearningUploadSessions   ProfessionalLearningUploadSession[]
+  // Professional Skill Engine, Stage 8.5L4 (Professional Learning
+  // Discernment + Structured Knowledge Extraction Draft). Virtual
+  // back-relation only -- produces no column or constraint on "User"; the
+  // FK lives on "ProfessionalLearningDraft".
+  professionalLearningDrafts           ProfessionalLearningDraft[]
 }
 
 model Session {
@@ -3272,6 +3277,155 @@ model ProfessionalLearningEvidence {
   @@index([imageAssetId])
   @@index([captureSetId])
   @@index([videoAssetId])
+}
+
+// AI Hair Architect, Professional Skill Engine Stage 8.5L4 --
+// PROFESSIONAL LEARNING DISCERNMENT + STRUCTURED KNOWLEDGE EXTRACTION
+// DRAFT. The entity ProfessionalLearningEvidence's own header comment
+// already named three times over: "AI INTERPRETATION OF PROFESSIONAL
+// LEARNING EVIDENCE" -- deliberately NOT approved knowledge, NOT an
+// active skill, NOT ProfessionalMemory free text, NOT a client analysis,
+// NOT an ExecutionPlan, NOT internet truth. Sits strictly between
+// ProfessionalLearningEvidence (raw private material) and
+// ProfessionalSkillDefinition (the authoritative registry) -- this stage
+// does NOT wire the two together; registry promotion is an explicitly
+// later, separately-authorized stage (Part 4/28 of this stage's own
+// task).
+//
+// SOURCE != TRUTH (this stage's absolute rule): a draft is always an
+// UNTRUSTED, server-validated proposal about what evidence might mean,
+// never a fact. `extraction` therefore stores an array of individually
+// provenance-tagged fields (OBSERVED | INFERRED | PROFESSIONAL_INPUT |
+// UNKNOWN -- professional-learning-draft-validators.ts), never one
+// scalar label for the whole draft -- see that file's own header for why
+// a single evidenceType-style provenance column would collapse exactly
+// the distinction this stage exists to preserve.
+//
+// Ownership: purely user-scoped, no clientId -- mirrors
+// ProfessionalLearningEvidence's own "LEARNING EVIDENCE != USER CONTENT"
+// reasoning exactly (a draft is derived from evidence that is itself
+// never client-scoped).
+//
+// `sourceEvidenceId` is a validated soft pointer (same discipline as
+// ProfessionalLearningEvidence.imageAssetId/captureSetId/videoAssetId --
+// never a database FK, so a draft never blocks or complicates the
+// referenced evidence row's own independent revoke/delete-source
+// lifecycle; see Part 33's own revocation/retention rule: a revoked or
+// source-deleted evidence row never causes its historical drafts to be
+// silently destroyed or rewritten). Combined with `extractorVersion`
+// into a uniqueness constraint -- the idempotency strategy Part 32 asks
+// for: reprocessing the exact same (immutable) evidence with the exact
+// same extractor version must never create an uncontrolled duplicate
+// draft; a genuinely new interpretation (a professional correction, or a
+// future extractor version) is always a NEW row that supersedes the old
+// one via `correctsDraftId`/`supersededByDraftId`, never an in-place
+// overwrite (Part 15's "no destructive rewrite of history").
+//
+// `status` is this draft's OWN review lifecycle -- DRAFT | READY_FOR_REVIEW
+// | APPROVED | REJECTED | SUPERSEDED
+// (professional-learning-draft-validators.ts). APPROVED records that a
+// professional reviewed and accepted this INTERPRETATION -- it is
+// PROFESSIONAL REVIEW APPROVED, explicitly NOT REGISTRY ACTIVATED (Part
+// 28): nothing in this stage ever creates, updates, or activates a
+// ProfessionalSkillDefinition row. That is a separate, later, explicitly
+// designed gate.
+model ProfessionalLearningDraft {
+  id          String @id @default(uuid())
+  ownerUserId String
+
+  // Soft pointer to ProfessionalLearningEvidence -- see model header.
+  sourceEvidenceId String
+
+  // Identifies which extractor implementation produced this draft (e.g.
+  // "mock-deterministic-v1" in this stage; a future real provider-backed
+  // extractor bumps this string to force fresh processing rather than
+  // silently reusing a stale interpretation). Part of the idempotency key
+  // below.
+  extractorVersion String
+
+  // Application-validated closed vocabulary
+  // (professional-learning-draft-validators.ts): DRAFT |
+  // READY_FOR_REVIEW | APPROVED | REJECTED | SUPERSEDED. Plain string,
+  // not a Postgres enum -- same convention as every lifecycle field
+  // introduced since Stage 3.
+  status String @default("DRAFT")
+
+  // What the discernment step believes this evidence primarily contains
+  // (Part 8) -- PROFESSIONAL_TECHNIQUE | PROFESSIONAL_VARIATION |
+  // PROFESSIONAL_CORRECTION | PROFESSIONAL_RULE | PROFESSIONAL_RATIONALE
+  // | PROFESSIONAL_EXAMPLE | TOOL_INFORMATION | PRODUCT_INFORMATION |
+  // BRAND_INFORMATION | RESULT_REFERENCE | TREND_INFORMATION | IRRELEVANT
+  // | INSUFFICIENT_EVIDENCE. The system must be able to say plainly "this
+  // material does not contain reusable professional knowledge" -- not
+  // every upload is forced to teach something.
+  discernmentCategory String
+
+  // The outcome of comparing this draft's extraction against the
+  // existing ProfessionalSkillDefinition registry (Part 10) -- MATCH_EXISTING
+  // | EVIDENCE_FOR_EXISTING | VARIATION_OF_EXISTING | POSSIBLE_CORRECTION
+  // | POSSIBLE_CONFLICT | POSSIBLE_NEW_SKILL | INSUFFICIENT_INFORMATION.
+  // Never created merely because wording differs from an existing skill's
+  // own name/description (Stage 4's own "capability-declared, never
+  // keyword-guessed" discipline extends here).
+  comparisonOutcome String
+
+  // Which existing skill (by its own stable skillId, e.g.
+  // "skill-cutting-graduated") this draft was compared against, if any --
+  // soft reference only, same non-FK discipline as every other
+  // cross-registry pointer in this schema. Null when comparisonOutcome is
+  // POSSIBLE_NEW_SKILL or INSUFFICIENT_INFORMATION.
+  comparedSkillId String?
+
+  // The structured extraction itself: a JSON object of named fields (Part
+  // 7's vocabulary -- technique, elevation, guideType, tool, ...), each
+  // shaped { value, source, confidence?, note? } where source is one of
+  // this stage's provenance classes. Missing evidence is always an
+  // explicit UNKNOWN entry, never a silently-omitted field and never a
+  // guessed value (Part 7: "Do NOT require every field. Missing evidence
+  // = UNKNOWN."). Mirrors the established "frozen Json payload, validated
+  // by a pure function, never trusted verbatim from a provider" pattern
+  // already used by ProfessionalReasoningProposal.proposalPayload /
+  // TechnicalDemonstrationPlan.
+  extraction Json
+
+  // Populated only when comparisonOutcome is POSSIBLE_CONFLICT (Part 13):
+  // { existingClaim, newClaim, existingAuthority, newEvidenceId, reason,
+  // reviewRequired }. The system NEVER picks a winner automatically --
+  // the referenced ProfessionalSkillDefinition is never mutated by this
+  // row's existence (Part 12/13).
+  conflictDetail Json?
+
+  // Professional correction support (Part 15): when this draft records a
+  // professional correcting a PRIOR draft's interpretation,
+  // `correctsDraftId` names that prior draft (soft pointer). The prior
+  // draft is never destructively rewritten -- it is instead transitioned
+  // to SUPERSEDED with `supersededByDraftId` pointing forward at this new
+  // row, the same soft, non-FK supersession discipline
+  // AnalysisProposal.supersededByProposalId already established.
+  correctsDraftId     String?
+  supersededByDraftId String?
+
+  // Convenience audit snapshot for a correction (Part 15): { previousInterpretation,
+  // correction, correctedByUserId, correctedAt }. Reconstructible from the
+  // correctsDraftId chain alone, but stored redundantly here so a reader
+  // never has to walk history just to see what changed and why.
+  correctionNote Json?
+
+  createdByUserId String
+  reviewedByUserId String?
+  reviewedAt       DateTime? @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner User @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  // Idempotency key (Part 32): the same evidence processed by the same
+  // extractor version never produces more than one draft row.
+  @@unique([sourceEvidenceId, extractorVersion])
+  @@index([ownerUserId, status, createdAt, id])
+  @@index([sourceEvidenceId])
+  @@index([correctsDraftId])
 }
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L3.1 -- LARGE

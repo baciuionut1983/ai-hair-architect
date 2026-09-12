@@ -1,0 +1,150 @@
+import { findLearningEvidenceForOwner } from "@/lib/professional-learning-evidence-repository";
+import { checkRelevanceGate } from "@/lib/professional-learning-relevance-gate";
+import type { ProfessionalLearningExtractor } from "@/lib/professional-learning-extractor";
+import { validateExtractorOutput } from "@/lib/professional-learning-draft-extraction-validator";
+import { compareExtractionAgainstRegistry } from "@/lib/professional-learning-draft-comparison";
+import {
+  createCorrectionDraft,
+  createDraft,
+  findDraftBySourceEvidenceAndExtractorVersion,
+  findDraftForOwner,
+  type ProfessionalLearningDraftRecord,
+} from "@/lib/professional-learning-draft-repository";
+import type { ProfessionalSkillDefinitionRecord } from "@/lib/professional-skill-registry-repository";
+import type { ProfessionalLearningExtraction, ProfessionalLearningExtractedField } from "@/lib/professional-learning-draft-validators";
+
+// AI Hair Architect, Professional Skill Engine Stage 8.5L4 -- the
+// orchestration layer connecting evidence -> relevance gate -> extractor
+// (mock today) -> strict validation -> compare-before-create -> durable
+// draft. Mirrors professional-brain-orchestrator.ts's own "thin
+// connective layer, no domain logic of its own" discipline: every real
+// decision lives in the module it delegates to (the gate, the extractor,
+// the validator, the comparator, the repository).
+//
+// THIS FILE NEVER TOUCHES ProfessionalSkillDefinition (Part 4/12/28): the
+// registry it reads is a plain, already-built, read-only snapshot passed
+// in by the caller (the same `buildCanonicalCandidateSkillRegistry()`
+// every other Professional Brain stage already reads) -- nothing here
+// creates, updates, or activates a skill row, regardless of
+// comparisonOutcome.
+
+export class ProfessionalLearningDraftServiceError extends Error {
+  readonly code: string;
+  readonly httpStatus: number;
+  constructor(code: string, httpStatus: number, message: string) {
+    super(message);
+    this.name = "ProfessionalLearningDraftServiceError";
+    this.code = code;
+    this.httpStatus = httpStatus;
+  }
+}
+
+export type ProcessEvidenceOutcome =
+  | { readonly kind: "created"; readonly draft: ProfessionalLearningDraftRecord }
+  | { readonly kind: "already_processed"; readonly draft: ProfessionalLearningDraftRecord }
+  | { readonly kind: "skipped"; readonly reason: string };
+
+export interface ProcessEvidenceIntoDraftInput {
+  readonly ownerUserId: string;
+  readonly evidenceId: string;
+  readonly draftId: string;
+  readonly extractor: ProfessionalLearningExtractor;
+  readonly registry: readonly ProfessionalSkillDefinitionRecord[];
+}
+
+export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftInput): Promise<ProcessEvidenceOutcome> {
+  const evidence = await findLearningEvidenceForOwner(input.ownerUserId, input.evidenceId);
+  if (!evidence) {
+    throw new ProfessionalLearningDraftServiceError("EVIDENCE_NOT_FOUND", 404, "Learning evidence not found.");
+  }
+
+  const existing = await findDraftBySourceEvidenceAndExtractorVersion(input.ownerUserId, input.evidenceId, input.extractor.extractorVersion);
+  const gate = checkRelevanceGate(
+    { status: evidence.status, evidenceType: evidence.evidenceType, originalText: evidence.originalText },
+    existing !== null,
+  );
+
+  if (!gate.proceed) {
+    if (gate.reason === "ALREADY_PROCESSED" && existing) {
+      return { kind: "already_processed", draft: existing };
+    }
+    return { kind: "skipped", reason: gate.reason };
+  }
+
+  const rawOutput = await input.extractor.extract({
+    evidence: { evidenceId: evidence.id, evidenceType: evidence.evidenceType, vertical: evidence.vertical, originalText: evidence.originalText },
+    evidenceReferences: { imageAssetId: evidence.imageAssetId, captureSetId: evidence.captureSetId, videoAssetId: evidence.videoAssetId },
+    relevantRegistry: input.registry,
+  });
+
+  const output = validateExtractorOutput({ output: rawOutput, evidenceOriginalText: evidence.originalText });
+
+  const comparison = compareExtractionAgainstRegistry(output.discernment.category, output.relatedSkillIdHints, input.registry, evidence.id);
+
+  const draft = await createDraft(input.ownerUserId, input.draftId, {
+    sourceEvidenceId: evidence.id,
+    extractorVersion: input.extractor.extractorVersion,
+    discernmentCategory: output.discernment.category,
+    comparisonOutcome: comparison.outcome,
+    comparedSkillId: comparison.comparedSkillId,
+    extraction: output.extraction,
+    conflictDetail: comparison.conflictDetail,
+    createdByUserId: input.ownerUserId,
+  });
+
+  return { kind: "created", draft };
+}
+
+export interface SubmitProfessionalCorrectionInput {
+  readonly ownerUserId: string;
+  readonly priorDraftId: string;
+  readonly correctionEvidenceId: string;
+  readonly newDraftId: string;
+  // Only the field(s) the professional is correcting -- every other field
+  // from the prior draft's own extraction is preserved unchanged
+  // alongside the correction (no wholesale rewrite of the interpretation,
+  // only the specific correction).
+  readonly correctedFields: Readonly<Record<string, { readonly value: unknown; readonly previousValue: unknown }>>;
+  readonly correctedByUserId: string;
+}
+
+// Professional correction (Part 15): an explicit, professional-initiated
+// action -- NOT something this mock stage's extractor infers from free
+// text (a real correction is a deliberate override, distinguishable from
+// AI inference by construction, not by guessing at phrasing like "no,
+// actually..."). Preserves the prior draft's extraction fields that were
+// NOT corrected; every corrected field is stamped source=PROFESSIONAL_INPUT
+// with the highest authority this stage recognizes. No destructive
+// rewrite: the prior draft transitions to SUPERSEDED, its own row and
+// extraction remain exactly as they were.
+export async function submitProfessionalCorrection(input: SubmitProfessionalCorrectionInput): Promise<ProfessionalLearningDraftRecord> {
+  const prior = await findDraftForOwner(input.ownerUserId, input.priorDraftId);
+  if (!prior) {
+    throw new ProfessionalLearningDraftServiceError("DRAFT_NOT_FOUND", 404, "The draft being corrected was not found.");
+  }
+
+  const correctedFieldNames = Object.keys(input.correctedFields);
+  if (correctedFieldNames.length === 0) {
+    throw new ProfessionalLearningDraftServiceError("NO_CORRECTED_FIELDS", 400, "At least one corrected field is required.");
+  }
+
+  const mergedExtraction: Record<string, ProfessionalLearningExtractedField> = { ...(prior.extraction as Record<string, ProfessionalLearningExtractedField>) };
+  for (const fieldName of correctedFieldNames) {
+    const correction = input.correctedFields[fieldName];
+    mergedExtraction[fieldName] = { value: correction.value, source: "PROFESSIONAL_INPUT", confidence: 1 };
+  }
+
+  return createCorrectionDraft(input.ownerUserId, input.newDraftId, {
+    priorDraftId: input.priorDraftId,
+    correctionEvidenceId: input.correctionEvidenceId,
+    extractorVersion: prior.extractorVersion,
+    extraction: mergedExtraction as ProfessionalLearningExtraction,
+    correctionNote: {
+      previousInterpretation: Object.fromEntries(correctedFieldNames.map((name) => [name, input.correctedFields[name].previousValue])),
+      correction: Object.fromEntries(correctedFieldNames.map((name) => [name, input.correctedFields[name].value])),
+      correctedByUserId: input.correctedByUserId,
+      correctedAt: new Date().toISOString(),
+    },
+    createdByUserId: input.correctedByUserId,
+  });
+}
