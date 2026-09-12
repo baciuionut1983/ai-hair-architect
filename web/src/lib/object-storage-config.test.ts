@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   loadObjectStorageConfig,
+  resolveObjectStorageConnectSrcOrigin,
   validateObjectStorageConfig,
   validateObjectStorageWriteMode
 } from "./object-storage-config";
@@ -96,6 +97,38 @@ describe("object storage configuration", () => {
     const invalid = validateObjectStorageWriteMode({ OBJECT_STORAGE_WRITE_MODE: "on" });
     expect(invalid.mode).toBe("disabled");
     expect(invalid.issues.map((issue) => issue.code)).toEqual(["OBJECT_STORAGE_WRITE_MODE_INVALID"]);
+  });
+});
+
+// Stage 8.5L3.3 -- real live-browser test found next.config.ts's CSP
+// connect-src silently blocking the browser-to-S3 presigned PUT before
+// the network call was ever attempted. This is the regression test for
+// the fix.
+describe("resolveObjectStorageConnectSrcOrigin (Stage 8.5L3.3 CSP fix)", () => {
+  it("returns null when the backend is not s3 -- connect-src 'self' stays exactly as it always was", () => {
+    expect(resolveObjectStorageConnectSrcOrigin({})).toBeNull();
+    expect(resolveObjectStorageConnectSrcOrigin({ OBJECT_STORAGE_BACKEND: "local" })).toBeNull();
+  });
+
+  it("returns the real virtual-hosted-style S3 origin AWS SDK's default (forcePathStyle=false) client actually uses", () => {
+    expect(
+      resolveObjectStorageConnectSrcOrigin({ OBJECT_STORAGE_BACKEND: "s3", OBJECT_STORAGE_BUCKET: "my-bucket", OBJECT_STORAGE_REGION: "eu-north-1" }),
+    ).toBe("https://my-bucket.s3.eu-north-1.amazonaws.com");
+  });
+
+  it("prefers OBJECT_STORAGE_ENDPOINT's own origin when a non-AWS S3-compatible endpoint is configured", () => {
+    expect(
+      resolveObjectStorageConnectSrcOrigin({ OBJECT_STORAGE_BACKEND: "s3", OBJECT_STORAGE_ENDPOINT: "https://isolated.example.test:9000", OBJECT_STORAGE_BUCKET: "b", OBJECT_STORAGE_REGION: "r" }),
+    ).toBe("https://isolated.example.test:9000");
+  });
+
+  it("returns null (fail-closed, never a broken/partial CSP directive) when bucket or region is missing despite backend=s3", () => {
+    expect(resolveObjectStorageConnectSrcOrigin({ OBJECT_STORAGE_BACKEND: "s3", OBJECT_STORAGE_REGION: "eu-north-1" })).toBeNull();
+    expect(resolveObjectStorageConnectSrcOrigin({ OBJECT_STORAGE_BACKEND: "s3", OBJECT_STORAGE_BUCKET: "my-bucket" })).toBeNull();
+  });
+
+  it("returns null for a malformed OBJECT_STORAGE_ENDPOINT rather than throwing", () => {
+    expect(resolveObjectStorageConnectSrcOrigin({ OBJECT_STORAGE_BACKEND: "s3", OBJECT_STORAGE_ENDPOINT: "not a url" })).toBeNull();
   });
 });
 

@@ -3,6 +3,7 @@ import { execSync } from "child_process";
 import type { NextConfig } from "next";
 
 import { resolveBuildCommitSha } from "./src/lib/resolve-build-commit-sha";
+import { resolveObjectStorageConnectSrcOrigin } from "./src/lib/object-storage-config";
 
 // Stale-client-bundle diagnosis (2026-08-20, Round 9): a real production
 // test showed 5 TTS timing fields (introduced in the immediately prior
@@ -68,8 +69,21 @@ const nextConfig: NextConfig = {
             // blob: allowance for the same reason, now that audio blobs
             // exist too. Applies globally (source: "/:path*" below), so
             // this fixes every language's Voice Reply, not just one.
-            value:
-              "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+            //
+            // Stage 8.5L3.3 -- connect-src additionally allows the
+            // configured S3 origin, ONLY when the s3 backend is actually
+            // active (resolveObjectStorageConnectSrcOrigin returns null
+            // otherwise, leaving connect-src 'self' exactly as it always
+            // was). Required for Stage 8.5L3.1's own browser-direct-to-S3
+            // multipart upload: a real live-browser test found this
+            // exact CSP directive silently blocking every presigned PUT
+            // request, before the browser ever attempted the network
+            // call -- CSP is enforced client-side, ahead of CORS.
+            value: (() => {
+              const objectStorageOrigin = resolveObjectStorageConnectSrcOrigin(process.env);
+              const connectSrc = objectStorageOrigin ? `connect-src 'self' ${objectStorageOrigin}` : "connect-src 'self'";
+              return `default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; ${connectSrc}; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'`;
+            })()
           },
           {
             key: "Strict-Transport-Security",

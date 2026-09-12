@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import nextConfig from "../next.config";
 
@@ -69,5 +69,39 @@ describe("next.config.ts security headers", () => {
   it("keeps the same blob: allowance already established for images (client photo previews), for consistency", async () => {
     const value = await contentSecurityPolicyValue();
     expect(value).toContain("img-src 'self' data: blob:");
+  });
+
+  // Stage 8.5L3.3 -- a real live-browser test against a real, newly
+  // created non-production S3 bucket found this exact CSP directive
+  // silently blocking every browser-to-S3 presigned multipart PUT
+  // request before the network call was ever attempted (a real console
+  // error: "Refused to connect because it violates the document's
+  // Content Security Policy"), invisible to every prior test because
+  // CSP is a browser-enforced header no Node-based fake/mock ever
+  // exercises.
+  describe("connect-src / Stage 8.5L3.3 S3 multipart CSP fix", () => {
+    const originalEnv = { ...process.env };
+
+    afterEach(() => {
+      for (const key of Object.keys(process.env)) {
+        if (!(key in originalEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, originalEnv);
+    });
+
+    it("stays exactly connect-src 'self' when the s3 backend is not configured (every local dev/test environment by default)", async () => {
+      delete process.env.OBJECT_STORAGE_BACKEND;
+      const value = await contentSecurityPolicyValue();
+      expect(value).toContain("connect-src 'self';");
+      expect(value).not.toContain("amazonaws.com");
+    });
+
+    it("allows the real, configured S3 origin once the s3 backend is active -- exactly what the browser multipart PUT needs", async () => {
+      process.env.OBJECT_STORAGE_BACKEND = "s3";
+      process.env.OBJECT_STORAGE_BUCKET = "ai-hair-architect-learning-test-example";
+      process.env.OBJECT_STORAGE_REGION = "eu-north-1";
+      const value = await contentSecurityPolicyValue();
+      expect(value).toContain("connect-src 'self' https://ai-hair-architect-learning-test-example.s3.eu-north-1.amazonaws.com;");
+    });
   });
 });

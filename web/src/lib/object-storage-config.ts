@@ -124,6 +124,41 @@ export function loadObjectStorageConfig(env: EnvironmentSource, mode: ObjectStor
   return validation.config;
 }
 
+// Stage 8.5L3.3 -- REAL BROWSER TEST FOUND DEFECT: next.config.ts's own
+// Content-Security-Policy (`connect-src 'self'`) silently blocked every
+// browser-to-S3 presigned PUT request before the browser ever attempted
+// the network call at all -- CSP is enforced client-side, BEFORE CORS is
+// even consulted, so this was invisible to every prior test (the L3.1
+// hand-built fake makes no real network call at all; L3.2 never reached
+// a live browser). Confirmed live: a real browser console error, "Refused
+// to connect because it violates the document's Content Security
+// Policy," against the exact virtual-hosted-style URL the AWS SDK
+// produces by default (bucket.s3.region.amazonaws.com, forcePathStyle
+// defaults to false in object-storage-s3.ts's own createS3Client).
+//
+// Returns the exact origin next.config.ts's CSP connect-src directive
+// must allow for the multipart direct-upload path to work at all -- null
+// whenever S3 is not the active backend, so every environment that
+// doesn't use S3 (all local dev/test by default) keeps its EXACT current
+// `connect-src 'self'` value, unchanged.
+export function resolveObjectStorageConnectSrcOrigin(env: EnvironmentSource): string | null {
+  if (value(env.OBJECT_STORAGE_BACKEND) !== "s3") return null;
+
+  const endpoint = value(env.OBJECT_STORAGE_ENDPOINT);
+  if (endpoint) {
+    try {
+      return new URL(endpoint).origin;
+    } catch {
+      return null;
+    }
+  }
+
+  const bucket = value(env.OBJECT_STORAGE_BUCKET);
+  const region = value(env.OBJECT_STORAGE_REGION);
+  if (!bucket || !region) return null;
+  return `https://${bucket}.s3.${region}.amazonaws.com`;
+}
+
 export function validateObjectStorageWriteMode(env: EnvironmentSource): {
   mode: ObjectStorageWriteMode;
   issues: ObjectStorageConfigIssue[];
