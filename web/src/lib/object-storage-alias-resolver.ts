@@ -1,5 +1,5 @@
 import type { M15ObjectStorageAliasResolver } from "./backup-m15-external-reference-verifier";
-import type { ObjectStorage } from "./object-storage";
+import type { MultipartObjectStorage, ObjectStorage } from "./object-storage";
 import {
   loadObjectStorageConfig,
   type ObjectStorageConfig,
@@ -81,6 +81,31 @@ export function createObjectStorageAliasResolver(
       throw providerError;
     }
   };
+}
+
+// Stage 8.5L3.1 -- same config-loading/single-bucket-alias-match logic as
+// createObjectStorageAliasResolver above, returned typed as
+// MultipartObjectStorage & ObjectStorage instead of only the base
+// ObjectStorage interface (finalization needs both: completeMultipartUpload
+// AND a real head() call for the authoritative post-upload verification,
+// Part 11/22). Deliberately a SEPARATE exported function rather than
+// widening the existing resolver's return type -- every existing consumer
+// of createObjectStorageAliasResolver (image-asset-retention-runtime.ts,
+// photo-preview-output-storage.ts, video-asset-storage.ts, ...) keeps its
+// exact current type unchanged. Not a second storage service: it
+// resolves the SAME S3ObjectStorage instance shape (which implements
+// both interfaces) -- only the local-disk backend is structurally unable
+// to satisfy MultipartObjectStorage, which is why this resolver still
+// throws ObjectStorageAliasResolverError whenever the configured backend
+// is not s3, exactly like the base resolver does.
+type MultipartCapableObjectStorage = MultipartObjectStorage & ObjectStorage;
+type MultipartObjectStorageResolver = (bucketAlias: string) => Promise<MultipartCapableObjectStorage | null>;
+
+export function createMultipartObjectStorageAliasResolver(
+  dependencies: ObjectStorageAliasResolverDependencies = {},
+): MultipartObjectStorageResolver {
+  const base = createObjectStorageAliasResolver(dependencies);
+  return async (bucketAlias) => (await base(bucketAlias)) as MultipartCapableObjectStorage | null;
 }
 
 function resolveMode(value: string | undefined): ObjectStorageMode {

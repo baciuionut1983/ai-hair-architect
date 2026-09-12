@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { CAPTURE_SET_VIEW_LABELS, type CaptureSetImageInput } from "@/lib/capture-set-validators";
+import { CAPTURE_SET_VIEW_LABELS, MAX_PROFESSIONAL_LEARNING_SET_IMAGES, type CaptureSetImageInput } from "@/lib/capture-set-validators";
 import { CaptureSetConcurrencyError, CaptureSetDependencyError, CaptureSetInvariantError, CaptureSetPersistenceError, CaptureSetValidationError, createCaptureSet } from "@/lib/capture-set-repository";
 import { resolveOwnedClient } from "@/lib/client-repository";
 import { checkRateLimit } from "@/lib/hardening";
@@ -42,6 +42,15 @@ import { authenticateSessionRequest } from "@/lib/session-request-auth";
 // images in this stage -- the same cap CaptureSet, and every existing
 // image-upload path in this app (image-upload-validation.ts's own
 // MAX_IMAGES), already enforces; not a new, invented limitation.
+//
+// Stage 8.5L3.1 SEMANTIC CLEANUP: the CaptureSet row this route creates
+// now carries purpose="PROFESSIONAL_LEARNING_SET" explicitly (default
+// for every other CaptureSet caller in this app remains
+// "CLIENT_MULTIVIEW", unchanged) and each image its own real
+// ordinalPosition -- a future domain/AI engine must consult
+// isAnatomicalViewLabelMeaningful(purpose) (capture-set-validators.ts)
+// before ever treating this row's viewLabel values as real camera
+// angles, and should read ordinalPosition for true sequence instead.
 const ORDINAL_VIEW_LABELS = CAPTURE_SET_VIEW_LABELS;
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -67,8 +76,8 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
   if (files.length < 2) {
     return NextResponse.json({ error: "At least 2 files are required for an image set (use the single-image endpoint for one file)." }, { status: 400 });
   }
-  if (files.length > ORDINAL_VIEW_LABELS.length) {
-    return NextResponse.json({ error: `A maximum of ${ORDINAL_VIEW_LABELS.length} images is supported per image set in this stage.` }, { status: 400 });
+  if (files.length > MAX_PROFESSIONAL_LEARNING_SET_IMAGES) {
+    return NextResponse.json({ error: `A maximum of ${MAX_PROFESSIONAL_LEARNING_SET_IMAGES} images is supported per image set in this stage.` }, { status: 400 });
   }
 
   const submissionId = resolveSubmissionId(form.get("submissionId"));
@@ -82,12 +91,19 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
 
   try {
     const assets = await uploadLearningEvidenceImageAssets(user.id, id, files);
+    // Stage 8.5L3.1: purpose="PROFESSIONAL_LEARNING_SET" is the
+    // server-authoritative marker that this row's viewLabel values are
+    // ordinal slots, never anatomical camera angles (see
+    // capture-set-validators.ts's own isAnatomicalViewLabelMeaningful).
+    // ordinalPosition is the neutral field a future consumer should
+    // actually read for sequence.
     const captureSetImages: CaptureSetImageInput[] = assets.map((asset, index) => ({
       viewLabel: ORDINAL_VIEW_LABELS[index],
       imageAssetId: asset.id,
+      ordinalPosition: index + 1,
     }));
 
-    const captureSet = await createCaptureSet(user.id, id, captureSetImages);
+    const captureSet = await createCaptureSet(user.id, id, captureSetImages, "PROFESSIONAL_LEARNING_SET");
 
     const evidence = await createLearningEvidence(
       user.id,

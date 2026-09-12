@@ -49,9 +49,49 @@ export function isCaptureSetViewLabel(value: unknown): value is CaptureSetViewLa
   return typeof value === "string" && (CAPTURE_SET_VIEW_LABELS as readonly string[]).includes(value);
 }
 
+// Stage 8.5L3.1 -- SEMANTIC CLEANUP (see this stage's own schema.prisma
+// header comment on CaptureSet.purpose for the full reasoning).
+// CLIENT_MULTIVIEW is the ONLY purpose that has ever existed before this
+// stage -- every real client capture set (front/left/back/right of an
+// actual client's head) is exactly this, and the default preserves that
+// meaning with zero behavior change for every existing call site.
+// PROFESSIONAL_LEARNING_SET is Stage 8.5L3.1's own new value: a generic,
+// ordered teaching image sequence with no anatomical claim at all.
+export const CAPTURE_SET_PURPOSES = ["CLIENT_MULTIVIEW", "PROFESSIONAL_LEARNING_SET"] as const;
+export type CaptureSetPurpose = (typeof CAPTURE_SET_PURPOSES)[number];
+
+export function isCaptureSetPurpose(value: unknown): value is CaptureSetPurpose {
+  return typeof value === "string" && (CAPTURE_SET_PURPOSES as readonly string[]).includes(value);
+}
+
+// The single, discoverable place that answers "does this CaptureSet
+// row's viewLabel value mean a real anatomical camera angle, or is it
+// just an ordinal slot reused for a generic teaching sequence." A future
+// domain/AI engine reading CaptureSetImage.viewLabel MUST consult this
+// (or the row's own purpose field directly) before ever treating FRONT/
+// LEFT/BACK/RIGHT as anatomical truth.
+export function isAnatomicalViewLabelMeaningful(purpose: CaptureSetPurpose): boolean {
+  return purpose === "CLIENT_MULTIVIEW";
+}
+
+// Stage 8.5L3.1 -- capped at exactly 4 (the same limit CaptureSet's own
+// viewLabel uniqueness and image-upload-validation.ts's MAX_IMAGES
+// already enforce everywhere else in this app -- not a new, invented
+// limit). Raising this for PROFESSIONAL_LEARNING_SET specifically would
+// require restructuring CaptureSetImage's own (captureSetId, viewLabel)
+// uniqueness away from the anatomical vocabulary entirely -- a separate,
+// larger schema decision appropriately deferred to a future stage, not
+// casually done here.
+export const MAX_PROFESSIONAL_LEARNING_SET_IMAGES = CAPTURE_SET_VIEW_LABELS.length;
+
 export interface CaptureSetImageInput {
   viewLabel: CaptureSetViewLabel;
   imageAssetId: string;
+  // Stage 8.5L3.1 -- required and meaningful ONLY for a
+  // PROFESSIONAL_LEARNING_SET row (the neutral ordering field); always
+  // absent/ignored for CLIENT_MULTIVIEW, where viewLabel alone already
+  // carries the real anatomical meaning and no ordering concept applies.
+  ordinalPosition?: number;
 }
 
 export function isValidCaptureSetImageInput(value: unknown): value is CaptureSetImageInput {
@@ -59,6 +99,7 @@ export function isValidCaptureSetImageInput(value: unknown): value is CaptureSet
   const record = value as Record<string, unknown>;
   if (!isCaptureSetViewLabel(record.viewLabel)) return false;
   if (typeof record.imageAssetId !== "string" || record.imageAssetId.length === 0) return false;
+  if (record.ordinalPosition !== undefined && (!Number.isInteger(record.ordinalPosition) || (record.ordinalPosition as number) < 1)) return false;
   return true;
 }
 

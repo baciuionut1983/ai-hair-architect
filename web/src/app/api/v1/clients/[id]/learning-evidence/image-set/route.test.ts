@@ -120,10 +120,19 @@ describe("POST /api/v1/clients/[id]/learning-evidence/image-set", () => {
     const response = await invokePost("client-1", form);
 
     expect(response.status).toBe(201);
-    expect(captureSetRepoMock.createCaptureSet).toHaveBeenCalledWith("owner-1", "client-1", [
-      { viewLabel: "FRONT", imageAssetId: "image-1" },
-      { viewLabel: "LEFT", imageAssetId: "image-2" },
-    ]);
+    // Stage 8.5L3.1: the CaptureSet is explicitly marked
+    // PROFESSIONAL_LEARNING_SET (never the default CLIENT_MULTIVIEW) and
+    // each image carries its own real ordinalPosition -- viewLabel is
+    // never anatomically meaningful for this purpose.
+    expect(captureSetRepoMock.createCaptureSet).toHaveBeenCalledWith(
+      "owner-1",
+      "client-1",
+      [
+        { viewLabel: "FRONT", imageAssetId: "image-1", ordinalPosition: 1 },
+        { viewLabel: "LEFT", imageAssetId: "image-2", ordinalPosition: 2 },
+      ],
+      "PROFESSIONAL_LEARNING_SET",
+    );
     expect(evidenceRepoMock.createLearningEvidence).toHaveBeenCalledWith(
       "owner-1",
       expect.objectContaining({ evidenceType: "IMAGE_SET", captureSetId: "capture-set-1" }),

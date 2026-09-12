@@ -89,7 +89,11 @@ export const LEARNING_EVIDENCE_STATUS_TEXT = {
   uploadedVideo: "Videoclipul a fost încărcat ca dovadă de învățare privată.",
   revoked: "Dovada a fost revocată -- nu va mai fi folosită pentru procesare viitoare.",
   genericFailure: "Materialul nu a putut fi salvat acum. Poți încerca din nou.",
-  videoTooLarge: "Videoclipul depășește limita curentă pentru încărcare standard. Încărcarea fișierelor foarte mari nu este încă disponibilă.",
+  // Stage 8.5L3.1: multipart direct upload now covers video up to the
+  // application's own MAX_MULTIPART_UPLOAD_BYTES (10GB) -- this message
+  // is shown only when a file genuinely exceeds even that bound.
+  videoTooLarge: "Videoclipul depășește limita maximă acceptată pentru încărcare.",
+  videoUploadCanceled: "Încărcarea videoclipului a fost anulată.",
 } as const;
 
 export function isForbiddenLearningClaim(text: string): boolean {

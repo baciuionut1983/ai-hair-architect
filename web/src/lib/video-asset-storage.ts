@@ -203,3 +203,51 @@ export function extensionForMimeType(mimeType: string): string {
   if (mimeType === "video/quicktime") return "mov";
   return "mp4";
 }
+
+// Stage 8.5L3.1 -- registers a VideoAsset for bytes that are ALREADY
+// durably in S3 (uploaded directly by the browser via a multipart
+// session -- see professional-learning-video-multipart-upload-service.ts).
+// Deliberately does NOT call put()/writeVideoToObjectStorage: this
+// application never receives the video bytes at all for this path, by
+// design (Part 31: "GB-scale professional media must not be proxied
+// through application memory"). The caller is responsible for having
+// already independently verified the object exists with the given
+// size/contentType via a real head() call BEFORE this function is ever
+// invoked (Part 11/22) -- this function only records that already-proven
+// fact.
+//
+// contentSha256 stays null: a real whole-object SHA-256 would require
+// downloading the entire (possibly multi-GB) object back into this
+// process, exactly the anti-pattern this stage exists to avoid. The
+// provider's own ETag (storageEtag) is the integrity signal for a
+// multipart-assembled object instead -- a composite hash S3 itself
+// computes from the uploaded parts, not a plain whole-file MD5/SHA-256,
+// but still proof the object matches exactly the parts this application
+// authorized and later verified via CompleteMultipartUpload.
+export async function registerCompletedMultipartVideoAsset(input: {
+  ownerUserId: string;
+  clientId: string;
+  bucketAlias: string;
+  key: string;
+  versionId: string | null;
+  etag: string | null;
+  mimeType: string;
+  sizeBytes: number;
+}): Promise<VideoAsset> {
+  return prisma.videoAsset.create({
+    data: {
+      id: randomUUID(),
+      ownerUserId: input.ownerUserId,
+      clientId: input.clientId,
+      mimeType: input.mimeType,
+      sizeBytes: input.sizeBytes,
+      storagePath: input.key,
+      storageBackend: "s3",
+      storageBucketAlias: input.bucketAlias,
+      storageKey: input.key,
+      storageVersionId: input.versionId,
+      storageEtag: input.etag,
+      origin: "uploaded_source",
+    },
+  });
+}

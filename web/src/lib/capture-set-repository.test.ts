@@ -58,6 +58,52 @@ suite("capture-set-repository (durable Capture Set domain layer)", () => {
     expect(row.images).toHaveLength(4);
   });
 
+  // -------------------------------------------------------------------------
+  // Stage 8.5L3.1 -- SEMANTIC CLEANUP: purpose / ordinalPosition
+  // -------------------------------------------------------------------------
+
+  it("40. defaults to purpose=CLIENT_MULTIVIEW when omitted -- every existing call site keeps its exact current behavior", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const front = await createImageAsset(ownerUserId, clientId);
+
+    const set = await createCaptureSet(ownerUserId, clientId, [{ viewLabel: "FRONT", imageAssetId: front.id }]);
+
+    expect(set.purpose).toBe("CLIENT_MULTIVIEW");
+    expect(set.images[0].ordinalPosition).toBeNull();
+    const row = await prisma.captureSet.findUniqueOrThrow({ where: { id: set.id } });
+    expect(row.purpose).toBe("CLIENT_MULTIVIEW");
+  });
+
+  it("39. an explicit PROFESSIONAL_LEARNING_SET purpose with real ordinalPosition values round-trips correctly", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const first = await createImageAsset(ownerUserId, clientId);
+    const second = await createImageAsset(ownerUserId, clientId);
+
+    const set = await createCaptureSet(
+      ownerUserId,
+      clientId,
+      [
+        { viewLabel: "FRONT", imageAssetId: first.id, ordinalPosition: 1 },
+        { viewLabel: "LEFT", imageAssetId: second.id, ordinalPosition: 2 },
+      ],
+      "PROFESSIONAL_LEARNING_SET",
+    );
+
+    expect(set.purpose).toBe("PROFESSIONAL_LEARNING_SET");
+    expect(set.images.map((i) => i.ordinalPosition).sort()).toEqual([1, 2]);
+  });
+
+  it("a replacement CaptureSet inherits the base row's own purpose", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const first = await createImageAsset(ownerUserId, clientId);
+    const base = await createCaptureSet(ownerUserId, clientId, [{ viewLabel: "FRONT", imageAssetId: first.id, ordinalPosition: 1 }], "PROFESSIONAL_LEARNING_SET");
+
+    const second = await createImageAsset(ownerUserId, clientId);
+    const replacement = await createReplacementCaptureSet(ownerUserId, clientId, base.id, [{ viewLabel: "LEFT", imageAssetId: second.id, ordinalPosition: 2 }]);
+
+    expect(replacement.purpose).toBe("PROFESSIONAL_LEARNING_SET");
+  });
+
   it("C/D. creates an incomplete set (only FRONT+BACK) and correctly detects incompleteness, listing the missing views", async () => {
     const { ownerUserId, clientId } = await createOwnerAndClient();
     const front = await createImageAsset(ownerUserId, clientId);

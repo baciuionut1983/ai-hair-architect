@@ -5,7 +5,10 @@ const clientRepoMock = vi.hoisted(() => ({ resolveOwnedClient: vi.fn() }));
 const hardeningMock = vi.hoisted(() => ({ checkRateLimit: vi.fn() }));
 const imageAnalysisServiceMock = vi.hoisted(() => {
   class ObjectStorageWriteModeRequiredError extends Error {}
-  return { ObjectStorageWriteModeRequiredError };
+  return {
+    ObjectStorageWriteModeRequiredError,
+    resolveObjectStorageWriteTarget: vi.fn((): { bucketAlias: string; resolve: () => unknown } | null => null),
+  };
 });
 const videoUploadMock = vi.hoisted(() => {
   class LearningEvidenceVideoValidationError extends Error {
@@ -65,6 +68,7 @@ beforeEach(() => {
   authMock.authenticateSessionRequest.mockResolvedValue(OWNER);
   clientRepoMock.resolveOwnedClient.mockResolvedValue(CLIENT);
   hardeningMock.checkRateLimit.mockReturnValue({ allowed: true, remaining: 9 });
+  imageAnalysisServiceMock.resolveObjectStorageWriteTarget.mockReturnValue(null);
   videoUploadMock.uploadLearningEvidenceVideoAsset.mockResolvedValue({ id: "video-asset-1", origin: "uploaded_source" });
   evidenceRepoMock.findLearningEvidenceForOwner.mockResolvedValue(null);
   evidenceRepoMock.createLearningEvidence.mockResolvedValue({ id: "evidence-1", evidenceType: "VIDEO", status: "ACTIVE" });
@@ -72,6 +76,20 @@ beforeEach(() => {
 });
 
 describe("POST /api/v1/clients/[id]/learning-evidence/video", () => {
+  it("33. Stage 8.5L3.1: refuses with 410 (superseded) once S3/object storage is configured, before any file processing", async () => {
+    imageAnalysisServiceMock.resolveObjectStorageWriteTarget.mockReturnValue({ bucketAlias: "primary-videos", resolve: vi.fn() });
+    const form = new FormData();
+    form.append("file", fakeVideoFile());
+
+    const response = await invokePost("client-1", form);
+
+    expect(response.status).toBe(410);
+    const body = await response.json();
+    expect(body.error).toBe("USE_MULTIPART_UPLOAD");
+    expect(clientRepoMock.resolveOwnedClient).not.toHaveBeenCalled();
+    expect(videoUploadMock.uploadLearningEvidenceVideoAsset).not.toHaveBeenCalled();
+  });
+
   it("returns 401 without a cookie", async () => {
     authMock.authenticateSessionRequest.mockResolvedValue(null);
     const form = new FormData();

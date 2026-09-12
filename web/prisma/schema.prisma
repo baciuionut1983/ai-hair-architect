@@ -221,6 +221,11 @@ model User {
   // Foundation). Virtual back-relation only -- produces no column or
   // constraint on "User"; the FK lives on "ProfessionalLearningEvidence".
   professionalLearningEvidence         ProfessionalLearningEvidence[]
+  // Professional Skill Engine, Stage 8.5L3.1 (Large Media Ingestion
+  // Hardening). Virtual back-relation only -- produces no column or
+  // constraint on "User"; the FK lives on
+  // "ProfessionalLearningUploadSession".
+  professionalLearningUploadSessions   ProfessionalLearningUploadSession[]
 }
 
 model Session {
@@ -335,6 +340,13 @@ model Client {
   // Plan). Virtual back-relation only -- produces no column or constraint
   // on "Client"; the FK lives on "ProfessionalExecutionScenePlan".
   professionalExecutionScenePlans      ProfessionalExecutionScenePlan[]
+  // Professional Skill Engine, Stage 8.5L3.1 (Large Media Ingestion
+  // Hardening). Virtual back-relation only -- produces no column or
+  // constraint on "Client"; the FK lives on
+  // "ProfessionalLearningUploadSession". Infrastructure-only storage
+  // scoping (see that model's own header comment) -- never client
+  // content.
+  professionalLearningUploadSessions   ProfessionalLearningUploadSession[]
 
   @@unique([id, ownerUserId])
   @@index([ownerUserId, deletedAt, updatedAt, id])
@@ -2994,6 +3006,27 @@ model CaptureSet {
   // that behavior.
   supersededByCaptureSetId String?
 
+  // Stage 8.5L3.1 -- SEMANTIC CLEANUP. The audit found L3's own multi-image
+  // Learning Evidence path repurposing FRONT/LEFT/BACK/RIGHT as ordinal
+  // slots for a generic teaching sequence -- correct mechanically, but a
+  // future domain/AI engine reading a CaptureSet must never assume every
+  // row's viewLabel means a real anatomical camera angle. `purpose`
+  // (application-validated: capture-set-validators.ts's
+  // CAPTURE_SET_PURPOSES) makes that distinction explicit and
+  // server-authoritative. Defaults to "CLIENT_MULTIVIEW" -- every row
+  // created before this stage, and every existing call site that never
+  // passes this new parameter, keeps its EXACT current anatomical meaning
+  // with zero behavior change and no backfill needed (a NULL-free default
+  // is safe here specifically because "CLIENT_MULTIVIEW" already IS what
+  // 100% of prior rows structurally are -- this app's own real client
+  // multi-view capture feature is the only thing that has ever created a
+  // CaptureSet row until this stage). "PROFESSIONAL_LEARNING_SET" is the
+  // new value Stage 8.5L3.1's own image-set ingestion route sets
+  // explicitly -- see capture-set-validators.ts's own
+  // isAnatomicalViewLabelMeaningful() for the single, discoverable place
+  // that answers "does this row's viewLabel mean what it literally says."
+  purpose String @default("CLIENT_MULTIVIEW")
+
   createdAt DateTime @default(now()) @db.Timestamp(6)
   updatedAt DateTime @updatedAt @db.Timestamp(6)
 
@@ -3049,6 +3082,16 @@ model CaptureSetImage {
   // must not carry -- Stage 2.5.i.21a Section 3, mirroring Stage
   // 2.5.i.12's own "never import ViewLabel" precedent).
   viewLabel String
+
+  // Stage 8.5L3.1 -- the NEUTRAL ordering field for a
+  // PROFESSIONAL_LEARNING_SET row (task's own "and/or a neutral ordinal
+  // field for learning sets" suggestion). Always null for
+  // CLIENT_MULTIVIEW rows (viewLabel alone already carries their real
+  // anatomical meaning; no ordering concept applies). Populated
+  // 1/2/3/4 in upload order for a PROFESSIONAL_LEARNING_SET row -- the
+  // field a future consumer should read for sequence, never viewLabel's
+  // literal FRONT/LEFT/BACK/RIGHT value on that kind of row.
+  ordinalPosition Int?
 
   createdAt DateTime @default(now()) @db.Timestamp(6)
   updatedAt DateTime @updatedAt @db.Timestamp(6)
@@ -3229,6 +3272,95 @@ model ProfessionalLearningEvidence {
   @@index([imageAssetId])
   @@index([captureSetId])
   @@index([videoAssetId])
+}
+
+// AI Hair Architect, Professional Skill Engine Stage 8.5L3.1 -- LARGE
+// MEDIA UPLOAD SESSION. Temporary orchestration metadata only -- NOT a
+// second media authority, and NOT itself referenced by anything once it
+// completes (it points FORWARD at the VideoAsset/evidence it produced;
+// nothing ever points back at it). Exists specifically so a genuinely
+// large (up to GB-scale) video's bytes never pass through this
+// application's own memory: the browser uploads every part DIRECTLY to
+// S3 via a short-lived presigned URL this session authorizes, and this
+// row is simply the durable record of "who started this, for what file,
+// against which real S3 multipart upload, and how far it got."
+//
+// PURPOSE LOCK (mid-stage product correction): `purpose` is exactly one
+// value today, "PROFESSIONAL_LEARNING" -- server-set default, never
+// accepted from the client, mirrors ProfessionalLearningEvidence.
+// visibilityScope's own "closed vocabulary of one, room to grow later"
+// precedent (Stage 8.5L2 Part 4) exactly. Teach the AI is an ingestion
+// gateway for the Professional Brain, never a generic media library --
+// this field makes that true of the upload mechanism itself, not only of
+// the evidence it eventually produces.
+//
+// LIFECYCLE (application-validated:
+// professional-learning-upload-session-validators.ts):
+// INITIATED -> UPLOADING -> COMPLETING -> COMPLETED, or ABORTED |
+// EXPIRED | FAILED from any non-terminal state. `id` doubles as the
+// caller's own idempotency key -- identical precedent to
+// VoiceTranscript.id / ProfessionalLearningEvidence's own submissionId
+// handling (Stage 8.5L3): the client generates one UUID for "this upload
+// attempt" and it becomes this row's primary key, so a retried initiate
+// request is recognized and answered with the existing session rather
+// than creating a second one.
+model ProfessionalLearningUploadSession {
+  id          String @id
+  ownerUserId String
+
+  // INFRASTRUCTURE-ONLY storage scoping, never evidence scoping -- same
+  // exact discipline and reasoning as every Stage 8.5L3 upload route
+  // (learning-evidence-image-upload.ts's own header comment): VideoAsset
+  // still structurally requires a clientId (an unmodified, foundational
+  // constraint, out of scope to change here), so this session threads the
+  // ambient client context through to the eventual VideoAsset it
+  // authorizes creating. The resulting ProfessionalLearningEvidence row
+  // itself still carries no clientId at all (Stage 8.5L2) and this
+  // session is never presented anywhere as "this upload belongs to
+  // Client X" -- purely plumbing to satisfy an unrelated table's schema.
+  clientId String
+
+  purpose   String @default("PROFESSIONAL_LEARNING")
+  mediaKind String @default("VIDEO")
+
+  fileName    String @db.VarChar(255)
+  contentType String @db.VarChar(128)
+
+  expectedSizeBytes Int
+  // Advisory only, never authoritative -- see Part 11's own "the client
+  // saying upload complete is not enough" rule. The real, final object is
+  // independently verified via a real head() call at completion time.
+  expectedChecksumSha256 String? @db.Char(64)
+
+  // Server-generated, collision-safe, never derived from the client's own
+  // filename (Stage 8.5L3.1 Part 6).
+  storageBucketAlias String  @db.VarChar(64)
+  storageKey         String  @db.VarChar(512)
+  providerUploadId   String? @db.VarChar(512)
+
+  partSizeBytes Int
+
+  status String @default("INITIATED")
+
+  // Set once, only on successful completion.
+  videoAssetId String?
+  evidenceId   String?
+
+  errorCode String? @db.VarChar(80)
+
+  createdAt   DateTime  @default(now()) @db.Timestamp(6)
+  updatedAt   DateTime  @updatedAt @db.Timestamp(6)
+  expiresAt   DateTime  @db.Timestamp(6)
+  completedAt DateTime? @db.Timestamp(6)
+  abortedAt   DateTime? @db.Timestamp(6)
+  failedAt    DateTime? @db.Timestamp(6)
+
+  owner  User   @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  client Client @relation(fields: [clientId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([storageBucketAlias, storageKey])
+  @@index([ownerUserId, status, createdAt, id])
+  @@index([status, expiresAt])
 }
 
 // Technical Execution Generation Authorization + Image Qualification

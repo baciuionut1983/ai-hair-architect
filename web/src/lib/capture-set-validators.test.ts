@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CAPTURE_SET_PURPOSES,
   CAPTURE_SET_VIEW_LABELS,
   findDuplicateCaptureSetViewLabels,
+  isAnatomicalViewLabelMeaningful,
+  isCaptureSetPurpose,
   isCaptureSetViewLabel,
   isCompleteCaptureSetViewSet,
   isValidCaptureSetImageInput,
+  MAX_PROFESSIONAL_LEARNING_SET_IMAGES,
   missingCaptureSetViews,
 } from "@/lib/capture-set-validators";
 
@@ -26,6 +30,32 @@ describe("capture-set-validators (pure domain layer)", () => {
     expect(isValidCaptureSetImageInput({ viewLabel: "TOP", imageAssetId: "asset-1" })).toBe(false);
     expect(isValidCaptureSetImageInput(null)).toBe(false);
     expect(isValidCaptureSetImageInput("FRONT")).toBe(false);
+  });
+
+  // Stage 8.5L3.1 -- SEMANTIC CLEANUP
+  it("38. accepts an optional, positive-integer ordinalPosition; rejects a zero/negative/non-integer one", () => {
+    expect(isValidCaptureSetImageInput({ viewLabel: "FRONT", imageAssetId: "a", ordinalPosition: 1 })).toBe(true);
+    expect(isValidCaptureSetImageInput({ viewLabel: "FRONT", imageAssetId: "a" })).toBe(true);
+    expect(isValidCaptureSetImageInput({ viewLabel: "FRONT", imageAssetId: "a", ordinalPosition: 0 })).toBe(false);
+    expect(isValidCaptureSetImageInput({ viewLabel: "FRONT", imageAssetId: "a", ordinalPosition: -1 })).toBe(false);
+    expect(isValidCaptureSetImageInput({ viewLabel: "FRONT", imageAssetId: "a", ordinalPosition: 1.5 })).toBe(false);
+  });
+
+  it("recognizes exactly CLIENT_MULTIVIEW and PROFESSIONAL_LEARNING_SET as CaptureSet purposes", () => {
+    expect([...CAPTURE_SET_PURPOSES].sort()).toEqual(["CLIENT_MULTIVIEW", "PROFESSIONAL_LEARNING_SET"]);
+    expect(isCaptureSetPurpose("CLIENT_MULTIVIEW")).toBe(true);
+    expect(isCaptureSetPurpose("PROFESSIONAL_LEARNING_SET")).toBe(true);
+    expect(isCaptureSetPurpose("ACADEMY_CONTENT")).toBe(false);
+  });
+
+  it("39/41. only CLIENT_MULTIVIEW carries real anatomical viewLabel meaning", () => {
+    expect(isAnatomicalViewLabelMeaningful("CLIENT_MULTIVIEW")).toBe(true);
+    expect(isAnatomicalViewLabelMeaningful("PROFESSIONAL_LEARNING_SET")).toBe(false);
+  });
+
+  it("42. the learning-set image cap equals the existing 4-label bound, not an invented number", () => {
+    expect(MAX_PROFESSIONAL_LEARNING_SET_IMAGES).toBe(CAPTURE_SET_VIEW_LABELS.length);
+    expect(MAX_PROFESSIONAL_LEARNING_SET_IMAGES).toBe(4);
   });
 
   it("finds duplicate view labels within one candidate list", () => {

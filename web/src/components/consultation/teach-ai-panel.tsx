@@ -10,10 +10,10 @@ import {
   buildLearningEvidenceImageSetFormData,
   buildLearningEvidenceVideoFormData,
   generateLearningEvidenceSubmissionId,
-  isVideoFileWithinClientSizeLimit,
   LEARNING_EVIDENCE_STATUS_TEXT,
   type LearningEvidenceSummary,
 } from "./teach-ai-learning-evidence-logic";
+import { describeVideoUploadProgress, uploadVideoViaMultipart, type VideoUploadProgressState } from "./teach-ai-video-multipart-upload-logic";
 
 type Action = "save_client_memory" | "save_professional_rule" | "mark_preference" | "save_outcome";
 
@@ -48,11 +48,15 @@ export function TeachAiPanel({ clientId }: { clientId: string }) {
   const [savingEvidence, setSavingEvidence] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [uploadingImageSet, setUploadingImageSet] = useState(false);
-  const [uploadingVideo, setUploadingVideo] = useState(false);
+  // Stage 8.5L3.1 -- real upload progress (Preparing/Uploading X%/
+  // Finalizing/Saved privately), never a fake "Analyzing"/"Learning"
+  // phase (task Part 19/22).
+  const [videoUploadProgress, setVideoUploadProgress] = useState<VideoUploadProgressState | null>(null);
   const [recentEvidence, setRecentEvidence] = useState<LearningEvidenceSummary[]>([]);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const imageSetInputRef = useRef<HTMLInputElement | null>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
+  const videoUploadAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -135,31 +139,54 @@ export function TeachAiPanel({ clientId }: { clientId: string }) {
     }
   }
 
+  // Stage 8.5L3.1 -- real multipart direct-to-S3 upload. This function
+  // never reads the video's own bytes into a request THIS app's server
+  // receives: uploadVideoViaMultipart uploads every part directly to a
+  // presigned object-storage URL (Part 31's own absolute rule).
   async function uploadVideo(file: File) {
-    if (!isVideoFileWithinClientSizeLimit(file)) {
-      setStatus(LEARNING_EVIDENCE_STATUS_TEXT.videoTooLarge);
-      if (videoInputRef.current) videoInputRef.current.value = "";
-      return;
-    }
-    setUploadingVideo(true);
+    const controller = new AbortController();
+    videoUploadAbortRef.current = controller;
     try {
-      const form = buildLearningEvidenceVideoFormData(file, { submissionId: generateLearningEvidenceSubmissionId() });
-      const response = await fetch(`/api/v1/clients/${clientId}/learning-evidence/video`, { method: "POST", body: form });
-      const payload = (await response.json().catch(() => ({}))) as { evidence?: LearningEvidenceSummary; error?: string };
-      setStatus(
-        response.ok
-          ? LEARNING_EVIDENCE_STATUS_TEXT.uploadedVideo
-          : payload.error === "FILE_TOO_LARGE"
-            ? LEARNING_EVIDENCE_STATUS_TEXT.videoTooLarge
-            : LEARNING_EVIDENCE_STATUS_TEXT.genericFailure,
+      await uploadVideoViaMultipart(
+        clientId,
+        file,
+        {},
+        {
+          fetch: bindFetch(fetch),
+          // Stage 8.5L3.1 Part 18: the ONE narrow fallback -- a local
+          // environment with no object storage configured at all has no
+          // multipart-capable backend. Reuses the small-file buffered
+          // endpoint that exists specifically for that case; never
+          // invoked when S3 is genuinely configured (real production
+          // always requires it).
+          fallbackUpload: async (fallbackFile) => {
+            const form = buildLearningEvidenceVideoFormData(fallbackFile, { submissionId: generateLearningEvidenceSubmissionId() });
+            const response = await fetch(`/api/v1/clients/${clientId}/learning-evidence/video`, { method: "POST", body: form });
+            if (!response.ok) throw new Error("fallback video upload failed");
+            const payload = (await response.json()) as { evidence: LearningEvidenceSummary };
+            return payload.evidence;
+          },
+        },
+        {
+          onProgress: (state) => setVideoUploadProgress(state),
+          onSuccess: (evidence) => {
+            setStatus(LEARNING_EVIDENCE_STATUS_TEXT.uploadedVideo);
+            setRecentEvidence((prev) => [evidence as LearningEvidenceSummary, ...prev]);
+          },
+          onFailure: (message) => setStatus(message),
+          onCanceled: () => setStatus(LEARNING_EVIDENCE_STATUS_TEXT.videoUploadCanceled),
+        },
+        controller.signal,
       );
-      if (response.ok && payload.evidence) setRecentEvidence((prev) => [payload.evidence as LearningEvidenceSummary, ...prev]);
-    } catch {
-      setStatus(LEARNING_EVIDENCE_STATUS_TEXT.genericFailure);
     } finally {
-      setUploadingVideo(false);
+      videoUploadAbortRef.current = null;
+      setVideoUploadProgress(null);
       if (videoInputRef.current) videoInputRef.current.value = "";
     }
+  }
+
+  function cancelVideoUpload() {
+    videoUploadAbortRef.current?.abort();
   }
 
   async function revokeEvidence(evidenceId: string) {
@@ -345,6 +372,10 @@ export function TeachAiPanel({ clientId }: { clientId: string }) {
           The professional chooses this INSTEAD OF or IN ADDITION TO a
           memory action -- never both automatically from one click. */}
       <div className="mt-3 border-t border-border pt-3">
+        {/* PURPOSE LOCK (product correction): this section exists for
+            exactly one intent -- teaching the professional AI. Never
+            presented as a generic upload/media-library/file-save area. */}
+        <p className="text-sm font-medium">Încarcă materiale pentru a învăța AI-ul profesional</p>
         <p className="mb-2 text-xs text-muted">
           Materialele încărcate aici sunt dovezi private pentru învățarea profesională.
         </p>
@@ -367,11 +398,19 @@ export function TeachAiPanel({ clientId }: { clientId: string }) {
             <Images className="h-4 w-4" aria-hidden="true" />
             Multiple photos
           </Button>
-          <Button type="button" variant="secondary" onClick={() => videoInputRef.current?.click()} disabled={uploadingVideo} loading={uploadingVideo}>
+          <Button type="button" variant="secondary" onClick={() => videoInputRef.current?.click()} disabled={videoUploadProgress !== null} loading={videoUploadProgress !== null}>
             <Video className="h-4 w-4" aria-hidden="true" />
             Video
           </Button>
+          {videoUploadProgress ? (
+            <Button type="button" variant="secondary" onClick={cancelVideoUpload}>
+              Cancel upload
+            </Button>
+          ) : null}
         </div>
+        {videoUploadProgress ? (
+          <p className="mt-1 text-xs text-muted">{describeVideoUploadProgress(videoUploadProgress)}</p>
+        ) : null}
         <input
           ref={imageInputRef}
           type="file"

@@ -5,9 +5,11 @@ import { Prisma, type CaptureSet as PrismaCaptureSetRow, type CaptureSetImage as
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 import {
   findDuplicateCaptureSetViewLabels,
+  isCaptureSetPurpose,
   isCaptureSetViewLabel,
   isValidCaptureSetImageInput,
   type CaptureSetImageInput,
+  type CaptureSetPurpose,
   type CaptureSetViewLabel,
 } from "@/lib/capture-set-validators";
 
@@ -115,6 +117,7 @@ export interface CaptureSetImageRecord {
   clientId: string;
   imageAssetId: string;
   viewLabel: CaptureSetViewLabel;
+  ordinalPosition: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -124,6 +127,7 @@ export interface CaptureSetRecord {
   ownerUserId: string;
   clientId: string;
   captureSetVersion: number;
+  purpose: CaptureSetPurpose;
   supersededByCaptureSetId: string | null;
   images: readonly CaptureSetImageRecord[];
   createdAt: string;
@@ -153,10 +157,16 @@ type PrismaCaptureSetWithImages = PrismaCaptureSetRow & { images: PrismaCaptureS
 // a concurrent create cannot silently duplicate a version number -- the
 // DB-level unique index on (clientId, ownerUserId, captureSetVersion) is
 // the final backstop, surfaced as a retry.
+// Stage 8.5L3.1 -- `purpose` defaults to "CLIENT_MULTIVIEW", preserving
+// every existing call site's exact current behavior with zero change
+// (see this stage's own schema.prisma header comment on CaptureSet.purpose).
+// Only Learning Evidence's own image-set route passes
+// "PROFESSIONAL_LEARNING_SET" explicitly.
 export async function createCaptureSet(
   ownerUserId: string,
   clientId: string,
   images: readonly CaptureSetImageInput[],
+  purpose: CaptureSetPurpose = "CLIENT_MULTIVIEW",
 ): Promise<CaptureSetRecord> {
   validateImagesOrThrow(images);
 
@@ -172,7 +182,7 @@ export async function createCaptureSet(
       const nextVersion = await nextCaptureSetVersion(tx, ownerUserId, clientId);
 
       const row = await tx.captureSet.create({
-        data: { id: randomUUID(), ownerUserId, clientId, captureSetVersion: nextVersion },
+        data: { id: randomUUID(), ownerUserId, clientId, captureSetVersion: nextVersion, purpose },
       });
       const createdImages = await createImageRows(tx, ownerUserId, clientId, row.id, images);
       return toCaptureSetRecord({ ...row, images: createdImages });
@@ -240,8 +250,16 @@ export async function createReplacementCaptureSet(
 
       const nextVersion = await nextCaptureSetVersion(tx, ownerUserId, clientId);
 
+      // Stage 8.5L3.1 -- a replacement inherits the BASE row's own
+      // purpose (a learning-set replacement stays a learning set; a
+      // client-multiview replacement stays client-multiview). Every
+      // existing row's purpose is "CLIENT_MULTIVIEW" (the only value
+      // that existed before this stage), so this preserves exact current
+      // behavior for every existing call site with zero change.
+      const purpose = isCaptureSetPurpose(base.purpose) ? base.purpose : "CLIENT_MULTIVIEW";
+
       const newRow = await tx.captureSet.create({
-        data: { id: randomUUID(), ownerUserId, clientId, captureSetVersion: nextVersion },
+        data: { id: randomUUID(), ownerUserId, clientId, captureSetVersion: nextVersion, purpose },
       });
       const createdImages = await createImageRows(tx, ownerUserId, clientId, newRow.id, mergedImages);
 
@@ -372,7 +390,15 @@ async function createImageRows(
   const created: PrismaCaptureSetImageRow[] = [];
   for (const image of images) {
     const row = await tx.captureSetImage.create({
-      data: { id: randomUUID(), ownerUserId, clientId, captureSetId, imageAssetId: image.imageAssetId, viewLabel: image.viewLabel },
+      data: {
+        id: randomUUID(),
+        ownerUserId,
+        clientId,
+        captureSetId,
+        imageAssetId: image.imageAssetId,
+        viewLabel: image.viewLabel,
+        ordinalPosition: image.ordinalPosition ?? null,
+      },
     });
     created.push(row);
   }
@@ -457,11 +483,13 @@ function hitsCaptureSetUniqueIndex(error: Prisma.PrismaClientKnownRequestError):
 }
 
 function toCaptureSetRecord(row: PrismaCaptureSetWithImages): CaptureSetRecord {
+  if (!isCaptureSetPurpose(row.purpose)) throw new CaptureSetPersistenceError();
   return {
     id: row.id,
     ownerUserId: row.ownerUserId,
     clientId: row.clientId,
     captureSetVersion: row.captureSetVersion,
+    purpose: row.purpose,
     supersededByCaptureSetId: row.supersededByCaptureSetId,
     images: row.images.map(toCaptureSetImageRecord),
     createdAt: row.createdAt.toISOString(),
@@ -478,6 +506,7 @@ function toCaptureSetImageRecord(row: PrismaCaptureSetImageRow): CaptureSetImage
     clientId: row.clientId,
     imageAssetId: row.imageAssetId,
     viewLabel: row.viewLabel,
+    ordinalPosition: row.ordinalPosition,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
