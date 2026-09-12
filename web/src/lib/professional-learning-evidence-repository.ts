@@ -49,6 +49,20 @@ export class ProfessionalLearningEvidencePersistenceError extends Error {
   }
 }
 
+export function isProfessionalLearningEvidencePersistenceError(error: unknown): error is ProfessionalLearningEvidencePersistenceError {
+  return error instanceof ProfessionalLearningEvidencePersistenceError;
+}
+
+// Same convention as professionalMemoryPersistenceUnavailableResponse
+// (professional-memory-repository.ts) -- one shared response shape for
+// every API route that surfaces this exact error.
+export function professionalLearningEvidencePersistenceUnavailableResponse(): Response {
+  return Response.json(
+    { error: PROFESSIONAL_LEARNING_EVIDENCE_PERSISTENCE_ERROR_CODE, message: "Professional learning evidence data is temporarily unavailable." },
+    { status: 503, headers: { "Cache-Control": "no-store" } },
+  );
+}
+
 export class ProfessionalLearningEvidenceValidationError extends Error {
   readonly code = "PROFESSIONAL_LEARNING_EVIDENCE_VALIDATION_FAILED";
   readonly httpStatus = 400;
@@ -170,9 +184,22 @@ function computeTextContentSha256(text: string): string {
 // referenced asset is verified INSIDE the same transaction as the insert,
 // so a foreign/nonexistent asset id can never slip through a race. Never
 // duplicates the referenced asset's own bytes, metadata, or hash.
+//
+// Stage 8.5L3 -- SUBMISSION IDEMPOTENCY (Part 13): `options.submissionId`,
+// when provided by the caller, becomes this row's own primary key --
+// identical precedent to voice-transcript/route.ts's own
+// VoiceTranscript.id = attemptId idiom. A double-click or a browser/network
+// retry of the exact same logical submission reuses the same
+// submissionId, so the resulting P2002 conflict below is recognized and
+// answered with the ALREADY-persisted row instead of a duplicate or an
+// error. This is deliberately narrower than content-hash dedup (Part 13:
+// "same bytes" and "same submission" are different questions) -- the same
+// photo/video submitted twice with two different submissionIds still
+// legitimately creates two separate evidence rows.
 export async function createLearningEvidence(
   ownerUserId: string,
   input: CreateProfessionalLearningEvidenceInput,
+  options?: { readonly submissionId?: string },
 ): Promise<ProfessionalLearningEvidenceRecord> {
   if (!isValidCreateProfessionalLearningEvidenceInput(input)) {
     throw new ProfessionalLearningEvidenceValidationError("Professional learning evidence input is not structurally valid.");
@@ -186,34 +213,53 @@ export async function createLearningEvidence(
       ? computeTextContentSha256(input.originalText)
       : null;
 
-  return runLearningEvidenceQuery(() =>
-    prisma.$transaction(async (tx) => {
-      if (pointerKind && pointerId) {
-        await assertAssetPointerOwnedByUser(tx, ownerUserId, pointerKind, pointerId);
-      }
+  const id = options?.submissionId?.trim() || randomUUID();
 
-      const row = await tx.professionalLearningEvidence.create({
-        data: {
-          id: randomUUID(),
-          ownerUserId,
-          evidenceType: input.evidenceType,
-          vertical: input.vertical,
-          title: input.title ?? null,
-          originalText: input.originalText ?? null,
-          contentSha256,
-          imageAssetId: pointerKind === "imageAssetId" ? pointerId : null,
-          captureSetId: pointerKind === "captureSetId" ? pointerId : null,
-          videoAssetId: pointerKind === "videoAssetId" ? pointerId : null,
-          provenance: input.provenance as never,
-          sourceMetadata: (input.sourceMetadata ?? null) as never,
-          rightsClassification: input.rightsClassification,
-          createdByUserId: ownerUserId,
-        },
+  return runLearningEvidenceQuery(async () => {
+    try {
+      return await prisma.$transaction(async (tx) => {
+        if (pointerKind && pointerId) {
+          await assertAssetPointerOwnedByUser(tx, ownerUserId, pointerKind, pointerId);
+        }
+
+        const row = await tx.professionalLearningEvidence.create({
+          data: {
+            id,
+            ownerUserId,
+            evidenceType: input.evidenceType,
+            vertical: input.vertical,
+            title: input.title ?? null,
+            originalText: input.originalText ?? null,
+            contentSha256,
+            imageAssetId: pointerKind === "imageAssetId" ? pointerId : null,
+            captureSetId: pointerKind === "captureSetId" ? pointerId : null,
+            videoAssetId: pointerKind === "videoAssetId" ? pointerId : null,
+            provenance: input.provenance as never,
+            sourceMetadata: (input.sourceMetadata ?? null) as never,
+            rightsClassification: input.rightsClassification,
+            createdByUserId: ownerUserId,
+          },
+        });
+
+        return toRecord(row);
       });
-
-      return toRecord(row);
-    }),
-  );
+    } catch (error) {
+      // A P2002 on the create above aborts the whole transaction at the
+      // Postgres level (25P02 -- no further command, not even a SELECT,
+      // may run on that same transaction) -- the recovery lookup below
+      // MUST use the plain `prisma` client, outside any transaction,
+      // never `tx`. Only a genuine replay of THIS owner's own prior
+      // submission is treated as idempotent success -- an id collision
+      // against a different owner's row (astronomically unlikely, never
+      // trusted blindly) still surfaces as a real error, matching
+      // voice-transcript/route.ts's identical ownership re-check.
+      if (options?.submissionId && error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        const existing = await prisma.professionalLearningEvidence.findFirst({ where: { id, ownerUserId } });
+        if (existing) return toRecord(existing);
+      }
+      throw error;
+    }
+  });
 }
 
 // Owner-scoped lookup. Returns null when the row does not exist or is not

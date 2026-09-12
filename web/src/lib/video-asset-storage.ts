@@ -132,6 +132,69 @@ function sha256(buffer: Buffer): string {
   return createHash("sha256").update(buffer).digest("hex");
 }
 
+// Stage 8.5L3 -- PRIVATE LEARNING VIDEO UPLOAD. Persists a professional's
+// own uploaded source video (never a provider-generated one) as a durable
+// VideoAsset row, reusing the exact same object-storage decision and
+// put-then-verify-via-head integrity discipline as
+// persistGeneratedVideoDemonstrationAsset above -- no second video storage
+// system. The ONE deliberate difference: origin is explicitly
+// "uploaded_source" (schema.prisma's own documented VideoAsset.origin
+// value for this exact path), never left to the "generated_output"
+// column default, so an uploaded teaching video and a generated Result
+// Video remain distinguishable by construction, never by inference.
+//
+// Buffer-based, matching the app's own established upload discipline
+// (uploadAndAnalyzeImages, the voice-transcript route) -- the caller is
+// responsible for enforcing a safe maximum size BEFORE this function is
+// ever called (see learning-evidence-video-upload.ts's own
+// MAX_LEARNING_VIDEO_BYTES and its header comment on why a much larger
+// "Ionuț has large complete professional videos" upload is explicitly NOT
+// supported by this function).
+export async function persistUploadedLearningVideoAsset(
+  ownerUserId: string,
+  clientId: string,
+  videoBuffer: Buffer,
+  mimeType: string,
+): Promise<VideoAsset> {
+  const objectStorageTarget = resolveObjectStorageWriteTarget();
+
+  if (!objectStorageTarget && resolveRuntimeMode(process.env.NODE_ENV) === "production") {
+    throw new ObjectStorageWriteModeRequiredError();
+  }
+
+  const asset = await prisma.videoAsset.create({
+    data: {
+      id: randomUUID(),
+      ownerUserId,
+      clientId,
+      mimeType,
+      sizeBytes: videoBuffer.length,
+      storagePath: "pending",
+      origin: "uploaded_source",
+    },
+  });
+
+  try {
+    if (objectStorageTarget) {
+      await writeVideoToObjectStorage(asset, videoBuffer, mimeType, objectStorageTarget);
+    } else {
+      const storagePath = await saveImageFile(ownerUserId, asset.id, `learning-evidence-${Date.now()}.${extensionForMimeType(mimeType)}`, videoBuffer);
+      await prisma.videoAsset.update({ where: { id: asset.id }, data: { storagePath, contentSha256: sha256(videoBuffer) } });
+    }
+  } catch (error) {
+    // Same fail-closed shape as persistGeneratedVideoDemonstrationAsset:
+    // the row stays exactly as created (storageBackend=null,
+    // storagePath="pending") -- never orphaned in a way that hides what
+    // happened, and never silently retried with different bytes. The
+    // caller (the /learning-evidence/video route) reports this as a
+    // clean failure; no ProfessionalLearningEvidence row is ever created
+    // for a VideoAsset whose storage write failed.
+    throw new VideoAssetStorageError(error instanceof Error ? error.message : "Failed to persist uploaded video to durable storage.");
+  }
+
+  return prisma.videoAsset.findUniqueOrThrow({ where: { id: asset.id } });
+}
+
 // Exported (unchanged, unbehaviored) -- Video UI's own content-serving
 // route (video-assets/[id]/content) reuses this exact mapping for its
 // Content-Disposition filename, rather than a second, duplicated table.

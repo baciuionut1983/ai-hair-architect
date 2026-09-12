@@ -1,10 +1,19 @@
 "use client";
 
-import { Brain, Mic, Square } from "lucide-react";
+import { Brain, Image as ImageIcon, Images, Mic, Square, Trash2, Video } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Alert, Button, Textarea } from "@/components/ui";
 import { decodeBlobAsWav } from "./audio-wav-encode";
 import { bindFetch, classifyMicrophoneStartError, finishRecording, generateAttemptId, logClient } from "./teach-ai-panel-logic";
+import {
+  buildLearningEvidenceImageFormData,
+  buildLearningEvidenceImageSetFormData,
+  buildLearningEvidenceVideoFormData,
+  generateLearningEvidenceSubmissionId,
+  isVideoFileWithinClientSizeLimit,
+  LEARNING_EVIDENCE_STATUS_TEXT,
+  type LearningEvidenceSummary,
+} from "./teach-ai-learning-evidence-logic";
 
 type Action = "save_client_memory" | "save_professional_rule" | "mark_preference" | "save_outcome";
 
@@ -30,6 +39,142 @@ export function TeachAiPanel({ clientId }: { clientId: string }) {
   const streamRef = useRef<MediaStream | null>(null);
   const startingRef = useRef(false);
   const hasStoppedRef = useRef(false);
+
+  // Stage 8.5L3 -- Professional Learning Evidence. Kept fully separate
+  // from the memory-save state above: this is a DISTINCT, additive action
+  // (see savingEvidence's own save handler below), never a silent
+  // duplicate of save(). The same reviewed `draft`/`transcriptId` is
+  // reused for the text/voice-transcript evidence path only.
+  const [savingEvidence, setSavingEvidence] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [uploadingImageSet, setUploadingImageSet] = useState(false);
+  const [uploadingVideo, setUploadingVideo] = useState(false);
+  const [recentEvidence, setRecentEvidence] = useState<LearningEvidenceSummary[]>([]);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const imageSetInputRef = useRef<HTMLInputElement | null>(null);
+  const videoInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/v1/learning-evidence");
+        if (!response.ok || cancelled) return;
+        const payload = (await response.json()) as { evidence?: LearningEvidenceSummary[] };
+        if (!cancelled) setRecentEvidence(payload.evidence ?? []);
+      } catch {
+        // Best-effort only -- an empty/stale history list is never worse
+        // than blocking the panel from opening.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  async function saveAsLearningEvidence() {
+    if (!draft.trim()) return;
+    if (!window.confirm("Confirm that you want to save this as private learning evidence?")) return;
+
+    setSavingEvidence(true);
+    try {
+      const response = await fetch(`/api/v1/clients/${clientId}/learning-evidence`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          evidenceType: transcriptId ? "VOICE_TRANSCRIPT" : "TEXT",
+          content: draft.trim(),
+          transcriptId,
+          submissionId: generateLearningEvidenceSubmissionId(),
+        }),
+      });
+      const payload = (await response.json().catch(() => ({}))) as { evidence?: LearningEvidenceSummary };
+      setStatus(response.ok ? LEARNING_EVIDENCE_STATUS_TEXT.savedText : LEARNING_EVIDENCE_STATUS_TEXT.genericFailure);
+      if (response.ok) {
+        setDraft("");
+        setTranscriptId(undefined);
+        if (payload.evidence) setRecentEvidence((prev) => [payload.evidence as LearningEvidenceSummary, ...prev]);
+      }
+    } catch {
+      setStatus(LEARNING_EVIDENCE_STATUS_TEXT.genericFailure);
+    } finally {
+      setSavingEvidence(false);
+    }
+  }
+
+  async function uploadImage(file: File) {
+    setUploadingImage(true);
+    try {
+      const form = buildLearningEvidenceImageFormData(file, { submissionId: generateLearningEvidenceSubmissionId() });
+      const response = await fetch(`/api/v1/clients/${clientId}/learning-evidence/image`, { method: "POST", body: form });
+      const payload = (await response.json().catch(() => ({}))) as { evidence?: LearningEvidenceSummary };
+      setStatus(response.ok ? LEARNING_EVIDENCE_STATUS_TEXT.uploadedImage : LEARNING_EVIDENCE_STATUS_TEXT.genericFailure);
+      if (response.ok && payload.evidence) setRecentEvidence((prev) => [payload.evidence as LearningEvidenceSummary, ...prev]);
+    } catch {
+      setStatus(LEARNING_EVIDENCE_STATUS_TEXT.genericFailure);
+    } finally {
+      setUploadingImage(false);
+      if (imageInputRef.current) imageInputRef.current.value = "";
+    }
+  }
+
+  async function uploadImageSet(files: File[]) {
+    setUploadingImageSet(true);
+    try {
+      const form = buildLearningEvidenceImageSetFormData(files, { submissionId: generateLearningEvidenceSubmissionId() });
+      const response = await fetch(`/api/v1/clients/${clientId}/learning-evidence/image-set`, { method: "POST", body: form });
+      const payload = (await response.json().catch(() => ({}))) as { evidence?: LearningEvidenceSummary };
+      setStatus(response.ok ? LEARNING_EVIDENCE_STATUS_TEXT.uploadedImageSet : LEARNING_EVIDENCE_STATUS_TEXT.genericFailure);
+      if (response.ok && payload.evidence) setRecentEvidence((prev) => [payload.evidence as LearningEvidenceSummary, ...prev]);
+    } catch {
+      setStatus(LEARNING_EVIDENCE_STATUS_TEXT.genericFailure);
+    } finally {
+      setUploadingImageSet(false);
+      if (imageSetInputRef.current) imageSetInputRef.current.value = "";
+    }
+  }
+
+  async function uploadVideo(file: File) {
+    if (!isVideoFileWithinClientSizeLimit(file)) {
+      setStatus(LEARNING_EVIDENCE_STATUS_TEXT.videoTooLarge);
+      if (videoInputRef.current) videoInputRef.current.value = "";
+      return;
+    }
+    setUploadingVideo(true);
+    try {
+      const form = buildLearningEvidenceVideoFormData(file, { submissionId: generateLearningEvidenceSubmissionId() });
+      const response = await fetch(`/api/v1/clients/${clientId}/learning-evidence/video`, { method: "POST", body: form });
+      const payload = (await response.json().catch(() => ({}))) as { evidence?: LearningEvidenceSummary; error?: string };
+      setStatus(
+        response.ok
+          ? LEARNING_EVIDENCE_STATUS_TEXT.uploadedVideo
+          : payload.error === "FILE_TOO_LARGE"
+            ? LEARNING_EVIDENCE_STATUS_TEXT.videoTooLarge
+            : LEARNING_EVIDENCE_STATUS_TEXT.genericFailure,
+      );
+      if (response.ok && payload.evidence) setRecentEvidence((prev) => [payload.evidence as LearningEvidenceSummary, ...prev]);
+    } catch {
+      setStatus(LEARNING_EVIDENCE_STATUS_TEXT.genericFailure);
+    } finally {
+      setUploadingVideo(false);
+      if (videoInputRef.current) videoInputRef.current.value = "";
+    }
+  }
+
+  async function revokeEvidence(evidenceId: string) {
+    if (!window.confirm("Revoke this learning evidence? It will no longer be used for future processing.")) return;
+    try {
+      const response = await fetch(`/api/v1/learning-evidence?evidenceId=${encodeURIComponent(evidenceId)}`, { method: "DELETE" });
+      if (response.ok) {
+        setStatus(LEARNING_EVIDENCE_STATUS_TEXT.revoked);
+        setRecentEvidence((prev) => prev.map((item) => (item.id === evidenceId ? { ...item, status: "REVOKED" } : item)));
+      }
+    } catch {
+      // Best-effort -- a failed revoke leaves the row exactly as it was;
+      // the professional can simply try again.
+    }
+  }
 
   async function save(action: Action) {
     if (!draft.trim()) return;
@@ -192,6 +337,91 @@ export function TeachAiPanel({ clientId }: { clientId: string }) {
         <Button type="button" variant="secondary" onClick={() => save("mark_preference")}>Mark as preference</Button>
         <Button type="button" variant="secondary" onClick={() => save("save_outcome")}>Save outcome</Button>
       </div>
+
+      {/* Stage 8.5L3 -- Professional Learning Evidence. A DISTINCT,
+          additive path from the four memory actions above: this creates a
+          ProfessionalLearningEvidence row (Stage 8.5L2), never a
+          ProfessionalMemory row, and never influences Consultation Chat.
+          The professional chooses this INSTEAD OF or IN ADDITION TO a
+          memory action -- never both automatically from one click. */}
+      <div className="mt-3 border-t border-border pt-3">
+        <p className="mb-2 text-xs text-muted">
+          Materialele încărcate aici sunt dovezi private pentru învățarea profesională.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() => void saveAsLearningEvidence()}
+            disabled={savingEvidence || !draft.trim()}
+            loading={savingEvidence}
+          >
+            <Brain className="h-4 w-4" aria-hidden="true" />
+            Save as learning evidence
+          </Button>
+          <Button type="button" variant="secondary" onClick={() => imageInputRef.current?.click()} disabled={uploadingImage} loading={uploadingImage}>
+            <ImageIcon className="h-4 w-4" aria-hidden="true" />
+            Photo
+          </Button>
+          <Button type="button" variant="secondary" onClick={() => imageSetInputRef.current?.click()} disabled={uploadingImageSet} loading={uploadingImageSet}>
+            <Images className="h-4 w-4" aria-hidden="true" />
+            Multiple photos
+          </Button>
+          <Button type="button" variant="secondary" onClick={() => videoInputRef.current?.click()} disabled={uploadingVideo} loading={uploadingVideo}>
+            <Video className="h-4 w-4" aria-hidden="true" />
+            Video
+          </Button>
+        </div>
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void uploadImage(file);
+          }}
+        />
+        <input
+          ref={imageSetInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          multiple
+          hidden
+          onChange={(event) => {
+            const files = Array.from(event.target.files ?? []);
+            if (files.length >= 2) void uploadImageSet(files);
+          }}
+        />
+        <input
+          ref={videoInputRef}
+          type="file"
+          accept="video/mp4,video/webm,video/quicktime"
+          hidden
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void uploadVideo(file);
+          }}
+        />
+
+        {recentEvidence.length > 0 ? (
+          <ul className="mt-3 space-y-1">
+            {recentEvidence.map((item) => (
+              <li key={item.id} className="flex items-center justify-between gap-2 rounded-md border border-border px-2 py-1 text-xs">
+                <span className="truncate">
+                  {item.evidenceType} · {item.title || item.vertical} · {item.status}
+                </span>
+                {item.status === "ACTIVE" ? (
+                  <button type="button" onClick={() => void revokeEvidence(item.id)} className="shrink-0 text-muted hover:text-foreground" aria-label="Revoke">
+                    <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+
       {status ? (
         <div className="mt-2">
           <Alert>{status}</Alert>

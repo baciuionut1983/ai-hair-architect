@@ -112,6 +112,60 @@ suite("professional-learning-evidence-repository (durable Learning Evidence doma
     await expect(prisma.professionalLearningEvidence.count({ where: { ownerUserId: userA } })).resolves.toBe(0);
   });
 
+  it("Stage 8.5L3 Part 28 #13: rejects a CaptureSet reference owned by a different user", async () => {
+    const { ownerUserId: userA } = await createOwner();
+    const { ownerUserId: userB, clientId: clientB } = await createOwnerAndClient();
+    const foreignImage = await createImageAsset(userB, clientB);
+    const foreignCaptureSet = await createCaptureSet(userB, clientB, [{ viewLabel: "FRONT", imageAssetId: foreignImage.id }]);
+
+    const error = await createLearningEvidence(userA, {
+      evidenceType: "IMAGE_SET",
+      vertical: "hair_cutting",
+      captureSetId: foreignCaptureSet.id,
+      provenance: {},
+      rightsClassification: "USER_OWNED_OR_AUTHORIZED",
+    }).catch((e: unknown) => e);
+    expect((error as Error).name).toBe("ProfessionalLearningEvidenceDependencyError");
+    await expect(prisma.professionalLearningEvidence.count({ where: { ownerUserId: userA } })).resolves.toBe(0);
+  });
+
+  it("Stage 8.5L3 Part 28 #14: rejects a VideoAsset reference owned by a different user", async () => {
+    const { ownerUserId: userA } = await createOwner();
+    const { ownerUserId: userB, clientId: clientB } = await createOwnerAndClient();
+    const foreignVideo = await createVideoAsset(userB, clientB);
+
+    const error = await createLearningEvidence(userA, {
+      evidenceType: "VIDEO",
+      vertical: "hair_cutting",
+      videoAssetId: foreignVideo.id,
+      provenance: {},
+      rightsClassification: "USER_OWNED_OR_AUTHORIZED",
+    }).catch((e: unknown) => e);
+    expect((error as Error).name).toBe("ProfessionalLearningEvidenceDependencyError");
+    await expect(prisma.professionalLearningEvidence.count({ where: { ownerUserId: userA } })).resolves.toBe(0);
+  });
+
+  it("Stage 8.5L3 Part 28 #17/18: a repeated submissionId is idempotent -- no duplicate row, same evidence returned", async () => {
+    const { ownerUserId } = await createOwner();
+    const submissionId = randomUUID();
+
+    const first = await createLearningEvidence(ownerUserId, textInput({ title: "idempotency check" }), { submissionId });
+    const second = await createLearningEvidence(ownerUserId, textInput({ title: "idempotency check" }), { submissionId });
+
+    expect(second.id).toBe(first.id);
+    await expect(prisma.professionalLearningEvidence.count({ where: { ownerUserId } })).resolves.toBe(1);
+  });
+
+  it("Stage 8.5L3 Part 28 #17: a different submissionId for the same content legitimately creates a second row (same bytes != same submission)", async () => {
+    const { ownerUserId } = await createOwner();
+
+    const first = await createLearningEvidence(ownerUserId, textInput({ title: "same content" }), { submissionId: randomUUID() });
+    const second = await createLearningEvidence(ownerUserId, textInput({ title: "same content" }), { submissionId: randomUUID() });
+
+    expect(second.id).not.toBe(first.id);
+    await expect(prisma.professionalLearningEvidence.count({ where: { ownerUserId } })).resolves.toBe(2);
+  });
+
   it("6. evidence can reference a CaptureSet safely (IMAGE_SET type)", async () => {
     const { ownerUserId, clientId } = await createOwnerAndClient();
     const image = await createImageAsset(ownerUserId, clientId);
