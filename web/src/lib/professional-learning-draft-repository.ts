@@ -7,6 +7,8 @@ import {
   type ProfessionalLearningExtraction,
 } from "@/lib/professional-learning-draft-validators";
 import type { DraftConflictDetail } from "@/lib/professional-learning-draft-comparison";
+import type { ReferenceDependencyRelationship } from "@/lib/professional-learning-reference-dependency";
+import type { ReviewedComparisonResult } from "@/lib/professional-learning-reviewed-comparison";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L4 -- PROFESSIONAL
 // LEARNING DRAFT, the durable repository layer. Mirrors this repo's own
@@ -259,7 +261,23 @@ export interface CreateCorrectionDraftInput {
   readonly correctionEvidenceId: string;
   readonly extractorVersion: string;
   readonly extraction: ProfessionalLearningExtraction;
-  readonly correctionNote: { readonly previousInterpretation: unknown; readonly correction: unknown; readonly correctedByUserId: string; readonly correctedAt: string };
+  // Stage 8.5L5.R1.1 (Section 21/24): `referenceDependencies` and
+  // `reviewedComparison` are purely additive, optional keys -- zero
+  // migration, since correctionNote is already a free Json? column. They
+  // never replace `previousInterpretation`/`correction` (the existing
+  // field-level diff), and `reviewedComparison` is deliberately never
+  // written back into this row's own `comparisonOutcome`/`comparedSkillId`
+  // columns (which createCorrectionDraft below still hardcodes/copies
+  // exactly as before) -- a SEPARATE, ADDITIONAL annotation of what the
+  // evidence supports after review, never an overwrite of history.
+  readonly correctionNote: {
+    readonly previousInterpretation: unknown;
+    readonly correction: unknown;
+    readonly correctedByUserId: string;
+    readonly correctedAt: string;
+    readonly referenceDependencies?: readonly ReferenceDependencyRelationship[];
+    readonly reviewedComparison?: ReviewedComparisonResult;
+  };
   readonly createdByUserId: string;
 }
 

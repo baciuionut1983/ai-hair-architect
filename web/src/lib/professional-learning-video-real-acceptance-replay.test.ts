@@ -11,15 +11,13 @@ import type { ProfessionalLearningExtractor, ProfessionalLearningExtractorInput,
 import { createVideoLearningSegment, createTemporalObservation, type VideoLearningSegment, type TemporalObservation } from "@/lib/professional-learning-video-segmentation";
 import { assessRepetition, assessZoneCompletion, assessEffect, createActionCandidate, type ActionCandidate } from "@/lib/professional-learning-video-temporal-reasoning";
 import { computeVideoTimeIntervalOrder } from "@/lib/professional-learning-video-temporal";
+import { L5R1_REAL_CAPTURED_OUTPUT } from "@/lib/professional-learning-video-l5r1-real-fixture";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L5.R1 -- Section
-// 36 DETERMINISTIC REPLAY. Embeds the EXACT raw output captured from the
-// one authorized real Gemini video call (professional-learning-
-// extractor-gemini-video-real-acceptance.test.ts, run 2026-09-13,
-// providerRequestId "W7emav62H_PxnsEPm5WesAc", source video IMG_9798.mp4,
-// sha256 a25e4b8c2ca02350298698e0056b17999693d476c371c93bad9aa6273ce2030a)
-// as a hand-copied literal fixture, then replays it through
-// validation -> UNKNOWN normalization -> semantic binding ->
+// 36 DETERMINISTIC REPLAY. Uses the EXACT raw output captured from the
+// one authorized real Gemini video call (see professional-learning-
+// video-l5r1-real-fixture.ts's own header for full provenance), replayed
+// through validation -> UNKNOWN normalization -> semantic binding ->
 // registry comparison -> draft creation, AND through the identical L5
 // temporal-reasoning post-processing used at real-call time -- with ZERO
 // additional AI calls anywhere in this file. Proves the pipeline is
@@ -31,39 +29,7 @@ import { computeVideoTimeIntervalOrder } from "@/lib/professional-learning-video
 // Always runs as part of npm test/CI -- this file makes no network call
 // of any kind.
 
-const REAL_CAPTURED_OUTPUT: ProfessionalLearningExtractorOutput = {
-  discernment: {
-    category: "PROFESSIONAL_TECHNIQUE",
-    reason: "Demonstrates technique for cutting a blunt perimeter baseline by adjusting client head position to remove under-hair growth.",
-  },
-  extraction: {
-    domain: { value: "HAIR", source: "OBSERVED", confidence: 0.7, segments: [{ timeStartSeconds: 0, timeEndSeconds: 37, relevance: 1 }] },
-    discipline: { value: "HAIRCUTTING", source: "OBSERVED", confidence: 0.7, segments: [{ timeStartSeconds: 0, timeEndSeconds: 37, relevance: 1 }] },
-    techniqueCandidate: { value: "Blunt Bob Perimeter Cutting with Head Tilt", source: "INFERRED", confidence: 0.7, segments: [{ timeStartSeconds: 0, timeEndSeconds: 34, relevance: 1 }] },
-    targetEffect: { value: "Clean blunt baseline", source: "OBSERVED", confidence: 0.7, segments: [{ timeStartSeconds: 30, timeEndSeconds: 37, relevance: 1 }] },
-    applicableZones: { value: "Nape / Perimeter", source: "OBSERVED", confidence: 0.7, segments: [{ timeStartSeconds: 0, timeEndSeconds: 34, relevance: 1 }] },
-    tool: { value: "Shears and Comb", source: "OBSERVED", confidence: 0.7, segments: [{ timeStartSeconds: 0, timeEndSeconds: 23, relevance: 1 }] },
-  },
-  comparisonSkillIdHint: null,
-  relatedSkillIdHints: [],
-  temporalObservations: [
-    { timeStartSeconds: 0, timeEndSeconds: 5, observation: "Scissors cut hair horizontally across nape while client head is upright." },
-    { timeStartSeconds: 5, timeEndSeconds: 9, observation: "Framing shifts to wider view showing upper sections clipped up; client tilts head forward." },
-    { timeStartSeconds: 9, timeEndSeconds: 23, observation: "Comb pulls hair downward over tilted nape and scissors trim shorter hairs exposed below line." },
-    { timeStartSeconds: 24, timeEndSeconds: 34, observation: "Client returns head upright and hand smooths hair to display perimeter line." },
-    { timeStartSeconds: 35, timeEndSeconds: 37, observation: "Cut to finished dry styled blunt bob haircut." },
-  ],
-  actionCandidates: [
-    { timeStartSeconds: 0, timeEndSeconds: 5, kind: "CUTTING_ACTION" },
-    { timeStartSeconds: 5, timeEndSeconds: 9, kind: "REPOSITIONING" },
-    { timeStartSeconds: 9, timeEndSeconds: 23, kind: "COMBING_AND_CUTTING" },
-    { timeStartSeconds: 24, timeEndSeconds: 34, kind: "INSPECTION" },
-  ],
-  notableEditsOrCuts: [
-    { beforeTimeSeconds: 5, afterTimeSeconds: 6 },
-    { beforeTimeSeconds: 34, afterTimeSeconds: 35 },
-  ],
-};
+const REAL_CAPTURED_OUTPUT: ProfessionalLearningExtractorOutput = L5R1_REAL_CAPTURED_OUTPUT;
 
 class ReplayExtractor implements ProfessionalLearningExtractor {
   readonly extractorVersion = "gemini-real-v1:gemini-3.6-flash";

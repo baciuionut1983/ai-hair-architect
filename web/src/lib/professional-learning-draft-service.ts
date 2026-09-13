@@ -17,6 +17,8 @@ import {
 } from "@/lib/professional-learning-draft-repository";
 import type { ProfessionalSkillDefinitionRecord } from "@/lib/professional-skill-registry-repository";
 import type { ProfessionalLearningExtraction, ProfessionalLearningExtractedField } from "@/lib/professional-learning-draft-validators";
+import { createReferenceDependencyRelationship, type ReferenceDependencyRelationship, type ReferenceDependencyRelationshipType, type ReferenceEntityRef, type ReferenceRoleKind } from "@/lib/professional-learning-reference-dependency";
+import { computeReviewedComparison } from "@/lib/professional-learning-reviewed-comparison";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L4 -- the
 // orchestration layer connecting evidence -> relevance gate -> extractor
@@ -179,6 +181,21 @@ export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftIn
   return { kind: "created", draft };
 }
 
+// Stage 8.5L5.R1.1 -- what a professional's review supplies for ONE
+// reference-dependency relationship. Deliberately NO `provenance` or
+// `semanticSupport` field: this input shape only ever reaches
+// submitProfessionalCorrection, which is itself the professional-
+// authority pathway -- provenance is unconditionally forced to
+// PROFESSIONAL_INPUT below, exactly mirroring how `correctedFields`
+// above already forces PROFESSIONAL_INPUT regardless of caller input.
+export interface SubmitCorrectionReferenceDependencyInput {
+  readonly sourceEntity: ReferenceEntityRef;
+  readonly targetEntity: ReferenceEntityRef;
+  readonly relationshipType: ReferenceDependencyRelationshipType;
+  readonly referenceRole?: ReferenceRoleKind;
+  readonly note?: string;
+}
+
 export interface SubmitProfessionalCorrectionInput {
   readonly ownerUserId: string;
   readonly priorDraftId: string;
@@ -190,6 +207,20 @@ export interface SubmitProfessionalCorrectionInput {
   // only the specific correction).
   readonly correctedFields: Readonly<Record<string, { readonly value: unknown; readonly previousValue: unknown }>>;
   readonly correctedByUserId: string;
+  // Stage 8.5L5.R1.1 -- optional professional guide/reference relationships
+  // (Section 7/11/14). Omitted entirely for a correction that only
+  // touches scalar fields, exactly like before this stage.
+  readonly referenceDependencies?: readonly SubmitCorrectionReferenceDependencyInput[];
+  // Stage 8.5L5.R1.1 (Section 21/29) -- optional; when supplied, triggers
+  // a SEPARATE, additional "what does the evidence support now" registry
+  // comparison, stored in correctionNote.reviewedComparison only -- never
+  // written to this row's own comparisonOutcome/comparedSkillId columns,
+  // and never mutating the registry itself (computeReviewedComparison is
+  // a pure function; this service never writes to
+  // ProfessionalSkillDefinition). Omitted entirely, existing callers
+  // (the /learning-drafts/[draftId]/correct route) are completely
+  // unaffected.
+  readonly registry?: readonly ProfessionalSkillDefinitionRecord[];
 }
 
 // Professional correction (Part 15): an explicit, professional-initiated
@@ -218,6 +249,20 @@ export async function submitProfessionalCorrection(input: SubmitProfessionalCorr
     mergedExtraction[fieldName] = { value: correction.value, source: "PROFESSIONAL_INPUT", confidence: 1 };
   }
 
+  // Stage 8.5L5.R1.1 (Section 11) -- every relationship reaching this
+  // service is unconditionally stamped PROFESSIONAL_INPUT, exactly like
+  // corrected scalar fields above; the caller has no way to request any
+  // other provenance through this pathway.
+  const referenceDependencies: readonly ReferenceDependencyRelationship[] = (input.referenceDependencies ?? []).map((relationship) =>
+    createReferenceDependencyRelationship({ ...relationship, provenance: "PROFESSIONAL_INPUT" }),
+  );
+
+  // Section 20/21/29 -- a SEPARATE, additional comparison; never
+  // overwrites the prior draft's own comparisonOutcome/comparedSkillId,
+  // and createCorrectionDraft below still hardcodes this new row's own
+  // comparisonOutcome to "POSSIBLE_CORRECTION" exactly as it always has.
+  const reviewedComparison = input.registry ? computeReviewedComparison(mergedExtraction as ProfessionalLearningExtraction, prior.comparisonOutcome, referenceDependencies, input.registry) : undefined;
+
   return createCorrectionDraft(input.ownerUserId, input.newDraftId, {
     priorDraftId: input.priorDraftId,
     correctionEvidenceId: input.correctionEvidenceId,
@@ -228,6 +273,8 @@ export async function submitProfessionalCorrection(input: SubmitProfessionalCorr
       correction: Object.fromEntries(correctedFieldNames.map((name) => [name, input.correctedFields[name].value])),
       correctedByUserId: input.correctedByUserId,
       correctedAt: new Date().toISOString(),
+      ...(referenceDependencies.length > 0 ? { referenceDependencies } : {}),
+      ...(reviewedComparison ? { reviewedComparison } : {}),
     },
     createdByUserId: input.correctedByUserId,
   });
