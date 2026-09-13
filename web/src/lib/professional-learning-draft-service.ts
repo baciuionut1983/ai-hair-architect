@@ -4,6 +4,7 @@ import type { ProfessionalLearningExtractor } from "@/lib/professional-learning-
 import { validateExtractorOutput } from "@/lib/professional-learning-draft-extraction-validator";
 import { compareExtractionAgainstRegistry } from "@/lib/professional-learning-draft-comparison";
 import { completeApplicableFieldsWithUnknown } from "@/lib/professional-learning-draft-field-completion";
+import { applyElevationSemanticGuard } from "@/lib/professional-learning-elevation-semantic-guard";
 import { resolveLearningEvidenceImageMedia } from "@/lib/professional-learning-image-media-resolver";
 import type { ProfessionalLearningExtractorImageMedia } from "@/lib/professional-learning-extractor";
 import {
@@ -120,13 +121,21 @@ export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftIn
     skipObservedGrounding: isImageEvidence,
   });
 
+  // Stage 8.5L4.R2.1 -- PROFESSIONAL VISUAL SEMANTIC CLASSIFICATION GUARD
+  // (Part 8): runs BEFORE UNKNOWN completion, exactly matching the
+  // OBSERVATION -> INTERPRETATION -> VALIDATION -> STRUCTURED CLAIM
+  // ordering (Part 6). Scoped to image-shaped evidence only -- TEXT
+  // evidence's elevation claims remain governed solely by the existing,
+  // stronger text-grounding check (unchanged since L4.R1).
+  const semanticallyGuardedExtraction = applyElevationSemanticGuard(output.extraction, isImageEvidence);
+
   // Stage 8.5L4.R1.1 -- EXPLICIT UNKNOWN NORMALIZATION (Part 4): applied
-  // here, after validation and before comparison/persistence, so it is
-  // authoritative and provider-agnostic regardless of which extractor
-  // produced `output` (mock or real). Never overwrites an already-present
-  // field; only completes a genuinely applicable field the extractor was
-  // silent about.
-  const extraction = completeApplicableFieldsWithUnknown(output.extraction, output.discernment.category);
+  // here, after validation and semantic guarding, and before comparison/
+  // persistence, so it is authoritative and provider-agnostic regardless
+  // of which extractor produced `output` (mock or real). Never overwrites
+  // an already-present field; only completes a genuinely applicable
+  // field the extractor (or the semantic guard above) was silent about.
+  const extraction = completeApplicableFieldsWithUnknown(semanticallyGuardedExtraction, output.discernment.category);
 
   const comparison = compareExtractionAgainstRegistry(output.discernment.category, output.relatedSkillIdHints, input.registry, evidence.id);
 
