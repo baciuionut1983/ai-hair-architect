@@ -121,10 +121,68 @@ ${evidenceText}
 Produce your structured extraction now, in the required JSON shape. Only include a field in extractedFields when you have something genuine to say about it (OBSERVED, INFERRED, PROFESSIONAL_INPUT, or an explicit UNKNOWN) -- you do not need to cover every possible field.`;
 }
 
+// Stage 8.5L4.R2 -- IMAGE/DIAGRAM system instruction. A separate
+// instruction from the TEXT path (not a variant of it) because the
+// epistemic rules are materially different for a still visual source:
+// OBSERVED means genuinely, directly visible (not "common professional
+// practice"); a single still image carries NO temporal/sequence
+// information on its own (Part 17 -- "first do X, then Y" is forbidden
+// unless a diagram explicitly encodes it); numeric precision (exact
+// degrees/cm/mm) must never be asserted as OBSERVED from pixel geometry
+// alone (Part 18); a visible tool supports only its category, never a
+// brand/model/product guess (Part 19); a finished-look photo must be
+// classifiable as RESULT_REFERENCE rather than an invented procedure
+// (Part 21); and human attributes unrelated to the professional
+// technique (identity, ethnicity, health, or any other personal
+// characteristic) must never be extracted or inferred (Part 20).
+const IMAGE_SYSTEM_INSTRUCTION = `You are a strict, conservative professional visual-evidence extraction assistant for a hairdressing-professional application called AI Hair Architect. A professional has submitted ONE still image or diagram as teaching material. Your job is ONLY to extract what is ACTUALLY, VERIFIABLY visible or diagrammatically encoded in this exact image -- you are NOT deciding whether this is correct, approved, or new; a separate deterministic system does that after you respond.
+
+ABSOLUTE RULES, enforced by a separate deterministic validator after you respond -- any violation causes your entire response to be rejected:
+
+1. AN IMAGE IS EVIDENCE, NOT PROFESSIONAL TRUTH. OBSERVED means directly, visibly confirmable in THIS image -- never "this is how it's usually done" or "this is common practice." If something is not clearly visible, it is not OBSERVED.
+
+2. A SINGLE STILL IMAGE SHOWS ONE MOMENT. It does not show a sequence. NEVER invent a procedural order ("first section here, then move to...", "continue around the head", "repeat until...") unless a diagram explicitly draws arrows/numbered steps/an explicit sequence -- a normal photograph never justifies this. When in doubt, leave "progression" and "completionCondition" as UNKNOWN.
+
+3. NEVER assert a specific numeric measurement (an exact angle in degrees, exact centimeters/millimeters, an exact percentage, exact timing) as OBSERVED from pixel geometry alone -- pixels do not give you a ruler or protractor. If the image contains no genuine printed/labeled measurement, such fields must be UNKNOWN (or, only where the schema's own field is inherently qualitative, a coarse INFERRED description like "appears close to natural fall" is acceptable, still never a specific number).
+
+4. A visible tool (scissors, comb, clipper, etc.) supports only recognizing its CATEGORY. Never guess a brand, model, or product name from a visible object, even if a logo happens to be visible -- brand/product identity is never part of a professional technique and must not be extracted as if it were.
+
+5. A photograph of a FINISHED hairstyle/look does NOT reveal the procedure that created it. If the image shows only a completed result with no visible in-progress technique (sectioning, tool-in-hand, hand position, etc.), set discernmentCategory to RESULT_REFERENCE, not a technique -- never invent a plausible-sounding cutting procedure to explain a result you cannot actually see being performed.
+
+6. Do NOT extract, infer, or mention anything about the identity, ethnicity, religion, health, age beyond broad professional relevance, sexual orientation, political affiliation, or any other personal characteristic of any person visible in the image. Analyze ONLY the hair/technical geometry, tool, and hand/body-position context directly relevant to the professional technique.
+
+7. Distinguish these four provenance labels precisely for EVERY field you extract:
+   - OBSERVED: directly, clearly visible in this exact image.
+   - INFERRED: a reasonable professional interpretation the image supports but does not directly, unambiguously show.
+   - PROFESSIONAL_INPUT: reserved for an explicit textual instruction/correction the professional separately provided alongside the image -- you will be told separately if any such text exists; never assign PROFESSIONAL_INPUT to your own visual reading.
+   - UNKNOWN: the image does not establish this. UNKNOWN is a fully successful, expected answer for a single still image -- most exact technical parameters SHOULD be UNKNOWN unless genuinely, unambiguously visible.
+   Confidence (0-1) is a SEPARATE dimension from provenance -- never upgrade a label because you are confident.
+
+8. If the image shows a real, in-progress professional technique (not just a finished look), extract into "techniqueCandidate" your own best short name for what appears to be happening, IN YOUR OWN WORDS and general hairdressing terminology -- never guess at any internal system name.
+
+9. You have no authority to approve, activate, or finalize anything. Your entire output is an untrusted draft extraction for a professional to review later.
+
+10. Respond with EXACTLY the required JSON shape and nothing else -- no prose, no markdown outside the JSON fields.`;
+
+function buildImagePromptInstruction(domainHint?: string, professionalNote?: string): string {
+  const hintBlock = domainHint ? `\n\nDOMAIN HINT (context only, not an answer): ${domainHint}` : "";
+  const noteBlock = professionalNote
+    ? `\n\nSEPARATE PROFESSIONAL TEXT NOTE (provided by the professional ALONGSIDE this image -- this text, if it makes a direct assertion, may be PROFESSIONAL_INPUT; your own reading of the IMAGE itself is never PROFESSIONAL_INPUT):\n"""\n${professionalNote}\n"""`
+    : "";
+  return `${IMAGE_SYSTEM_INSTRUCTION}${hintBlock}${noteBlock}
+
+The image follows as a separate part of this request. Inspect it directly and produce your structured extraction now, in the required JSON shape. Only include a field in extractedFields when you have something genuine to say about it (OBSERVED, INFERRED, PROFESSIONAL_INPUT, or an explicit UNKNOWN) -- you do not need to cover every possible field.`;
+}
+
 export interface GeminiLearningExtractorGenerateInput {
   prompt: string;
   model: string;
   signal: AbortSignal;
+  // Stage 8.5L4.R2 -- present only for IMAGE/DIAGRAM evidence. `data` is
+  // the already-base64-encoded image bytes; sent as a Gemini `inlineData`
+  // part alongside the text prompt in the SAME request -- never uploaded
+  // anywhere else, never a public URL (Part 11).
+  imagePart?: { mimeType: string; data: string };
   onUsage?: (usage: GeminiRawUsageMetadata | undefined, providerRequestId: string | undefined) => void;
 }
 
@@ -178,12 +236,23 @@ export class GeminiProfessionalLearningExtractor implements ProfessionalLearning
   }
 
   async extract(input: ProfessionalLearningExtractorInput): Promise<ProfessionalLearningExtractorOutput> {
+    const isImageEvidence = input.evidence.evidenceType === "IMAGE" || input.evidence.evidenceType === "DIAGRAM";
+
+    if (isImageEvidence) {
+      if (!input.imageMedia) {
+        // Resolution was never attempted or failed upstream -- honestly
+        // reported as insufficient rather than fabricating a visual
+        // analysis of media this adapter never actually received.
+        return { discernment: { category: "INSUFFICIENT_EVIDENCE", reason: "No image media was resolved for this evidence." }, extraction: {}, comparisonSkillIdHint: null, relatedSkillIdHints: [] };
+      }
+      return this.extractFromImage(input, input.imageMedia);
+    }
+
     if (input.evidence.evidenceType !== "TEXT" && input.evidence.evidenceType !== "VOICE_TRANSCRIPT") {
-      // Vision/multimodal extraction is a real, separate capability not
-      // authorized by this stage (Part 10/34) -- honestly reported as
-      // insufficient rather than faked, identical in spirit to the mock
-      // extractor's own behavior for non-text evidence.
-      return { discernment: { category: "INSUFFICIENT_EVIDENCE", reason: "Real extraction in this stage only supports text-shaped evidence." }, extraction: {}, comparisonSkillIdHint: null, relatedSkillIdHints: [] };
+      // IMAGE_SET/VIDEO multimodal extraction is a real, separate
+      // capability not authorized by this stage (Part 43/Part 10) --
+      // honestly reported as insufficient rather than faked.
+      return { discernment: { category: "INSUFFICIENT_EVIDENCE", reason: "Real extraction in this stage only supports text-shaped and single-image/diagram evidence." }, extraction: {}, comparisonSkillIdHint: null, relatedSkillIdHints: [] };
     }
     const text = input.evidence.originalText?.trim() ?? "";
     if (text.length === 0) {
@@ -206,6 +275,57 @@ export class GeminiProfessionalLearningExtractor implements ProfessionalLearning
 
       const parsed = this.parseResponse(rawText);
       const extraction = buildExtractionFromRawFields(parsed.extractedFields, text);
+
+      const recognizedName = typeof extraction.techniqueCandidate?.value === "string" ? extraction.techniqueCandidate.value : "";
+      const matchedSkillId = recognizedName ? matchTechniqueNameToRegistry(recognizedName, input.relevantRegistry) : null;
+
+      return {
+        discernment: { category: assertDiscernmentCategory(parsed.discernmentCategory), reason: parsed.discernmentReason },
+        extraction,
+        comparisonSkillIdHint: matchedSkillId,
+        relatedSkillIdHints: matchedSkillId ? [matchedSkillId] : [],
+      };
+    } catch (error) {
+      throw this.classifyError(error, controller.signal);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Stage 8.5L4.R2 -- IMAGE/DIAGRAM extraction path. Sends the resolved,
+  // already ownership-checked image bytes as a Gemini inlineData part
+  // alongside the image-specific instruction (never the TEXT path's
+  // prompt/schema mixed together) -- the registry is never sent here
+  // either, same discipline as the text path. The professional's own
+  // OPTIONAL caption (input.evidence.professionalNote) is passed
+  // separately and is the ONLY text this method ever grounds a
+  // PROFESSIONAL_INPUT claim against -- the image itself can never
+  // ground PROFESSIONAL_INPUT (Part 8: a visual guess must never
+  // self-promote to professional authority).
+  private async extractFromImage(input: ProfessionalLearningExtractorInput, media: { buffer: Buffer; mimeType: string }): Promise<ProfessionalLearningExtractorOutput> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    try {
+      const professionalNote = input.evidence.professionalNote?.trim() ?? "";
+      const rawText = await this.client.generateContent({
+        prompt: buildImagePromptInstruction(input.domainHint, professionalNote || undefined),
+        model: this.model,
+        signal: controller.signal,
+        imagePart: { mimeType: media.mimeType, data: media.buffer.toString("base64") },
+        onUsage: (usage, requestId) => {
+          this.lastUsage = mapGeminiUsageMetadata(usage);
+          this.lastProviderRequestId = requestId;
+        },
+      });
+
+      const parsed = this.parseResponse(rawText);
+      // Grounding reference for PROFESSIONAL_INPUT is the professional's
+      // own note ONLY -- never the image (there is nothing to tokenize an
+      // image against). An empty note means ANY PROFESSIONAL_INPUT claim
+      // is automatically ungrounded and downgraded to INFERRED -- correct,
+      // since there is no professional text at all to have asserted it.
+      const extraction = buildExtractionFromRawFields(parsed.extractedFields, professionalNote);
 
       const recognizedName = typeof extraction.techniqueCandidate?.value === "string" ? extraction.techniqueCandidate.value : "";
       const matchedSkillId = recognizedName ? matchTechniqueNameToRegistry(recognizedName, input.relevantRegistry) : null;
@@ -327,10 +447,11 @@ function createDefaultGeminiLearningExtractorClient(apiKey: string, timeoutMs: n
   const ai = new GoogleGenAI({ apiKey });
 
   return {
-    async generateContent({ prompt, model, signal, onUsage }: GeminiLearningExtractorGenerateInput) {
+    async generateContent({ prompt, model, signal, imagePart, onUsage }: GeminiLearningExtractorGenerateInput) {
+      const parts = imagePart ? [{ text: prompt }, { inlineData: { mimeType: imagePart.mimeType, data: imagePart.data } }] : [{ text: prompt }];
       const response = await ai.models.generateContent({
         model,
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        contents: [{ role: "user", parts }],
         config: {
           abortSignal: signal,
           httpOptions: { timeout: timeoutMs },

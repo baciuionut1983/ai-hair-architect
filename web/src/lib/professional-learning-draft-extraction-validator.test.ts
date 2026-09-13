@@ -69,4 +69,27 @@ describe("validateExtractorOutput (Part 21 strict validation, provider-agnostic)
     const output = baseOutput({ extraction: { fingerPosition: { value: "pointing downward", source: "PROFESSIONAL_INPUT" } } });
     expect(() => validateExtractorOutput({ output, evidenceOriginalText: "unrelated text" })).not.toThrow();
   });
+
+  describe("Stage 8.5L4.R2: skipObservedGrounding (IMAGE/DIAGRAM evidence)", () => {
+    it("without the flag, an OBSERVED claim with null evidenceOriginalText (as every IMAGE/DIAGRAM evidence row structurally has) is rejected -- proving the flag is genuinely necessary, not merely convenient", () => {
+      const output = baseOutput({ extraction: { sectioning: { value: "horizontal partings visible", source: "OBSERVED" } } });
+      expect(() => validateExtractorOutput({ output, evidenceOriginalText: null })).toThrowError(expect.objectContaining({ code: "UNGROUNDED_OBSERVATION" }));
+    });
+
+    it("with the flag set, the same OBSERVED claim against null evidenceOriginalText is accepted", () => {
+      const output = baseOutput({ extraction: { sectioning: { value: "horizontal partings visible", source: "OBSERVED" } } });
+      const result = validateExtractorOutput({ output, evidenceOriginalText: null, skipObservedGrounding: true });
+      expect(result).toBe(output);
+    });
+
+    it("the flag never weakens any OTHER validation rule -- an invented field name is still rejected even with the flag set", () => {
+      const output = baseOutput({ extraction: { trendScore: { value: "99", source: "OBSERVED" } } as never });
+      expect(() => validateExtractorOutput({ output, evidenceOriginalText: null, skipObservedGrounding: true })).toThrowError(expect.objectContaining({ code: "INVALID_EXTRACTION_SHAPE" }));
+    });
+
+    it("grounding still applies in full for TEXT evidence when the flag is left at its default (false)", () => {
+      const output = baseOutput({ extraction: { elevation: { value: "completely unrelated fabricated claim", source: "OBSERVED" } } });
+      expect(() => validateExtractorOutput({ output, evidenceOriginalText: "No elevation, natural fall throughout." })).toThrowError(expect.objectContaining({ code: "UNGROUNDED_OBSERVATION" }));
+    });
+  });
 });

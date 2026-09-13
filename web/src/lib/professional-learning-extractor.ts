@@ -24,15 +24,50 @@ export interface ProfessionalLearningExtractorEvidenceMetadata {
   readonly evidenceType: string;
   readonly vertical: string;
   readonly originalText: string | null;
+  // Stage 8.5L4.R2 (Part 8) -- an optional professional caption/note
+  // supplied ALONGSIDE image/diagram evidence, kept explicitly SEPARATE
+  // from the visual content itself. Read from
+  // ProfessionalLearningEvidence.sourceMetadata.professionalNote (an
+  // already-existing, flexible JSON field -- no schema change). A
+  // real extractor must never relabel this text's own assertions as
+  // OBSERVED (that would credit the image with something only the
+  // professional's words established), and must never relabel its own
+  // reading of the IMAGE as PROFESSIONAL_INPUT merely because a note
+  // happens to be attached.
+  readonly professionalNote?: string | null;
+}
+
+// Stage 8.5L4.R2 -- resolved, ownership-checked, in-memory-only image
+// bytes for IMAGE/DIAGRAM evidence. The SERVICE layer
+// (professional-learning-draft-service.ts) is the only place this is
+// ever populated -- it reads the bytes via the existing, unmodified
+// loadValidatedImageBuffer (image-analysis-processing-service.ts, the
+// same ownership-scoped, bounded-size, real-byte-validated read every
+// other image-consuming feature already uses), strictly AFTER the
+// relevance gate has confirmed the evidence is ACTIVE (never REVOKED/
+// DELETED_SOURCE) and owned by the caller. This object is transient: it
+// exists only for the duration of one extract() call, is never logged,
+// never persisted, and never duplicated into the resulting draft (Part
+// 12/6 -- the draft only ever stores the evidence's own soft-pointer
+// reference, exactly as it always has).
+export interface ProfessionalLearningExtractorImageMedia {
+  readonly buffer: Buffer;
+  readonly mimeType: string;
 }
 
 export interface ProfessionalLearningExtractorInput {
   readonly evidence: ProfessionalLearningExtractorEvidenceMetadata;
   // Only already-authorized evidence references may ever be passed --
-  // never a raw asset URL/bytes (Part 6: "Do NOT duplicate source media.
-  // Do NOT copy large source content into the draft. Store
+  // an asset ID/pointer, never a URL (Part 6: "Do NOT duplicate source
+  // media. Do NOT copy large source content into the draft. Store
   // references/provenance.").
   readonly evidenceReferences: Readonly<Record<string, string | null>>;
+  // Present only for IMAGE/DIAGRAM evidence whose referenced ImageAsset
+  // was successfully, ownership-checked, resolved -- see type header.
+  // Absent for TEXT/VOICE_TRANSCRIPT evidence, and absent (with the
+  // extractor expected to answer INSUFFICIENT_EVIDENCE) if resolution
+  // was not possible.
+  readonly imageMedia?: ProfessionalLearningExtractorImageMedia;
   // A bounded, already-fetched slice of the existing skill registry the
   // extractor may use as context (e.g. to recognize a technique name it
   // already knows) -- the extractor itself never queries the database.

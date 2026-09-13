@@ -4,6 +4,8 @@ import type { ProfessionalLearningExtractor } from "@/lib/professional-learning-
 import { validateExtractorOutput } from "@/lib/professional-learning-draft-extraction-validator";
 import { compareExtractionAgainstRegistry } from "@/lib/professional-learning-draft-comparison";
 import { completeApplicableFieldsWithUnknown } from "@/lib/professional-learning-draft-field-completion";
+import { resolveLearningEvidenceImageMedia } from "@/lib/professional-learning-image-media-resolver";
+import type { ProfessionalLearningExtractorImageMedia } from "@/lib/professional-learning-extractor";
 import {
   createCorrectionDraft,
   createDraft,
@@ -72,13 +74,46 @@ export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftIn
     return { kind: "skipped", reason: gate.reason };
   }
 
+  // Stage 8.5L4.R2 -- PRIVATE IMAGE MEDIA RESOLUTION (Part 9/11): resolved
+  // HERE, strictly after the relevance gate has already confirmed the
+  // evidence is ACTIVE (never REVOKED/DELETED_SOURCE) and owned by this
+  // exact caller -- a revoked or foreign evidence row never reaches media
+  // resolution, and therefore never reaches the provider, regardless of
+  // evidenceType. Only IMAGE/DIAGRAM evidence (the two types that carry
+  // an imageAssetId pointer) attempt resolution; IMAGE_SET/VIDEO
+  // multimodal extraction is explicitly out of scope for this stage (Part
+  // 43) and TEXT/VOICE_TRANSCRIPT never had a pointer to resolve.
+  let imageMedia: ProfessionalLearningExtractorImageMedia | undefined;
+  if ((evidence.evidenceType === "IMAGE" || evidence.evidenceType === "DIAGRAM") && evidence.imageAssetId) {
+    const resolved = await resolveLearningEvidenceImageMedia(input.ownerUserId, evidence.imageAssetId);
+    if (resolved.status === "unavailable") {
+      throw new ProfessionalLearningDraftServiceError("IMAGE_MEDIA_UNAVAILABLE", 502, `Could not read the authorized image evidence (${resolved.reason}).`);
+    }
+    imageMedia = resolved.media;
+  }
+
+  const isImageEvidence = evidence.evidenceType === "IMAGE" || evidence.evidenceType === "DIAGRAM";
+  // Stage 8.5L4.R2 (Part 8) -- reuses the already-existing, flexible
+  // sourceMetadata JSON field, never a new column. Absent/non-string
+  // values are treated identically to "no note."
+  const professionalNote = typeof evidence.sourceMetadata?.professionalNote === "string" ? evidence.sourceMetadata.professionalNote : null;
+
   const rawOutput = await input.extractor.extract({
-    evidence: { evidenceId: evidence.id, evidenceType: evidence.evidenceType, vertical: evidence.vertical, originalText: evidence.originalText },
+    evidence: { evidenceId: evidence.id, evidenceType: evidence.evidenceType, vertical: evidence.vertical, originalText: evidence.originalText, ...(isImageEvidence ? { professionalNote } : {}) },
     evidenceReferences: { imageAssetId: evidence.imageAssetId, captureSetId: evidence.captureSetId, videoAssetId: evidence.videoAssetId },
+    ...(imageMedia ? { imageMedia } : {}),
     relevantRegistry: input.registry,
   });
 
-  const output = validateExtractorOutput({ output: rawOutput, evidenceOriginalText: evidence.originalText });
+  const output = validateExtractorOutput({
+    output: rawOutput,
+    evidenceOriginalText: evidence.originalText,
+    // See ValidateExtractorOutputInput's own doc comment: IMAGE/DIAGRAM
+    // evidence structurally never has originalText, so a genuine visual
+    // OBSERVED claim can never be text-grounded -- this never weakens the
+    // check for TEXT/VOICE_TRANSCRIPT evidence, where it stays false.
+    skipObservedGrounding: isImageEvidence,
+  });
 
   // Stage 8.5L4.R1.1 -- EXPLICIT UNKNOWN NORMALIZATION (Part 4): applied
   // here, after validation and before comparison/persistence, so it is

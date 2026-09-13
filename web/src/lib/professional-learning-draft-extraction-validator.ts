@@ -12,7 +12,9 @@ import type { ProfessionalLearningExtractorOutput } from "@/lib/professional-lea
 // for shapes that are unambiguously invalid regardless of provider
 // (invented enum values, an UNKNOWN field smuggling a value, an
 // internally-inconsistent hint, an OBSERVED claim with zero textual
-// grounding in the evidence it claims to observe). A softer downgrade
+// grounding in the evidence it claims to observe -- TEXT/VOICE_TRANSCRIPT
+// evidence only; see ValidateExtractorOutputInput.skipObservedGrounding
+// for why IMAGE/DIAGRAM evidence cannot use this same check). A softer downgrade
 // (comparisonSkillIdHint/relatedSkillIdHints entries that simply don't
 // resolve to a real registry skillId) is handled one layer up, in
 // professional-learning-draft-comparison.ts, which already treats an
@@ -55,6 +57,19 @@ function isTextuallyGrounded(value: string, sourceText: string): boolean {
 export interface ValidateExtractorOutputInput {
   readonly output: ProfessionalLearningExtractorOutput;
   readonly evidenceOriginalText: string | null;
+  // Stage 8.5L4.R2 -- IMAGE/DIAGRAM evidence structurally never has
+  // originalText (schema: "Always null for IMAGE/IMAGE_SET/DIAGRAM/VIDEO
+  // -- the asset pointer is the content"), so a genuine visual OBSERVED
+  // claim ("a comb is visible") can never share text vocabulary with
+  // anything -- there is no text to ground it against, by construction,
+  // not because the claim is fabricated. Text-grounding an OBSERVED claim
+  // therefore only APPLIES to text-shaped evidence (TEXT/VOICE_TRANSCRIPT);
+  // for image-shaped evidence the caller sets this true, and containment
+  // of visual overreach instead relies on the extractor's own strict
+  // prompt discipline plus mandatory professional review (Part 34) --
+  // never weakened for text evidence, where this stays false and the
+  // check remains exactly as strict as L4.R1 established.
+  readonly skipObservedGrounding?: boolean;
 }
 
 // Returns the SAME output object when valid (never mutates it) -- throws
@@ -82,7 +97,9 @@ export function validateExtractorOutput(input: ValidateExtractorOutputInput): Pr
     throw new ProfessionalLearningExtractionValidationError("INCONSISTENT_SKILL_HINTS", "relatedSkillIdHints is non-empty but comparisonSkillIdHint is null -- internally inconsistent extractor output.");
   }
 
-  assertObservedFieldsAreGrounded(output.extraction, evidenceOriginalText);
+  if (!input.skipObservedGrounding) {
+    assertObservedFieldsAreGrounded(output.extraction, evidenceOriginalText);
+  }
 
   return output;
 }
