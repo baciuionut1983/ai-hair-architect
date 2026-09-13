@@ -26,8 +26,15 @@ describe("teach-ai-learning-draft-review-logic", () => {
     expect(comparisonLabel("POSSIBLE_CONFLICT")).toContain("conflict");
     expect(comparisonLabel("EVIDENCE_FOR_EXISTING")).toContain("Susține");
     expect(provenanceLabel("OBSERVED")).toBe("Observat");
-    expect(provenanceLabel("UNKNOWN")).toBe("Necunoscut");
+    expect(provenanceLabel("UNKNOWN")).toBe("Nedeterminat din material");
     expect(draftStatusLabel("APPROVED")).toContain("profesionist");
+  });
+
+  it("Stage 8.5L4.R1.1: UNKNOWN's label never implies AI failure or that the information does not exist", () => {
+    const label = provenanceLabel("UNKNOWN").toLowerCase();
+    expect(label).not.toContain("eșec");
+    expect(label).not.toContain("eroare");
+    expect(label).toContain("material");
   });
 
   it("falls back to the raw value for an unrecognized code rather than throwing", () => {
@@ -43,7 +50,7 @@ describe("teach-ai-learning-draft-review-logic", () => {
 
     expect(display).toEqual([
       { field: "elevation", value: "0 degrees", source: "Observat" },
-      { field: "overdirection", value: "—", source: "Necunoscut" },
+      { field: "overdirection", value: "—", source: "Nedeterminat din material" },
     ]);
   });
 });

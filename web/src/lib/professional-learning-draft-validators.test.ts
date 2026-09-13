@@ -71,6 +71,14 @@ describe("professional-learning-draft-validators", () => {
       expect(isValidExtraction({ overdirection: { value: "forward", source: "UNKNOWN" } })).toBe(false);
     });
 
+    it("Stage 8.5L4.R1.1: rejects an UNKNOWN field carrying an empty string -- an empty string is not a valid disguise for UNKNOWN", () => {
+      expect(isValidExtraction({ overdirection: { value: "", source: "UNKNOWN" } })).toBe(false);
+    });
+
+    it("Stage 8.5L4.R1.1: accepts UNKNOWN with value omitted entirely (undefined), treated identically to null", () => {
+      expect(isValidExtraction({ overdirection: { source: "UNKNOWN" } })).toBe(true);
+    });
+
     it("rejects an unknown/invented field name", () => {
       expect(isValidExtraction({ hairColorTrend: { value: "balayage", source: "OBSERVED" } })).toBe(false);
     });

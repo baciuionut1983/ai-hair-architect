@@ -3,6 +3,7 @@ import { checkRelevanceGate } from "@/lib/professional-learning-relevance-gate";
 import type { ProfessionalLearningExtractor } from "@/lib/professional-learning-extractor";
 import { validateExtractorOutput } from "@/lib/professional-learning-draft-extraction-validator";
 import { compareExtractionAgainstRegistry } from "@/lib/professional-learning-draft-comparison";
+import { completeApplicableFieldsWithUnknown } from "@/lib/professional-learning-draft-field-completion";
 import {
   createCorrectionDraft,
   createDraft,
@@ -79,6 +80,14 @@ export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftIn
 
   const output = validateExtractorOutput({ output: rawOutput, evidenceOriginalText: evidence.originalText });
 
+  // Stage 8.5L4.R1.1 -- EXPLICIT UNKNOWN NORMALIZATION (Part 4): applied
+  // here, after validation and before comparison/persistence, so it is
+  // authoritative and provider-agnostic regardless of which extractor
+  // produced `output` (mock or real). Never overwrites an already-present
+  // field; only completes a genuinely applicable field the extractor was
+  // silent about.
+  const extraction = completeApplicableFieldsWithUnknown(output.extraction, output.discernment.category);
+
   const comparison = compareExtractionAgainstRegistry(output.discernment.category, output.relatedSkillIdHints, input.registry, evidence.id);
 
   const draft = await createDraft(input.ownerUserId, input.draftId, {
@@ -87,7 +96,7 @@ export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftIn
     discernmentCategory: output.discernment.category,
     comparisonOutcome: comparison.outcome,
     comparedSkillId: comparison.comparedSkillId,
-    extraction: output.extraction,
+    extraction,
     conflictDetail: comparison.conflictDetail,
     createdByUserId: input.ownerUserId,
   });

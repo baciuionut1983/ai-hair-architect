@@ -38,7 +38,12 @@ const PROVENANCE_LABELS: Record<string, string> = {
   OBSERVED: "Observat",
   INFERRED: "Dedus",
   PROFESSIONAL_INPUT: "Introdus de profesionist",
-  UNKNOWN: "Necunoscut",
+  // Stage 8.5L4.R1.1 -- "Nedeterminat din material" rather than a bare
+  // "Necunoscut" (unknown/ignorant): the meaning is specifically "the
+  // supplied source did not establish this reliably," never "the AI
+  // failed" or "this information does not exist" (this stage's own
+  // absolute rule).
+  UNKNOWN: "Nedeterminat din material",
   EXTERNAL_RESEARCH: "Cercetare externă",
   MANUFACTURER_CLAIM: "Afirmație producător",
   TREND_SIGNAL: "Semnal de tendință",
