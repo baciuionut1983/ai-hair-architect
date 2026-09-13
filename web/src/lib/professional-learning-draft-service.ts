@@ -53,6 +53,10 @@ export interface ProcessEvidenceIntoDraftInput {
   readonly draftId: string;
   readonly extractor: ProfessionalLearningExtractor;
   readonly registry: readonly ProfessionalSkillDefinitionRecord[];
+  // Stage 8.5L4.R2 (Part 6) -- an optional, minimal, generic hint (e.g.
+  // "HAIR / CUTTING"), never a description of what the evidence
+  // supposedly shows. Passed through to the extractor verbatim.
+  readonly domainHint?: string;
 }
 
 export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftInput): Promise<ProcessEvidenceOutcome> {
@@ -103,6 +107,7 @@ export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftIn
     evidenceReferences: { imageAssetId: evidence.imageAssetId, captureSetId: evidence.captureSetId, videoAssetId: evidence.videoAssetId },
     ...(imageMedia ? { imageMedia } : {}),
     relevantRegistry: input.registry,
+    ...(input.domainHint ? { domainHint: input.domainHint } : {}),
   });
 
   const output = validateExtractorOutput({
