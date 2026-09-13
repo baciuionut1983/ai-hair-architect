@@ -81,12 +81,21 @@ export interface ExtractedFieldDisplay {
 // APPROVED, never REGISTRY ACTIVATED).
 export const APPROVED_NOTE_TEXT = "Aprobarea înregistrează verificarea profesională a interpretării -- nu activează automat nicio tehnică în registru.";
 
-export function formatExtractionForDisplay(extraction: Record<string, { value: unknown; source: string } | undefined>): readonly ExtractedFieldDisplay[] {
+// Stage 8.5L4.R2.2, Part 17 -- minimum safe reviewability for a claim the
+// general semantic-binding guard downgraded: rather than a bare "—"
+// (indistinguishable from a field the extractor never addressed at all),
+// a preserved rawObservation is shown so the professional can see
+// something WAS observed, even though its professional meaning could not
+// be safely established. No redesign, no verbose AI explanation -- one
+// short, clearly-labeled line.
+export function formatExtractionForDisplay(
+  extraction: Record<string, { value: unknown; source: string; rawObservation?: string } | undefined>,
+): readonly ExtractedFieldDisplay[] {
   return Object.entries(extraction)
-    .filter((entry): entry is [string, { value: unknown; source: string }] => entry[1] !== undefined)
-    .map(([field, entry]) => ({
-      field,
-      value: entry.value === null || entry.value === undefined ? "—" : String(entry.value),
-      source: provenanceLabel(entry.source),
-    }));
+    .filter((entry): entry is [string, { value: unknown; source: string; rawObservation?: string }] => entry[1] !== undefined)
+    .map(([field, entry]) => {
+      const isEmpty = entry.value === null || entry.value === undefined;
+      const value = isEmpty ? (entry.rawObservation ? `Observat, sens neclar: ${entry.rawObservation}` : "—") : String(entry.value);
+      return { field, value, source: provenanceLabel(entry.source) };
+    });
 }

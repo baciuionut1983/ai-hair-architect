@@ -193,7 +193,14 @@ suite("Stage 8.5L4.R2 -- image/diagram pipeline, real service integration", () =
     const { ownerUserId, clientId } = await createOwnerAndClient();
     const { evidenceId } = await createImageEvidence(ownerUserId, clientId);
 
-    const extractor = fakeImageExtractor({ category: "PROFESSIONAL_TECHNIQUE", extraction: { guideType: { value: "possibly a stationary guide", source: "INFERRED" } }, comparisonSkillIdHint: "skill-cutting-graduated" });
+    // Stage 8.5L4.R2.2 semantic-binding guard requires guideType to name a
+    // continuation/authority relationship (not just the bare word "guide")
+    // to survive as KNOWN -- "established length" grounds this claim.
+    const extractor = fakeImageExtractor({
+      category: "PROFESSIONAL_TECHNIQUE",
+      extraction: { guideType: { value: "possibly a stationary guide maintaining an established length", source: "INFERRED" } },
+      comparisonSkillIdHint: "skill-cutting-graduated",
+    });
     const outcome = await processEvidenceIntoDraft({ ownerUserId, evidenceId, draftId: randomUUID(), extractor, registry });
     if (outcome.kind !== "created") throw new Error("expected created");
     expect(outcome.draft.extraction.guideType?.source).toBe("INFERRED");
@@ -211,7 +218,7 @@ suite("Stage 8.5L4.R2 -- image/diagram pipeline, real service integration", () =
       priorDraftId: outcome.draft.id,
       correctionEvidenceId: correctionEvidence.id,
       newDraftId: randomUUID(),
-      correctedFields: { guideType: { value: "a travelling guide", previousValue: "possibly a stationary guide" } },
+      correctedFields: { guideType: { value: "a travelling guide", previousValue: "possibly a stationary guide maintaining an established length" } },
       correctedByUserId: ownerUserId,
     });
 
@@ -219,7 +226,7 @@ suite("Stage 8.5L4.R2 -- image/diagram pipeline, real service integration", () =
 
     const priorAfter = await findDraftForOwner(ownerUserId, outcome.draft.id);
     expect(priorAfter?.status).toBe("SUPERSEDED");
-    expect(priorAfter?.extraction.guideType).toEqual({ value: "possibly a stationary guide", source: "INFERRED" });
+    expect(priorAfter?.extraction.guideType).toEqual({ value: "possibly a stationary guide maintaining an established length", source: "INFERRED" });
   });
 });
 

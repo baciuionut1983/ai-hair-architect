@@ -79,6 +79,14 @@ describe("professional-learning-draft-validators", () => {
       expect(isValidExtraction({ overdirection: { source: "UNKNOWN" } })).toBe(true);
     });
 
+    it("Stage 8.5L4.R2.2: accepts an UNKNOWN field carrying a preserved rawObservation string", () => {
+      expect(isValidExtraction({ elevation: { value: null, source: "UNKNOWN", rawObservation: "Angled diagram lines were visible." } })).toBe(true);
+    });
+
+    it("Stage 8.5L4.R2.2: rejects a non-string rawObservation", () => {
+      expect(isValidExtraction({ elevation: { value: null, source: "UNKNOWN", rawObservation: 123 } })).toBe(false);
+    });
+
     it("rejects an unknown/invented field name", () => {
       expect(isValidExtraction({ hairColorTrend: { value: "balayage", source: "OBSERVED" } })).toBe(false);
     });

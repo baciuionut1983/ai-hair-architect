@@ -53,4 +53,27 @@ describe("teach-ai-learning-draft-review-logic", () => {
       { field: "overdirection", value: "—", source: "Nedeterminat din material" },
     ]);
   });
+
+  it("Stage 8.5L4.R2.2, Part 17: an UNKNOWN field with a preserved rawObservation shows the observation instead of a bare dash", () => {
+    const display = formatExtractionForDisplay({
+      elevation: {
+        value: null,
+        source: "UNKNOWN",
+        rawObservation: "Represented visually by directional projection arrows extending from head contours.",
+      },
+    });
+
+    expect(display).toEqual([
+      {
+        field: "elevation",
+        value: "Observat, sens neclar: Represented visually by directional projection arrows extending from head contours.",
+        source: "Nedeterminat din material",
+      },
+    ]);
+  });
+
+  it("an UNKNOWN field with no rawObservation still falls back to a bare dash", () => {
+    const display = formatExtractionForDisplay({ overdirection: { value: null, source: "UNKNOWN" } });
+    expect(display).toEqual([{ field: "overdirection", value: "—", source: "Nedeterminat din material" }]);
+  });
 });

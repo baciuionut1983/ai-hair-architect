@@ -203,6 +203,15 @@ export interface ProfessionalLearningExtractedField {
   readonly note?: string;
   // Present only for a field derived from long-video evidence (Part 19).
   readonly segments?: readonly ProfessionalLearningExtractionSegmentReference[];
+  // Stage 8.5L4.R2.2 (Part 13: "Observation First") -- when a general
+  // semantic-binding guard (professional-learning-semantic-binding-guard.ts)
+  // downgrades a claim because the FIELD NAME assignment itself is not
+  // safely established (even though something real was seen), the
+  // original observation text is preserved here rather than discarded --
+  // `value`/`source` become the honest {null, "UNKNOWN"}, but a reviewer
+  // can still see what was actually observed. Never set by an extractor
+  // directly; only ever written by the server-side guard.
+  readonly rawObservation?: string;
 }
 
 export type ProfessionalLearningExtraction = Readonly<Partial<Record<ProfessionalLearningExtractionFieldName, ProfessionalLearningExtractedField>>>;
@@ -223,6 +232,7 @@ function isValidExtractedField(value: unknown): value is ProfessionalLearningExt
   }
   if (record.note !== undefined && typeof record.note !== "string") return false;
   if (record.segments !== undefined && !Array.isArray(record.segments)) return false;
+  if (record.rawObservation !== undefined && typeof record.rawObservation !== "string") return false;
 
   return true;
 }

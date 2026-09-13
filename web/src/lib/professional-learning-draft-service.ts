@@ -4,7 +4,7 @@ import type { ProfessionalLearningExtractor } from "@/lib/professional-learning-
 import { validateExtractorOutput } from "@/lib/professional-learning-draft-extraction-validator";
 import { compareExtractionAgainstRegistry } from "@/lib/professional-learning-draft-comparison";
 import { completeApplicableFieldsWithUnknown } from "@/lib/professional-learning-draft-field-completion";
-import { applyElevationSemanticGuard } from "@/lib/professional-learning-elevation-semantic-guard";
+import { applySemanticBindingGuard } from "@/lib/professional-learning-semantic-binding-guard";
 import { resolveLearningEvidenceImageMedia } from "@/lib/professional-learning-image-media-resolver";
 import type { ProfessionalLearningExtractorImageMedia } from "@/lib/professional-learning-extractor";
 import {
@@ -121,13 +121,16 @@ export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftIn
     skipObservedGrounding: isImageEvidence,
   });
 
-  // Stage 8.5L4.R2.1 -- PROFESSIONAL VISUAL SEMANTIC CLASSIFICATION GUARD
-  // (Part 8): runs BEFORE UNKNOWN completion, exactly matching the
+  // Stage 8.5L4.R2.2 -- GENERAL PROFESSIONAL SEMANTIC BINDING GUARD (Part
+  // 6/8): runs BEFORE UNKNOWN completion, exactly matching the
   // OBSERVATION -> INTERPRETATION -> VALIDATION -> STRUCTURED CLAIM
   // ordering (Part 6). Scoped to image-shaped evidence only -- TEXT
-  // evidence's elevation claims remain governed solely by the existing,
-  // stronger text-grounding check (unchanged since L4.R1).
-  const semanticallyGuardedExtraction = applyElevationSemanticGuard(output.extraction, isImageEvidence);
+  // evidence's claims (e.g. One-Length's own "no elevation") remain
+  // governed solely by the existing, stronger text-grounding check
+  // (unchanged since L4.R1). Generalizes R2.1's elevation-only guard to a
+  // small table of GEOMETRY/DIRECTION/STRUCTURE fields genuinely at risk
+  // of visual field-choice misclassification.
+  const semanticallyGuardedExtraction = applySemanticBindingGuard(output.extraction, isImageEvidence);
 
   // Stage 8.5L4.R1.1 -- EXPLICIT UNKNOWN NORMALIZATION (Part 4): applied
   // here, after validation and semantic guarding, and before comparison/

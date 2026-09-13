@@ -21,6 +21,10 @@ import {
 interface DraftExtractionEntry {
   readonly value: unknown;
   readonly source: string;
+  // Stage 8.5L4.R2.2, Part 17 -- present only when the semantic-binding
+  // guard downgraded a claim to UNKNOWN while preserving what was
+  // actually observed; see formatExtractionForDisplay.
+  readonly rawObservation?: string;
 }
 
 interface LearningDraft {
