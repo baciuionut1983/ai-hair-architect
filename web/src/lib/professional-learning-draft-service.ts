@@ -6,7 +6,8 @@ import { compareExtractionAgainstRegistry } from "@/lib/professional-learning-dr
 import { completeApplicableFieldsWithUnknown } from "@/lib/professional-learning-draft-field-completion";
 import { applySemanticBindingGuard } from "@/lib/professional-learning-semantic-binding-guard";
 import { resolveLearningEvidenceImageMedia } from "@/lib/professional-learning-image-media-resolver";
-import type { ProfessionalLearningExtractorImageMedia } from "@/lib/professional-learning-extractor";
+import { resolveLearningEvidenceVideoMedia } from "@/lib/professional-learning-video-media-resolver";
+import type { ProfessionalLearningExtractorImageMedia, ProfessionalLearningExtractorVideoMedia } from "@/lib/professional-learning-extractor";
 import {
   createCorrectionDraft,
   createDraft,
@@ -97,16 +98,37 @@ export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftIn
     imageMedia = resolved.media;
   }
 
+  // Stage 8.5L5.R1 -- PRIVATE VIDEO MEDIA RESOLUTION, same placement/
+  // discipline as the IMAGE branch above: after the relevance gate has
+  // already confirmed ACTIVE + owned, before the provider is ever called.
+  let videoMedia: ProfessionalLearningExtractorVideoMedia | undefined;
+  if (evidence.evidenceType === "VIDEO" && evidence.videoAssetId) {
+    const resolved = await resolveLearningEvidenceVideoMedia(input.ownerUserId, evidence.videoAssetId);
+    if (resolved.status === "unavailable") {
+      throw new ProfessionalLearningDraftServiceError("VIDEO_MEDIA_UNAVAILABLE", 502, `Could not read the authorized video evidence (${resolved.reason}).`);
+    }
+    videoMedia = resolved.media;
+  }
+
   const isImageEvidence = evidence.evidenceType === "IMAGE" || evidence.evidenceType === "DIAGRAM";
+  // Stage 8.5L5.R1 -- VIDEO evidence structurally never has originalText
+  // either (same reasoning as IMAGE/DIAGRAM), so it needs the exact same
+  // coarser visual grounding/semantic-binding treatment as IMAGE, for the
+  // exact same reason: no text to token-overlap-check against. This is
+  // computed once, locally, at this call site -- it does NOT rename or
+  // widen professional-learning-semantic-binding-guard.ts's own
+  // `isImageEvidence` parameter (Section 4/60: preserve R2.2 unmodified).
+  const isVisualEvidence = isImageEvidence || evidence.evidenceType === "VIDEO";
   // Stage 8.5L4.R2 (Part 8) -- reuses the already-existing, flexible
   // sourceMetadata JSON field, never a new column. Absent/non-string
   // values are treated identically to "no note."
   const professionalNote = typeof evidence.sourceMetadata?.professionalNote === "string" ? evidence.sourceMetadata.professionalNote : null;
 
   const rawOutput = await input.extractor.extract({
-    evidence: { evidenceId: evidence.id, evidenceType: evidence.evidenceType, vertical: evidence.vertical, originalText: evidence.originalText, ...(isImageEvidence ? { professionalNote } : {}) },
+    evidence: { evidenceId: evidence.id, evidenceType: evidence.evidenceType, vertical: evidence.vertical, originalText: evidence.originalText, ...(isVisualEvidence ? { professionalNote } : {}) },
     evidenceReferences: { imageAssetId: evidence.imageAssetId, captureSetId: evidence.captureSetId, videoAssetId: evidence.videoAssetId },
     ...(imageMedia ? { imageMedia } : {}),
+    ...(videoMedia ? { videoMedia } : {}),
     relevantRegistry: input.registry,
     ...(input.domainHint ? { domainHint: input.domainHint } : {}),
   });
@@ -114,11 +136,12 @@ export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftIn
   const output = validateExtractorOutput({
     output: rawOutput,
     evidenceOriginalText: evidence.originalText,
-    // See ValidateExtractorOutputInput's own doc comment: IMAGE/DIAGRAM
-    // evidence structurally never has originalText, so a genuine visual
-    // OBSERVED claim can never be text-grounded -- this never weakens the
-    // check for TEXT/VOICE_TRANSCRIPT evidence, where it stays false.
-    skipObservedGrounding: isImageEvidence,
+    // See ValidateExtractorOutputInput's own doc comment: IMAGE/DIAGRAM/
+    // VIDEO evidence structurally never has originalText, so a genuine
+    // visual/temporal OBSERVED claim can never be text-grounded -- this
+    // never weakens the check for TEXT/VOICE_TRANSCRIPT evidence, where it
+    // stays false.
+    skipObservedGrounding: isVisualEvidence,
   });
 
   // Stage 8.5L4.R2.2 -- GENERAL PROFESSIONAL SEMANTIC BINDING GUARD (Part
@@ -130,7 +153,7 @@ export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftIn
   // (unchanged since L4.R1). Generalizes R2.1's elevation-only guard to a
   // small table of GEOMETRY/DIRECTION/STRUCTURE fields genuinely at risk
   // of visual field-choice misclassification.
-  const semanticallyGuardedExtraction = applySemanticBindingGuard(output.extraction, isImageEvidence);
+  const semanticallyGuardedExtraction = applySemanticBindingGuard(output.extraction, isVisualEvidence);
 
   // Stage 8.5L4.R1.1 -- EXPLICIT UNKNOWN NORMALIZATION (Part 4): applied
   // here, after validation and semantic guarding, and before comparison/

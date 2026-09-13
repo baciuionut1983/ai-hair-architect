@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type, type Schema } from "@google/genai";
+import { FileState, GoogleGenAI, Type, type Schema } from "@google/genai";
 
 import { mapGeminiUsageMetadata, type GeminiRawUsageMetadata } from "@/lib/gemini-usage-mapper";
 import {
@@ -49,6 +49,12 @@ import type { AiUsageQuantities } from "@/lib/ai-usage-contracts";
 
 export const GEMINI_LEARNING_EXTRACTOR_NAME = "gemini";
 export const GEMINI_LEARNING_EXTRACTOR_DEFAULT_TIMEOUT_MS = 30_000;
+// Stage 8.5L5.R1 -- video file upload + server-side processing genuinely
+// takes real wall-clock time before a file becomes usable in a
+// generateContent call; the outer timeout for the video path is always
+// at least this floor, regardless of the (shorter) default/configured
+// text/image timeout.
+export const GEMINI_LEARNING_EXTRACTOR_VIDEO_MIN_TIMEOUT_MS = 180_000;
 export const PROFESSIONAL_LEARNING_EXTRACTION_FEATURE = "professional_learning_extraction";
 
 export interface ProfessionalLearningExtractorError extends Error {
@@ -83,6 +89,76 @@ const RESPONSE_SCHEMA: Schema = {
     extractedFields: { type: Type.ARRAY, items: EXTRACTED_FIELD_SCHEMA },
   },
   required: ["discernmentCategory", "discernmentReason", "extractedFields"],
+};
+
+// Stage 8.5L5.R1 -- VIDEO response shape. A separate schema (not a
+// variant of RESPONSE_SCHEMA) because video genuinely adds a temporal
+// dimension text/image never had: raw time-ranged observations, coarse
+// action candidates, and notable edit/cut gaps, on top of the same
+// extractedFields vocabulary every extractor already shares. `-1` is the
+// established sentinel for "not tied to a specific time," matching this
+// file's own existing "empty string = no note" convention rather than
+// relying on schema-level optionality.
+const VIDEO_TEMPORAL_OBSERVATION_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    timeStartSeconds: { type: Type.NUMBER },
+    timeEndSeconds: { type: Type.NUMBER },
+    observation: {
+      type: Type.STRING,
+      description: "A single, concrete, LITERAL description of what is visible/audible in this time range -- movement/appearance only, never a professional interpretation.",
+    },
+  },
+  required: ["timeStartSeconds", "timeEndSeconds", "observation"],
+};
+
+const VIDEO_ACTION_CANDIDATE_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    timeStartSeconds: { type: Type.NUMBER },
+    timeEndSeconds: { type: Type.NUMBER },
+    kind: {
+      type: Type.STRING,
+      description: "A short, GENERIC label for the kind of action, in your own words (e.g. COMBING, CUTTING_ACTION, REPOSITIONING, INSPECTION, TOOL_CHANGE) -- never a specific named professional technique or hairstyle name.",
+    },
+  },
+  required: ["timeStartSeconds", "timeEndSeconds", "kind"],
+};
+
+const VIDEO_EDIT_GAP_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    beforeTimeSeconds: { type: Type.NUMBER },
+    afterTimeSeconds: { type: Type.NUMBER },
+  },
+  required: ["beforeTimeSeconds", "afterTimeSeconds"],
+};
+
+const VIDEO_EXTRACTED_FIELD_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    field: { type: Type.STRING, enum: [...PROFESSIONAL_LEARNING_EXTRACTION_FIELD_NAMES] },
+    value: { type: Type.STRING, description: "The extracted value as plain text. Empty string only when source is UNKNOWN." },
+    source: { type: Type.STRING, enum: [...PROFESSIONAL_LEARNING_PROVENANCE_SOURCES] },
+    confidence: { type: Type.NUMBER, description: "Your own confidence in this specific value, 0 to 1. This is NOT the same as source/provenance." },
+    note: { type: Type.STRING, description: "Optional short clarifying note. Empty string if not needed." },
+    timeStartSeconds: { type: Type.NUMBER, description: "The time (seconds) this specific claim is grounded in. Use -1 if not tied to a specific moment." },
+    timeEndSeconds: { type: Type.NUMBER, description: "Use -1 if not tied to a specific moment." },
+  },
+  required: ["field", "value", "source", "confidence", "note", "timeStartSeconds", "timeEndSeconds"],
+};
+
+const VIDEO_RESPONSE_SCHEMA: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    discernmentCategory: { type: Type.STRING, enum: [...PROFESSIONAL_LEARNING_DISCERNMENT_CATEGORIES] },
+    discernmentReason: { type: Type.STRING },
+    temporalObservations: { type: Type.ARRAY, items: VIDEO_TEMPORAL_OBSERVATION_SCHEMA },
+    actionCandidates: { type: Type.ARRAY, items: VIDEO_ACTION_CANDIDATE_SCHEMA },
+    notableEditsOrCuts: { type: Type.ARRAY, items: VIDEO_EDIT_GAP_SCHEMA },
+    extractedFields: { type: Type.ARRAY, items: VIDEO_EXTRACTED_FIELD_SCHEMA },
+  },
+  required: ["discernmentCategory", "discernmentReason", "temporalObservations", "actionCandidates", "notableEditsOrCuts", "extractedFields"],
 };
 
 const SYSTEM_INSTRUCTION = `You are a strict, conservative professional-knowledge extraction assistant for a hairdressing-professional application called AI Hair Architect. A professional has submitted a piece of teaching material (below). Your job is ONLY to extract what the material actually, verifiably supports -- you are NOT deciding whether this is correct, approved, or new; a separate deterministic system does that after you respond.
@@ -174,6 +250,69 @@ function buildImagePromptInstruction(domainHint?: string, professionalNote?: str
 The image follows as a separate part of this request. Inspect it directly and produce your structured extraction now, in the required JSON shape. Only include a field in extractedFields when you have something genuine to say about it (OBSERVED, INFERRED, PROFESSIONAL_INPUT, or an explicit UNKNOWN) -- you do not need to cover every possible field.`;
 }
 
+// Stage 8.5L5.R1 -- VIDEO system instruction. A separate instruction from
+// both the TEXT and IMAGE paths (not a variant of either) because video
+// adds a genuinely new dimension neither has: TIME. The rules below
+// encode this stage's own absolute professional principles directly
+// ("AN ACTION IS NOT DEMONSTRATED UNTIL ITS EFFECT IS VISIBLE AND
+// VERIFIABLE", "REPETITION IS NOT COMPLETION", "A VIDEO CUT IS NOT
+// PROCEDURAL CONTINUITY") as hard constraints on the model's OWN output,
+// not merely relied upon downstream -- the deterministic validator/L5
+// reasoning layer still independently enforces every one of them
+// regardless of what the model claims.
+//
+// BLIND BY CONSTRUCTION (Part 1 of this stage's task): this instruction
+// names no haircut, no technique, no approved registry entry anywhere.
+// The model is asked only to report what it can literally observe, in
+// its own words, with time ranges -- OBSERVE first, structure/interpret
+// only as a secondary, clearly-separated step.
+const VIDEO_SYSTEM_INSTRUCTION = `You are a strict, conservative professional visual-evidence extraction assistant for a hairdressing-professional application called AI Hair Architect. A professional has submitted ONE short video as teaching material. Your job is ONLY to extract what is ACTUALLY, VERIFIABLY visible or audible in THIS exact video, over time -- you are NOT deciding whether this is correct, approved, or new; a separate deterministic system does that after you respond.
+
+ABSOLUTE RULES, enforced by a separate deterministic validator after you respond -- any violation causes your entire response to be rejected:
+
+1. A VIDEO IS EVIDENCE, NOT PROFESSIONAL TRUTH. "OBSERVED" means directly, clearly visible or audible in THIS video -- never "this is how it's usually done."
+
+2. FIRST report raw, literal TEMPORAL OBSERVATIONS (temporalObservations): short, concrete descriptions of what happens at approximate time ranges (e.g. "comb passes through a section of hair", "scissors visibly close near the ends", "operator moves to a different area"). These are literal descriptions of movement/appearance ONLY -- do NOT use interpretive professional vocabulary here (no "elevation", "distribution", "overdirection", "guide", "sectioning" as labels) -- describe only what a non-expert would literally see or hear.
+
+3. SEPARATELY, you may propose a small number of GENERIC action candidates (actionCandidates) grouping related observations into a coarse action, using a SHORT GENERIC LABEL you choose yourself (e.g. COMBING, CUTTING_ACTION, REPOSITIONING, INSPECTION, TOOL_CHANGE) -- never a specific named professional technique or hairstyle name.
+
+4. AN ACTION IS NOT DEMONSTRATED UNTIL ITS EFFECT IS VISIBLE AND VERIFIABLE. Do not claim a cutting/styling action achieved anything unless you can also point to a visibly different state afterward.
+
+5. NEVER invent a measurement, angle, or specific numeric value from visual appearance alone (no exact degrees, centimeters, millimeters, percentages) -- numeric fields must be UNKNOWN unless a number is genuinely, explicitly visible (printed/labeled) or spoken aloud.
+
+6. Do NOT invent a procedural sequence, repetition scope, or completion beyond what THIS video actually shows. One repeated action is never proof that an entire intended area/procedure was completed. The video ending, the camera cutting away, or the operator stopping is NEVER evidence of completion.
+
+7. If the video appears to jump/cut (a sudden change in state or framing with no continuous transition), report it in notableEditsOrCuts with your best approximate time range -- do not fill in what might have happened during a cut as if you saw it.
+
+8. Distinguish these four provenance labels precisely for EVERY entry in extractedFields:
+   - OBSERVED: directly, clearly visible/audible in this exact video.
+   - INFERRED: a reasonable professional interpretation the video supports but does not directly, unambiguously show.
+   - PROFESSIONAL_INPUT: reserved for an explicit textual instruction/correction the professional separately provided alongside the video -- you will be told separately if any such text exists; never assign PROFESSIONAL_INPUT to your own reading of the video.
+   - UNKNOWN: the video does not establish this. UNKNOWN is a fully successful, expected answer -- most exact technical parameters SHOULD be UNKNOWN.
+   Confidence (0-1) is a SEPARATE dimension from provenance -- never upgrade a label because you are confident.
+
+9. A visible tool supports only recognizing its CATEGORY (scissors, comb, clipper, etc.), never a brand or model.
+
+10. Do NOT extract, infer, or mention anything about the identity, ethnicity, religion, health, age beyond broad professional relevance, sexual orientation, political affiliation, or any other personal characteristic of any person visible/audible in the video. Analyze ONLY the hair/technical geometry, tool, and hand/body-position context directly relevant to the professional technique.
+
+11. If the video shows a real, in-progress professional technique, extract into "techniqueCandidate" your own best short name for what appears to be happening, IN YOUR OWN WORDS and general hairdressing terminology -- never guess at any internal system name.
+
+12. You have no authority to approve, activate, or finalize anything. Your entire output is an untrusted draft extraction for a professional to review later.
+
+13. For every entry in extractedFields, set timeStartSeconds/timeEndSeconds to the specific moment this exact claim is grounded in, when applicable; use -1 for both when the claim is not tied to one specific moment.
+
+14. Respond with EXACTLY the required JSON shape and nothing else -- no prose, no markdown outside the JSON fields.`;
+
+function buildVideoPromptInstruction(domainHint?: string, professionalNote?: string): string {
+  const hintBlock = domainHint ? `\n\nDOMAIN HINT (context only, not an answer): ${domainHint}` : "";
+  const noteBlock = professionalNote
+    ? `\n\nSEPARATE PROFESSIONAL TEXT NOTE (provided by the professional ALONGSIDE this video -- this text, if it makes a direct assertion, may be PROFESSIONAL_INPUT; your own reading of the VIDEO itself is never PROFESSIONAL_INPUT):\n"""\n${professionalNote}\n"""`
+    : "";
+  return `${VIDEO_SYSTEM_INSTRUCTION}${hintBlock}${noteBlock}
+
+The video follows as a separate part of this request. Watch and listen to it directly and produce your structured extraction now, in the required JSON shape. Only include a field in extractedFields when you have something genuine to say about it (OBSERVED, INFERRED, PROFESSIONAL_INPUT, or an explicit UNKNOWN) -- you do not need to cover every possible field.`;
+}
+
 export interface GeminiLearningExtractorGenerateInput {
   prompt: string;
   model: string;
@@ -183,11 +322,21 @@ export interface GeminiLearningExtractorGenerateInput {
   // part alongside the text prompt in the SAME request -- never uploaded
   // anywhere else, never a public URL (Part 11).
   imagePart?: { mimeType: string; data: string };
+  // Stage 8.5L5.R1 -- present only for VIDEO evidence. `fileUri` is a
+  // provider File API reference (never a public URL, never anything this
+  // app itself serves) -- video bytes are too large for the inline
+  // transport imagePart uses, so they are sent via `fileData` instead.
+  videoPart?: { mimeType: string; fileUri: string };
   onUsage?: (usage: GeminiRawUsageMetadata | undefined, providerRequestId: string | undefined) => void;
 }
 
 export interface GeminiLearningExtractorGenerateClient {
   generateContent(input: GeminiLearningExtractorGenerateInput): Promise<string | undefined>;
+  // Stage 8.5L5.R1 -- uploads video bytes via the provider's File API and
+  // waits until the file is ready for use in a generateContent request
+  // (or throws). Optional so existing IMAGE/TEXT fakes never need to
+  // implement it -- only extractFromVideo below ever calls it.
+  uploadVideoFile?(input: { buffer: Buffer; mimeType: string; signal: AbortSignal }): Promise<{ fileUri: string; mimeType: string }>;
 }
 
 export interface GeminiProfessionalLearningExtractorOptions {
@@ -200,6 +349,15 @@ interface RawGeminiExtractionResponse {
   discernmentCategory: string;
   discernmentReason: string;
   extractedFields: readonly { field: string; value: string; source: string; confidence: number; note: string }[];
+}
+
+interface RawGeminiVideoExtractionResponse {
+  discernmentCategory: string;
+  discernmentReason: string;
+  temporalObservations: readonly { timeStartSeconds: number; timeEndSeconds: number; observation: string }[];
+  actionCandidates: readonly { timeStartSeconds: number; timeEndSeconds: number; kind: string }[];
+  notableEditsOrCuts: readonly { beforeTimeSeconds: number; afterTimeSeconds: number }[];
+  extractedFields: readonly { field: string; value: string; source: string; confidence: number; note: string; timeStartSeconds: number; timeEndSeconds: number }[];
 }
 
 export interface RealExtractionCallResult {
@@ -248,11 +406,18 @@ export class GeminiProfessionalLearningExtractor implements ProfessionalLearning
       return this.extractFromImage(input, input.imageMedia);
     }
 
+    if (input.evidence.evidenceType === "VIDEO") {
+      if (!input.videoMedia) {
+        return { discernment: { category: "INSUFFICIENT_EVIDENCE", reason: "No video media was resolved for this evidence." }, extraction: {}, comparisonSkillIdHint: null, relatedSkillIdHints: [] };
+      }
+      return this.extractFromVideo(input, input.videoMedia);
+    }
+
     if (input.evidence.evidenceType !== "TEXT" && input.evidence.evidenceType !== "VOICE_TRANSCRIPT") {
-      // IMAGE_SET/VIDEO multimodal extraction is a real, separate
-      // capability not authorized by this stage (Part 43/Part 10) --
-      // honestly reported as insufficient rather than faked.
-      return { discernment: { category: "INSUFFICIENT_EVIDENCE", reason: "Real extraction in this stage only supports text-shaped and single-image/diagram evidence." }, extraction: {}, comparisonSkillIdHint: null, relatedSkillIdHints: [] };
+      // IMAGE_SET multimodal extraction is a real, separate capability
+      // not authorized by this stage (Part 43/Part 10) -- honestly
+      // reported as insufficient rather than faked.
+      return { discernment: { category: "INSUFFICIENT_EVIDENCE", reason: "Real extraction in this stage only supports text-shaped and single-image/diagram/video evidence." }, extraction: {}, comparisonSkillIdHint: null, relatedSkillIdHints: [] };
     }
     const text = input.evidence.originalText?.trim() ?? "";
     if (text.length === 0) {
@@ -341,6 +506,88 @@ export class GeminiProfessionalLearningExtractor implements ProfessionalLearning
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  // Stage 8.5L5.R1 -- VIDEO extraction path. Uploads the resolved,
+  // already ownership-checked video bytes via the provider's File API
+  // (uploadVideoFile), then sends a SINGLE generateContent call
+  // referencing that uploaded file -- the upload/poll step is provider
+  // TRANSPORT (getting large bytes into a request the inline `imagePart`
+  // mechanism cannot carry), not a second independent analysis call; the
+  // real call-count budget (Section 8) counts generateContent
+  // invocations, exactly one here. Uses a longer timeout than the
+  // text/image paths because file processing genuinely takes real wall-
+  // clock time server-side before a file becomes usable.
+  private async extractFromVideo(input: ProfessionalLearningExtractorInput, media: { buffer: Buffer; mimeType: string }): Promise<ProfessionalLearningExtractorOutput> {
+    if (!this.client.uploadVideoFile) {
+      throw createProviderError("PROVIDER_ERROR", "This Gemini client does not support video file upload.");
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.max(this.timeoutMs, GEMINI_LEARNING_EXTRACTOR_VIDEO_MIN_TIMEOUT_MS));
+
+    try {
+      const professionalNote = input.evidence.professionalNote?.trim() ?? "";
+      const uploaded = await this.client.uploadVideoFile({ buffer: media.buffer, mimeType: media.mimeType, signal: controller.signal });
+
+      const rawText = await this.client.generateContent({
+        prompt: buildVideoPromptInstruction(input.domainHint, professionalNote || undefined),
+        model: this.model,
+        signal: controller.signal,
+        videoPart: { mimeType: uploaded.mimeType, fileUri: uploaded.fileUri },
+        onUsage: (usage, requestId) => {
+          this.lastUsage = mapGeminiUsageMetadata(usage);
+          this.lastProviderRequestId = requestId;
+        },
+      });
+
+      const parsed = this.parseVideoResponse(rawText);
+      // Same grounding discipline as extractFromImage: the professional's
+      // own separate note is the ONLY text a PROFESSIONAL_INPUT claim can
+      // be grounded against -- the video itself can never self-promote a
+      // claim to professional authority.
+      const extraction = buildExtractionFromRawVideoFields(parsed.extractedFields, professionalNote);
+
+      const recognizedName = typeof extraction.techniqueCandidate?.value === "string" ? extraction.techniqueCandidate.value : "";
+      const matchedSkillId = recognizedName ? matchTechniqueNameToRegistry(recognizedName, input.relevantRegistry) : null;
+
+      return {
+        discernment: { category: assertDiscernmentCategory(parsed.discernmentCategory), reason: parsed.discernmentReason },
+        extraction,
+        comparisonSkillIdHint: matchedSkillId,
+        relatedSkillIdHints: matchedSkillId ? [matchedSkillId] : [],
+        temporalObservations: parsed.temporalObservations,
+        actionCandidates: parsed.actionCandidates,
+        notableEditsOrCuts: parsed.notableEditsOrCuts,
+      };
+    } catch (error) {
+      throw this.classifyError(error, controller.signal);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private parseVideoResponse(rawText: string | undefined): RawGeminiVideoExtractionResponse {
+    if (!rawText || rawText.trim().length === 0) {
+      throw createProviderError("INVALID_RESPONSE", "Gemini returned an empty response.");
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      throw createProviderError("INVALID_RESPONSE", "Gemini returned malformed JSON.");
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("extractedFields" in parsed) ||
+      !Array.isArray((parsed as { extractedFields: unknown }).extractedFields) ||
+      !("temporalObservations" in parsed) ||
+      !Array.isArray((parsed as { temporalObservations: unknown }).temporalObservations)
+    ) {
+      throw createProviderError("INVALID_RESPONSE", "Gemini video response did not match the required extraction shape.");
+    }
+    return parsed as RawGeminiVideoExtractionResponse;
   }
 
   private parseResponse(rawText: string | undefined): RawGeminiExtractionResponse {
@@ -433,6 +680,55 @@ function buildExtractionFromRawFields(rawFields: RawGeminiExtractionResponse["ex
   return extraction as ProfessionalLearningExtraction;
 }
 
+// Stage 8.5L5.R1 -- video sibling of buildExtractionFromRawFields above,
+// with exactly one addition: when a field claim carries a real time
+// range (not the -1/-1 sentinel for "not tied to a specific moment"),
+// that range is attached as `segments` on the extracted field -- reusing
+// the EXACT ProfessionalLearningExtractionSegmentReference shape Stage
+// 8.5L4 already reserved for this purpose (professional-learning-draft-
+// validators.ts), never a new/competing shape. `relevance` is set to 1
+// (the claim's own single grounding interval, not a ranked list).
+function isRealVideoTimeRange(startSeconds: number, endSeconds: number): boolean {
+  return typeof startSeconds === "number" && typeof endSeconds === "number" && startSeconds >= 0 && endSeconds > startSeconds;
+}
+
+function buildExtractionFromRawVideoFields(rawFields: RawGeminiVideoExtractionResponse["extractedFields"], evidenceText: string): ProfessionalLearningExtraction {
+  const extraction: Partial<Record<string, ProfessionalLearningExtractedField>> = {};
+
+  for (const raw of rawFields) {
+    if (!(PROFESSIONAL_LEARNING_EXTRACTION_FIELD_NAMES as readonly string[]).includes(raw.field)) continue;
+    if (!(PROFESSIONAL_LEARNING_PROVENANCE_SOURCES as readonly string[]).includes(raw.source)) continue;
+
+    let source = raw.source as ProfessionalLearningExtractedField["source"];
+    const trimmedValue = raw.value?.trim() ?? "";
+
+    if (source === "UNKNOWN") {
+      extraction[raw.field] = { value: null, source: "UNKNOWN" };
+      continue;
+    }
+    if (trimmedValue.length === 0) continue;
+
+    if (source === "PROFESSIONAL_INPUT" && !isTextuallyGrounded(trimmedValue, evidenceText)) {
+      source = "INFERRED";
+    }
+
+    const confidence = typeof raw.confidence === "number" && raw.confidence >= 0 && raw.confidence <= 1 ? raw.confidence : undefined;
+    const note = raw.note?.trim();
+    const hasRealTimeRange = isRealVideoTimeRange(raw.timeStartSeconds, raw.timeEndSeconds);
+    const segments = hasRealTimeRange ? [{ timeStartSeconds: raw.timeStartSeconds, timeEndSeconds: raw.timeEndSeconds, relevance: 1 }] : undefined;
+
+    extraction[raw.field] = {
+      value: trimmedValue,
+      source,
+      ...(confidence !== undefined ? { confidence } : {}),
+      ...(note ? { note } : {}),
+      ...(segments ? { segments } : {}),
+    };
+  }
+
+  return extraction as ProfessionalLearningExtraction;
+}
+
 function isProviderError(error: unknown): error is ProfessionalLearningExtractorError {
   return error instanceof Error && typeof (error as { code?: unknown }).code === "string";
 }
@@ -443,12 +739,26 @@ function extractHttpStatus(error: unknown): number | undefined {
   return typeof status === "number" ? status : undefined;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Stage 8.5L5.R1 -- how long this acceptance-sized poller will wait for a
+// just-uploaded video to leave PROCESSING and reach ACTIVE. Short clips
+// typically become ACTIVE in well under a minute; this is a generous
+// ceiling, not an expected duration.
+const VIDEO_FILE_ACTIVE_POLL_INTERVAL_MS = 2_000;
+const VIDEO_FILE_ACTIVE_POLL_TIMEOUT_MS = 120_000;
+
 function createDefaultGeminiLearningExtractorClient(apiKey: string, timeoutMs: number): GeminiLearningExtractorGenerateClient {
   const ai = new GoogleGenAI({ apiKey });
 
   return {
-    async generateContent({ prompt, model, signal, imagePart, onUsage }: GeminiLearningExtractorGenerateInput) {
-      const parts = imagePart ? [{ text: prompt }, { inlineData: { mimeType: imagePart.mimeType, data: imagePart.data } }] : [{ text: prompt }];
+    async generateContent({ prompt, model, signal, imagePart, videoPart, onUsage }: GeminiLearningExtractorGenerateInput) {
+      const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } } | { fileData: { mimeType: string; fileUri: string } }> = [{ text: prompt }];
+      if (imagePart) parts.push({ inlineData: { mimeType: imagePart.mimeType, data: imagePart.data } });
+      if (videoPart) parts.push({ fileData: { mimeType: videoPart.mimeType, fileUri: videoPart.fileUri } });
+
       const response = await ai.models.generateContent({
         model,
         contents: [{ role: "user", parts }],
@@ -456,11 +766,42 @@ function createDefaultGeminiLearningExtractorClient(apiKey: string, timeoutMs: n
           abortSignal: signal,
           httpOptions: { timeout: timeoutMs },
           responseMimeType: "application/json",
-          responseSchema: RESPONSE_SCHEMA,
+          responseSchema: videoPart ? VIDEO_RESPONSE_SCHEMA : RESPONSE_SCHEMA,
         },
       });
       onUsage?.(response.usageMetadata, response.responseId);
       return response.text;
+    },
+
+    // Stage 8.5L5.R1 -- File API upload + poll-until-ACTIVE. This is
+    // provider TRANSPORT (getting bytes too large for inlineData into a
+    // request), never a second analysis call -- the real Gemini call
+    // count this stage reports is generateContent invocations only.
+    async uploadVideoFile({ buffer, mimeType, signal }) {
+      const uploaded = await ai.files.upload({ file: new Blob([Uint8Array.from(buffer)], { type: mimeType }), config: { mimeType } });
+      if (!uploaded.name) {
+        throw createProviderError("PROVIDER_ERROR", "Gemini file upload did not return a file name.");
+      }
+      const fileName = uploaded.name;
+
+      const deadline = Date.now() + VIDEO_FILE_ACTIVE_POLL_TIMEOUT_MS;
+      let current = uploaded;
+      while (current.state === FileState.PROCESSING) {
+        if (signal.aborted) {
+          throw createProviderError("TIMEOUT", "Gemini video file upload/processing was aborted.", true);
+        }
+        if (Date.now() > deadline) {
+          throw createProviderError("PROVIDER_ERROR", "Gemini video file did not become ACTIVE within the acceptance poll timeout.", true);
+        }
+        await sleep(VIDEO_FILE_ACTIVE_POLL_INTERVAL_MS);
+        current = await ai.files.get({ name: fileName });
+      }
+
+      if (current.state !== FileState.ACTIVE || !current.uri || !current.mimeType) {
+        throw createProviderError("PROVIDER_ERROR", `Gemini video file failed to become ACTIVE (state=${String(current.state)}).`);
+      }
+
+      return { fileUri: current.uri, mimeType: current.mimeType };
     },
   };
 }

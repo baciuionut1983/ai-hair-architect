@@ -55,6 +55,16 @@ export interface ProfessionalLearningExtractorImageMedia {
   readonly mimeType: string;
 }
 
+// Stage 8.5L5.R1 -- resolved, ownership-checked, in-memory-only video
+// bytes for VIDEO evidence. Same transience/privacy discipline as
+// ProfessionalLearningExtractorImageMedia above: exists only for the
+// duration of one extract() call, never logged, never persisted, never
+// duplicated into the resulting draft.
+export interface ProfessionalLearningExtractorVideoMedia {
+  readonly buffer: Buffer;
+  readonly mimeType: string;
+}
+
 export interface ProfessionalLearningExtractorInput {
   readonly evidence: ProfessionalLearningExtractorEvidenceMetadata;
   // Only already-authorized evidence references may ever be passed --
@@ -68,6 +78,9 @@ export interface ProfessionalLearningExtractorInput {
   // extractor expected to answer INSUFFICIENT_EVIDENCE) if resolution
   // was not possible.
   readonly imageMedia?: ProfessionalLearningExtractorImageMedia;
+  // Present only for VIDEO evidence whose referenced VideoAsset was
+  // successfully, ownership-checked, resolved (Stage 8.5L5.R1).
+  readonly videoMedia?: ProfessionalLearningExtractorVideoMedia;
   // A bounded, already-fetched slice of the existing skill registry the
   // extractor may use as context (e.g. to recognize a technique name it
   // already knows) -- the extractor itself never queries the database.
@@ -94,6 +107,25 @@ export interface ProfessionalLearningExtractorOutput {
   // re-parsing free text. Always includes `comparisonSkillIdHint` as its
   // first element when non-empty.
   readonly relatedSkillIdHints: readonly string[];
+  // Stage 8.5L5.R1 -- present ONLY for VIDEO evidence. Raw, time-ranged
+  // observations in the provider's own literal words (Part 2 of the
+  // real-video system instruction: never professional vocabulary here).
+  // Untrusted, exactly like `extraction` -- the caller is responsible for
+  // running these through professional-learning-video-segmentation.ts/
+  // professional-learning-video-temporal-reasoning.ts before treating
+  // them as anything more than a raw claim.
+  readonly temporalObservations?: readonly { readonly timeStartSeconds: number; readonly timeEndSeconds: number; readonly observation: string }[];
+  // Coarse, provider-proposed action groupings (Part 3) -- `kind` is
+  // open, provider-chosen text, never validated against a closed
+  // vocabulary here (Stage 8.5L5's own "kind is always caller-supplied,
+  // this module never classifies it" discipline extends to the provider
+  // itself: the provider MAY propose a kind, but nothing downstream
+  // treats that proposal as authoritative classification).
+  readonly actionCandidates?: readonly { readonly timeStartSeconds: number; readonly timeEndSeconds: number; readonly kind: string }[];
+  // Provider-reported apparent video cuts/edits (Part 28) -- always
+  // treated as a hint for professional-learning-video-temporal-
+  // reasoning.ts's declared-continuity-break mechanism, never as proof.
+  readonly notableEditsOrCuts?: readonly { readonly beforeTimeSeconds: number; readonly afterTimeSeconds: number }[];
 }
 
 export interface ProfessionalLearningExtractor {
