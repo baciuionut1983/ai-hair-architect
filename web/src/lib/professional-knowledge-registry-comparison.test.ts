@@ -9,6 +9,7 @@ import type { ProfessionalKnowledgeUnit } from "@/lib/professional-knowledge-uni
 import type { ProfessionalSkillDefinitionRecord } from "@/lib/professional-skill-registry-repository";
 import type { SkillDefinition } from "@/lib/professional-skill-contracts";
 import { createReferenceDependencyRelationship, type ReferenceDependencyRelationship } from "@/lib/professional-learning-reference-dependency";
+import type { BoundClaim } from "@/lib/professional-knowledge-claim-binding";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L5.R3 -- pure
 // registry-comparison tests, no I/O, no database, no AI calls, ZERO
@@ -175,5 +176,50 @@ describe("professional-knowledge-registry-comparison", () => {
     expect(before).not.toBe(after);
     expect(isProposalStaleAgainstRegistry(before, after)).toBe(true);
     expect(isProposalStaleAgainstRegistry(before, before)).toBe(false);
+  });
+
+  // Stage 8.5L5.R3.1 (Section 30/31): a PROFESSIONALLY_CONFIRMED claim
+  // binding may strengthen an otherwise-insufficient unit, tagged with a
+  // distinct `via` so it is never confused with a real PROFESSIONAL_INPUT
+  // correction.
+  function confirmedClaim(overrides: Partial<BoundClaim> = {}): BoundClaim {
+    return {
+      claimId: "claim-1",
+      claimType: "EXTRACTION_FIELD",
+      fieldName: "elevation",
+      value: "0 degrees",
+      originalProvenance: "INFERRED",
+      sourceIntervals: [],
+      reviewConfirmation: "PROFESSIONALLY_CONFIRMED",
+      confirmedByTheme: "progressive_elevation",
+      supportModality: "AUDIO_NARRATION",
+      ...overrides,
+    };
+  }
+
+  it("Section 31: with zero confirmed claims, an otherwise-unsupported unit is INSUFFICIENT; the SAME unit with a matching confirmed claim becomes ATTACH_EVIDENCE_TO_EXISTING", () => {
+    const registrySkill = skill({ parameters: [{ name: "elevation", valueKind: "enum", allowedValues: ["0 degrees"], description: "test" }] });
+    const unit = baseUnit(); // knownFields stays {} -- no PROFESSIONAL_INPUT correction exists
+
+    const withoutConfirmation = compareKnowledgeUnitAgainstRegistry(unit, [], [registrySkill], []);
+    expect(withoutConfirmation.outcome).toBe("INSUFFICIENT_FOR_ASSIMILATION");
+
+    const withConfirmation = compareKnowledgeUnitAgainstRegistry(unit, [], [registrySkill], [confirmedClaim()]);
+    expect(withConfirmation.outcome).toBe("ATTACH_EVIDENCE_TO_EXISTING");
+    expect(withConfirmation.parameterEvidence[0].via).toBe("PROFESSIONAL_REVIEW_CONFIRMATION");
+  });
+
+  it("Section 32: a confirmed claim strengthens eligibility for THAT field only -- it never fabricates evidence for an unrelated parameter", () => {
+    const registrySkill = skill({ parameters: [{ name: "distribution", valueKind: "enum", allowedValues: ["natural fall"], description: "test" }] });
+    const unit = baseUnit();
+    const result = compareKnowledgeUnitAgainstRegistry(unit, [], [registrySkill], [confirmedClaim()]); // confirmed claim is for "elevation", skill wants "distribution"
+    expect(result.outcome).toBe("INSUFFICIENT_FOR_ASSIMILATION");
+  });
+
+  it("a claim that is NOT_REVIEWED (no matching theme) never counts as comparison evidence, even if its value would otherwise match", () => {
+    const registrySkill = skill({ parameters: [{ name: "elevation", valueKind: "enum", allowedValues: ["0 degrees"], description: "test" }] });
+    const unit = baseUnit();
+    const result = compareKnowledgeUnitAgainstRegistry(unit, [], [registrySkill], [confirmedClaim({ reviewConfirmation: "NOT_REVIEWED", confirmedByTheme: null })]);
+    expect(result.outcome).toBe("INSUFFICIENT_FOR_ASSIMILATION");
   });
 });

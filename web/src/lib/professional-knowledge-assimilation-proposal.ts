@@ -2,6 +2,7 @@ import { createHash } from "crypto";
 
 import type { ProcedureKnowledgeDecomposition } from "@/lib/professional-knowledge-decomposition";
 import { compareKnowledgeUnitAgainstRegistry, computeRegistryContextHash, type KnowledgeUnitComparisonResult } from "@/lib/professional-knowledge-registry-comparison";
+import type { BoundClaim } from "@/lib/professional-knowledge-claim-binding";
 import type { ReferenceDependencyRelationship } from "@/lib/professional-learning-reference-dependency";
 import type { ProfessionalSkillDefinitionRecord } from "@/lib/professional-skill-registry-repository";
 
@@ -51,6 +52,12 @@ export interface BuildKnowledgeAssimilationProposalInput {
   // professional-knowledge-decomposition.ts). Absent/empty for every other
   // unit type.
   readonly relationshipsByUnitId?: ReadonlyMap<string, readonly ReferenceDependencyRelationship[]>;
+  // Stage 8.5L5.R3.1 (Section 30/31): PROFESSIONALLY_CONFIRMED claim
+  // bindings for each knowledge unit, keyed by unit id -- optional,
+  // additive. Absent entirely reproduces L5.R3's own original behavior
+  // byte-for-byte (registry comparison never sees confirmed claims it
+  // was not given).
+  readonly confirmedClaimsByUnitId?: ReadonlyMap<string, readonly BoundClaim[]>;
 }
 
 function computeCanonicalHash(proposalWithoutHash: Omit<ProfessionalKnowledgeAssimilationProposal, "canonicalHash">): string {
@@ -58,10 +65,12 @@ function computeCanonicalHash(proposalWithoutHash: Omit<ProfessionalKnowledgeAss
 }
 
 export function buildKnowledgeAssimilationProposal(input: BuildKnowledgeAssimilationProposalInput): ProfessionalKnowledgeAssimilationProposal {
-  const { proposalVersion, decomposition, registry, relationshipsByUnitId } = input;
+  const { proposalVersion, decomposition, registry, relationshipsByUnitId, confirmedClaimsByUnitId } = input;
   const registryContextHash = computeRegistryContextHash(registry);
 
-  const registryComparisons = decomposition.knowledgeUnits.map((unit) => compareKnowledgeUnitAgainstRegistry(unit, relationshipsByUnitId?.get(unit.id) ?? [], registry));
+  const registryComparisons = decomposition.knowledgeUnits.map((unit) =>
+    compareKnowledgeUnitAgainstRegistry(unit, relationshipsByUnitId?.get(unit.id) ?? [], registry, confirmedClaimsByUnitId?.get(unit.id) ?? []),
+  );
 
   const byOutcome = (outcome: KnowledgeUnitComparisonResult["outcome"]) => registryComparisons.filter((c) => c.outcome === outcome);
 
