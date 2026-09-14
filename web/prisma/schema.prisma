@@ -231,6 +231,11 @@ model User {
   // back-relation only -- produces no column or constraint on "User"; the
   // FK lives on "ProfessionalLearningDraft".
   professionalLearningDrafts           ProfessionalLearningDraft[]
+  // Professional Skill Engine, Stage 8.5L5.R2 (Professional Review of Blind
+  // Long-Video Extraction). Virtual back-relation only -- produces no
+  // column or constraint on "User"; the FK lives on
+  // "ProfessionalLearningReview".
+  professionalLearningReviews          ProfessionalLearningReview[]
 }
 
 model Session {
@@ -3426,6 +3431,83 @@ model ProfessionalLearningDraft {
   @@index([ownerUserId, status, createdAt, id])
   @@index([sourceEvidenceId])
   @@index([correctsDraftId])
+}
+
+// AI Hair Architect, Professional Skill Engine Stage 8.5L5.R2 -- PROFESSIONAL
+// REVIEW OF BLIND LONG-VIDEO EXTRACTION (post-acceptance follow-up: Ionuț's
+// professional validation of the frozen L5.R2 blind result). Deliberately
+// NOT a ProfessionalLearningDraft row: a draft's `extraction` column uses a
+// closed, single-technique-shaped field vocabulary
+// (professional-learning-draft-validators.ts), and L5.R2 produced a
+// genuinely compound, multi-phase procedure across independent windows
+// (e.g. a mobile guide confirmed correct in one window, a stationary guide
+// confirmed correct in another) -- collapsing this review into one flat
+// extraction would force exactly the single-technique template this
+// engagement has forbidden since the Butterfly anti-template regression.
+// This model changes NOTHING about the underlying blind result: it carries
+// no FK to and never mutates ProfessionalLearningEvidence/Draft/
+// SkillDefinition -- it is a purely additive, backward-pointing
+// professional-judgment record.
+//
+// `approvedResultHash` binds this review to one specific, unchanged frozen
+// result (sha256 of the canonical reconciliation + procedural-candidate
+// JSON) so a later reader can detect if the underlying fixture was ever
+// altered after approval -- the review approves a SNAPSHOT, not "whatever
+// this evidence currently produces."
+//
+// `approvalDetail` is intentionally a free-form Json object rather than the
+// draft's closed per-field vocabulary (see file header above): a
+// whole-procedure professional judgment across several independently
+// confirmed themes is not one of the draft's individual extraction fields.
+// It always carries `provenance: "PROFESSIONAL_INPUT"` inside the payload
+// (professional-learning-review-validators.ts) and explicit negative
+// assertions (`fieldsChanged: false`, `unknownsRemoved: false`,
+// `registryMutated: false`, `skillsCreated: false`) so "this approval
+// touched nothing else" is directly queryable, not just implied by what the
+// row doesn't contain.
+model ProfessionalLearningReview {
+  id          String @id @default(uuid())
+  ownerUserId String
+
+  // Soft pointer to ProfessionalLearningEvidence -- same non-FK discipline
+  // as every other cross-entity pointer in this schema (never blocks or
+  // complicates the evidence row's own independent lifecycle).
+  sourceEvidenceId String
+
+  // Identifies which extraction/segmentation run this review approves --
+  // e.g. "l5r2-long-video-v1" (the SEGMENTATION_VERSION this evidence was
+  // processed with). A later, different segmentation/extractor version
+  // requires its own, separate review rather than silently inheriting this
+  // one -- enforced by the uniqueness constraint below.
+  reviewedExtractionVersion String
+
+  // sha256 of the canonical, frozen result being approved. See model
+  // header.
+  approvedResultHash String @db.Char(64)
+
+  // Application-validated closed vocabulary
+  // (professional-learning-review-validators.ts): currently only
+  // "PROFESSIONALLY_VALIDATED". Plain string, not a Postgres enum -- same
+  // convention as every lifecycle field introduced since Stage 3.
+  status String @default("PROFESSIONALLY_VALIDATED")
+
+  // Structured approval detail -- see model header. Validated by
+  // professional-learning-review-validators.ts#isValidApprovalDetail.
+  approvalDetail Json
+
+  reviewedByUserId String
+  reviewedAt       DateTime @db.Timestamp(6)
+
+  createdAt DateTime @default(now()) @db.Timestamp(6)
+  updatedAt DateTime @updatedAt @db.Timestamp(6)
+
+  owner User @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  // Idempotency: the same evidence reviewed twice against the same
+  // extraction version never produces more than one review row.
+  @@unique([sourceEvidenceId, reviewedExtractionVersion])
+  @@index([ownerUserId, status, createdAt, id])
+  @@index([sourceEvidenceId])
 }
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L3.1 -- LARGE
