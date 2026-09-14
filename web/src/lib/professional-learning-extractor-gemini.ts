@@ -11,6 +11,7 @@ import {
 import type { ProfessionalLearningExtractor, ProfessionalLearningExtractorInput, ProfessionalLearningExtractorOutput } from "@/lib/professional-learning-extractor";
 import { matchTechniqueNameToRegistry } from "@/lib/professional-learning-technique-name-matcher";
 import type { AiUsageQuantities } from "@/lib/ai-usage-contracts";
+import type { ProfessionalSkillDefinitionRecord } from "@/lib/professional-skill-registry-repository";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L4.R1 -- the
 // FIRST real Professional Learning extractor adapter, implementing the
@@ -55,6 +56,13 @@ export const GEMINI_LEARNING_EXTRACTOR_DEFAULT_TIMEOUT_MS = 30_000;
 // at least this floor, regardless of the (shorter) default/configured
 // text/image timeout.
 export const GEMINI_LEARNING_EXTRACTOR_VIDEO_MIN_TIMEOUT_MS = 180_000;
+// Stage 8.5L5.R2 -- a long source (hundreds of MB) genuinely takes longer
+// to upload and to finish server-side processing than L5.R1's short clip
+// did. A separate, larger ceiling used ONLY by
+// uploadVideoForWindowedAnalysis -- extractFromVideo's own single-call
+// upload+analyze timeout above is left completely unchanged, so L5.R1's
+// already-validated short-video behavior is untouched.
+export const GEMINI_LEARNING_EXTRACTOR_LONG_VIDEO_UPLOAD_TIMEOUT_MS = 600_000;
 export const PROFESSIONAL_LEARNING_EXTRACTION_FEATURE = "professional_learning_extraction";
 
 export interface ProfessionalLearningExtractorError extends Error {
@@ -303,12 +311,23 @@ ABSOLUTE RULES, enforced by a separate deterministic validator after you respond
 
 14. Respond with EXACTLY the required JSON shape and nothing else -- no prose, no markdown outside the JSON fields.`;
 
-function buildVideoPromptInstruction(domainHint?: string, professionalNote?: string): string {
+// Stage 8.5L5.R2 -- neutral, non-priming clarification for a bounded
+// window of a longer source (Section 15/22/23 of this stage's task): the
+// model must not assume the clip it is shown is the whole procedure, nor
+// its true start/end, nor infer a real-world duration from playback
+// length. Names no technique, no expected sequence, no registry --
+// purely a scope/coordinate-system clarification.
+const WINDOWED_CLIP_NOTE = `
+
+IMPORTANT -- THIS IS A BOUNDED EXCERPT OF A LONGER SOURCE VIDEO, NOT THE WHOLE RECORDING: describe only what is visible/audible in THIS clip. Do not assume this clip shows the true beginning or end of any procedure unless the clip itself clearly shows a natural start/finish. Report all time values RELATIVE TO THIS CLIP (0 = the first moment of this clip). Do not estimate real-world elapsed time from playback duration -- edited video length never equals real execution time.`;
+
+function buildVideoPromptInstruction(domainHint?: string, professionalNote?: string, options?: { readonly isWindowedClip?: boolean }): string {
   const hintBlock = domainHint ? `\n\nDOMAIN HINT (context only, not an answer): ${domainHint}` : "";
   const noteBlock = professionalNote
     ? `\n\nSEPARATE PROFESSIONAL TEXT NOTE (provided by the professional ALONGSIDE this video -- this text, if it makes a direct assertion, may be PROFESSIONAL_INPUT; your own reading of the VIDEO itself is never PROFESSIONAL_INPUT):\n"""\n${professionalNote}\n"""`
     : "";
-  return `${VIDEO_SYSTEM_INSTRUCTION}${hintBlock}${noteBlock}
+  const windowedBlock = options?.isWindowedClip ? WINDOWED_CLIP_NOTE : "";
+  return `${VIDEO_SYSTEM_INSTRUCTION}${hintBlock}${noteBlock}${windowedBlock}
 
 The video follows as a separate part of this request. Watch and listen to it directly and produce your structured extraction now, in the required JSON shape. Only include a field in extractedFields when you have something genuine to say about it (OBSERVED, INFERRED, PROFESSIONAL_INPUT, or an explicit UNKNOWN) -- you do not need to cover every possible field.`;
 }
@@ -326,7 +345,12 @@ export interface GeminiLearningExtractorGenerateInput {
   // provider File API reference (never a public URL, never anything this
   // app itself serves) -- video bytes are too large for the inline
   // transport imagePart uses, so they are sent via `fileData` instead.
-  videoPart?: { mimeType: string; fileUri: string };
+  // Stage 8.5L5.R2 -- optional bounded-window reference into the SAME
+  // uploaded file (Gemini's own VideoMetadata.startOffset/endOffset,
+  // "Xs" duration-string format). Lets a long source be analyzed across
+  // several calls that all reuse ONE upload, instead of uploading a
+  // derivative clip per call.
+  videoPart?: { mimeType: string; fileUri: string; startOffsetSeconds?: number; endOffsetSeconds?: number };
   onUsage?: (usage: GeminiRawUsageMetadata | undefined, providerRequestId: string | undefined) => void;
 }
 
@@ -567,6 +591,84 @@ export class GeminiProfessionalLearningExtractor implements ProfessionalLearning
     }
   }
 
+  // Stage 8.5L5.R2 -- uploads once for REUSE across several bounded-window
+  // extractVideoWindow calls below, instead of extractFromVideo's own
+  // upload-once-per-call behavior. Exists specifically so a long source
+  // is never uploaded more than once regardless of how many windows are
+  // analyzed (Section 6's cost discipline).
+  async uploadVideoForWindowedAnalysis(media: { buffer: Buffer; mimeType: string }): Promise<{ fileUri: string; mimeType: string }> {
+    if (!this.client.uploadVideoFile) {
+      throw createProviderError("PROVIDER_ERROR", "This Gemini client does not support video file upload.");
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), GEMINI_LEARNING_EXTRACTOR_LONG_VIDEO_UPLOAD_TIMEOUT_MS);
+    try {
+      return await this.client.uploadVideoFile({ buffer: media.buffer, mimeType: media.mimeType, signal: controller.signal });
+    } catch (error) {
+      throw this.classifyError(error, controller.signal);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Stage 8.5L5.R2 -- ONE generateContent call analyzing a BOUNDED WINDOW
+  // of an already-uploaded video (via Gemini's own VideoMetadata.
+  // startOffset/endOffset), reusing the exact same VIDEO_RESPONSE_SCHEMA/
+  // parsing/grounding discipline as extractFromVideo -- the only
+  // differences are (a) no fresh upload, (b) the videoPart carries an
+  // offset window, (c) the prompt gets the neutral windowed-clip
+  // clarification (never a technique/registry hint). Returned times are
+  // WINDOW-RELATIVE (0 = window start) by explicit prompt instruction --
+  // shifting them to absolute source time is the caller's own
+  // deterministic responsibility (professional-learning-video-cross-
+  // window-reconciliation.ts), never trusted from provider arithmetic.
+  async extractVideoWindow(input: {
+    readonly fileUri: string;
+    readonly mimeType: string;
+    readonly startOffsetSeconds: number;
+    readonly endOffsetSeconds: number;
+    readonly domainHint?: string;
+    readonly professionalNote?: string;
+    readonly relevantRegistry: readonly ProfessionalSkillDefinitionRecord[];
+  }): Promise<ProfessionalLearningExtractorOutput> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.max(this.timeoutMs, GEMINI_LEARNING_EXTRACTOR_VIDEO_MIN_TIMEOUT_MS));
+
+    try {
+      const professionalNote = input.professionalNote?.trim() ?? "";
+      const rawText = await this.client.generateContent({
+        prompt: buildVideoPromptInstruction(input.domainHint, professionalNote || undefined, { isWindowedClip: true }),
+        model: this.model,
+        signal: controller.signal,
+        videoPart: { mimeType: input.mimeType, fileUri: input.fileUri, startOffsetSeconds: input.startOffsetSeconds, endOffsetSeconds: input.endOffsetSeconds },
+        onUsage: (usage, requestId) => {
+          this.lastUsage = mapGeminiUsageMetadata(usage);
+          this.lastProviderRequestId = requestId;
+        },
+      });
+
+      const parsed = this.parseVideoResponse(rawText);
+      const extraction = buildExtractionFromRawVideoFields(parsed.extractedFields, professionalNote);
+
+      const recognizedName = typeof extraction.techniqueCandidate?.value === "string" ? extraction.techniqueCandidate.value : "";
+      const matchedSkillId = recognizedName ? matchTechniqueNameToRegistry(recognizedName, input.relevantRegistry) : null;
+
+      return {
+        discernment: { category: assertDiscernmentCategory(parsed.discernmentCategory), reason: parsed.discernmentReason },
+        extraction,
+        comparisonSkillIdHint: matchedSkillId,
+        relatedSkillIdHints: matchedSkillId ? [matchedSkillId] : [],
+        temporalObservations: parsed.temporalObservations,
+        actionCandidates: parsed.actionCandidates,
+        notableEditsOrCuts: parsed.notableEditsOrCuts,
+      };
+    } catch (error) {
+      throw this.classifyError(error, controller.signal);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   private parseVideoResponse(rawText: string | undefined): RawGeminiVideoExtractionResponse {
     if (!rawText || rawText.trim().length === 0) {
       throw createProviderError("INVALID_RESPONSE", "Gemini returned an empty response.");
@@ -748,16 +850,35 @@ function sleep(ms: number): Promise<void> {
 // typically become ACTIVE in well under a minute; this is a generous
 // ceiling, not an expected duration.
 const VIDEO_FILE_ACTIVE_POLL_INTERVAL_MS = 2_000;
-const VIDEO_FILE_ACTIVE_POLL_TIMEOUT_MS = 120_000;
+// Stage 8.5L5.R2 -- raised from L5.R1's original 120_000 to accommodate a
+// long (hundreds-of-MB) source's genuinely longer server-side processing
+// time. A higher ceiling is backward-compatible for L5.R1's short clip
+// (it still leaves PROCESSING in well under a minute; this only changes
+// the worst-case wait, never the fast-path behavior).
+const VIDEO_FILE_ACTIVE_POLL_TIMEOUT_MS = 600_000;
 
 function createDefaultGeminiLearningExtractorClient(apiKey: string, timeoutMs: number): GeminiLearningExtractorGenerateClient {
   const ai = new GoogleGenAI({ apiKey });
 
   return {
     async generateContent({ prompt, model, signal, imagePart, videoPart, onUsage }: GeminiLearningExtractorGenerateInput) {
-      const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } } | { fileData: { mimeType: string; fileUri: string } }> = [{ text: prompt }];
+      const parts: Array<
+        { text: string } | { inlineData: { mimeType: string; data: string } } | { fileData: { mimeType: string; fileUri: string }; videoMetadata?: { startOffset: string; endOffset: string } }
+      > = [{ text: prompt }];
       if (imagePart) parts.push({ inlineData: { mimeType: imagePart.mimeType, data: imagePart.data } });
-      if (videoPart) parts.push({ fileData: { mimeType: videoPart.mimeType, fileUri: videoPart.fileUri } });
+      if (videoPart) {
+        // Stage 8.5L5.R2 -- Gemini's own VideoMetadata.startOffset/
+        // endOffset ("Xs" protobuf Duration string format) references a
+        // BOUNDED WINDOW of the SAME uploaded file, so a long source is
+        // uploaded exactly once regardless of how many windows are
+        // analyzed. Omitted entirely (L5.R1's own unchanged behavior)
+        // when no offsets are supplied.
+        const hasWindow = videoPart.startOffsetSeconds !== undefined && videoPart.endOffsetSeconds !== undefined;
+        parts.push({
+          fileData: { mimeType: videoPart.mimeType, fileUri: videoPart.fileUri },
+          ...(hasWindow ? { videoMetadata: { startOffset: `${videoPart.startOffsetSeconds}s`, endOffset: `${videoPart.endOffsetSeconds}s` } } : {}),
+        });
+      }
 
       const response = await ai.models.generateContent({
         model,
