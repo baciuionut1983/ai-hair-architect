@@ -5,18 +5,44 @@ import type { ExecutionUnit, ExecutionUnitParameterRule } from "@/lib/profession
 import type { AtomicAction } from "@/lib/professional-skill-atomic-action-contracts";
 import { buildGuideRelationshipCapability, type GuideRelationshipCapability } from "@/lib/professional-skill-guide-relationship-contracts";
 
-// AI Hair Architect, Professional Skill Engine Stage 8.5L5.R3.4.R2 --
-// "45deg INTERIOR" / ONE-LENGTH INWARD-CURVE TECHNIQUE. PROPOSAL ONLY.
-// Pure, no I/O, no database, ZERO AI calls, ZERO registry writes, ZERO
-// wiring into professional-brain-skill-templates.ts's own
-// buildCanonicalCandidateSkillRegistry() -- this Skill is DRAFT, never
-// ACTIVE, and therefore structurally INELIGIBLE for authority via the
-// SAME existing gate every other skill in this codebase already uses
-// (isSkillEligibleForAuthority requires status === "ACTIVE"; a DRAFT
-// skill fails that check unconditionally, regardless of authorityType).
-// That is the entire "must remain PENDING_PROFESSIONAL_APPROVAL"
-// requirement for this stage, satisfied by an EXISTING mechanism -- no
-// new gating concept was invented for this file.
+// AI Hair Architect, Professional Skill Engine Stage 8.5L5.R3.4.R2,
+// ACTIVATED at Stage 8.5L5.R3.5 -- "45deg INTERIOR" / ONE-LENGTH
+// INWARD-CURVE TECHNIQUE.
+// Pure, no I/O, no database, ZERO AI calls.
+//
+// STAGE 8.5L5.R3.5 ACTIVATION (this revision): Ionuț professionally
+// approved this proposal. Per the L5.R3.5 activation manifest
+// (professional-knowledge-activation-l5r3-5-manifest.ts), this is the
+// ONE mutation of the 11 professionally approved L5.R3.4.R1+R2
+// proposals that the existing architecture can safely activate as a
+// complete registry skill (it is the only PROPOSE_NEW_SKILL proposal
+// with a full, structurally valid, already-authored SkillDefinition --
+// Deep Point Cut/Point Cut/Channel Cut exist only as proposal-level
+// identity metadata with no procedure/parameters, and the guide-
+// evidence/workflow-transition/effect-relationship proposals have no
+// corresponding field anywhere in SkillDefinition/ExecutionUnit; see
+// the activation manifest's own header for the full audit). ONLY
+// `status` changed, DRAFT -> ACTIVE -- every mechanics/parameter/
+// procedure/capability/guide field below is BYTE-IDENTICAL to the R2
+// proposal, verified by professional-knowledge-activation-l5r3-5-
+// execute.ts's own diff-verifier, which fails closed on any other
+// change. Also wired (purely additively) into professional-brain-
+// skill-templates.ts's own PROFESSIONAL_BRAIN_SKILL_TEMPLATES /
+// buildCanonicalCandidateSkillRegistry(), exactly like every other
+// ACTIVE skill in this codebase (this Skill was never inserted into
+// the DB-backed ProfessionalSkillDefinition table as part of THIS
+// wiring -- see the L5.R3.5 report for why that table is real,
+// separately exercised, and legitimate, but is not what the actual
+// runtime brain/compiler pipeline reads from today).
+//
+// (isSkillEligibleForAuthority requires status === "ACTIVE" AND
+// authorityType !== "MACHINE_DRAFTED"; this Skill's authorityType was
+// always PROFESSIONALLY_AUTHORED, so flipping status to ACTIVE here is
+// the ONLY change needed to make it eligible authority -- the exact
+// same existing gate every other active skill in this codebase already
+// satisfies. Before this stage (R2), status: "DRAFT" made it
+// structurally ineligible via this SAME gate -- no new gating concept
+// was invented for either state.)
 //
 // PROVENANCE: this is Ionuț's own direct professional input, supplied at
 // Stage 8.5L5.R3.4.R2 -- NOT extracted from the L5.R2 video, NOT an AI
@@ -119,10 +145,15 @@ import { buildGuideRelationshipCapability, type GuideRelationshipCapability } fr
 // WHAT THIS FILE IS NOT: it does not modify cutting-skill-graduated.ts,
 // cutting-skill-one-length-perimeter.ts, cutting-skill-slice-and-slide-
 // refinement.ts, or any other existing skill file -- zero edits, zero
-// imports of their own internal constants. It is not registered in
-// professional-brain-skill-templates.ts's buildCanonicalCandidateSkillRegistry().
-// It performs zero database writes, zero AI/provider calls, zero video
-// generation.
+// imports of their own internal constants. As of Stage 8.5L5.R3.5 it IS
+// registered in professional-brain-skill-templates.ts's
+// PROFESSIONAL_BRAIN_SKILL_TEMPLATES / buildCanonicalCandidateSkillRegistry()
+// (a purely additive collection edit there, authoring no new content).
+// This file itself still performs zero database writes, zero AI/
+// provider calls, zero video generation -- the real, local, DB-backed
+// activation proof lives in its own separate, real-DB-gated acceptance
+// test (professional-skill-registry-repository-l5r3-5-real-activation.test.ts),
+// never in this pure module.
 
 const INTERIOR_45_VERTICAL = "cutting";
 export const INTERIOR_45_AUTHORITY_SOURCE = "Professional authority -- Ionuț's direct professional input, Stage 8.5L5.R3.4.R2 (2026-09-15). NOT extracted from the L5.R2 video review, NOT an AI observation or inference.";
@@ -141,7 +172,7 @@ export const INTERIOR_45_SKILL: SkillDefinition<InteriorFortyFiveFact> = {
   version: 1,
   vertical: INTERIOR_45_VERTICAL,
   name: "45deg Interior (Inward-Curve Terminal Technique)",
-  status: "DRAFT",
+  status: "ACTIVE",
   authorityType: "PROFESSIONALLY_AUTHORED",
   description:
     "Applied only after a complete One-Length perimeter, works the perimetral termination region (front of one ear -> posterior -> front of the other ear) in vertical ~2cm sections. Hair is controlled between fingers, fingertips beginning down; the hand rotates without lifting away from the base until fingertips point up, repositioning the strand's interior corner lower and exterior corner upper. The cut begins at the upper/exterior corner and progresses downward toward the lower reference line, producing an approximately 45deg cutting line. The result is exterior terminal hair shorter than interior terminal hair on each section -- a length relationship that causes the terminations to turn inward.",

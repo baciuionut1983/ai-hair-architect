@@ -86,10 +86,23 @@ describe("Stage 8.5L5.R3 -- deterministic replay of the real knowledge assimilat
     expect(proposal.proposedEvidenceAttachments).toHaveLength(0);
   });
 
+  // STAGE 8.5L5.R3.5 FLIP (this revision): both literals below changed
+  // because buildCanonicalCandidateSkillRegistry() now includes Ionuț's
+  // approved 45deg Interior skill (7 skills, not 6) -- registryContextHash
+  // is a direct, deterministic hash of the full registry content
+  // (computeRegistryContextHash), so any real registry growth changes it;
+  // canonicalHash incorporates registryContextHash, so it changes too.
+  // The pipeline's own CONTENT is unaffected -- the sibling test above
+  // ("replays the exact real registry-comparison result...") still
+  // passes unchanged: 12 insufficient items, zero new skills, zero
+  // conflicts -- this frozen L5.R2 decomposition still finds nothing
+  // newly assimilable against the larger registry. Both new literal
+  // values were captured by directly running this exact test against the
+  // real, live post-activation registry (never guessed).
   it("replays the exact real proposal canonical hash and registry context hash", () => {
     const { proposal } = runPipeline();
-    expect(proposal.canonicalHash).toBe("9ebd0fc3d5a5ec377029fb71308fe54b674f3043a2ca81113939013aa6a14a01");
-    expect(proposal.registryContextHash).toBe("e6b32872cd64f04fc12edaf95838d140717a5bcb914d954e7d0727867c833d1e");
+    expect(proposal.canonicalHash).toBe("2cbdd8afd49d5cd4c003f04be7e19123702e81425e26e5c7f440954d93a3dc19");
+    expect(proposal.registryContextHash).toBe("4ba57db71d311c1b203c4c4f28bf0c84774eec7e40fd3e9d35485dd83d4dcac0");
     expect(proposal.status).toBe("DRAFT_PENDING_PROFESSIONAL_APPROVAL");
   });
 

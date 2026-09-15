@@ -64,19 +64,33 @@ describe("Stage 8.5L5.R3.2 -- real professional review decision classification (
     expect(byLabel.get("#13")?.outcome).toBe("PROFESSIONAL_ADDITION_PENDING_REVIEW");
   });
 
-  it("#7 Deep Point Cut and #12B (deep point cut texturization) never silently attach to Slice-and-Slide -- PROPOSE_TECHNIQUE_VARIANT, not EXTEND_EXISTING_CAPABILITY", () => {
+  // STAGE 8.5L5.R3.5 FLIP (this revision): before this stage, Slice-and-
+  // Slide was the ONLY registry skill declaring REFINE_ENDS, so the
+  // classifier's own single-match rule (professional-knowledge-review-
+  // decision.ts's classifyProfessionalDecisionAssimilation) could
+  // uniquely propose these as a VARIANT of it. Ionuț's professionally
+  // approved 45deg Interior is now ALSO active with REFINE_ENDS (its own
+  // honest, independently-justified capability -- see cutting-skill-45-
+  // degree-interior.ts's own header) -- correctly, honestly, the
+  // classifier can no longer uniquely disambiguate which of TWO
+  // REFINE_ENDS skills a new technique is "a variant of" from capability
+  // alone, and its own >1-match branch now applies
+  // (ATTACH_EVIDENCE_TO_EXISTING_KNOWLEDGE, comparedSkillId: null) --
+  // never a silent misattachment to either one. This is the classifier
+  // correctly reacting to a real, larger registry, not a regression.
+  it("#7 Deep Point Cut and #12B (deep point cut texturization) never silently attach to Slice-and-Slide -- ATTACH_EVIDENCE_TO_EXISTING_KNOWLEDGE (ambiguous: 2 registry skills now share REFINE_ENDS), never a forced unique variant of either", () => {
     const results = classifyAll();
     const byLabel = new Map(L5R3_2_REAL_PROFESSIONAL_REVIEW_DECISIONS.map((d, i) => [d.reviewItemLabel, results[i]]));
-    expect(byLabel.get("#7")?.outcome).toBe("PROPOSE_TECHNIQUE_VARIANT");
-    expect(byLabel.get("#7")?.comparedSkillId).toBe("skill-cutting-slice-and-slide-refinement");
-    expect(byLabel.get("#12B")?.outcome).toBe("PROPOSE_TECHNIQUE_VARIANT");
+    expect(byLabel.get("#7")?.outcome).toBe("ATTACH_EVIDENCE_TO_EXISTING_KNOWLEDGE");
+    expect(byLabel.get("#7")?.comparedSkillId).toBeNull();
+    expect(byLabel.get("#12B")?.outcome).toBe("ATTACH_EVIDENCE_TO_EXISTING_KNOWLEDGE");
   });
 
-  it("#11 (Point Cut for correction/alignment) and #12A (Point Cut for lateral alignment) receive the SAME structural outcome as #7/#12B (both compare against REFINE_ENDS) -- the DIFFERENCE in professional purpose (correction/alignment vs texturization) is preserved in professionalValue/professionalNote, not collapsed by the classifier", () => {
+  it("#11 (Point Cut for correction/alignment) and #12A (Point Cut for lateral alignment) receive the SAME structural outcome as #7/#12B (both compare against REFINE_ENDS, now ambiguous across 2 registry skills) -- the DIFFERENCE in professional purpose (correction/alignment vs texturization) is preserved in professionalValue/professionalNote, not collapsed by the classifier", () => {
     const results = classifyAll();
     const byLabel = new Map(L5R3_2_REAL_PROFESSIONAL_REVIEW_DECISIONS.map((d, i) => [d.reviewItemLabel, results[i]]));
-    expect(byLabel.get("#11")?.outcome).toBe("PROPOSE_TECHNIQUE_VARIANT");
-    expect(byLabel.get("#12A")?.outcome).toBe("PROPOSE_TECHNIQUE_VARIANT");
+    expect(byLabel.get("#11")?.outcome).toBe("ATTACH_EVIDENCE_TO_EXISTING_KNOWLEDGE");
+    expect(byLabel.get("#12A")?.outcome).toBe("ATTACH_EVIDENCE_TO_EXISTING_KNOWLEDGE");
     // The classifier's structural outcome is the same shape, but the two
     // decisions' own recorded purpose text is never conflated:
     const decision11 = L5R3_2_REAL_PROFESSIONAL_REVIEW_DECISIONS.find((d) => d.reviewItemLabel === "#11")!;

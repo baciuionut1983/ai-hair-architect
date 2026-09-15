@@ -16,22 +16,30 @@ import { isValidAtomicActionSequence } from "@/lib/professional-skill-atomic-act
 import { GRADUATED_CUTTING_SKILL } from "@/lib/cutting-skill-graduated";
 import { ONE_LENGTH_PERIMETER_SKILL } from "@/lib/cutting-skill-one-length-perimeter";
 
-// AI Hair Architect, Professional Skill Engine Stage 8.5L5.R3.4.R2 -- pure
-// tests for the 45deg Interior proposal, no I/O, no database, no AI calls.
-// PROPOSAL ONLY -- every test in this file operates on DRAFT content;
-// none of it proves or requires runtime authority.
+// AI Hair Architect, Professional Skill Engine Stage 8.5L5.R3.4.R2,
+// ACTIVATED at Stage 8.5L5.R3.5 -- pure tests for the 45deg Interior
+// skill, no I/O, no database, no AI calls.
+//
+// STAGE 8.5L5.R3.5 UPDATE (this revision): tests 2/3 below are
+// INTENTIONALLY FLIPPED from R2's own original assertions (status was
+// DRAFT / ineligible for authority) -- Ionuț professionally approved
+// this proposal, and L5.R3.5's own activation manifest confirms it as
+// the one mutation of the 11 approved proposals the existing
+// architecture can safely activate as a complete registry skill. Every
+// other test in this file is UNCHANGED from R2 -- activation touched
+// only `status`, never mechanics/parameters/procedure/capabilities.
 
-describe("cutting-skill-45-degree-interior -- structural validity + DRAFT/ineligibility", () => {
+describe("cutting-skill-45-degree-interior -- structural validity + ACTIVE/eligibility (Stage 8.5L5.R3.5)", () => {
   it("test 1: INTERIOR_45_SKILL is a structurally valid SkillDefinition", () => {
     expect(isValidSkillDefinition(INTERIOR_45_SKILL, isInteriorFortyFiveFact)).toBe(true);
   });
 
-  it("test 2: status is DRAFT, never ACTIVE", () => {
-    expect(INTERIOR_45_SKILL.status).toBe("DRAFT");
+  it("test 2 (flipped by L5.R3.5 activation): status is ACTIVE, no longer DRAFT", () => {
+    expect(INTERIOR_45_SKILL.status).toBe("ACTIVE");
   });
 
-  it("test 3: a DRAFT skill is structurally ineligible for authority via the SAME existing gate every other skill uses -- no new gating concept invented", () => {
-    expect(isSkillEligibleForAuthority(INTERIOR_45_SKILL)).toBe(false);
+  it("test 3 (flipped by L5.R3.5 activation): an ACTIVE, PROFESSIONALLY_AUTHORED skill is structurally eligible for authority via the SAME existing gate every other active skill uses -- no new gating concept invented", () => {
+    expect(isSkillEligibleForAuthority(INTERIOR_45_SKILL)).toBe(true);
   });
 });
 

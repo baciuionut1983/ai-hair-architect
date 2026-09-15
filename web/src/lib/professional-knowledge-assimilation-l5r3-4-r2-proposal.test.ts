@@ -117,16 +117,25 @@ describe("pending mutation status -- existing 10 + new 1 = 11, nothing activated
   });
 });
 
-describe("registry safety -- zero registry mutation, zero activation, zero Prisma/provider coupling", () => {
-  it("test 17: the real, currently-registered skill registry never references the new proposed skillId -- proposal-only, never wired in", () => {
+describe("registry safety -- zero registry mutation, zero activation, zero Prisma/provider coupling (R2-time)", () => {
+  // STAGE 8.5L5.R3.5 FLIP (this revision): tests 17/18 originally
+  // asserted the R2-time invariant "proposal-only, never wired in".
+  // Ionuț's professional approval + the L5.R3.5 activation manifest
+  // deliberately wired this ONE skill into the canonical registry --
+  // the exact, intended outcome of that later, separately-authorized
+  // stage, never a silent regression of THIS file's own R2 scope. R2's
+  // own files (this one and cutting-skill-45-degree-interior.ts) still
+  // perform zero registry writes themselves -- the wiring edit lives in
+  // professional-brain-skill-templates.ts, outside R2's own scope,
+  // which is exactly what test 17/18 now verify.
+  it("test 17 (flipped by L5.R3.5 activation): the real, currently-registered skill registry NOW references the approved skillId, via professional-brain-skill-templates.ts's own additive wiring", () => {
     const registryJson = JSON.stringify(buildCanonicalCandidateSkillRegistry());
-    expect(registryJson).not.toMatch(/skill-cutting-45-degree-interior/);
+    expect(registryJson).toMatch(/skill-cutting-45-degree-interior/);
   });
 
-  it("test 18: professional-brain-skill-templates.ts's own source file never imports or references the new proposal files", () => {
+  it("test 18 (flipped by L5.R3.5 activation): professional-brain-skill-templates.ts's own source file NOW imports the activated skill (additive wiring only, authored in that file's own L5.R3.5 edit, not in either R2 file)", () => {
     const source = fs.readFileSync(path.join(__dirname, "professional-brain-skill-templates.ts"), "utf8");
-    expect(source).not.toMatch(/45-degree-interior/);
-    expect(source).not.toMatch(/cutting-skill-45-degree-interior/);
+    expect(source).toMatch(/cutting-skill-45-degree-interior/);
   });
 
   it("test 19: neither new proposal file imports Prisma or calls any provider client", () => {

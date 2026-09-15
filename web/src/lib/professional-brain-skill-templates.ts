@@ -37,6 +37,12 @@ import {
   SLICE_AND_SLIDE_REFINEMENT_EXECUTION_UNITS,
   isSliceAndSlideRefinementFact,
 } from "@/lib/cutting-skill-slice-and-slide-refinement";
+import {
+  INTERIOR_45_SKILL,
+  INTERIOR_45_SKILL_INSTANCE,
+  INTERIOR_45_EXECUTION_UNITS,
+  isInteriorFortyFiveFact,
+} from "@/lib/cutting-skill-45-degree-interior";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5A -- CANONICAL
 // PROFESSIONAL SKILL TEMPLATE REGISTRY. Pure, deterministic, no I/O, no
@@ -57,7 +63,17 @@ import {
 // constants from their own cutting-skill-*.ts files. The original three
 // skills are listed first, byte-unchanged, in their original order.
 //
-// The registry is intentionally exactly these six skills. A real client
+// STAGE 8.5L5.R3.5 -- one new skill added, 45deg Interior, activated per
+// the L5.R3.5 activation manifest (professional-knowledge-activation-
+// l5r3-5-manifest.ts): the ONE proposal of the 11 professionally
+// approved L5.R3.4.R1+R2 mutations with a complete, already-authored
+// SkillDefinition ready to register. This file still authors nothing of
+// its own -- INTERIOR_45_SKILL's own status flip (DRAFT -> ACTIVE)
+// happened in cutting-skill-45-degree-interior.ts itself, not here; this
+// file only collects the now-active constant, appended last, after the
+// original six, byte-unchanged.
+//
+// The registry is intentionally exactly these seven skills. A real client
 // whose target needs a capability none of them provides correctly yields
 // UNRESOLVED (Part AG) -- this module never widens the registry to reach
 // RENDER_READY.
@@ -99,6 +115,12 @@ export const PROFESSIONAL_BRAIN_SKILL_TEMPLATES: readonly ExecutionPlanSkillTemp
     executionUnits: SLICE_AND_SLIDE_REFINEMENT_EXECUTION_UNITS,
     isValidFact: isSliceAndSlideRefinementFact,
   },
+  {
+    skillDefinition: INTERIOR_45_SKILL,
+    skillInstance: INTERIOR_45_SKILL_INSTANCE,
+    executionUnits: INTERIOR_45_EXECUTION_UNITS,
+    isValidFact: isInteriorFortyFiveFact,
+  },
 ];
 
 // Stage 4's deterministic candidate selector takes ProfessionalSkillDefinitionRecord[].
@@ -136,5 +158,6 @@ export function buildCanonicalCandidateSkillRegistry(): readonly ProfessionalSki
     toRecord(GRADUATED_CUTTING_SKILL),
     toRecord(ONE_LENGTH_PERIMETER_SKILL),
     toRecord(SLICE_AND_SLIDE_REFINEMENT_SKILL),
+    toRecord(INTERIOR_45_SKILL),
   ];
 }

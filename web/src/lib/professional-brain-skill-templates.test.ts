@@ -28,9 +28,14 @@ import { SLICE_AND_SLIDE_REFINEMENT_SKILL } from "@/lib/cutting-skill-slice-and-
 const COMPILED_AT = "2026-09-11T00:00:00.000Z";
 
 describe("A. Registry integrity -- Stage 8.5S1B additive registration, zero disruption", () => {
-  it("1. exactly 6 templates registered -- the original 3 plus the 3 new approved skills", () => {
-    expect(PROFESSIONAL_BRAIN_SKILL_TEMPLATES.length).toBe(6);
-    expect(buildCanonicalCandidateSkillRegistry().length).toBe(6);
+  // STAGE 8.5L5.R3.5 FLIP (this revision): 7, not 6 -- Ionuț's approved
+  // 45deg Interior proposal was activated and additively registered
+  // (professional-knowledge-activation-l5r3-5-manifest.ts's own audit).
+  // Still purely additive: the original 3 + Stage 8.5S1B's 3 stay
+  // byte-unchanged (tests 4/5 below), only the count itself grows.
+  it("1. exactly 7 templates registered -- the original 3, Stage 8.5S1B's 3, plus Stage 8.5L5.R3.5's 45deg Interior", () => {
+    expect(PROFESSIONAL_BRAIN_SKILL_TEMPLATES.length).toBe(7);
+    expect(buildCanonicalCandidateSkillRegistry().length).toBe(7);
   });
 
   it("2. no duplicate skillId+version pairs anywhere in the registry", () => {
