@@ -34,11 +34,11 @@ describe("Stage 8.5L5.R3.4 -- real professional knowledge assimilation plan (zer
     expect(second.canonicalHash).toBe(first.canonicalHash);
   });
 
-  it("test 5: #2 guide knowledge attaches to BOTH real matching skills (Graduated Cutting AND One-Length Perimeter) -- evidence the relationship is reusable, never a single forced skill", () => {
+  it("Stage 8.5L5.R3.4.R1 CORRECTION: #2 mobile/travelling guide evidence attaches ONLY to Graduated Cutting -- NEVER to One-Length Perimeter. Ionut's own final review: One-Length's previously-cut-strand reference reproduces the SAME UNCHANGED established line (fixed authority), it does not travel -- semantic similarity (both use already-cut hair as a reference) must never imply full behavioral equivalence (travelling guide)", () => {
     const plan = buildRealAssimilationPlan();
     const entry2 = plan.entries.find((e) => e.reviewItemLabel === "#2-guide")!;
     expect(entry2.registryCandidates).toContain("skill-cutting-graduated");
-    expect(entry2.registryCandidates).toContain("skill-cutting-one-length-perimeter");
+    expect(entry2.registryCandidates).not.toContain("skill-cutting-one-length-perimeter");
     expect(entry2.safeToApplyLater).toBe("YES");
   });
 

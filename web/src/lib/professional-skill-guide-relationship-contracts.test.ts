@@ -89,9 +89,9 @@ describe("professional-skill-guide-relationship-contracts", () => {
   });
 
   it("determinism: identical inputs produce identical ids; a changed dimension changes the id", () => {
-    const a = computeGuideRelationshipCapabilityId({ guideSource: "PREVIOUSLY_CUT_SECTION", guideRole: "CONTINUATION_GUIDE", guideBehavior: "TRAVELLING", currentSectionRelationship: "BECOMES_NEXT_GUIDE", overdirectionRelationship: "UNKNOWN", progression: "PROGRESSES_EACH_UNIT", unknownNumericFields: [] });
-    const b = computeGuideRelationshipCapabilityId({ guideSource: "PREVIOUSLY_CUT_SECTION", guideRole: "CONTINUATION_GUIDE", guideBehavior: "TRAVELLING", currentSectionRelationship: "BECOMES_NEXT_GUIDE", overdirectionRelationship: "UNKNOWN", progression: "PROGRESSES_EACH_UNIT", unknownNumericFields: [] });
-    const c = computeGuideRelationshipCapabilityId({ guideSource: "PREVIOUSLY_CUT_SECTION", guideRole: "CONTINUATION_GUIDE", guideBehavior: "STATIONARY", currentSectionRelationship: "BECOMES_NEXT_GUIDE", overdirectionRelationship: "UNKNOWN", progression: "PROGRESSES_EACH_UNIT", unknownNumericFields: [] });
+    const a = computeGuideRelationshipCapabilityId({ guideSource: "PREVIOUSLY_CUT_SECTION", guideRole: "CONTINUATION_GUIDE", guideBehavior: "TRAVELLING", currentSectionRelationship: "BECOMES_NEXT_GUIDE", overdirectionRelationship: "UNKNOWN", progression: "PROGRESSES_EACH_UNIT", referenceProgression: "UNKNOWN", unknownNumericFields: [] });
+    const b = computeGuideRelationshipCapabilityId({ guideSource: "PREVIOUSLY_CUT_SECTION", guideRole: "CONTINUATION_GUIDE", guideBehavior: "TRAVELLING", currentSectionRelationship: "BECOMES_NEXT_GUIDE", overdirectionRelationship: "UNKNOWN", progression: "PROGRESSES_EACH_UNIT", referenceProgression: "UNKNOWN", unknownNumericFields: [] });
+    const c = computeGuideRelationshipCapabilityId({ guideSource: "PREVIOUSLY_CUT_SECTION", guideRole: "CONTINUATION_GUIDE", guideBehavior: "STATIONARY", currentSectionRelationship: "BECOMES_NEXT_GUIDE", overdirectionRelationship: "UNKNOWN", progression: "PROGRESSES_EACH_UNIT", referenceProgression: "UNKNOWN", unknownNumericFields: [] });
     expect(a).toBe(b);
     expect(a).not.toBe(c);
   });

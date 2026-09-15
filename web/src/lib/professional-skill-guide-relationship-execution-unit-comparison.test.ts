@@ -54,13 +54,24 @@ describe("professional-skill-guide-relationship-execution-unit-comparison (real 
     expect(JSON.stringify(ALL_REAL_UNITS)).toBe(snapshot);
   });
 
-  it("a STATIONARY, PREVIOUSLY_CUT_SECTION-sourced guide with no matching real execution unit honestly reports zero matches (no forced attachment)", () => {
-    // No real execution unit anywhere declares a stationary guide whose
-    // SOURCE is a previously-cut section (only contour/perimeter guides
-    // are stationary in the real registry today) -- confirms the honest
-    // "gap" finding from this stage's own report (review item #4 has no
-    // current execution unit representation).
-    const capability = buildGuideRelationshipCapability({ guideSource: "PREVIOUSLY_CUT_SECTION", guideBehavior: "STATIONARY" });
+  it("Stage 8.5L5.R3.4.R1 correction: a STATIONARY, PREVIOUSLY_CUT_SECTION-sourced guide with progressing REFERENCE now correctly matches One-Length Perimeter's own 'same established line' execution units -- this is Ionut's own corrected One-Length semantics (fixed authority + a moving reference pointer), not a forced attachment", () => {
+    // Continue Central Nape Construction's own guideReferenceMode is
+    // bound at the SkillInstance level (fixedBinding), not as an
+    // ExecutionUnitParameterRule on its own execution unit -- this
+    // comparator only reads execution-unit-scoped fixed rules (by
+    // design, see ComparableExecutionUnit), so that skill structurally
+    // cannot appear in ANY guide match here, unaffected by this
+    // correction (a pre-existing, narrow scope boundary, not a new gap).
+    const capability = buildGuideRelationshipCapability({ guideSource: "PREVIOUSLY_CUT_SECTION", guideBehavior: "STATIONARY", referenceProgression: "REFERENCE_PROGRESSES_WITH_EXECUTION" });
+    const result = compareGuideRelationshipAgainstExecutionUnits(capability, ALL_REAL_UNITS);
+    expect(result.hasCompatibleExecutionUnit).toBe(true);
+    expect(result.matches.map((m) => m.skillId)).toContain("skill-cutting-one-length-perimeter");
+    // Never Graduated Cutting's own genuinely travelling-guide unit.
+    expect(result.matches.map((m) => m.executionUnitId)).not.toContain("executionunit-cutting-graduated-execution-zone");
+  });
+
+  it("a genuinely still-unrepresented combination (a contour/perimeter guide that also travels) honestly reports zero matches -- the comparator never forces a match merely because SOME dimension happens to coincide", () => {
+    const capability = buildGuideRelationshipCapability({ guideSource: "PERIMETER_CONTOUR_GUIDE", guideBehavior: "TRAVELLING" });
     const result = compareGuideRelationshipAgainstExecutionUnits(capability, ALL_REAL_UNITS);
     expect(result.hasCompatibleExecutionUnit).toBe(false);
   });

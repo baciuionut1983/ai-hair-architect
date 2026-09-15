@@ -138,6 +138,32 @@ export function isGuideProgressionState(value: unknown): value is GuideProgressi
 }
 
 // ---------------------------------------------------------------------
+// F. Reference progression -- Stage 8.5L5.R3.4.R1 addition. ANSWERS A
+// GENUINELY DIFFERENT QUESTION FROM `progression` ABOVE: `progression`
+// is about the GUIDE AUTHORITY itself (does the geometric target
+// change); `referenceProgression` is about which concrete, already-cut
+// section a stylist physically LOOKS AT as their working reference
+// (does that pointer move through execution). These are independent by
+// construction (Section "EXECUTION PROGRESSION is NOT necessarily GUIDE
+// AUTHORITY PROGRESSION"): a One-Length construction has
+// referenceProgression = REFERENCE_PROGRESSES_WITH_EXECUTION (you check
+// the most-recently-cut subsection every time) while guideBehavior stays
+// STATIONARY and progression stays FIXED_THROUGHOUT (the target line
+// itself never changes) -- a combination the pre-R1 model could not
+// represent, because it only had ONE progression-shaped field, forcing
+// a false choice between "the guide progresses" and "fixed throughout."
+// A Graduated Cutting travelling guide has BOTH dimensions progressing
+// together -- also representable, never conflated with One-Length's case.
+// ---------------------------------------------------------------------
+
+export const REFERENCE_PROGRESSION_STATES = ["REFERENCE_PROGRESSES_WITH_EXECUTION", "REFERENCE_FIXED", "UNKNOWN"] as const;
+export type ReferenceProgressionState = (typeof REFERENCE_PROGRESSION_STATES)[number];
+
+export function isReferenceProgressionState(value: unknown): value is ReferenceProgressionState {
+  return typeof value === "string" && (REFERENCE_PROGRESSION_STATES as readonly string[]).includes(value);
+}
+
+// ---------------------------------------------------------------------
 // The capability itself. Sectioning/elevation/distribution/cutting-line/
 // zone (dimensions F/G/H/I/J) are DELIBERATELY ABSENT from this type --
 // they already have their own established representations elsewhere
@@ -156,6 +182,7 @@ export interface GuideRelationshipCapability {
   readonly currentSectionRelationship: GuideSectionRelationship;
   readonly overdirectionRelationship: OverdirectionRelationship;
   readonly progression: GuideProgressionState;
+  readonly referenceProgression: ReferenceProgressionState;
   // Explicit, never-defaulted list of numeric/geometric facts that
   // remain UNKNOWN (Section "UNKNOWN / PARTIAL KNOWLEDGE") -- e.g.
   // "exactOverdirectionAngle", "exactSectionAngle". Never populated with
@@ -165,7 +192,7 @@ export interface GuideRelationshipCapability {
 }
 
 export function computeGuideRelationshipCapabilityId(input: Omit<GuideRelationshipCapability, "id" | "note">): string {
-  const canonical = [input.guideSource, input.guideRole, input.guideBehavior, input.currentSectionRelationship, input.overdirectionRelationship, input.progression, [...input.unknownNumericFields].sort().join(",")].join("|");
+  const canonical = [input.guideSource, input.guideRole, input.guideBehavior, input.currentSectionRelationship, input.overdirectionRelationship, input.progression, input.referenceProgression, [...input.unknownNumericFields].sort().join(",")].join("|");
   return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 
@@ -176,6 +203,7 @@ export interface BuildGuideRelationshipCapabilityInput {
   readonly currentSectionRelationship?: GuideSectionRelationship;
   readonly overdirectionRelationship?: OverdirectionRelationship;
   readonly progression?: GuideProgressionState;
+  readonly referenceProgression?: ReferenceProgressionState;
   readonly unknownNumericFields?: readonly string[];
   readonly note?: string;
 }
@@ -192,6 +220,7 @@ export function buildGuideRelationshipCapability(input: BuildGuideRelationshipCa
     currentSectionRelationship: input.currentSectionRelationship ?? "RELATIONSHIP_UNKNOWN",
     overdirectionRelationship: input.overdirectionRelationship ?? "UNKNOWN",
     progression: input.progression ?? "UNKNOWN",
+    referenceProgression: input.referenceProgression ?? "UNKNOWN",
     unknownNumericFields: input.unknownNumericFields ?? [],
   };
   return { ...withoutId, id: computeGuideRelationshipCapabilityId(withoutId), ...(input.note !== undefined ? { note: input.note } : {}) };

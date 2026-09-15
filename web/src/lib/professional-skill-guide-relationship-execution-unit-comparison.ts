@@ -1,4 +1,4 @@
-import type { GuideBehavior, GuideRelationshipCapability, GuideRole, GuideSource } from "@/lib/professional-skill-guide-relationship-contracts";
+import type { GuideBehavior, GuideRelationshipCapability, GuideRole, GuideSource, ReferenceProgressionState } from "@/lib/professional-skill-guide-relationship-contracts";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L5.R3.3 --
 // GUIDE RELATIONSHIP <-> EXISTING EXECUTION UNIT COMPARISON. Pure, no
@@ -27,18 +27,44 @@ interface LegacyGuideSemantics {
   readonly source?: GuideSource;
   readonly role?: GuideRole;
   readonly behavior?: GuideBehavior;
+  readonly referenceProgression?: ReferenceProgressionState;
 }
 
 // From cutting-skill-graduated.ts / -continue-central-nape-construction.ts
 // / -one-length-perimeter.ts's own real `guideReferenceMode` values.
+//
+// Stage 8.5L5.R3.4.R1 CORRECTION (see professional-skill-guide-
+// relationship-l5r3-4-r1-correction.ts for the full record): the
+// `previous_subsection` entry below previously mapped to
+// `behavior: "TRAVELLING"` UNCONDITIONALLY -- correct for Graduated
+// Cutting (where it never actually took effect anyway, since Graduated
+// Cutting's own `guideType: "traveling"` already overrides behavior in
+// legacySemanticsForUnit below), but WRONG for One-Length Perimeter and
+// Continue Central Nape Construction, whose own "previous_subsection"
+// reference mode means the opposite: the geometric authority is the SAME
+// established line/perimeter throughout -- only the CONCRETE PIECE OF
+// ALREADY-CUT HAIR a stylist looks at as a practical, visible reference
+// changes from section to section (see the new `referenceProgression`
+// dimension, Section F of the contracts file). Ionuț's own words: "Șuviță
+// tăiată anterior, logic, devine aceeași linie cu ultimele straturi
+// tăiate și devine ghid interpretabil pentru următoarea care se taie la
+// aceeași linie neschimbată." ("The previously cut strand, logically,
+// becomes the same line as the last cut layers, and becomes an
+// interpretable guide for the next one, which is cut to that same
+// unchanged line.") `previous_subsection`'s own DEFAULT/general meaning
+// is therefore corrected to STATIONARY authority + a progressing
+// reference pointer -- Graduated Cutting's genuinely different,
+// authority-travels case remains exactly as correct as before, because
+// it is asserted independently via `guideType`, never via this entry.
 const LEGACY_REFERENCE_MODE_TO_GUIDE_SEMANTICS: Readonly<Record<string, LegacyGuideSemantics>> = {
-  contour_guide_reference: { source: "PERIMETER_CONTOUR_GUIDE", role: "STRUCTURAL_AUTHORITY", behavior: "STATIONARY" },
-  established_perimeter_guide: { source: "PERIMETER_CONTOUR_GUIDE", role: "STRUCTURAL_AUTHORITY", behavior: "STATIONARY" },
-  previous_subsection: { source: "PREVIOUSLY_CUT_SECTION", role: "CONTINUATION_GUIDE", behavior: "TRAVELLING" },
+  contour_guide_reference: { source: "PERIMETER_CONTOUR_GUIDE", role: "STRUCTURAL_AUTHORITY", behavior: "STATIONARY", referenceProgression: "REFERENCE_FIXED" },
+  established_perimeter_guide: { source: "PERIMETER_CONTOUR_GUIDE", role: "STRUCTURAL_AUTHORITY", behavior: "STATIONARY", referenceProgression: "REFERENCE_FIXED" },
+  previous_subsection: { source: "PREVIOUSLY_CUT_SECTION", role: "CONTINUATION_GUIDE", behavior: "STATIONARY", referenceProgression: "REFERENCE_PROGRESSES_WITH_EXECUTION" },
   // Lateral connection references the already-cut (and by then fixed)
   // posterior guide behind the ear -- structurally a continuation use of
-  // a guide that is itself no longer moving at the point of reference.
-  lateral_connection_guide: { source: "PERIMETER_CONTOUR_GUIDE", role: "CONTINUATION_GUIDE", behavior: "STATIONARY" },
+  // a guide that is itself no longer moving at the point of reference,
+  // and always the SAME single reference (never progresses further).
+  lateral_connection_guide: { source: "PERIMETER_CONTOUR_GUIDE", role: "CONTINUATION_GUIDE", behavior: "STATIONARY", referenceProgression: "REFERENCE_FIXED" },
 };
 
 // From cutting-skill-graduated.ts's own real `guideType` values only --
@@ -64,7 +90,13 @@ function legacySemanticsForUnit(unit: ComparableExecutionUnit): LegacyGuideSeman
   const guideType = fixedValueFor(unit, "guideType");
   const fromReferenceMode = typeof referenceMode === "string" ? LEGACY_REFERENCE_MODE_TO_GUIDE_SEMANTICS[referenceMode] : undefined;
   const behaviorFromGuideType = typeof guideType === "string" ? LEGACY_GUIDE_TYPE_TO_BEHAVIOR[guideType] : undefined;
-  return { source: fromReferenceMode?.source, role: fromReferenceMode?.role, behavior: behaviorFromGuideType ?? fromReferenceMode?.behavior };
+  // `guideType` (Graduated Cutting only) is the more specific signal for
+  // BEHAVIOR and wins when present, exactly as before R1. There is no
+  // separate guideType->referenceProgression table: `referenceProgression`
+  // always comes from `guideReferenceMode` alone -- every Graduated
+  // Cutting execution unit already declares its own guideReferenceMode
+  // alongside guideType (audited verbatim), so this is never a gap.
+  return { source: fromReferenceMode?.source, role: fromReferenceMode?.role, behavior: behaviorFromGuideType ?? fromReferenceMode?.behavior, referenceProgression: fromReferenceMode?.referenceProgression };
 }
 
 // A capability field of UNKNOWN is treated as "no claim" -- it can never
@@ -80,7 +112,7 @@ function fieldCompatible<T extends string>(capabilityValue: T, unitValue: T | un
 export interface GuideRelationshipExecutionUnitMatch {
   readonly executionUnitId: string;
   readonly skillId: string;
-  readonly matchedDimensions: readonly ("source" | "role" | "behavior")[];
+  readonly matchedDimensions: readonly ("source" | "role" | "behavior" | "referenceProgression")[];
 }
 
 export interface CompareGuideRelationshipResult {
@@ -102,12 +134,14 @@ export function compareGuideRelationshipAgainstExecutionUnits(capability: GuideR
     const sourceOk = fieldCompatible(capability.guideSource, legacy.source, "UNKNOWN");
     const roleOk = fieldCompatible(capability.guideRole, legacy.role, "UNKNOWN");
     const behaviorOk = fieldCompatible(capability.guideBehavior, legacy.behavior, "UNKNOWN");
+    const referenceProgressionOk = fieldCompatible(capability.referenceProgression, legacy.referenceProgression, "UNKNOWN");
 
-    if (sourceOk && roleOk && behaviorOk) {
-      const matchedDimensions: ("source" | "role" | "behavior")[] = [];
+    if (sourceOk && roleOk && behaviorOk && referenceProgressionOk) {
+      const matchedDimensions: ("source" | "role" | "behavior" | "referenceProgression")[] = [];
       if (capability.guideSource !== "UNKNOWN" && legacy.source === capability.guideSource) matchedDimensions.push("source");
       if (capability.guideRole !== "UNKNOWN" && legacy.role === capability.guideRole) matchedDimensions.push("role");
       if (capability.guideBehavior !== "UNKNOWN" && legacy.behavior === capability.guideBehavior) matchedDimensions.push("behavior");
+      if (capability.referenceProgression !== "UNKNOWN" && legacy.referenceProgression === capability.referenceProgression) matchedDimensions.push("referenceProgression");
       // Only count as a real match when at least one dimension was
       // positively confirmed -- a capability that is UNKNOWN on every
       // dimension trivially "matches" everything, which is never useful
