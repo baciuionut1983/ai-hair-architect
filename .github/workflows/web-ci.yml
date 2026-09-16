@@ -84,7 +84,7 @@ jobs:
             -p 9000:9000 \
             -e "MINIO_ROOT_USER=$AWS_ACCESS_KEY_ID" \
             -e "MINIO_ROOT_PASSWORD=$AWS_SECRET_ACCESS_KEY" \
-            minio/minio:RELEASE.2025-04-08T15-41-24Z \
+            quay.io/minio/minio:RELEASE.2025-04-08T15-41-24Z \
             server /data
 
       - name: Wait for MinIO readiness (bounded)
@@ -106,7 +106,7 @@ jobs:
           docker run --rm \
             --network host \
             -e "MC_HOST_ciminio=http://$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY@127.0.0.1:9000" \
-            minio/mc:RELEASE.2025-07-16T15-35-03Z \
+            quay.io/minio/mc:RELEASE.2025-07-16T15-35-03Z \
             mb --ignore-existing "ciminio/$OBJECT_STORAGE_BUCKET"
 
       - name: Verify the test bucket exists
@@ -114,7 +114,7 @@ jobs:
           docker run --rm \
             --network host \
             -e "MC_HOST_ciminio=http://$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY@127.0.0.1:9000" \
-            minio/mc:RELEASE.2025-07-16T15-35-03Z \
+            quay.io/minio/mc:RELEASE.2025-07-16T15-35-03Z \
             ls "ciminio/$OBJECT_STORAGE_BUCKET"
 
       # No step anywhere in this workflow ever applies an anonymous/public
