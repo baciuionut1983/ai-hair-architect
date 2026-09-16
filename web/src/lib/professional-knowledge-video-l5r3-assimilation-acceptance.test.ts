@@ -3,7 +3,7 @@ import path from "path";
 
 import { describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/prisma";
+import { withL5R3AcceptanceFixture } from "../../tests/l5r3-acceptance-db-fixture";
 import { verifyApprovedKnowledgeSource } from "@/lib/professional-knowledge-approved-source";
 import { decomposeApprovedSource } from "@/lib/professional-knowledge-decomposition";
 import { buildKnowledgeAssimilationProposal } from "@/lib/professional-knowledge-assimilation-proposal";
@@ -30,7 +30,7 @@ const ASSIMILATION_VERSION = "l5r3-assimilation-v1";
 const PROPOSAL_VERSION = "l5r3-proposal-v1";
 
 suite("Stage 8.5L5.R3 -- real professionally-validated knowledge assimilation (zero AI calls, zero network)", () => {
-  it("loads the real frozen L5.R2 result + real review, verifies authority, decomposes, compares against the real registry, and builds a real proposal", async () => {
+  it("loads the real frozen L5.R2 result + real review, verifies authority, decomposes, compares against the real registry, and builds a real proposal", async () => withL5R3AcceptanceFixture(async (prisma) => {
     const evidenceRow = await prisma.professionalLearningEvidence.findUnique({ where: { id: REAL_SOURCE_EVIDENCE_ID } });
     expect(evidenceRow).not.toBeNull();
     const reviewRow = await prisma.professionalLearningReview.findUnique({ where: { id: REAL_REVIEW_ID } });
@@ -103,5 +103,5 @@ suite("Stage 8.5L5.R3 -- real professionally-validated knowledge assimilation (z
     // the stage's own scratch-JSON precedent from L5.R1/L5.R1.1/L5.R2).
     const outputPath = path.join(process.cwd(), "scratch-l5r3-real-assimilation-proposal-result.json");
     fs.writeFileSync(outputPath, JSON.stringify({ eligibility: { eligibility: eligibility.eligibility, recomputedHash: eligibility.recomputedHash }, decomposition, proposal }, null, 2), "utf8");
-  });
+  }), 60_000);
 });

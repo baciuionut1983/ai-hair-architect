@@ -97,11 +97,22 @@ describe("next.config.ts security headers", () => {
     });
 
     it("allows the real, configured S3 origin once the s3 backend is active -- exactly what the browser multipart PUT needs", async () => {
+      delete process.env.OBJECT_STORAGE_ENDPOINT;
       process.env.OBJECT_STORAGE_BACKEND = "s3";
       process.env.OBJECT_STORAGE_BUCKET = "ai-hair-architect-learning-test-example";
       process.env.OBJECT_STORAGE_REGION = "eu-north-1";
       const value = await contentSecurityPolicyValue();
       expect(value).toContain("connect-src 'self' https://ai-hair-architect-learning-test-example.s3.eu-north-1.amazonaws.com;");
+    });
+
+    it("uses an explicit custom endpoint as the authoritative S3 CSP origin", async () => {
+      process.env.OBJECT_STORAGE_BACKEND = "s3";
+      process.env.OBJECT_STORAGE_ENDPOINT = "http://127.0.0.1:9000";
+      process.env.OBJECT_STORAGE_BUCKET = "ai-hair-architect-learning-test-example";
+      process.env.OBJECT_STORAGE_REGION = "eu-north-1";
+      const value = await contentSecurityPolicyValue();
+      expect(value).toContain("connect-src 'self' http://127.0.0.1:9000;");
+      expect(value).not.toContain("amazonaws.com");
     });
   });
 });

@@ -3,7 +3,7 @@ import path from "path";
 
 import { describe, expect, it } from "vitest";
 
-import { prisma } from "@/lib/prisma";
+import { withL5R3AcceptanceFixture } from "../../tests/l5r3-acceptance-db-fixture";
 import { verifyApprovedKnowledgeSource } from "@/lib/professional-knowledge-approved-source";
 import { decomposeApprovedSource } from "@/lib/professional-knowledge-decomposition";
 import { bindClaimsForApprovedSource } from "@/lib/professional-knowledge-claim-binding";
@@ -30,7 +30,7 @@ const PROPOSAL_VERSION_BEFORE = "l5r3-proposal-v1";
 const PROPOSAL_VERSION_AFTER = "l5r3.1-proposal-v1";
 
 suite("Stage 8.5L5.R3.1 -- real professionally validated claim binding (zero AI calls, zero network)", () => {
-  it("recovers real frozen claims, binds Ionut's real confirmed themes, and re-runs registry comparison -- registry/review/draft immutable", async () => {
+  it("recovers real frozen claims, binds Ionut's real confirmed themes, and re-runs registry comparison -- registry/review/draft immutable", async () => withL5R3AcceptanceFixture(async (prisma) => {
     const evidenceRow = await prisma.professionalLearningEvidence.findUnique({ where: { id: REAL_SOURCE_EVIDENCE_ID } });
     const reviewRow = await prisma.professionalLearningReview.findUnique({ where: { id: REAL_REVIEW_ID } });
     expect(evidenceRow).not.toBeNull();
@@ -116,5 +116,5 @@ suite("Stage 8.5L5.R3.1 -- real professionally validated claim binding (zero AI 
       ),
       "utf8",
     );
-  });
+  }), 60_000);
 });
