@@ -51,6 +51,37 @@ import type { ProfessionalLearningExtractorOutput } from "@/lib/professional-lea
 const MAX_TEMPORAL_ENTRIES_PER_ARRAY = 200;
 const MAX_TEMPORAL_TEXT_LENGTH = 2000;
 
+// Stage 8.5T1.3.R1 -- TEMPORAL VALIDITY CONTRACT. Once an authoritative
+// source duration is known (professional-learning-extractor-gemini.ts's
+// provider-file-derived `sourceVideoDurationSeconds`, never a model
+// estimate, never a client-declared number), every entry's own time
+// range must fall within [0, duration] to be trusted. A TINY, documented
+// tolerance absorbs only media-duration/floating-point rounding (e.g.
+// duration=67.04s, an entry ending at 67.3s) -- it is never large enough
+// to turn a genuinely impossible timestamp (the real T1.3 anomaly:
+// 59-104s against a ~67s source) into a false accept.
+const TEMPORAL_DURATION_TOLERANCE_SECONDS = 0.5;
+
+function isValidAuthoritativeDuration(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+// FAIL-HONEST, NEVER FABRICATED CLAMP (Section "CRITICAL -- PARTIALLY
+// OUT-OF-RANGE INTERVALS"): an interval violating the bound is REJECTED
+// AS A WHOLE, never rewritten to end at the duration. 59-104 against
+// duration=67 must be dropped entirely, never silently become 59-67.
+// When no authoritative duration is known at all, this returns true
+// unconditionally -- backward-compatible with every call site that
+// predates this stage (structural-only validation, exactly as before);
+// callers are responsible for treating a null `sourceDurationSeconds`
+// on the returned evidence as UNVERIFIED, never as trusted source-time
+// (see ProfessionalLearningTemporalEvidence's own doc comment below).
+function isWithinAuthoritativeDuration(startSeconds: number, endSeconds: number, duration: number | null): boolean {
+  if (duration === null) return true;
+  const bound = duration + TEMPORAL_DURATION_TOLERANCE_SECONDS;
+  return startSeconds < bound && endSeconds <= bound;
+}
+
 export interface ProfessionalLearningTemporalObservationEvidence {
   readonly timeStartSeconds: number;
   readonly timeEndSeconds: number;
@@ -75,6 +106,17 @@ export interface ProfessionalLearningTemporalEvidence {
   readonly observations: readonly ProfessionalLearningTemporalObservationEvidence[];
   readonly actions: readonly ProfessionalLearningTemporalActionEvidence[];
   readonly editGaps: readonly ProfessionalLearningTemporalEditGapEvidence[];
+  // Stage 8.5T1.3.R1 -- the authoritative source-video duration (seconds)
+  // every entry above was actually bounded against, or `null` when no
+  // authoritative duration was available at build time (every entry is
+  // then only structurally valid, NOT verified against real source
+  // time). FUTURE PROFESSIONAL REASONING MUST NOT TREAT ANY ENTRY HERE
+  // AS TRUSTED SOURCE-TIME EVIDENCE WHEN THIS IS `null` -- this field
+  // exists specifically so that check is possible without re-deriving
+  // duration. Optional (never required) so a value persisted before this
+  // stage -- which lacks the key entirely -- remains a valid, readable
+  // historical record; absent is treated identically to `null`.
+  readonly sourceDurationSeconds?: number | null;
 }
 
 function isNonEmptyBoundedText(value: unknown): value is string {
@@ -113,11 +155,15 @@ function isValidEditGapShape(value: unknown): value is { beforeTimeSeconds: numb
 // three-state signal this stage does not need.
 export function buildProfessionalLearningTemporalEvidence(
   output: Pick<ProfessionalLearningExtractorOutput, "temporalObservations" | "actionCandidates" | "notableEditsOrCuts">,
+  authoritativeSourceDurationSeconds?: number,
 ): ProfessionalLearningTemporalEvidence | null {
+  const duration = isValidAuthoritativeDuration(authoritativeSourceDurationSeconds) ? authoritativeSourceDurationSeconds : null;
+
   const observations: ProfessionalLearningTemporalObservationEvidence[] = [];
   for (const raw of output.temporalObservations ?? []) {
     if (observations.length >= MAX_TEMPORAL_ENTRIES_PER_ARRAY) break;
     if (!isValidVideoTimeInterval(raw) || !isNonEmptyBoundedText(raw.observation)) continue;
+    if (!isWithinAuthoritativeDuration(raw.timeStartSeconds, raw.timeEndSeconds, duration)) continue;
     observations.push({ timeStartSeconds: raw.timeStartSeconds, timeEndSeconds: raw.timeEndSeconds, observation: raw.observation.trim(), source: "OBSERVED" });
   }
 
@@ -125,6 +171,7 @@ export function buildProfessionalLearningTemporalEvidence(
   for (const raw of output.actionCandidates ?? []) {
     if (actions.length >= MAX_TEMPORAL_ENTRIES_PER_ARRAY) break;
     if (!isValidVideoTimeInterval(raw) || !isNonEmptyBoundedText(raw.kind)) continue;
+    if (!isWithinAuthoritativeDuration(raw.timeStartSeconds, raw.timeEndSeconds, duration)) continue;
     actions.push({ timeStartSeconds: raw.timeStartSeconds, timeEndSeconds: raw.timeEndSeconds, kind: raw.kind.trim(), source: "INFERRED" });
   }
 
@@ -132,11 +179,15 @@ export function buildProfessionalLearningTemporalEvidence(
   for (const raw of output.notableEditsOrCuts ?? []) {
     if (editGaps.length >= MAX_TEMPORAL_ENTRIES_PER_ARRAY) break;
     if (!isValidEditGapShape(raw)) continue;
+    // Possible video edits/cuts are temporal evidence too (T1.3.R1's own
+    // explicit instruction) -- the exact same source-duration bound
+    // applies, never a haircut-action interpretation.
+    if (!isWithinAuthoritativeDuration(raw.beforeTimeSeconds, raw.afterTimeSeconds, duration)) continue;
     editGaps.push({ beforeTimeSeconds: raw.beforeTimeSeconds, afterTimeSeconds: raw.afterTimeSeconds, source: "OBSERVED" });
   }
 
   if (observations.length === 0 && actions.length === 0 && editGaps.length === 0) return null;
-  return { observations, actions, editGaps };
+  return { observations, actions, editGaps, sourceDurationSeconds: duration };
 }
 
 function isValidObservationEntry(value: unknown): value is ProfessionalLearningTemporalObservationEvidence {
@@ -166,6 +217,11 @@ function isValidEditGapEntry(value: unknown): value is ProfessionalLearningTempo
 export function isValidProfessionalLearningTemporalEvidence(value: unknown): value is ProfessionalLearningTemporalEvidence {
   if (typeof value !== "object" || value === null) return false;
   const record = value as Record<string, unknown>;
+  // sourceDurationSeconds is optional (Stage 8.5T1.3.R1): absent
+  // entirely (a value persisted before this stage), null, or a valid
+  // positive finite number are all accepted -- anything else is not.
+  const duration = record.sourceDurationSeconds;
+  if (duration !== undefined && duration !== null && !isValidAuthoritativeDuration(duration)) return false;
   return (
     Array.isArray(record.observations) &&
     record.observations.every(isValidObservationEntry) &&

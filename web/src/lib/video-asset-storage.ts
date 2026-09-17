@@ -224,6 +224,46 @@ export function extensionForMimeType(mimeType: string): string {
 // computes from the uploaded parts, not a plain whole-file MD5/SHA-256,
 // but still proof the object matches exactly the parts this application
 // authorized and later verified via CompleteMultipartUpload.
+// Stage 8.5T1.3.R1 -- records the AUTHORITATIVE playback duration of an
+// ALREADY-UPLOADED professional learning source video, derived from the
+// provider's own file-processing metadata (never a client-declared
+// number, never a model estimate -- see professional-learning-extractor-
+// gemini.ts's parseGeminiFileVideoDurationSeconds). Reuses the existing
+// VideoAsset.durationSeconds column verbatim -- no new column, no
+// migration.
+//
+// Deliberately NARROW, ownership-scoped, origin-scoped, write-once:
+//   - `ownerUserId` in the WHERE clause -- a caller can never set
+//     duration on a video it does not own (a wrong-owner call matches
+//     zero rows, a silent no-op, never an error that would leak whether
+//     the id exists for someone else).
+//   - `origin: "uploaded_source"` in the WHERE clause -- a generated
+//     Result Video (origin "generated_output", written exclusively by
+//     persistGeneratedVideoDemonstrationAsset with its own, unrelated
+//     REQUESTED-duration semantics) can never be touched by this
+//     function, even if a caller passed its id by mistake.
+//   - `durationSeconds: null` in the WHERE clause -- write-once. An
+//     already-recorded value is never overwritten by a later
+//     (re)extraction; this also makes the function naturally idempotent
+//     across retries/reanalysis.
+// `updateMany` (never `update`): a zero-match outcome (wrong owner,
+// wrong origin, already set, or an id that does not exist) is an
+// expected, silent no-op here, never a thrown error -- this is always a
+// best-effort side effect of extraction, never a gate on it.
+const MAX_SANE_UPLOADED_VIDEO_DURATION_SECONDS = 4 * 60 * 60;
+
+export async function recordUploadedVideoAssetDuration(ownerUserId: string, videoAssetId: string, durationSeconds: number): Promise<void> {
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > MAX_SANE_UPLOADED_VIDEO_DURATION_SECONDS) {
+    // Not sane enough to trust -- silently ignored. Better an unknown
+    // duration (fail-honest) than a garbled one persisted as fact.
+    return;
+  }
+  await prisma.videoAsset.updateMany({
+    where: { id: videoAssetId, ownerUserId, origin: "uploaded_source", durationSeconds: null },
+    data: { durationSeconds },
+  });
+}
+
 export async function registerCompletedMultipartVideoAsset(input: {
   ownerUserId: string;
   clientId: string;

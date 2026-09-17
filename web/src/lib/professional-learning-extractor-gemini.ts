@@ -372,7 +372,13 @@ export interface GeminiLearningExtractorGenerateClient {
   // waits until the file is ready for use in a generateContent request
   // (or throws). Optional so existing IMAGE/TEXT fakes never need to
   // implement it -- only extractFromVideo below ever calls it.
-  uploadVideoFile?(input: { buffer: Buffer; mimeType: string; signal: AbortSignal }): Promise<{ fileUri: string; mimeType: string }>;
+  // Stage 8.5T1.3.R1 -- `durationSeconds`, when present, comes from the
+  // provider's own OUTPUT-ONLY File.videoMetadata (populated by Gemini's
+  // file-processing pipeline once the file reaches ACTIVE) -- a
+  // transcoding-level fact about the uploaded bytes, never a value this
+  // adapter computes or guesses. Optional so existing fakes that predate
+  // this stage keep compiling unchanged.
+  uploadVideoFile?(input: { buffer: Buffer; mimeType: string; signal: AbortSignal }): Promise<{ fileUri: string; mimeType: string; durationSeconds?: number }>;
 }
 
 export interface GeminiProfessionalLearningExtractorOptions {
@@ -605,6 +611,7 @@ export class GeminiProfessionalLearningExtractor implements ProfessionalLearning
         temporalObservations: parsed.temporalObservations,
         actionCandidates: parsed.actionCandidates,
         notableEditsOrCuts: parsed.notableEditsOrCuts,
+        sourceVideoDurationSeconds: uploaded.durationSeconds,
       };
     } catch (error) {
       throw this.classifyError(error, controller.signal);
@@ -618,6 +625,13 @@ export class GeminiProfessionalLearningExtractor implements ProfessionalLearning
   // upload-once-per-call behavior. Exists specifically so a long source
   // is never uploaded more than once regardless of how many windows are
   // analyzed (Section 6's cost discipline).
+  //
+  // Stage 8.5T1.3.R1 -- STRICT: the long-video windowing engine is NOT
+  // part of this stage's scope and stays completely disconnected. This
+  // method's own return type is deliberately kept exactly as it was
+  // (`{fileUri, mimeType}`, never widened) -- `uploadVideoFile`'s new
+  // optional `durationSeconds` is intentionally discarded here, never
+  // reaching the long-video path.
   async uploadVideoForWindowedAnalysis(media: { buffer: Buffer; mimeType: string }): Promise<{ fileUri: string; mimeType: string }> {
     if (!this.client.uploadVideoFile) {
       throw createProviderError("PROVIDER_ERROR", "This Gemini client does not support video file upload.");
@@ -625,7 +639,8 @@ export class GeminiProfessionalLearningExtractor implements ProfessionalLearning
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), GEMINI_LEARNING_EXTRACTOR_LONG_VIDEO_UPLOAD_TIMEOUT_MS);
     try {
-      return await this.client.uploadVideoFile({ buffer: media.buffer, mimeType: media.mimeType, signal: controller.signal });
+      const uploaded = await this.client.uploadVideoFile({ buffer: media.buffer, mimeType: media.mimeType, signal: controller.signal });
+      return { fileUri: uploaded.fileUri, mimeType: uploaded.mimeType };
     } catch (error) {
       throw this.classifyError(error, controller.signal);
     } finally {
@@ -867,6 +882,22 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Stage 8.5T1.3.R1 -- parses Gemini's own OUTPUT-ONLY File.videoMetadata
+// (the SDK types it as an untyped `Record<string, unknown>` -- it is not
+// part of this app's own contract). Defensive by construction: an
+// absent, malformed, or unrecognized shape yields `undefined`, never a
+// guessed number -- fail-honest, matching this file's own "UNKNOWN is a
+// fully successful answer" discipline extended to transport metadata.
+function parseGeminiFileVideoDurationSeconds(videoMetadata: unknown): number | undefined {
+  if (typeof videoMetadata !== "object" || videoMetadata === null) return undefined;
+  const raw = (videoMetadata as Record<string, unknown>).videoDuration;
+  if (typeof raw !== "string") return undefined;
+  const match = /^(\d+(?:\.\d+)?)s$/.exec(raw.trim());
+  if (!match) return undefined;
+  const seconds = Number(match[1]);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
+}
+
 // Stage 8.5L5.R1 -- how long this acceptance-sized poller will wait for a
 // just-uploaded video to leave PROCESSING and reach ACTIVE. Short clips
 // typically become ACTIVE in well under a minute; this is a generous
@@ -947,7 +978,7 @@ function createDefaultGeminiLearningExtractorClient(apiKey: string, timeoutMs: n
         throw createProviderError("PROVIDER_ERROR", `Gemini video file failed to become ACTIVE (state=${String(current.state)}).`);
       }
 
-      return { fileUri: current.uri, mimeType: current.mimeType };
+      return { fileUri: current.uri, mimeType: current.mimeType, durationSeconds: parseGeminiFileVideoDurationSeconds(current.videoMetadata) };
     },
   };
 }

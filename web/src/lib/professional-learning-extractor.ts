@@ -126,6 +126,14 @@ export interface ProfessionalLearningExtractorOutput {
   // treated as a hint for professional-learning-video-temporal-
   // reasoning.ts's declared-continuity-break mechanism, never as proof.
   readonly notableEditsOrCuts?: readonly { readonly beforeTimeSeconds: number; readonly afterTimeSeconds: number }[];
+  // Stage 8.5T1.3.R1 -- present ONLY for VIDEO evidence, and ONLY when the
+  // provider's own file-processing pipeline reported it. This is a
+  // TRANSCODING-LEVEL fact about the uploaded bytes (analogous to an
+  // object store's head() reporting size) -- NEVER the model's own
+  // semantic reading of the video, and NEVER a value this app or its
+  // caller supplied. Absent whenever the provider did not report it;
+  // never estimated or guessed by this interface's implementers.
+  readonly sourceVideoDurationSeconds?: number;
 }
 
 export interface ProfessionalLearningExtractor {

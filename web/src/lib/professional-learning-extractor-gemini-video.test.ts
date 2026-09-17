@@ -22,7 +22,7 @@ const registry = buildCanonicalCandidateSkillRegistry();
 
 function fakeClient(
   response: unknown,
-  options?: { capture?: (input: GeminiLearningExtractorGenerateInput) => void; uploaded?: { fileUri: string; mimeType: string }; uploadCalls?: { count: number } },
+  options?: { capture?: (input: GeminiLearningExtractorGenerateInput) => void; uploaded?: { fileUri: string; mimeType: string; durationSeconds?: number }; uploadCalls?: { count: number } },
 ): GeminiLearningExtractorGenerateClient {
   return {
     async generateContent(input) {
@@ -142,6 +142,27 @@ describe("GeminiProfessionalLearningExtractor -- VIDEO path (Stage 8.5L5.R1, zer
     expect(output.temporalObservations).toHaveLength(2);
     expect(output.actionCandidates).toEqual([{ timeStartSeconds: 5, timeEndSeconds: 9, kind: "CUTTING_ACTION" }]);
     expect(output.notableEditsOrCuts).toEqual([{ beforeTimeSeconds: 9, afterTimeSeconds: 40 }]);
+  });
+
+  it("Stage 8.5T1.3.R1 -- surfaces sourceVideoDurationSeconds when the provider's own file metadata reports it", async () => {
+    const canned = { discernmentCategory: "PROFESSIONAL_TECHNIQUE", discernmentReason: "test", temporalObservations: [], actionCandidates: [], notableEditsOrCuts: [], extractedFields: [] };
+    const extractor = new GeminiProfessionalLearningExtractor(
+      { apiKey: "key", model: "m" },
+      fakeClient(canned, { uploaded: { fileUri: "https://files.example/fake-video-1", mimeType: "video/mp4", durationSeconds: 67.3 } }),
+    );
+
+    const output = await extractor.extract({ evidence: videoEvidence(), evidenceReferences: {}, relevantRegistry: registry, videoMedia: dummyVideoMedia });
+
+    expect(output.sourceVideoDurationSeconds).toBe(67.3);
+  });
+
+  it("Stage 8.5T1.3.R1 -- sourceVideoDurationSeconds is undefined (never guessed) when the provider did not report it", async () => {
+    const canned = { discernmentCategory: "PROFESSIONAL_TECHNIQUE", discernmentReason: "test", temporalObservations: [], actionCandidates: [], notableEditsOrCuts: [], extractedFields: [] };
+    const extractor = new GeminiProfessionalLearningExtractor({ apiKey: "key", model: "m" }, fakeClient(canned));
+
+    const output = await extractor.extract({ evidence: videoEvidence(), evidenceReferences: {}, relevantRegistry: registry, videoMedia: dummyVideoMedia });
+
+    expect(output.sourceVideoDurationSeconds).toBeUndefined();
   });
 
   it("attaches a real time range as `segments` (the existing Stage 8.5L4 shape), and omits it for the -1/-1 sentinel", async () => {

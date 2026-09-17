@@ -18,6 +18,9 @@ describe("buildProfessionalLearningTemporalEvidence", () => {
       observations: [{ timeStartSeconds: 0, timeEndSeconds: 5, observation: "comb passes through a section of hair", source: "OBSERVED" }],
       actions: [],
       editGaps: [],
+      // No duration was supplied -- backward compatible with every call
+      // site that predates T1.3.R1, and explicitly marked UNVERIFIED.
+      sourceDurationSeconds: null,
     });
   });
 
@@ -110,6 +113,103 @@ describe("buildProfessionalLearningTemporalEvidence", () => {
     const many = Array.from({ length: 500 }, (_, i) => ({ timeStartSeconds: i, timeEndSeconds: i + 1, observation: `observation ${i}` }));
     const result = buildProfessionalLearningTemporalEvidence({ temporalObservations: many });
     expect(result!.observations.length).toBeLessThanOrEqual(200);
+  });
+});
+
+// Stage 8.5T1.3.R1 -- TEMPORAL VALIDITY CONTRACT. Source duration=67
+// throughout, matching the real T1.3 acceptance video's own known
+// length and the real, demonstrated 59-104s anomaly.
+describe("buildProfessionalLearningTemporalEvidence -- duration-bounded validity (Stage 8.5T1.3.R1)", () => {
+  const DURATION = 67;
+
+  it("accepts an entry well within the source duration (0-5)", () => {
+    const result = buildProfessionalLearningTemporalEvidence({ temporalObservations: [{ timeStartSeconds: 0, timeEndSeconds: 5, observation: "x" }] }, DURATION);
+    expect(result?.observations).toEqual([{ timeStartSeconds: 0, timeEndSeconds: 5, observation: "x", source: "OBSERVED" }]);
+    expect(result?.sourceDurationSeconds).toBe(DURATION);
+  });
+
+  it("accepts an entry ending right at the source duration (59-66, and 59-67)", () => {
+    const result = buildProfessionalLearningTemporalEvidence(
+      { temporalObservations: [{ timeStartSeconds: 59, timeEndSeconds: 66, observation: "a" }, { timeStartSeconds: 59, timeEndSeconds: 67, observation: "b" }] },
+      DURATION,
+    );
+    expect(result?.observations).toHaveLength(2);
+  });
+
+  it("REJECTS the real demonstrated anomaly (59-104) against duration=67 -- dropped, never clamped to 59-67", () => {
+    const result = buildProfessionalLearningTemporalEvidence(
+      {
+        temporalObservations: [
+          { timeStartSeconds: 59, timeEndSeconds: 104, observation: "impossible entry" },
+          { timeStartSeconds: 20, timeEndSeconds: 25, observation: "a genuinely valid neighbor" },
+        ],
+      },
+      DURATION,
+    );
+    // The impossible entry is gone entirely -- not present at all, and
+    // specifically never present as a rewritten "59-67" entry.
+    expect(result?.observations).toEqual([{ timeStartSeconds: 20, timeEndSeconds: 25, observation: "a genuinely valid neighbor", source: "OBSERVED" }]);
+    expect(result?.observations.some((o) => o.timeStartSeconds === 59)).toBe(false);
+  });
+
+  it("rejects an entry entirely beyond the source duration (70-80)", () => {
+    const result = buildProfessionalLearningTemporalEvidence({ temporalObservations: [{ timeStartSeconds: 70, timeEndSeconds: 80, observation: "x" }] }, DURATION);
+    expect(result).toBeNull();
+  });
+
+  it("rejects a negative start even when duration is known", () => {
+    const result = buildProfessionalLearningTemporalEvidence({ temporalObservations: [{ timeStartSeconds: -2, timeEndSeconds: 5, observation: "x" }] }, DURATION);
+    expect(result).toBeNull();
+  });
+
+  it("rejects end <= start even when duration is known", () => {
+    const result = buildProfessionalLearningTemporalEvidence({ temporalObservations: [{ timeStartSeconds: 20, timeEndSeconds: 10, observation: "x" }] }, DURATION);
+    expect(result).toBeNull();
+  });
+
+  it("boundary tolerance is tiny -- a hair past duration by rounding (67.3) is accepted, but 104 is always rejected regardless", () => {
+    const nearBoundary = buildProfessionalLearningTemporalEvidence({ temporalObservations: [{ timeStartSeconds: 60, timeEndSeconds: 67.3, observation: "x" }] }, DURATION);
+    expect(nearBoundary?.observations).toHaveLength(1);
+
+    const wayPast = buildProfessionalLearningTemporalEvidence({ temporalObservations: [{ timeStartSeconds: 60, timeEndSeconds: 68.5, observation: "x" }] }, DURATION);
+    expect(wayPast).toBeNull();
+  });
+
+  it("rejects an invalid action-candidate entry the same way (out of bounds), preserving a valid neighbor", () => {
+    const result = buildProfessionalLearningTemporalEvidence(
+      { actionCandidates: [{ timeStartSeconds: 59, timeEndSeconds: 104, kind: "CUTTING_ACTION" }, { timeStartSeconds: 20, timeEndSeconds: 25, kind: "COMBING" }] },
+      DURATION,
+    );
+    expect(result?.actions).toEqual([{ timeStartSeconds: 20, timeEndSeconds: 25, kind: "COMBING", source: "INFERRED" }]);
+  });
+
+  it("rejects an invalid possible-edit-marker entry the same way (out of bounds), preserving a valid neighbor", () => {
+    const result = buildProfessionalLearningTemporalEvidence(
+      { notableEditsOrCuts: [{ beforeTimeSeconds: 66, afterTimeSeconds: 104 }, { beforeTimeSeconds: 14, afterTimeSeconds: 16 }] },
+      DURATION,
+    );
+    expect(result?.editGaps).toEqual([{ beforeTimeSeconds: 14, afterTimeSeconds: 16, source: "OBSERVED" }]);
+  });
+
+  it("API/persisted shape never contains the rejected out-of-range entry under any key", () => {
+    const result = buildProfessionalLearningTemporalEvidence(
+      { temporalObservations: [{ timeStartSeconds: 59, timeEndSeconds: 104, observation: "impossible" }] },
+      DURATION,
+    );
+    expect(JSON.stringify(result)).not.toContain("104");
+  });
+
+  it("an invalid (non-finite / non-positive) authoritative duration is treated identically to unknown -- no fabricated bound", () => {
+    const asNaN = buildProfessionalLearningTemporalEvidence({ temporalObservations: [{ timeStartSeconds: 0, timeEndSeconds: 5, observation: "x" }] }, Number.NaN);
+    expect(asNaN?.sourceDurationSeconds).toBeNull();
+    const asZero = buildProfessionalLearningTemporalEvidence({ temporalObservations: [{ timeStartSeconds: 0, timeEndSeconds: 5, observation: "x" }] }, 0);
+    expect(asZero?.sourceDurationSeconds).toBeNull();
+  });
+
+  it("unknown duration (omitted) never rejects an entry on range grounds -- backward compatible, but explicitly marked unverified", () => {
+    const result = buildProfessionalLearningTemporalEvidence({ temporalObservations: [{ timeStartSeconds: 59, timeEndSeconds: 104, observation: "unverifiable without a duration" }] });
+    expect(result?.observations).toHaveLength(1);
+    expect(result?.sourceDurationSeconds).toBeNull();
   });
 });
 

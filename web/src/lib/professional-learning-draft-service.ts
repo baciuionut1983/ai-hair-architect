@@ -8,6 +8,7 @@ import { applySemanticBindingGuard } from "@/lib/professional-learning-semantic-
 import { resolveLearningEvidenceImageMedia } from "@/lib/professional-learning-image-media-resolver";
 import { resolveLearningEvidenceVideoMedia } from "@/lib/professional-learning-video-media-resolver";
 import { buildProfessionalLearningTemporalEvidence } from "@/lib/professional-learning-video-temporal-evidence";
+import { recordUploadedVideoAssetDuration } from "@/lib/video-asset-storage";
 import type { ProfessionalLearningExtractorImageMedia, ProfessionalLearningExtractorVideoMedia } from "@/lib/professional-learning-extractor";
 import {
   claimDraftForReanalysis,
@@ -189,13 +190,32 @@ async function buildExtractionResult(input: ProcessEvidenceIntoDraftInput, evide
 
   const comparison = compareExtractionAgainstRegistry(output.discernment.category, output.relatedSkillIdHints, input.registry, evidence.id);
 
+  // Stage 8.5T1.3.R1 -- best-effort, ownership/origin-scoped, write-once
+  // persistence of the provider-file-derived source duration onto the
+  // ALREADY-EXISTING VideoAsset.durationSeconds column (see video-asset-
+  // storage.ts's recordUploadedVideoAssetDuration for the full safety
+  // argument -- never touches a generated-output row, never overwrites
+  // an already-recorded value). Never gates the extraction itself: a
+  // failure here is swallowed, matching "do not make evidence ACTIVE (or
+  // block a draft) based solely on duration metadata."
+  if (evidence.evidenceType === "VIDEO" && evidence.videoAssetId && typeof output.sourceVideoDurationSeconds === "number") {
+    await recordUploadedVideoAssetDuration(input.ownerUserId, evidence.videoAssetId, output.sourceVideoDurationSeconds).catch(() => undefined);
+  }
+
   // Stage 8.5T1.2 -- STOP DISCARDING TEMPORAL EVIDENCE. `output` already
   // carries temporalObservations/actionCandidates/notableEditsOrCuts for
   // VIDEO evidence (the real Gemini adapter already returns them, under
   // the existing, unmodified prompt/schema) -- until this stage, nothing
   // past this point ever read them. This is a separate, additional
   // evidence layer, never flattened into `extraction` above.
-  const temporalEvidence = buildProfessionalLearningTemporalEvidence(output);
+  //
+  // Stage 8.5T1.3.R1 -- the SAME freshly-derived duration (never a
+  // stored/stale value, never a client-declared one) is passed straight
+  // through so THIS extraction's own temporal evidence is bounded
+  // against it before persistence -- see professional-learning-video-
+  // temporal-evidence.ts's own "TEMPORAL VALIDITY CONTRACT" for the
+  // fail-honest, non-fabricating accept/reject rule this applies.
+  const temporalEvidence = buildProfessionalLearningTemporalEvidence(output, output.sourceVideoDurationSeconds);
 
   return {
     discernmentCategory: output.discernment.category,

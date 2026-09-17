@@ -34,13 +34,13 @@ function fakeGeminiClient(cannedJson: unknown): GeminiLearningExtractorGenerateC
   };
 }
 
-function fakeGeminiVideoClient(cannedJson: unknown): GeminiLearningExtractorGenerateClient {
+function fakeGeminiVideoClient(cannedJson: unknown, durationSeconds?: number): GeminiLearningExtractorGenerateClient {
   return {
     async generateContent() {
       return JSON.stringify(cannedJson);
     },
     async uploadVideoFile() {
-      return { fileUri: "https://files.example/fake-video-1", mimeType: "video/mp4" };
+      return { fileUri: "https://files.example/fake-video-1", mimeType: "video/mp4", ...(durationSeconds !== undefined ? { durationSeconds } : {}) };
     },
   };
 }
@@ -105,6 +105,10 @@ suite("Stage 8.5T1.1 -- real Gemini extractor class through the real draft pipel
     // extraction + draft creation happened.
     const skillRows = await prisma.professionalSkillDefinition.count();
     expect(skillRows).toBe(0);
+
+    // Stage 8.5T1.3.R1, item 8 -- TEXT evidence is structurally unaffected:
+    // there is no video to have a duration/temporal layer at all.
+    expect(outcome.draft.temporalEvidence).toBeFalsy();
   });
 
   // T1.2 -- TEMPORAL OBSERVATION PRESERVATION. Proves the full path the
@@ -133,7 +137,9 @@ suite("Stage 8.5T1.1 -- real Gemini extractor class through the real draft pipel
       notableEditsOrCuts: [{ beforeTimeSeconds: 9, afterTimeSeconds: 40 }],
       extractedFields: [{ field: "tool", value: "comb", source: "OBSERVED", confidence: 0.8, note: "" }],
     };
-    const extractor = new GeminiProfessionalLearningExtractor({ apiKey: "fake-test-key-never-a-real-secret", model: "gemini-3.6-flash" }, fakeGeminiVideoClient(canned));
+    // Stage 8.5T1.3.R1 -- the provider's own file-processing metadata now
+    // reports a real duration (60s) alongside the upload.
+    const extractor = new GeminiProfessionalLearningExtractor({ apiKey: "fake-test-key-never-a-real-secret", model: "gemini-3.6-flash" }, fakeGeminiVideoClient(canned, 60));
 
     const outcome = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor, registry });
 
@@ -144,7 +150,8 @@ suite("Stage 8.5T1.1 -- real Gemini extractor class through the real draft pipel
     expect(outcome.draft.extraction.tool).toMatchObject({ value: "comb", source: "OBSERVED" });
 
     // Temporal evidence is a SEPARATE, additional layer -- never
-    // flattened into `extraction`, never dropped.
+    // flattened into `extraction`, never dropped -- and is now bounded
+    // against (and carries) the real, provider-derived duration.
     expect(outcome.draft.temporalEvidence).toEqual({
       observations: [
         { timeStartSeconds: 0, timeEndSeconds: 5, observation: "comb passes through a section of hair", source: "OBSERVED" },
@@ -152,14 +159,62 @@ suite("Stage 8.5T1.1 -- real Gemini extractor class through the real draft pipel
       ],
       actions: [{ timeStartSeconds: 5, timeEndSeconds: 9, kind: "CUTTING_ACTION", source: "INFERRED" }],
       editGaps: [{ beforeTimeSeconds: 9, afterTimeSeconds: 40, source: "OBSERVED" }],
+      sourceDurationSeconds: 60,
     });
 
     // Round-trips from real Postgres, not just the in-memory return value.
     const reloaded = await prisma.professionalLearningDraft.findUnique({ where: { id: outcome.draft.id } });
     expect(reloaded?.temporalEvidence).toEqual(outcome.draft.temporalEvidence);
 
+    // Stage 8.5T1.3.R1, item 1/2/3 -- the authoritative duration is
+    // persisted onto the exact, authorized VideoAsset row, in seconds.
+    const videoAsset = await prisma.videoAsset.findUnique({ where: { id: assetId } });
+    expect(videoAsset?.durationSeconds).toBe(60);
+
     // Zero active-knowledge mutation, exactly as before this stage.
     expect(await prisma.professionalSkillDefinition.count()).toBe(0);
+  });
+
+  // Stage 8.5T1.3.R1 -- the real, demonstrated production anomaly (a
+  // temporal interval extending past the real source duration) end to
+  // end: rejected before persistence, never fabricated/clamped, while a
+  // genuinely valid neighboring entry survives.
+  it("REJECTS a temporal entry that exceeds the real, provider-derived source duration -- never clamped, never persisted, valid neighbors survive", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const assetId = randomUUID();
+    const storagePath = await saveImageFile(ownerUserId, assetId, "video.mp4", FAKE_MP4_BYTES);
+    localVideoPaths.add(storagePath);
+    await prisma.videoAsset.create({
+      data: { id: assetId, ownerUserId, clientId, mimeType: "video/mp4", sizeBytes: FAKE_MP4_BYTES.length, storagePath, storageBackend: null, origin: "uploaded_source" },
+    });
+    const evidence = await createLearningEvidence(ownerUserId, videoInput(assetId));
+
+    const canned = {
+      discernmentCategory: "PROFESSIONAL_TECHNIQUE",
+      discernmentReason: "Real acceptance anomaly shape.",
+      temporalObservations: [
+        { timeStartSeconds: 20, timeEndSeconds: 25, observation: "a genuinely valid neighboring entry" },
+        { timeStartSeconds: 59, timeEndSeconds: 104, observation: "impossible -- exceeds the real ~67s source duration" },
+      ],
+      actionCandidates: [],
+      notableEditsOrCuts: [],
+      extractedFields: [{ field: "tool", value: "shears", source: "OBSERVED", confidence: 0.8, note: "" }],
+    };
+    // The real source video is ~67 seconds -- exactly the T1.3 acceptance baseline.
+    const extractor = new GeminiProfessionalLearningExtractor({ apiKey: "fake-test-key-never-a-real-secret", model: "gemini-3.6-flash" }, fakeGeminiVideoClient(canned, 67));
+
+    const outcome = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor, registry });
+
+    expect(outcome.kind).toBe("created");
+    if (outcome.kind !== "created") throw new Error("expected created");
+
+    expect(outcome.draft.temporalEvidence?.observations).toEqual([{ timeStartSeconds: 20, timeEndSeconds: 25, observation: "a genuinely valid neighboring entry", source: "OBSERVED" }]);
+    expect(JSON.stringify(outcome.draft.temporalEvidence)).not.toContain("104");
+
+    // API surface (the in-memory return value the route serializes) never
+    // contains the rejected entry either.
+    const reloaded = await prisma.professionalLearningDraft.findUnique({ where: { id: outcome.draft.id } });
+    expect(JSON.stringify(reloaded?.temporalEvidence)).not.toContain("104");
   });
 
   // T1.2.R1 -- EXPLICIT REANALYSIS through the REAL adapter's exact
@@ -186,7 +241,7 @@ suite("Stage 8.5T1.1 -- real Gemini extractor class through the real draft pipel
       notableEditsOrCuts: [],
       extractedFields: [{ field: "tool", value: "comb", source: "OBSERVED", confidence: 0.8, note: "" }],
     };
-    const extractorForFirst = new GeminiProfessionalLearningExtractor({ apiKey: "fake-test-key-never-a-real-secret", model: "gemini-3.6-flash" }, fakeGeminiVideoClient(firstCanned));
+    const extractorForFirst = new GeminiProfessionalLearningExtractor({ apiKey: "fake-test-key-never-a-real-secret", model: "gemini-3.6-flash" }, fakeGeminiVideoClient(firstCanned, 60));
     const first = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: extractorForFirst, registry });
     if (first.kind !== "created") throw new Error("expected created");
 
@@ -198,7 +253,10 @@ suite("Stage 8.5T1.1 -- real Gemini extractor class through the real draft pipel
       notableEditsOrCuts: [],
       extractedFields: [{ field: "tool", value: "shears", source: "OBSERVED", confidence: 0.9, note: "" }],
     };
-    const extractorForSecond = new GeminiProfessionalLearningExtractor({ apiKey: "fake-test-key-never-a-real-secret", model: "gemini-3.6-flash" }, fakeGeminiVideoClient(secondCanned));
+    // A DIFFERENT duration is reported on the reanalysis attempt --
+    // proves the CURRENT extraction's own fresh value is what bounds
+    // THIS temporal evidence (never a stale value from the first attempt).
+    const extractorForSecond = new GeminiProfessionalLearningExtractor({ apiKey: "fake-test-key-never-a-real-secret", model: "gemini-3.6-flash" }, fakeGeminiVideoClient(secondCanned, 45));
     const second = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: extractorForSecond, registry, mode: "REANALYZE" });
 
     expect(second.kind).toBe("reanalyzed");
@@ -213,7 +271,16 @@ suite("Stage 8.5T1.1 -- real Gemini extractor class through the real draft pipel
       observations: [{ timeStartSeconds: 10, timeEndSeconds: 15, observation: "scissors visibly close near the ends", source: "OBSERVED" }],
       actions: [{ timeStartSeconds: 10, timeEndSeconds: 15, kind: "CUTTING_ACTION", source: "INFERRED" }],
       editGaps: [],
+      sourceDurationSeconds: 45,
     });
+
+    // recordUploadedVideoAssetDuration is write-once: the FIRST attempt's
+    // duration (60) already won and is never overwritten by the second
+    // attempt's different value (45) -- professional authority over the
+    // VideoAsset row's own recorded fact is not re-litigated by every
+    // reanalysis.
+    const videoAsset = await prisma.videoAsset.findUnique({ where: { id: assetId } });
+    expect(videoAsset?.durationSeconds).toBe(60);
     for (const entry of Object.values(second.draft.extraction)) {
       expect(entry?.source).not.toBe("PROFESSIONAL_INPUT");
     }
