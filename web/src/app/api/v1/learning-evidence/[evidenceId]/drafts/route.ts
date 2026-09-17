@@ -43,6 +43,15 @@ export async function POST(request: Request, context: { params: Promise<{ eviden
   }
 
   const { evidenceId } = await context.params;
+  // Stage 8.5T1.2.R1 -- EXPLICIT REANALYSIS SEMANTICS. The only value this
+  // route ever trusts from the caller here is a closed-set mode flag --
+  // never an arbitrary "force" bypass. Anything other than the literal
+  // string "REANALYZE" (missing body, malformed JSON, an invalid value)
+  // fails safe to the existing, unchanged "ANALYZE" default; the caller
+  // cannot use this to skip authentication/ownership/evidence validation,
+  // all of which still run exactly as before inside processEvidenceIntoDraft.
+  const body = (await request.json().catch(() => null)) as { mode?: unknown } | null;
+  const mode = body?.mode === "REANALYZE" ? "REANALYZE" : "ANALYZE";
 
   try {
     const extractor = selectProfessionalLearningExtractor(process.env);
@@ -53,6 +62,7 @@ export async function POST(request: Request, context: { params: Promise<{ eviden
       draftId: randomUUID(),
       extractor,
       registry,
+      mode,
     });
 
     if (outcome.kind === "skipped") {

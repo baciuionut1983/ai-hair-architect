@@ -3,11 +3,12 @@ import { randomUUID } from "crypto";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { prisma } from "@/lib/prisma";
-import { createLearningEvidence } from "@/lib/professional-learning-evidence-repository";
+import { createLearningEvidence, revokeLearningEvidence } from "@/lib/professional-learning-evidence-repository";
 import { processEvidenceIntoDraft, submitProfessionalCorrection } from "@/lib/professional-learning-draft-service";
 import { mockProfessionalLearningExtractor } from "@/lib/professional-learning-mock-extractor";
 import { buildCanonicalCandidateSkillRegistry } from "@/lib/professional-brain-skill-templates";
-import { findDraftForOwner } from "@/lib/professional-learning-draft-repository";
+import { findDraftForOwner, transitionDraftStatus } from "@/lib/professional-learning-draft-repository";
+import type { ProfessionalLearningExtractor, ProfessionalLearningExtractorInput, ProfessionalLearningExtractorOutput } from "@/lib/professional-learning-extractor";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L4 -- the five
 // controlled acceptance fixtures this stage's own task requires (Parts
@@ -184,7 +185,207 @@ suite("Stage 8.5L4 controlled acceptance fixtures", () => {
     const preserved = await findDraftForOwner(ownerUserId, created.draft.id);
     expect(preserved).toEqual(created.draft);
   });
+
+  // T1.2.R1 -- EXPLICIT REANALYSIS SEMANTICS.
+  describe("explicit reanalysis (mode: REANALYZE)", () => {
+    it("reaches the extractor exactly once, reuses the SAME draft id, and returns kind='reanalyzed' -- never a second row", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createLearningEvidence(ownerUserId, textInput("Graduated cutting reanalysis-test example with sectioning and elevation."));
+      const extractor = countingExtractor(mockProfessionalLearningExtractor);
+
+      const first = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor, registry });
+      if (first.kind !== "created") throw new Error("expected created");
+      expect(extractor.callCount).toBe(1);
+
+      const second = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor, registry, mode: "REANALYZE" });
+
+      expect(second.kind).toBe("reanalyzed");
+      if (second.kind !== "reanalyzed") throw new Error("expected reanalyzed");
+      expect(second.draft.id).toBe(first.draft.id);
+      expect(extractor.callCount).toBe(2);
+      // Never a second row for this (evidence, extractorVersion) pair --
+      // the schema's own unique constraint is never bypassed.
+      expect(await prisma.professionalLearningDraft.count({ where: { sourceEvidenceId: evidence.id } })).toBe(1);
+      // Never required reuploading evidence or deleting it.
+      expect(await prisma.professionalLearningEvidence.count({ where: { id: evidence.id } })).toBe(1);
+    });
+
+    it("REANALYZE with no existing draft behaves exactly like a first ANALYZE (no special-casing, no error)", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createLearningEvidence(ownerUserId, textInput("Graduated cutting example, reanalyze-with-nothing-yet."));
+
+      const outcome = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: mockProfessionalLearningExtractor, registry, mode: "REANALYZE" });
+
+      expect(outcome.kind).toBe("created");
+    });
+
+    it("a normal ANALYZE request against existing evidence still reuses the cached draft -- REANALYZE did not weaken the existing idempotent default", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createLearningEvidence(ownerUserId, textInput("Graduated cutting example, normal-analyze-still-idempotent."));
+      const extractor = countingExtractor(mockProfessionalLearningExtractor);
+
+      await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor, registry });
+      const second = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor, registry }); // mode omitted -- defaults to ANALYZE
+
+      expect(second.kind).toBe("already_processed");
+      expect(extractor.callCount).toBe(1);
+    });
+
+    it("cannot reanalyze a draft that has already been professionally APPROVED -- fails closed, approved content is completely unchanged", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createLearningEvidence(ownerUserId, textInput("Graduated cutting example for approved-reanalysis-safety."));
+      const created = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: mockProfessionalLearningExtractor, registry });
+      if (created.kind !== "created") throw new Error("expected created");
+      await transitionDraftStatus(ownerUserId, created.draft.id, "READY_FOR_REVIEW");
+      const approved = await transitionDraftStatus(ownerUserId, created.draft.id, "APPROVED");
+
+      await expect(
+        processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: mockProfessionalLearningExtractor, registry, mode: "REANALYZE" }),
+      ).rejects.toMatchObject({ code: "DRAFT_NOT_REANALYZABLE" });
+
+      const stillApproved = await findDraftForOwner(ownerUserId, created.draft.id);
+      expect(stillApproved).toEqual(approved);
+    });
+
+    it("two concurrent explicit reanalysis attempts: exactly one reaches the extractor, the other fails closed with DRAFT_REANALYSIS_IN_PROGRESS -- never two provider calls for one action", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createLearningEvidence(ownerUserId, textInput("Graduated cutting example for concurrency-safety."));
+      const created = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: mockProfessionalLearningExtractor, registry });
+      if (created.kind !== "created") throw new Error("expected created");
+
+      const gate = deferredGateExtractor(mockProfessionalLearningExtractor);
+      const attempt1 = processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: gate.extractor, registry, mode: "REANALYZE" });
+      await gate.waitUntilEntered();
+      // The second attempt is issued while the first is still holding the
+      // claim (blocked inside its own extract() call, not yet resolved).
+      const attempt2Result = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: mockProfessionalLearningExtractor, registry, mode: "REANALYZE" }).catch(
+        (error: unknown) => error,
+      );
+      gate.release();
+      const attempt1Result = await attempt1;
+
+      expect(attempt1Result.kind).toBe("reanalyzed");
+      expect(attempt2Result).toMatchObject({ code: "DRAFT_REANALYSIS_IN_PROGRESS" });
+      expect(gate.callCount).toBe(1);
+    });
+
+    it("provider failure during REANALYZE is fail-honest: throws, never a false success, and the PRIOR valid content is left completely untouched", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createLearningEvidence(ownerUserId, textInput("Graduated cutting example for reanalysis-failure-safety."));
+      const created = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: mockProfessionalLearningExtractor, registry });
+      if (created.kind !== "created") throw new Error("expected created");
+
+      const failingExtractor: ProfessionalLearningExtractor = {
+        extractorVersion: mockProfessionalLearningExtractor.extractorVersion,
+        async extract() {
+          throw Object.assign(new Error("simulated provider failure"), { code: "PROVIDER_ERROR", retryable: true });
+        },
+      };
+
+      await expect(
+        processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: failingExtractor, registry, mode: "REANALYZE" }),
+      ).rejects.toMatchObject({ code: "PROVIDER_ERROR" });
+
+      // The draft is never left stuck in REANALYZING, and the prior,
+      // still-valid content is completely unchanged -- never presented
+      // as if a fresh reanalysis had succeeded.
+      const reverted = await findDraftForOwner(ownerUserId, created.draft.id);
+      expect(reverted?.status).toBe("DRAFT");
+      expect(reverted?.extraction).toEqual(created.draft.extraction);
+
+      // A subsequent, genuine retry is still possible.
+      const retried = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: mockProfessionalLearningExtractor, registry, mode: "REANALYZE" });
+      expect(retried.kind).toBe("reanalyzed");
+
+      // No Professional Knowledge activation occurred at any point.
+      expect(await prisma.professionalSkillDefinition.count()).toBe(0);
+    });
+
+    it("REANALYZE on non-ACTIVE (revoked) evidence is skipped, never reaching the extractor", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createLearningEvidence(ownerUserId, textInput("Graduated cutting example for revoked-reanalysis-safety."));
+      const created = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: mockProfessionalLearningExtractor, registry });
+      if (created.kind !== "created") throw new Error("expected created");
+      await revokeLearningEvidence(ownerUserId, evidence.id);
+
+      const extractor = countingExtractor(mockProfessionalLearningExtractor);
+      const outcome = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor, registry, mode: "REANALYZE" });
+
+      expect(outcome).toEqual({ kind: "skipped", reason: "EVIDENCE_NOT_ACTIVE" });
+      expect(extractor.callCount).toBe(0);
+    });
+
+    it("a caller-supplied mode is never trusted as a generic provider-call bypass -- only the literal string 'REANALYZE' has any effect", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createLearningEvidence(ownerUserId, textInput("Graduated cutting example for mode-bypass-safety."));
+      const extractor = countingExtractor(mockProfessionalLearningExtractor);
+
+      const first = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor, registry });
+      if (first.kind !== "created") throw new Error("expected created");
+
+      // @ts-expect-error -- deliberately an invalid mode value, exactly
+      // what a malformed/malicious request body could produce.
+      const second = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor, registry, mode: "force" });
+
+      expect(second.kind).toBe("already_processed");
+      expect(extractor.callCount).toBe(1);
+    });
+  });
 });
+
+// T1.2.R1 test helper -- wraps a real ProfessionalLearningExtractor to
+// count real extract() invocations, without altering its behavior at
+// all. Never a mocking library; a hand-built delegate, matching this
+// file's own established convention.
+function countingExtractor(delegate: ProfessionalLearningExtractor): ProfessionalLearningExtractor & { callCount: number } {
+  const wrapped = {
+    extractorVersion: delegate.extractorVersion,
+    callCount: 0,
+    async extract(input: ProfessionalLearningExtractorInput): Promise<ProfessionalLearningExtractorOutput> {
+      wrapped.callCount += 1;
+      return delegate.extract(input);
+    },
+  };
+  return wrapped;
+}
+
+// T1.2.R1 test helper -- wraps a real extractor so its extract() call
+// blocks until the test explicitly releases it, letting a test
+// deterministically interleave two concurrent processEvidenceIntoDraft
+// calls around the exact moment the first one is mid-extraction (i.e.
+// already holding the REANALYZING claim).
+function deferredGateExtractor(delegate: ProfessionalLearningExtractor): {
+  extractor: ProfessionalLearningExtractor;
+  waitUntilEntered: () => Promise<void>;
+  release: () => void;
+  callCount: number;
+} {
+  let entered = false;
+  let resolveEntered: () => void;
+  const enteredPromise = new Promise<void>((resolve) => (resolveEntered = resolve));
+  let release: () => void = () => undefined;
+  const state = { callCount: 0 };
+
+  const extractor: ProfessionalLearningExtractor = {
+    extractorVersion: delegate.extractorVersion,
+    async extract(input) {
+      state.callCount += 1;
+      entered = true;
+      resolveEntered();
+      await new Promise<void>((resolve) => (release = resolve));
+      return delegate.extract(input);
+    },
+  };
+
+  return {
+    extractor,
+    waitUntilEntered: () => (entered ? Promise.resolve() : enteredPromise),
+    release: () => release(),
+    get callCount() {
+      return state.callCount;
+    },
+  };
+}
 
 function textInput(originalText: string) {
   return {

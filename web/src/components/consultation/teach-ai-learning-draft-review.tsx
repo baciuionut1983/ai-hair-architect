@@ -13,6 +13,7 @@ import {
   formatExtractionForDisplay,
   formatTemporalEvidenceForDisplay,
   LEARNING_DRAFT_HEADING_TEXT,
+  nextRequestMode,
   TEMPORAL_EVIDENCE_HEADING_TEXT,
 } from "./teach-ai-learning-draft-review-logic";
 
@@ -66,14 +67,28 @@ export function LearningDraftReview({ evidenceId }: { evidenceId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  // T1.2.R1 -- EXPLICIT REANALYSIS SEMANTICS. Tracks "has a successful
+  // draft ever been shown for this evidence in this session" -- distinct
+  // from `expanded` (which also flips true on skip/error) and from
+  // `draft` itself (which is deliberately cleared at the START of every
+  // new attempt below, including a retry). Once true, it never resets:
+  // a click after a FAILED reanalysis attempt must still be sent as an
+  // explicit reanalysis, never silently fall back to the idempotent
+  // "ANALYZE" default merely because the failed attempt cleared `draft`.
+  const [hasExistingDraft, setHasExistingDraft] = useState(false);
 
   async function runDiscernment() {
+    const mode = nextRequestMode(hasExistingDraft);
     setLoading(true);
     setSkipped(null);
     setError(null);
     setDraft(null);
     try {
-      const response = await fetch(`/api/v1/learning-evidence/${evidenceId}/drafts`, { method: "POST" });
+      const response = await fetch(`/api/v1/learning-evidence/${evidenceId}/drafts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
       const body = await response.json().catch(() => null);
       // The uploaded evidence itself is never touched here -- only this
       // attempt's own draft-creation call is being classified. A retry
@@ -83,7 +98,10 @@ export function LearningDraftReview({ evidenceId }: { evidenceId: string }) {
       const outcome = classifyDraftAnalysisResponse(response.ok, body);
       if (outcome.kind === "error") setError(outcome.message);
       else if (outcome.kind === "skipped") setSkipped(outcome.reason);
-      else setDraft(outcome.draft as LearningDraft);
+      else {
+        setDraft(outcome.draft as LearningDraft);
+        setHasExistingDraft(true);
+      }
       setExpanded(true);
     } catch {
       const failure = classifyDraftAnalysisResponse(false, null);

@@ -5,12 +5,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import { prisma } from "@/lib/prisma";
 import { createLearningEvidence } from "@/lib/professional-learning-evidence-repository";
 import {
+  claimDraftForReanalysis,
+  completeReanalysis,
   createCorrectionDraft,
   createDraft,
   findDraftBySourceEvidenceAndExtractorVersion,
   findDraftForOwner,
   listDraftsForOwner,
   ProfessionalLearningDraftStateError,
+  revertFailedReanalysis,
   transitionDraftStatus,
 } from "@/lib/professional-learning-draft-repository";
 
@@ -171,6 +174,114 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
     expect(found?.temporalEvidence).toEqual(temporalEvidence);
     // Never flattened into / never overwrites the existing scalar fields.
     expect(found?.extraction).toEqual(input(evidence.id).extraction);
+  });
+
+  // T1.2.R1 -- EXPLICIT REANALYSIS SEMANTICS.
+  describe("claimDraftForReanalysis / completeReanalysis / revertFailedReanalysis", () => {
+    it("claims a DRAFT-status row, completes it in place (same id, same unique key), never a second row", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createEvidence(ownerUserId);
+      const original = await createDraft(ownerUserId, randomUUID(), input(evidence.id));
+
+      expect(await claimDraftForReanalysis(ownerUserId, original.id)).toBe(true);
+      const claimedRow = await prisma.professionalLearningDraft.findUniqueOrThrow({ where: { id: original.id } });
+      expect(claimedRow.status).toBe("REANALYZING");
+
+      const newTemporalEvidence = { observations: [{ timeStartSeconds: 0, timeEndSeconds: 5, observation: "x", source: "OBSERVED" as const }], actions: [], editGaps: [] };
+      const completed = await completeReanalysis(ownerUserId, original.id, {
+        discernmentCategory: "PROFESSIONAL_VARIATION",
+        comparisonOutcome: "POSSIBLE_NEW_SKILL",
+        comparedSkillId: null,
+        extraction: { elevation: { value: "45 degrees", source: "OBSERVED" } },
+        temporalEvidence: newTemporalEvidence,
+        conflictDetail: null,
+      });
+
+      expect(completed.id).toBe(original.id);
+      expect(completed.status).toBe("DRAFT");
+      expect(completed.discernmentCategory).toBe("PROFESSIONAL_VARIATION");
+      expect(completed.extraction).toEqual({ elevation: { value: "45 degrees", source: "OBSERVED" } });
+      expect(completed.temporalEvidence).toEqual(newTemporalEvidence);
+      // Same row -- never a second draft for this (sourceEvidenceId, extractorVersion) pair.
+      expect(await prisma.professionalLearningDraft.count({ where: { sourceEvidenceId: evidence.id } })).toBe(1);
+    });
+
+    it("a second concurrent claim attempt fails (count 0) while the first is still REANALYZING -- at most one caller ever wins", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createEvidence(ownerUserId);
+      const original = await createDraft(ownerUserId, randomUUID(), input(evidence.id));
+
+      expect(await claimDraftForReanalysis(ownerUserId, original.id)).toBe(true);
+      expect(await claimDraftForReanalysis(ownerUserId, original.id)).toBe(false);
+    });
+
+    it("cannot claim a draft that has already been APPROVED -- professional authority is never silently reopened", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createEvidence(ownerUserId);
+      const original = await createDraft(ownerUserId, randomUUID(), input(evidence.id));
+      await transitionDraftStatus(ownerUserId, original.id, "READY_FOR_REVIEW");
+      await transitionDraftStatus(ownerUserId, original.id, "APPROVED");
+
+      expect(await claimDraftForReanalysis(ownerUserId, original.id)).toBe(false);
+      const row = await prisma.professionalLearningDraft.findUniqueOrThrow({ where: { id: original.id } });
+      expect(row.status).toBe("APPROVED");
+    });
+
+    it("cannot claim another owner's draft (IDOR)", async () => {
+      const { ownerUserId: userA } = await createOwner();
+      const userB = (await createOwner()).ownerUserId;
+      const evidence = await createEvidence(userA);
+      const original = await createDraft(userA, randomUUID(), input(evidence.id));
+
+      expect(await claimDraftForReanalysis(userB, original.id)).toBe(false);
+      const row = await prisma.professionalLearningDraft.findUniqueOrThrow({ where: { id: original.id } });
+      expect(row.status).toBe("DRAFT");
+    });
+
+    it("revertFailedReanalysis returns a claimed draft to DRAFT, leaving the PRIOR scalar/temporal content completely untouched", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createEvidence(ownerUserId);
+      const original = await createDraft(ownerUserId, randomUUID(), input(evidence.id));
+      await claimDraftForReanalysis(ownerUserId, original.id);
+
+      await revertFailedReanalysis(ownerUserId, original.id);
+
+      const reverted = await findDraftForOwner(ownerUserId, original.id);
+      expect(reverted?.status).toBe("DRAFT");
+      expect(reverted?.extraction).toEqual(original.extraction);
+      expect(reverted?.temporalEvidence).toBeNull();
+    });
+
+    it("a stale (>15 min old) REANALYZING claim can be re-claimed -- a crashed attempt never permanently blocks reanalysis", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createEvidence(ownerUserId);
+      const original = await createDraft(ownerUserId, randomUUID(), input(evidence.id));
+      await claimDraftForReanalysis(ownerUserId, original.id);
+
+      // Simulate the claim having gone stale (a crashed/abandoned attempt)
+      // by directly backdating updatedAt -- never done by any real code
+      // path. Uses Prisma's own typed update (never $executeRawUnsafe):
+      // a raw parameterized Date binding was empirically found to pick up
+      // a timezone conversion this local Postgres server applies that
+      // Prisma's own typed client does not -- claimDraftForReanalysis's
+      // real `now` parameter and Prisma's own `@updatedAt` mechanism are
+      // BOTH populated from the Node process's clock via the SAME typed
+      // path, so this is the simulation that actually matches how the
+      // real code behaves.
+      const staleTimestamp = new Date(Date.now() - 20 * 60 * 1000);
+      await prisma.professionalLearningDraft.update({ where: { id: original.id }, data: { updatedAt: staleTimestamp } });
+
+      expect(await claimDraftForReanalysis(ownerUserId, original.id)).toBe(true);
+    });
+
+    it("a fresh (<15 min old) REANALYZING claim cannot be re-claimed by a second caller", async () => {
+      const { ownerUserId } = await createOwner();
+      const evidence = await createEvidence(ownerUserId);
+      const original = await createDraft(ownerUserId, randomUUID(), input(evidence.id));
+      await claimDraftForReanalysis(ownerUserId, original.id);
+
+      expect(await claimDraftForReanalysis(ownerUserId, original.id)).toBe(false);
+    });
   });
 });
 

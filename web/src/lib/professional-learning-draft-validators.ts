@@ -22,7 +22,17 @@
 // promotion is an explicitly later, separately-authorized stage.
 // ---------------------------------------------------------------------------
 
-export const PROFESSIONAL_LEARNING_DRAFT_STATUSES = ["DRAFT", "READY_FOR_REVIEW", "APPROVED", "REJECTED", "SUPERSEDED"] as const;
+// Stage 8.5T1.2.R1 -- REANALYZING is a transient, in-flight marker (Part
+// "explicit reanalysis"): claimed atomically right before the extractor
+// is invoked, and always resolved back to DRAFT before any response is
+// ever returned to a caller (either with the new result on success, or
+// unchanged on a caught failure -- see professional-learning-draft-
+// repository.ts's claimDraftForReanalysis/completeReanalysis/
+// revertFailedReanalysis). No caller-facing code path should normally
+// observe this value; it exists so a concurrent second request can be
+// told "already in progress" instead of triggering a second provider
+// call.
+export const PROFESSIONAL_LEARNING_DRAFT_STATUSES = ["DRAFT", "READY_FOR_REVIEW", "APPROVED", "REJECTED", "SUPERSEDED", "REANALYZING"] as const;
 export type ProfessionalLearningDraftStatus = (typeof PROFESSIONAL_LEARNING_DRAFT_STATUSES)[number];
 
 export function isProfessionalLearningDraftStatus(value: unknown): value is ProfessionalLearningDraftStatus {
@@ -35,13 +45,17 @@ export function isProfessionalLearningDraftStatus(value: unknown): value is Prof
 // REJECTED is a professional correction creating a brand-new draft that
 // separately marks the OLD row SUPERSEDED (see
 // professional-learning-draft-repository.ts) -- never an in-place
-// resurrection.
+// resurrection. REANALYZING is reachable only from DRAFT/READY_FOR_REVIEW
+// (never from an already-decided APPROVED/REJECTED row -- professional
+// authority, once crossed, is never silently rewritten by a reanalysis
+// action) and always resolves back to DRAFT.
 const LEGAL_DRAFT_STATUS_TRANSITIONS: Readonly<Record<ProfessionalLearningDraftStatus, readonly ProfessionalLearningDraftStatus[]>> = {
-  DRAFT: ["READY_FOR_REVIEW", "SUPERSEDED"],
-  READY_FOR_REVIEW: ["APPROVED", "REJECTED", "SUPERSEDED"],
+  DRAFT: ["READY_FOR_REVIEW", "SUPERSEDED", "REANALYZING"],
+  READY_FOR_REVIEW: ["APPROVED", "REJECTED", "SUPERSEDED", "REANALYZING"],
   APPROVED: ["SUPERSEDED"],
   REJECTED: ["SUPERSEDED"],
   SUPERSEDED: [],
+  REANALYZING: ["DRAFT"],
 };
 
 export function isLegalDraftStatusTransition(from: ProfessionalLearningDraftStatus, to: ProfessionalLearningDraftStatus): boolean {

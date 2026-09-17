@@ -11,6 +11,7 @@ import {
   formatExtractionForDisplay,
   formatTemporalEvidenceForDisplay,
   LEARNING_DRAFT_HEADING_TEXT,
+  nextRequestMode,
   provenanceLabel,
   TEMPORAL_EVIDENCE_HEADING_TEXT,
 } from "./teach-ai-learning-draft-review-logic";
@@ -241,6 +242,17 @@ describe("teach-ai-learning-draft-review-logic", () => {
       for (const entry of display) {
         expect(entry.source).not.toBe("Introdus de profesionist");
       }
+    });
+  });
+
+  // T1.2.R1 -- EXPLICIT REANALYSIS SEMANTICS.
+  describe("nextRequestMode", () => {
+    it("the very first attempt (no existing draft shown yet) is always ANALYZE, never REANALYZE", () => {
+      expect(nextRequestMode(false)).toBe("ANALYZE");
+    });
+
+    it("any attempt after a successful draft has been shown is REANALYZE", () => {
+      expect(nextRequestMode(true)).toBe("REANALYZE");
     });
   });
 });

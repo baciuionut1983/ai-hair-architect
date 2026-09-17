@@ -74,8 +74,14 @@ import { GET, POST } from "./route";
 
 const OWNER = { id: "owner-1", email: "owner@example.com", role: "professional", locale: "en" };
 
-function invokePost(evidenceId: string): Promise<Response> {
-  return POST(new Request(`http://localhost/api/v1/learning-evidence/${evidenceId}/drafts`, { method: "POST" }), { params: Promise.resolve({ evidenceId }) });
+function invokePost(evidenceId: string, body?: unknown): Promise<Response> {
+  return POST(
+    new Request(`http://localhost/api/v1/learning-evidence/${evidenceId}/drafts`, {
+      method: "POST",
+      ...(body !== undefined ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
+    }),
+    { params: Promise.resolve({ evidenceId }) },
+  );
 }
 function invokeGet(evidenceId: string): Promise<Response> {
   return GET(new Request(`http://localhost/api/v1/learning-evidence/${evidenceId}/drafts`), { params: Promise.resolve({ evidenceId }) });
@@ -180,6 +186,39 @@ describe("POST /api/v1/learning-evidence/[evidenceId]/drafts", () => {
     serviceMock.processEvidenceIntoDraft.mockRejectedValue(new serviceMock.ProfessionalLearningDraftServiceError("EVIDENCE_NOT_FOUND", 404, "not found"));
     const response = await invokePost("evidence-1");
     expect(response.status).toBe(404);
+  });
+
+  // T1.2.R1 -- EXPLICIT REANALYSIS SEMANTICS.
+  it("defaults to mode=ANALYZE when no body/mode is sent -- existing callers keep their exact current behavior", async () => {
+    serviceMock.processEvidenceIntoDraft.mockResolvedValue({ kind: "created", draft: { id: "draft-1" } });
+    await invokePost("evidence-1");
+    expect(serviceMock.processEvidenceIntoDraft).toHaveBeenCalledWith(expect.objectContaining({ mode: "ANALYZE" }));
+  });
+
+  it("passes mode=REANALYZE straight through only when the caller explicitly sends it", async () => {
+    serviceMock.processEvidenceIntoDraft.mockResolvedValue({ kind: "reanalyzed", draft: { id: "draft-1" } });
+    const response = await invokePost("evidence-1", { mode: "REANALYZE" });
+    expect(serviceMock.processEvidenceIntoDraft).toHaveBeenCalledWith(expect.objectContaining({ mode: "REANALYZE" }));
+    expect(response.status).toBe(200);
+    const returned = await response.json();
+    expect(returned.status).toBe("reanalyzed");
+  });
+
+  it.each(["reanalyze", "force", "", null, 123, { nested: true }])(
+    "never trusts an arbitrary/malformed mode value (%j) as a bypass -- falls back to the safe ANALYZE default",
+    async (malformedMode) => {
+      serviceMock.processEvidenceIntoDraft.mockResolvedValue({ kind: "created", draft: { id: "draft-1" } });
+      await invokePost("evidence-1", { mode: malformedMode });
+      expect(serviceMock.processEvidenceIntoDraft).toHaveBeenCalledWith(expect.objectContaining({ mode: "ANALYZE" }));
+    },
+  );
+
+  it("a REANALYZE conflict (already in progress / not reanalyzable) maps to its declared 409, exactly like any other service error", async () => {
+    serviceMock.processEvidenceIntoDraft.mockRejectedValue(new serviceMock.ProfessionalLearningDraftServiceError("DRAFT_REANALYSIS_IN_PROGRESS", 409, "in progress"));
+    const response = await invokePost("evidence-1", { mode: "REANALYZE" });
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body.error).toBe("DRAFT_REANALYSIS_IN_PROGRESS");
   });
 
   // Stage 8.5T1.1 (task requirement #7): connecting real extraction must

@@ -162,6 +162,69 @@ suite("Stage 8.5T1.1 -- real Gemini extractor class through the real draft pipel
     expect(await prisma.professionalSkillDefinition.count()).toBe(0);
   });
 
+  // T1.2.R1 -- EXPLICIT REANALYSIS through the REAL adapter's exact
+  // output shape end-to-end: a fresh provider response (with DIFFERENT
+  // temporal evidence than the first attempt) genuinely reaches
+  // buildProfessionalLearningTemporalEvidence and persistence a second
+  // time -- proving explicit reanalysis is not special-cased away from
+  // T1.2's own preservation path.
+  it("explicit REANALYZE of a real VIDEO draft reaches the real extractor again and persists the NEW temporal evidence, with provenance intact", async () => {
+    const { ownerUserId, clientId } = await createOwnerAndClient();
+    const assetId = randomUUID();
+    const storagePath = await saveImageFile(ownerUserId, assetId, "video.mp4", FAKE_MP4_BYTES);
+    localVideoPaths.add(storagePath);
+    await prisma.videoAsset.create({
+      data: { id: assetId, ownerUserId, clientId, mimeType: "video/mp4", sizeBytes: FAKE_MP4_BYTES.length, storagePath, storageBackend: null, origin: "uploaded_source" },
+    });
+    const evidence = await createLearningEvidence(ownerUserId, videoInput(assetId));
+
+    const firstCanned = {
+      discernmentCategory: "PROFESSIONAL_TECHNIQUE",
+      discernmentReason: "First attempt.",
+      temporalObservations: [{ timeStartSeconds: 0, timeEndSeconds: 5, observation: "comb passes through a section of hair" }],
+      actionCandidates: [],
+      notableEditsOrCuts: [],
+      extractedFields: [{ field: "tool", value: "comb", source: "OBSERVED", confidence: 0.8, note: "" }],
+    };
+    const extractorForFirst = new GeminiProfessionalLearningExtractor({ apiKey: "fake-test-key-never-a-real-secret", model: "gemini-3.6-flash" }, fakeGeminiVideoClient(firstCanned));
+    const first = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: extractorForFirst, registry });
+    if (first.kind !== "created") throw new Error("expected created");
+
+    const secondCanned = {
+      discernmentCategory: "PROFESSIONAL_TECHNIQUE",
+      discernmentReason: "Second, explicit reanalysis attempt -- a genuinely different provider response.",
+      temporalObservations: [{ timeStartSeconds: 10, timeEndSeconds: 15, observation: "scissors visibly close near the ends" }],
+      actionCandidates: [{ timeStartSeconds: 10, timeEndSeconds: 15, kind: "CUTTING_ACTION" }],
+      notableEditsOrCuts: [],
+      extractedFields: [{ field: "tool", value: "shears", source: "OBSERVED", confidence: 0.9, note: "" }],
+    };
+    const extractorForSecond = new GeminiProfessionalLearningExtractor({ apiKey: "fake-test-key-never-a-real-secret", model: "gemini-3.6-flash" }, fakeGeminiVideoClient(secondCanned));
+    const second = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: extractorForSecond, registry, mode: "REANALYZE" });
+
+    expect(second.kind).toBe("reanalyzed");
+    if (second.kind !== "reanalyzed") throw new Error("expected reanalyzed");
+    expect(second.draft.id).toBe(first.draft.id);
+
+    // The NEW result replaced the old one -- scalar field genuinely changed.
+    expect(second.draft.extraction.tool).toMatchObject({ value: "shears", source: "OBSERVED" });
+    // OBSERVED stays OBSERVED, INFERRED (action candidates) stays INFERRED,
+    // nothing became PROFESSIONAL_INPUT merely by surviving reanalysis.
+    expect(second.draft.temporalEvidence).toEqual({
+      observations: [{ timeStartSeconds: 10, timeEndSeconds: 15, observation: "scissors visibly close near the ends", source: "OBSERVED" }],
+      actions: [{ timeStartSeconds: 10, timeEndSeconds: 15, kind: "CUTTING_ACTION", source: "INFERRED" }],
+      editGaps: [],
+    });
+    for (const entry of Object.values(second.draft.extraction)) {
+      expect(entry?.source).not.toBe("PROFESSIONAL_INPUT");
+    }
+
+    // Round-trips from real Postgres.
+    const reloaded = await prisma.professionalLearningDraft.findUnique({ where: { id: second.draft.id } });
+    expect(reloaded?.temporalEvidence).toEqual(second.draft.temporalEvidence);
+    expect(await prisma.professionalLearningDraft.count({ where: { sourceEvidenceId: evidence.id } })).toBe(1);
+    expect(await prisma.professionalSkillDefinition.count()).toBe(0);
+  });
+
   it("a real provider failure fails honestly -- no draft is created, never a fabricated success", async () => {
     const { ownerUserId } = await createOwner();
     const evidence = await createLearningEvidence(ownerUserId, textInput("Graduated cutting provider-failure test example with sectioning and elevation."));

@@ -1,4 +1,4 @@
-import { findLearningEvidenceForOwner } from "@/lib/professional-learning-evidence-repository";
+import { findLearningEvidenceForOwner, type ProfessionalLearningEvidenceRecord } from "@/lib/professional-learning-evidence-repository";
 import { checkRelevanceGate } from "@/lib/professional-learning-relevance-gate";
 import type { ProfessionalLearningExtractor } from "@/lib/professional-learning-extractor";
 import { validateExtractorOutput } from "@/lib/professional-learning-draft-extraction-validator";
@@ -10,14 +10,24 @@ import { resolveLearningEvidenceVideoMedia } from "@/lib/professional-learning-v
 import { buildProfessionalLearningTemporalEvidence } from "@/lib/professional-learning-video-temporal-evidence";
 import type { ProfessionalLearningExtractorImageMedia, ProfessionalLearningExtractorVideoMedia } from "@/lib/professional-learning-extractor";
 import {
+  claimDraftForReanalysis,
+  completeReanalysis,
   createCorrectionDraft,
   createDraft,
   findDraftBySourceEvidenceAndExtractorVersion,
   findDraftForOwner,
+  revertFailedReanalysis,
   type ProfessionalLearningDraftRecord,
 } from "@/lib/professional-learning-draft-repository";
 import type { ProfessionalSkillDefinitionRecord } from "@/lib/professional-skill-registry-repository";
-import type { ProfessionalLearningExtraction, ProfessionalLearningExtractedField } from "@/lib/professional-learning-draft-validators";
+import type {
+  ProfessionalLearningComparisonOutcome,
+  ProfessionalLearningDiscernmentCategory,
+  ProfessionalLearningExtraction,
+  ProfessionalLearningExtractedField,
+} from "@/lib/professional-learning-draft-validators";
+import type { DraftConflictDetail } from "@/lib/professional-learning-draft-comparison";
+import type { ProfessionalLearningTemporalEvidence } from "@/lib/professional-learning-video-temporal-evidence";
 import { createReferenceDependencyRelationship, type ReferenceDependencyRelationship, type ReferenceDependencyRelationshipType, type ReferenceEntityRef, type ReferenceRoleKind } from "@/lib/professional-learning-reference-dependency";
 import { computeReviewedComparison } from "@/lib/professional-learning-reviewed-comparison";
 
@@ -50,7 +60,18 @@ export class ProfessionalLearningDraftServiceError extends Error {
 export type ProcessEvidenceOutcome =
   | { readonly kind: "created"; readonly draft: ProfessionalLearningDraftRecord }
   | { readonly kind: "already_processed"; readonly draft: ProfessionalLearningDraftRecord }
+  | { readonly kind: "reanalyzed"; readonly draft: ProfessionalLearningDraftRecord }
   | { readonly kind: "skipped"; readonly reason: string };
+
+// Stage 8.5T1.2.R1 -- explicit reanalysis intent (Part "primary product
+// semantic"). ANALYZE is the existing, unchanged default: idempotent,
+// reuses an existing draft for the same (evidence, extractorVersion)
+// pair rather than re-invoking the provider. REANALYZE is a deliberate
+// professional action -- it must reach the extractor exactly once, even
+// though nothing about the evidence or the extractor's own model
+// changed. Never inferred from anything other than an explicit request
+// value; the route never defaults to REANALYZE.
+export type ProcessEvidenceMode = "ANALYZE" | "REANALYZE";
 
 export interface ProcessEvidenceIntoDraftInput {
   readonly ownerUserId: string;
@@ -62,27 +83,27 @@ export interface ProcessEvidenceIntoDraftInput {
   // "HAIR / CUTTING"), never a description of what the evidence
   // supposedly shows. Passed through to the extractor verbatim.
   readonly domainHint?: string;
+  // Defaults to "ANALYZE" -- every existing caller that never passes
+  // this field keeps its exact current behavior.
+  readonly mode?: ProcessEvidenceMode;
 }
 
-export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftInput): Promise<ProcessEvidenceOutcome> {
-  const evidence = await findLearningEvidenceForOwner(input.ownerUserId, input.evidenceId);
-  if (!evidence) {
-    throw new ProfessionalLearningDraftServiceError("EVIDENCE_NOT_FOUND", 404, "Learning evidence not found.");
-  }
+interface BuiltExtractionResult {
+  readonly discernmentCategory: ProfessionalLearningDiscernmentCategory;
+  readonly comparisonOutcome: ProfessionalLearningComparisonOutcome;
+  readonly comparedSkillId: string | null;
+  readonly extraction: ProfessionalLearningExtraction;
+  readonly temporalEvidence: ProfessionalLearningTemporalEvidence | null;
+  readonly conflictDetail: DraftConflictDetail | null;
+}
 
-  const existing = await findDraftBySourceEvidenceAndExtractorVersion(input.ownerUserId, input.evidenceId, input.extractor.extractorVersion);
-  const gate = checkRelevanceGate(
-    { status: evidence.status, evidenceType: evidence.evidenceType, originalText: evidence.originalText },
-    existing !== null,
-  );
-
-  if (!gate.proceed) {
-    if (gate.reason === "ALREADY_PROCESSED" && existing) {
-      return { kind: "already_processed", draft: existing };
-    }
-    return { kind: "skipped", reason: gate.reason };
-  }
-
+// The ONE place that resolves media, invokes the extractor, validates,
+// guards, completes UNKNOWNs, compares against the registry, and builds
+// T1.2 temporal evidence -- shared verbatim between the initial-create
+// path and the explicit-reanalysis path below (Part "one extractor, one
+// normalization path, one draft persistence model" -- reanalysis is
+// never a second, competing implementation of this logic).
+async function buildExtractionResult(input: ProcessEvidenceIntoDraftInput, evidence: ProfessionalLearningEvidenceRecord): Promise<BuiltExtractionResult> {
   // Stage 8.5L4.R2 -- PRIVATE IMAGE MEDIA RESOLUTION (Part 9/11): resolved
   // HERE, strictly after the relevance gate has already confirmed the
   // evidence is ACTIVE (never REVOKED/DELETED_SOURCE) and owned by this
@@ -176,15 +197,83 @@ export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftIn
   // evidence layer, never flattened into `extraction` above.
   const temporalEvidence = buildProfessionalLearningTemporalEvidence(output);
 
-  const draft = await createDraft(input.ownerUserId, input.draftId, {
-    sourceEvidenceId: evidence.id,
-    extractorVersion: input.extractor.extractorVersion,
+  return {
     discernmentCategory: output.discernment.category,
     comparisonOutcome: comparison.outcome,
     comparedSkillId: comparison.comparedSkillId,
     extraction,
     temporalEvidence,
     conflictDetail: comparison.conflictDetail,
+  };
+}
+
+export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftInput): Promise<ProcessEvidenceOutcome> {
+  const evidence = await findLearningEvidenceForOwner(input.ownerUserId, input.evidenceId);
+  if (!evidence) {
+    throw new ProfessionalLearningDraftServiceError("EVIDENCE_NOT_FOUND", 404, "Learning evidence not found.");
+  }
+
+  const mode: ProcessEvidenceMode = input.mode === "REANALYZE" ? "REANALYZE" : "ANALYZE";
+  const existing = await findDraftBySourceEvidenceAndExtractorVersion(input.ownerUserId, input.evidenceId, input.extractor.extractorVersion);
+
+  // Stage 8.5T1.2.R1 -- EXPLICIT REANALYSIS. Only taken when the caller
+  // deliberately asked for it AND a draft already exists to reanalyze --
+  // REANALYZE with no existing draft is indistinguishable from a first
+  // analysis and falls through to the unchanged path below. The relevance
+  // gate below is still consulted (evidence must still be ACTIVE/non-
+  // empty) -- only its ALREADY_PROCESSED signal is deliberately bypassed,
+  // which is the ENTIRE point of this mode.
+  if (mode === "REANALYZE" && existing) {
+    const gate = checkRelevanceGate({ status: evidence.status, evidenceType: evidence.evidenceType, originalText: evidence.originalText }, false);
+    if (!gate.proceed) {
+      return { kind: "skipped", reason: gate.reason };
+    }
+
+    const claimed = await claimDraftForReanalysis(input.ownerUserId, existing.id);
+    if (!claimed) {
+      const fresh = await findDraftForOwner(input.ownerUserId, existing.id);
+      if (fresh?.status === "REANALYZING") {
+        throw new ProfessionalLearningDraftServiceError("DRAFT_REANALYSIS_IN_PROGRESS", 409, "A reanalysis of this evidence is already in progress. Try again shortly.");
+      }
+      // Already past professional review (APPROVED/REJECTED/SUPERSEDED),
+      // or the row no longer exists -- either way, never silently
+      // rewritten by an in-place reanalysis.
+      throw new ProfessionalLearningDraftServiceError("DRAFT_NOT_REANALYZABLE", 409, "This draft has already been professionally reviewed and cannot be reanalyzed in place.");
+    }
+
+    try {
+      const built = await buildExtractionResult(input, evidence);
+      const draft = await completeReanalysis(input.ownerUserId, existing.id, built);
+      return { kind: "reanalyzed", draft };
+    } catch (error) {
+      // Fail-honest (T1.1 Issue #1): a failed reanalysis attempt must
+      // never leave the draft stuck, and must never be hidden behind the
+      // still-valid prior content -- the caller's own catch block (route
+      // handler) reports this error exactly like any other extraction
+      // failure; the prior scalar/temporal content is left untouched.
+      await revertFailedReanalysis(input.ownerUserId, existing.id).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  const gate = checkRelevanceGate(
+    { status: evidence.status, evidenceType: evidence.evidenceType, originalText: evidence.originalText },
+    existing !== null,
+  );
+
+  if (!gate.proceed) {
+    if (gate.reason === "ALREADY_PROCESSED" && existing) {
+      return { kind: "already_processed", draft: existing };
+    }
+    return { kind: "skipped", reason: gate.reason };
+  }
+
+  const built = await buildExtractionResult(input, evidence);
+
+  const draft = await createDraft(input.ownerUserId, input.draftId, {
+    sourceEvidenceId: evidence.id,
+    extractorVersion: input.extractor.extractorVersion,
+    ...built,
     createdByUserId: input.ownerUserId,
   });
 

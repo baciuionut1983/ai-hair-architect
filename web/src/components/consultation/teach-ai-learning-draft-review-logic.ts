@@ -97,6 +97,9 @@ const EXTRACTION_ERROR_LABELS: Record<string, string> = {
   EVIDENCE_NOT_FOUND: "Materialul nu a fost găsit.",
   VIDEO_MEDIA_UNAVAILABLE: "Materialul video încărcat nu a putut fi citit. Încearcă să îl reîncarci.",
   IMAGE_MEDIA_UNAVAILABLE: "Materialul încărcat nu a putut fi citit. Încearcă să îl reîncarci.",
+  // T1.2.R1 -- EXPLICIT REANALYSIS SEMANTICS.
+  DRAFT_REANALYSIS_IN_PROGRESS: "O reanalizare a acestui material este deja în curs. Încearcă din nou în câteva momente.",
+  DRAFT_NOT_REANALYZABLE: "Acest draft a fost deja revizuit profesional și nu mai poate fi reanalizat.",
 };
 
 const EXTRACTION_ERROR_GENERIC_LABEL = "Analiza materialului nu a putut fi finalizată. Poți încerca din nou.";
@@ -228,4 +231,17 @@ export function formatTemporalEvidenceForDisplay(
   }
 
   return withStart.sort((a, b) => a.startSeconds - b.startSeconds).map((item) => item.entry);
+}
+
+// T1.2.R1 -- EXPLICIT REANALYSIS SEMANTICS. The ONE place the component
+// decides what to send the server: REANALYZE only once a successful
+// draft has genuinely been shown in this session, exactly matching the
+// button's own "Reanalizează" intent -- the very first click (even after
+// a page refresh, even if a draft already exists server-side) is always
+// a normal, idempotent ANALYZE, never REANALYZE. `hasExistingDraft` must
+// be tracked separately from `draft`/`expanded` (both of which the
+// component resets at the start of every attempt, including a failed
+// retry) -- see the component's own comment for why.
+export function nextRequestMode(hasExistingDraft: boolean): "ANALYZE" | "REANALYZE" {
+  return hasExistingDraft ? "REANALYZE" : "ANALYZE";
 }

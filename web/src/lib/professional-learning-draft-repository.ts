@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { isDatabaseConfigured, prisma } from "@/lib/prisma";
 import {
   isLegalDraftStatusTransition,
@@ -266,6 +267,98 @@ export async function transitionDraftStatus(
     const row = await prisma.professionalLearningDraft.findFirst({ where: { id, ownerUserId } });
     if (!row) throw new ProfessionalLearningDraftPersistenceError();
     return toRecord(row);
+  });
+}
+
+// Stage 8.5T1.2.R1 -- EXPLICIT REANALYSIS, atomic claim/complete/revert.
+// This is the ONLY safe way to reuse the SAME (sourceEvidenceId,
+// extractorVersion) row for a fresh extraction attempt: the schema's own
+// @@unique constraint above makes a second CREATE for that pair
+// impossible without a migration, so an explicit professional
+// reanalysis reuses the existing row via an in-place, atomically-claimed
+// UPDATE instead of a second row.
+//
+// A row already past professional review (APPROVED/REJECTED/SUPERSEDED)
+// is NEVER eligible -- claimDraftForReanalysis's own WHERE clause below
+// only ever matches DRAFT/READY_FOR_REVIEW (or a STALE REANALYZING claim,
+// see REANALYSIS_STALE_AFTER_MS), so approved/professionally-validated
+// history can never be silently rewritten by this path.
+//
+// CONCURRENCY: the claim is a single atomic `updateMany` -- exactly one
+// concurrent caller can ever win it (mirrors transitionDraftStatus's own
+// `status: fromStatus` CAS discipline above, and image-analysis-job-
+// repository.ts's own claim-before-provider-call precedent). A second
+// concurrent/retried/double-clicked request finds count === 0 and must
+// fail closed -- it never triggers a second provider call.
+const REANALYSIS_STALE_AFTER_MS = 15 * 60 * 1000;
+
+export async function claimDraftForReanalysis(ownerUserId: string, id: string, now: Date = new Date()): Promise<boolean> {
+  return runDraftQuery(async () => {
+    const staleBefore = new Date(now.getTime() - REANALYSIS_STALE_AFTER_MS);
+    const claimed = await prisma.professionalLearningDraft.updateMany({
+      where: {
+        id,
+        ownerUserId,
+        OR: [{ status: { in: ["DRAFT", "READY_FOR_REVIEW"] } }, { status: "REANALYZING", updatedAt: { lt: staleBefore } }],
+      },
+      data: { status: "REANALYZING" },
+    });
+    return claimed.count === 1;
+  });
+}
+
+export interface CompleteReanalysisInput {
+  readonly discernmentCategory: ProfessionalLearningDiscernmentCategory;
+  readonly comparisonOutcome: ProfessionalLearningComparisonOutcome;
+  readonly comparedSkillId: string | null;
+  readonly extraction: ProfessionalLearningExtraction;
+  readonly temporalEvidence?: ProfessionalLearningTemporalEvidence | null;
+  readonly conflictDetail: DraftConflictDetail | null;
+}
+
+// The caller must already hold the claim (status === "REANALYZING") --
+// only ever called immediately after claimDraftForReanalysis returned
+// true, from the same request. A count !== 1 here would mean something
+// else changed the row's status between the claim and this call, which
+// this code never does -- a genuine persistence-layer inconsistency.
+export async function completeReanalysis(ownerUserId: string, id: string, input: CompleteReanalysisInput): Promise<ProfessionalLearningDraftRecord> {
+  return runDraftQuery(async () => {
+    const result = await prisma.professionalLearningDraft.updateMany({
+      where: { id, ownerUserId, status: "REANALYZING" },
+      data: {
+        status: "DRAFT",
+        discernmentCategory: input.discernmentCategory,
+        comparisonOutcome: input.comparisonOutcome,
+        comparedSkillId: input.comparedSkillId,
+        extraction: input.extraction as object,
+        // Prisma requires the explicit Prisma.JsonNull sentinel (not a
+        // plain `null`) to SET a nullable Json column to SQL NULL on an
+        // update -- `undefined` would instead leave any STALE prior
+        // value untouched, which is wrong here: a reanalysis that
+        // produces no temporal evidence/conflict this time must clear
+        // whatever the PRIOR attempt left behind, never leave it stale.
+        temporalEvidence: input.temporalEvidence ? (input.temporalEvidence as unknown as Prisma.InputJsonValue) : Prisma.JsonNull,
+        conflictDetail: input.conflictDetail ? (input.conflictDetail as unknown as Prisma.InputJsonValue) : Prisma.JsonNull,
+      },
+    });
+    if (result.count !== 1) throw new ProfessionalLearningDraftPersistenceError();
+    const row = await prisma.professionalLearningDraft.findFirst({ where: { id, ownerUserId } });
+    if (!row) throw new ProfessionalLearningDraftPersistenceError();
+    return toRecord(row);
+  });
+}
+
+// Best-effort: releases a claim after a failed reanalysis attempt so the
+// draft is never left permanently stuck in REANALYZING just because this
+// one attempt failed (fail-honest -- see professional-learning-draft-
+// service.ts's own catch block). The prior, still-valid scalar/temporal
+// content is left completely untouched -- only `status` reverts.
+export async function revertFailedReanalysis(ownerUserId: string, id: string): Promise<void> {
+  return runDraftQuery(async () => {
+    await prisma.professionalLearningDraft.updateMany({
+      where: { id, ownerUserId, status: "REANALYZING" },
+      data: { status: "DRAFT" },
+    });
   });
 }
 
