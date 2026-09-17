@@ -11,7 +11,9 @@ import {
   draftActionButtonLabel,
   draftStatusLabel,
   formatExtractionForDisplay,
+  formatTemporalEvidenceForDisplay,
   LEARNING_DRAFT_HEADING_TEXT,
+  TEMPORAL_EVIDENCE_HEADING_TEXT,
 } from "./teach-ai-learning-draft-review-logic";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L4 -- MINIMAL
@@ -30,6 +32,16 @@ interface DraftExtractionEntry {
   readonly rawObservation?: string;
 }
 
+// T1.2 -- TEMPORAL OBSERVATION PRESERVATION. Mirrors professional-
+// learning-video-temporal-evidence.ts's own persisted shape exactly --
+// this is EVIDENCE, never the reviewable professional summary above,
+// and never professional truth on its own.
+interface DraftTemporalEvidence {
+  readonly observations?: readonly { readonly timeStartSeconds: number; readonly timeEndSeconds: number; readonly observation: string; readonly source: string }[];
+  readonly actions?: readonly { readonly timeStartSeconds: number; readonly timeEndSeconds: number; readonly kind: string; readonly source: string }[];
+  readonly editGaps?: readonly { readonly beforeTimeSeconds: number; readonly afterTimeSeconds: number; readonly source: string }[];
+}
+
 interface LearningDraft {
   readonly id: string;
   readonly status: string;
@@ -37,6 +49,7 @@ interface LearningDraft {
   readonly comparisonOutcome: string;
   readonly comparedSkillId: string | null;
   readonly extraction: Record<string, DraftExtractionEntry | undefined>;
+  readonly temporalEvidence: DraftTemporalEvidence | null;
   readonly conflictDetail: { readonly existingClaim: string; readonly newClaim: string; readonly reason: string } | null;
 }
 
@@ -140,6 +153,19 @@ export function LearningDraftReview({ evidenceId }: { evidenceId: string }) {
                     </li>
                   ))}
                 </ul>
+              ) : null}
+
+              {formatTemporalEvidenceForDisplay(draft.temporalEvidence).length > 0 ? (
+                <div className="mt-2 rounded-md border border-border p-1.5">
+                  <p className="font-medium">{TEMPORAL_EVIDENCE_HEADING_TEXT}</p>
+                  <ul className="mt-1 space-y-0.5">
+                    {formatTemporalEvidenceForDisplay(draft.temporalEvidence).map((entry, index) => (
+                      <li key={index}>
+                        {entry.rangeLabel}: {entry.text} ({entry.source})
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               ) : null}
 
               <p className="mt-1 text-muted">Stare: {draftStatusLabel(draft.status)}</p>

@@ -169,3 +169,63 @@ export function formatExtractionForDisplay(
       return { field, value, source: provenanceLabel(entry.source) };
     });
 }
+
+// T1.2 -- TEMPORAL OBSERVATION PRESERVATION. Heading for the new,
+// clearly separate section: this is raw evidence the AI observed over
+// time, never the reviewable professional field summary above, and
+// never professional truth/approved knowledge on its own.
+export const TEMPORAL_EVIDENCE_HEADING_TEXT = "Observații temporale din material";
+
+export interface TemporalEvidenceDisplayEntry {
+  readonly rangeLabel: string;
+  readonly text: string;
+  readonly source: string;
+}
+
+interface TemporalObservationLike {
+  readonly timeStartSeconds: number;
+  readonly timeEndSeconds: number;
+  readonly observation: string;
+  readonly source: string;
+}
+interface TemporalActionLike {
+  readonly timeStartSeconds: number;
+  readonly timeEndSeconds: number;
+  readonly kind: string;
+  readonly source: string;
+}
+interface TemporalEditGapLike {
+  readonly beforeTimeSeconds: number;
+  readonly afterTimeSeconds: number;
+  readonly source: string;
+}
+
+// Merges the three separately-shaped evidence arrays into ONE
+// chronological, display-ready list (Array.prototype.sort is stable, so
+// entries sharing an identical start second keep their original,
+// deterministic relative order -- never reshuffled). Never claims
+// professional authority for an edit-gap entry beyond what it is: a
+// literal, structural claim about the video itself, so its own text is
+// fixed and descriptive rather than professionally worded.
+export function formatTemporalEvidenceForDisplay(
+  temporalEvidence: { observations?: readonly TemporalObservationLike[]; actions?: readonly TemporalActionLike[]; editGaps?: readonly TemporalEditGapLike[] } | null | undefined,
+): readonly TemporalEvidenceDisplayEntry[] {
+  if (!temporalEvidence) return [];
+
+  const withStart: { startSeconds: number; entry: TemporalEvidenceDisplayEntry }[] = [];
+
+  for (const o of temporalEvidence.observations ?? []) {
+    withStart.push({ startSeconds: o.timeStartSeconds, entry: { rangeLabel: `${o.timeStartSeconds}s–${o.timeEndSeconds}s`, text: o.observation, source: provenanceLabel(o.source) } });
+  }
+  for (const a of temporalEvidence.actions ?? []) {
+    withStart.push({ startSeconds: a.timeStartSeconds, entry: { rangeLabel: `${a.timeStartSeconds}s–${a.timeEndSeconds}s`, text: a.kind, source: provenanceLabel(a.source) } });
+  }
+  for (const g of temporalEvidence.editGaps ?? []) {
+    withStart.push({
+      startSeconds: g.beforeTimeSeconds,
+      entry: { rangeLabel: `${g.beforeTimeSeconds}s–${g.afterTimeSeconds}s`, text: "Posibilă tăietură/editare video", source: provenanceLabel(g.source) },
+    });
+  }
+
+  return withStart.sort((a, b) => a.startSeconds - b.startSeconds).map((item) => item.entry);
+}

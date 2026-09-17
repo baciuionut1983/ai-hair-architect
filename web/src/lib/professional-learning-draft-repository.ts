@@ -9,6 +9,7 @@ import {
 import type { DraftConflictDetail } from "@/lib/professional-learning-draft-comparison";
 import type { ReferenceDependencyRelationship } from "@/lib/professional-learning-reference-dependency";
 import type { ReviewedComparisonResult } from "@/lib/professional-learning-reviewed-comparison";
+import type { ProfessionalLearningTemporalEvidence } from "@/lib/professional-learning-video-temporal-evidence";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L4 -- PROFESSIONAL
 // LEARNING DRAFT, the durable repository layer. Mirrors this repo's own
@@ -80,6 +81,11 @@ export interface ProfessionalLearningDraftRecord {
   readonly comparisonOutcome: ProfessionalLearningComparisonOutcome;
   readonly comparedSkillId: string | null;
   readonly extraction: ProfessionalLearningExtraction;
+  // Stage 8.5T1.2 -- additive, nullable. See professional-learning-video-
+  // temporal-evidence.ts for the canonical shape. Null for every draft
+  // that has none (every non-VIDEO draft, and every draft created before
+  // this stage) -- never backfilled, never inferred after the fact.
+  readonly temporalEvidence: ProfessionalLearningTemporalEvidence | null;
   readonly conflictDetail: DraftConflictDetail | null;
   readonly correctsDraftId: string | null;
   readonly supersededByDraftId: string | null;
@@ -114,6 +120,7 @@ function toRecord(row: {
   comparisonOutcome: string;
   comparedSkillId: string | null;
   extraction: unknown;
+  temporalEvidence: unknown;
   conflictDetail: unknown;
   correctsDraftId: string | null;
   supersededByDraftId: string | null;
@@ -134,6 +141,7 @@ function toRecord(row: {
     comparisonOutcome: row.comparisonOutcome as ProfessionalLearningComparisonOutcome,
     comparedSkillId: row.comparedSkillId,
     extraction: (row.extraction ?? {}) as ProfessionalLearningExtraction,
+    temporalEvidence: (row.temporalEvidence as ProfessionalLearningTemporalEvidence | null) ?? null,
     conflictDetail: (row.conflictDetail as DraftConflictDetail | null) ?? null,
     correctsDraftId: row.correctsDraftId,
     supersededByDraftId: row.supersededByDraftId,
@@ -153,6 +161,10 @@ export interface CreateDraftInput {
   readonly comparisonOutcome: ProfessionalLearningComparisonOutcome;
   readonly comparedSkillId: string | null;
   readonly extraction: ProfessionalLearningExtraction;
+  // Stage 8.5T1.2 -- optional so createCorrectionDraft's own call site
+  // (which never produces temporal evidence) needs no change. Omitted
+  // or null both persist as NULL.
+  readonly temporalEvidence?: ProfessionalLearningTemporalEvidence | null;
   readonly conflictDetail: DraftConflictDetail | null;
   readonly createdByUserId: string;
 }
@@ -172,6 +184,7 @@ export async function createDraft(ownerUserId: string, id: string, input: Create
           comparisonOutcome: input.comparisonOutcome,
           comparedSkillId: input.comparedSkillId,
           extraction: input.extraction as object,
+          temporalEvidence: (input.temporalEvidence as object | null) ?? undefined,
           conflictDetail: (input.conflictDetail as object | null) ?? undefined,
           createdByUserId: input.createdByUserId,
         },

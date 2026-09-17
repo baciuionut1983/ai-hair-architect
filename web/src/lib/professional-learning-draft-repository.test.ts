@@ -138,6 +138,40 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
     expect(await findDraftBySourceEvidenceAndExtractorVersion(userA, evidence.id, "mock-deterministic-v1")).not.toBeNull();
     expect(await findDraftBySourceEvidenceAndExtractorVersion(userB, evidence.id, "mock-deterministic-v1")).toBeNull();
   });
+
+  // T1.2 -- TEMPORAL OBSERVATION PRESERVATION.
+  it("a draft created without temporalEvidence persists/loads with it null -- existing historical draft shape remains fully compatible", async () => {
+    const { ownerUserId } = await createOwner();
+    const evidence = await createEvidence(ownerUserId);
+
+    const draft = await createDraft(ownerUserId, randomUUID(), input(evidence.id));
+
+    expect(draft.temporalEvidence).toBeNull();
+    const found = await findDraftForOwner(ownerUserId, draft.id);
+    expect(found?.temporalEvidence).toBeNull();
+  });
+
+  it("persists and round-trips temporal evidence with provenance and ordering intact", async () => {
+    const { ownerUserId } = await createOwner();
+    const evidence = await createEvidence(ownerUserId);
+    const temporalEvidence = {
+      observations: [
+        { timeStartSeconds: 0, timeEndSeconds: 5, observation: "comb passes through a section of hair", source: "OBSERVED" as const },
+        { timeStartSeconds: 5, timeEndSeconds: 9, observation: "scissors visibly close near the ends", source: "OBSERVED" as const },
+      ],
+      actions: [{ timeStartSeconds: 5, timeEndSeconds: 9, kind: "CUTTING_ACTION", source: "INFERRED" as const }],
+      editGaps: [{ beforeTimeSeconds: 9, afterTimeSeconds: 40, source: "OBSERVED" as const }],
+    };
+
+    const draft = await createDraft(ownerUserId, randomUUID(), { ...input(evidence.id), temporalEvidence });
+
+    expect(draft.temporalEvidence).toEqual(temporalEvidence);
+
+    const found = await findDraftForOwner(ownerUserId, draft.id);
+    expect(found?.temporalEvidence).toEqual(temporalEvidence);
+    // Never flattened into / never overwrites the existing scalar fields.
+    expect(found?.extraction).toEqual(input(evidence.id).extraction);
+  });
 });
 
 function input(sourceEvidenceId: string) {

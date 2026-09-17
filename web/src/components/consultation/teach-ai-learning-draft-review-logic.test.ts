@@ -9,8 +9,10 @@ import {
   draftStatusLabel,
   extractionErrorLabel,
   formatExtractionForDisplay,
+  formatTemporalEvidenceForDisplay,
   LEARNING_DRAFT_HEADING_TEXT,
   provenanceLabel,
+  TEMPORAL_EVIDENCE_HEADING_TEXT,
 } from "./teach-ai-learning-draft-review-logic";
 
 describe("teach-ai-learning-draft-review-logic", () => {
@@ -192,6 +194,52 @@ describe("teach-ai-learning-draft-review-logic", () => {
       expect(outcome.kind).not.toBe("skipped");
       if (outcome.kind === "error") {
         expect(outcome.message.toLowerCase()).not.toContain("informație insuficientă");
+      }
+    });
+  });
+
+  // T1.2 -- TEMPORAL OBSERVATION PRESERVATION.
+  describe("formatTemporalEvidenceForDisplay", () => {
+    it("the heading never claims professional truth/approved knowledge", () => {
+      expect(TEMPORAL_EVIDENCE_HEADING_TEXT.toLowerCase()).not.toContain("aprobat");
+      expect(TEMPORAL_EVIDENCE_HEADING_TEXT.toLowerCase()).not.toContain("cunoștințe");
+    });
+
+    it("renders normally (empty list) for a draft with no temporal evidence", () => {
+      expect(formatTemporalEvidenceForDisplay(null)).toEqual([]);
+      expect(formatTemporalEvidenceForDisplay(undefined)).toEqual([]);
+      expect(formatTemporalEvidenceForDisplay({ observations: [], actions: [], editGaps: [] })).toEqual([]);
+    });
+
+    it("renders timestamps/ranges safely and provenance labels correctly", () => {
+      const display = formatTemporalEvidenceForDisplay({
+        observations: [{ timeStartSeconds: 0, timeEndSeconds: 5, observation: "comb passes through a section", source: "OBSERVED" }],
+        actions: [{ timeStartSeconds: 5, timeEndSeconds: 9, kind: "CUTTING_ACTION", source: "INFERRED" }],
+        editGaps: [{ beforeTimeSeconds: 9, afterTimeSeconds: 40, source: "OBSERVED" }],
+      });
+      expect(display).toEqual([
+        { rangeLabel: "0s–5s", text: "comb passes through a section", source: "Observat" },
+        { rangeLabel: "5s–9s", text: "CUTTING_ACTION", source: "Dedus" },
+        { rangeLabel: "9s–40s", text: "Posibilă tăietură/editare video", source: "Observat" },
+      ]);
+    });
+
+    it("multiple observations render in deterministic temporal order across observations/actions/editGaps combined", () => {
+      const display = formatTemporalEvidenceForDisplay({
+        observations: [{ timeStartSeconds: 20, timeEndSeconds: 22, observation: "later observation", source: "OBSERVED" }],
+        actions: [{ timeStartSeconds: 0, timeEndSeconds: 2, kind: "EARLY_ACTION", source: "INFERRED" }],
+        editGaps: [{ beforeTimeSeconds: 10, afterTimeSeconds: 12, source: "OBSERVED" }],
+      });
+      expect(display.map((e) => e.text)).toEqual(["EARLY_ACTION", "Posibilă tăietură/editare video", "later observation"]);
+    });
+
+    it("never labels temporal evidence as PROFESSIONAL_INPUT or as approved knowledge", () => {
+      const display = formatTemporalEvidenceForDisplay({
+        observations: [{ timeStartSeconds: 0, timeEndSeconds: 5, observation: "x", source: "OBSERVED" }],
+        actions: [{ timeStartSeconds: 0, timeEndSeconds: 5, kind: "y", source: "INFERRED" }],
+      });
+      for (const entry of display) {
+        expect(entry.source).not.toBe("Introdus de profesionist");
       }
     });
   });

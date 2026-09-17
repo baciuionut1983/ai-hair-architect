@@ -3393,6 +3393,19 @@ model ProfessionalLearningDraft {
   // TechnicalDemonstrationPlan.
   extraction Json
 
+  // Stage 8.5T1.2 -- ADDITIVE, nullable. A separate preserved-evidence
+  // layer, never flattened into `extraction` above: { observations,
+  // actions, editGaps }, each entry shaped per
+  // professional-learning-video-temporal-evidence.ts's own canonical
+  // types. Present only for VIDEO evidence whose provider response
+  // contained at least one valid temporal entry -- every existing and
+  // future non-video draft simply has this column NULL, exactly like
+  // conflictDetail below. This is EVIDENCE the extraction fields were
+  // drawn from, never professional truth on its own -- reviewing it
+  // never implies approval, and it is never migrated/backfilled onto
+  // any historical row.
+  temporalEvidence Json?
+
   // Populated only when comparisonOutcome is POSSIBLE_CONFLICT (Part 13):
   // { existingClaim, newClaim, existingAuthority, newEvidenceId, reason,
   // reviewRequired }. The system NEVER picks a winner automatically --

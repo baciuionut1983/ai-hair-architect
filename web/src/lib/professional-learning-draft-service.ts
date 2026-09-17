@@ -7,6 +7,7 @@ import { completeApplicableFieldsWithUnknown } from "@/lib/professional-learning
 import { applySemanticBindingGuard } from "@/lib/professional-learning-semantic-binding-guard";
 import { resolveLearningEvidenceImageMedia } from "@/lib/professional-learning-image-media-resolver";
 import { resolveLearningEvidenceVideoMedia } from "@/lib/professional-learning-video-media-resolver";
+import { buildProfessionalLearningTemporalEvidence } from "@/lib/professional-learning-video-temporal-evidence";
 import type { ProfessionalLearningExtractorImageMedia, ProfessionalLearningExtractorVideoMedia } from "@/lib/professional-learning-extractor";
 import {
   createCorrectionDraft,
@@ -167,6 +168,14 @@ export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftIn
 
   const comparison = compareExtractionAgainstRegistry(output.discernment.category, output.relatedSkillIdHints, input.registry, evidence.id);
 
+  // Stage 8.5T1.2 -- STOP DISCARDING TEMPORAL EVIDENCE. `output` already
+  // carries temporalObservations/actionCandidates/notableEditsOrCuts for
+  // VIDEO evidence (the real Gemini adapter already returns them, under
+  // the existing, unmodified prompt/schema) -- until this stage, nothing
+  // past this point ever read them. This is a separate, additional
+  // evidence layer, never flattened into `extraction` above.
+  const temporalEvidence = buildProfessionalLearningTemporalEvidence(output);
+
   const draft = await createDraft(input.ownerUserId, input.draftId, {
     sourceEvidenceId: evidence.id,
     extractorVersion: input.extractor.extractorVersion,
@@ -174,6 +183,7 @@ export async function processEvidenceIntoDraft(input: ProcessEvidenceIntoDraftIn
     comparisonOutcome: comparison.outcome,
     comparedSkillId: comparison.comparedSkillId,
     extraction,
+    temporalEvidence,
     conflictDetail: comparison.conflictDetail,
     createdByUserId: input.ownerUserId,
   });
