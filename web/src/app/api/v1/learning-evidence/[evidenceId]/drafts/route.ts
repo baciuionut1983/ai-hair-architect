@@ -2,22 +2,35 @@ import { NextResponse } from "next/server";
 
 import { checkRateLimit } from "@/lib/hardening";
 import { buildCanonicalCandidateSkillRegistry } from "@/lib/professional-brain-skill-templates";
-import { mockProfessionalLearningExtractor } from "@/lib/professional-learning-mock-extractor";
 import { processEvidenceIntoDraft, ProfessionalLearningDraftServiceError } from "@/lib/professional-learning-draft-service";
 import { ProfessionalLearningExtractionValidationError } from "@/lib/professional-learning-draft-extraction-validator";
 import { isProfessionalLearningDraftPersistenceError, listDraftsForOwner, professionalLearningDraftPersistenceUnavailableResponse } from "@/lib/professional-learning-draft-repository";
 import { isProfessionalLearningEvidencePersistenceError, professionalLearningEvidencePersistenceUnavailableResponse } from "@/lib/professional-learning-evidence-repository";
+import {
+  isProfessionalLearningExtractorProviderError,
+  professionalLearningExtractorProviderErrorHttpStatus,
+  ProfessionalLearningExtractorSelectionError,
+  selectProfessionalLearningExtractor,
+} from "@/lib/professional-learning-extractor-selection";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
 import { randomUUID } from "crypto";
 
 // Professional Skill Engine, Stage 8.5L4 -- PROFESSIONAL LEARNING DRAFT,
 // service boundary (Part 28). POST runs the full evidence -> discernment
-// -> extraction -> validation -> compare-before-create pipeline using
-// ONLY the mock/deterministic extractor (Part 30: ZERO real AI calls in
-// this stage). This route NEVER creates, updates, or activates a
-// ProfessionalSkillDefinition row, regardless of the resulting
-// comparisonOutcome -- see professional-learning-draft-service.ts's own
-// header for why.
+// -> extraction -> validation -> compare-before-create pipeline. This
+// route NEVER creates, updates, or activates a ProfessionalSkillDefinition
+// row, regardless of the resulting comparisonOutcome -- see
+// professional-learning-draft-service.ts's own header for why.
+//
+// Stage 8.5T1.1 -- the extractor is no longer hardcoded to the mock. It is
+// resolved per-request via selectProfessionalLearningExtractor(process.env)
+// (professional-learning-extractor-selection.ts): mock when real
+// extraction is not explicitly enabled (the same safe default as before),
+// the real Gemini adapter when it is. A misconfigured "enabled" flag, or a
+// real provider failure during extraction, fails this request honestly
+// (503/502/504/429 as appropriate) -- it never silently falls back to a
+// mock-shaped "insufficient evidence" response that would hide the real
+// failure.
 export async function POST(request: Request, context: { params: Promise<{ evidenceId: string }> }) {
   const user = await authenticateSessionRequest();
   if (!user) {
@@ -32,12 +45,13 @@ export async function POST(request: Request, context: { params: Promise<{ eviden
   const { evidenceId } = await context.params;
 
   try {
+    const extractor = selectProfessionalLearningExtractor(process.env);
     const registry = buildCanonicalCandidateSkillRegistry();
     const outcome = await processEvidenceIntoDraft({
       ownerUserId: user.id,
       evidenceId,
       draftId: randomUUID(),
-      extractor: mockProfessionalLearningExtractor,
+      extractor,
       registry,
     });
 
@@ -46,6 +60,12 @@ export async function POST(request: Request, context: { params: Promise<{ eviden
     }
     return NextResponse.json({ status: outcome.kind, draft: outcome.draft }, { status: outcome.kind === "created" ? 201 : 200 });
   } catch (error) {
+    if (error instanceof ProfessionalLearningExtractorSelectionError) {
+      return NextResponse.json({ error: error.code, message: error.message }, { status: error.httpStatus });
+    }
+    if (isProfessionalLearningExtractorProviderError(error)) {
+      return NextResponse.json({ error: error.code, message: error.message }, { status: professionalLearningExtractorProviderErrorHttpStatus(error) });
+    }
     if (error instanceof ProfessionalLearningDraftServiceError) {
       return NextResponse.json({ error: error.code, message: error.message }, { status: error.httpStatus });
     }
