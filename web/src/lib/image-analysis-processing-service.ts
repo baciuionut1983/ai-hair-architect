@@ -335,7 +335,12 @@ export class ProcessingPreClaimError extends Error {
   }
 }
 
-class OversizedStreamError extends Error {}
+// T1.1 Issue #2 -- exported (unbehaviored) so professional-learning-
+// video-media-resolver.ts's own bounded S3 read can recognize this exact
+// error, mirroring how loadValidatedImageBuffer's own local-backend
+// branch below already distinguishes "too large" from a generic read
+// failure. No second bounded-stream implementation is introduced.
+export class OversizedStreamError extends Error {}
 
 // Exported (unchanged, unbehaviored) -- Real AI Photo Preview, Stage 2's own
 // executor reuses this exact dual-backend (S3 / legacy-local) read +
@@ -483,7 +488,12 @@ export async function loadValidatedImageBuffer(
   return buffer;
 }
 
-async function drainBoundedWebStream(stream: ReadableStream<Uint8Array>, maxBytes: number): Promise<Buffer> {
+// T1.1 Issue #2 -- exported (unbehaviored) so professional-learning-
+// video-media-resolver.ts's S3 read path can reuse the exact SAME
+// bounded-memory stream drain this file already uses for images,
+// instead of a second, competing implementation of "turn a
+// ReadableStream into a size-capped Buffer."
+export async function drainBoundedWebStream(stream: ReadableStream<Uint8Array>, maxBytes: number): Promise<Buffer> {
   const reader = stream.getReader();
   const chunks: Buffer[] = [];
   let total = 0;
