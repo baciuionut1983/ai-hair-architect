@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { GeminiProfessionalLearningExtractor, type GeminiLearningExtractorGenerateClient, type GeminiLearningExtractorGenerateInput } from "@/lib/professional-learning-extractor-gemini";
+import {
+  GEMINI_LEARNING_EXTRACTOR_VIDEO_MIN_TIMEOUT_MS,
+  GeminiProfessionalLearningExtractor,
+  type GeminiLearningExtractorGenerateClient,
+  type GeminiLearningExtractorGenerateInput,
+} from "@/lib/professional-learning-extractor-gemini";
 import { buildCanonicalCandidateSkillRegistry } from "@/lib/professional-brain-skill-templates";
 import { isValidExtraction } from "@/lib/professional-learning-draft-validators";
 
@@ -218,5 +223,49 @@ describe("GeminiProfessionalLearningExtractor -- VIDEO path (Stage 8.5L5.R1, zer
       fakeClient({ discernmentCategory: "PROFESSIONAL_TECHNIQUE", discernmentReason: "x", extractedFields: [] }),
     );
     await expect(extractor.extract({ evidence: videoEvidence(), evidenceReferences: {}, relevantRegistry: registry, videoMedia: dummyVideoMedia })).rejects.toThrow();
+  });
+
+  // T1.1 Issue #1, Fix 2 -- the SDK's own internal HTTP timeout for the
+  // analyze call must actually receive the widened ~3-minute video
+  // floor, not the shorter default/configured timeoutMs the extractor
+  // was constructed with. Before this fix, generateContent's input never
+  // carried a per-call override at all, so a real client would have
+  // silently kept using the shorter construction-time value here.
+  it("passes the widened ~180s video floor as generateContent's own effective timeoutMs when constructed with the (shorter) default", async () => {
+    let captured: GeminiLearningExtractorGenerateInput | undefined;
+    const canned = {
+      discernmentCategory: "PROFESSIONAL_TECHNIQUE",
+      discernmentReason: "test",
+      temporalObservations: [],
+      actionCandidates: [],
+      notableEditsOrCuts: [],
+      extractedFields: [],
+    };
+    const extractor = new GeminiProfessionalLearningExtractor({ apiKey: "key", model: "m" }, fakeClient(canned, { capture: (input) => (captured = input) }));
+
+    await extractor.extract({ evidence: videoEvidence(), evidenceReferences: {}, relevantRegistry: registry, videoMedia: dummyVideoMedia });
+
+    expect(captured?.timeoutMs).toBe(GEMINI_LEARNING_EXTRACTOR_VIDEO_MIN_TIMEOUT_MS);
+  });
+
+  it("never clamps DOWN an explicitly configured timeout that is already longer than the video floor", async () => {
+    let captured: GeminiLearningExtractorGenerateInput | undefined;
+    const canned = {
+      discernmentCategory: "PROFESSIONAL_TECHNIQUE",
+      discernmentReason: "test",
+      temporalObservations: [],
+      actionCandidates: [],
+      notableEditsOrCuts: [],
+      extractedFields: [],
+    };
+    const longerTimeoutMs = GEMINI_LEARNING_EXTRACTOR_VIDEO_MIN_TIMEOUT_MS + 60_000;
+    const extractor = new GeminiProfessionalLearningExtractor(
+      { apiKey: "key", model: "m", timeoutMs: longerTimeoutMs },
+      fakeClient(canned, { capture: (input) => (captured = input) }),
+    );
+
+    await extractor.extract({ evidence: videoEvidence(), evidenceReferences: {}, relevantRegistry: registry, videoMedia: dummyVideoMedia });
+
+    expect(captured?.timeoutMs).toBe(longerTimeoutMs);
   });
 });

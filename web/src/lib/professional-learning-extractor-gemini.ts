@@ -351,6 +351,18 @@ export interface GeminiLearningExtractorGenerateInput {
   // several calls that all reuse ONE upload, instead of uploading a
   // derivative clip per call.
   videoPart?: { mimeType: string; fileUri: string; startOffsetSeconds?: number; endOffsetSeconds?: number };
+  // T1.1 Issue #1, Fix 2 -- the EFFECTIVE per-call timeout to give the
+  // underlying provider request, when it must differ from the timeout
+  // this client was constructed with. Before this field existed, every
+  // generateContent call used the client's construction-time timeoutMs
+  // for the SDK's own httpOptions.timeout, EVEN when a caller (e.g.
+  // extractFromVideo below) had already computed and used a longer
+  // value for its own AbortController -- so the SDK's internal HTTP
+  // timeout could fire well before the caller's intended, longer budget
+  // ever applied. Optional: omitted, the client falls back to its own
+  // construction-time timeoutMs exactly as before (non-video/default
+  // behavior is unchanged).
+  timeoutMs?: number;
   onUsage?: (usage: GeminiRawUsageMetadata | undefined, providerRequestId: string | undefined) => void;
 }
 
@@ -547,8 +559,17 @@ export class GeminiProfessionalLearningExtractor implements ProfessionalLearning
       throw createProviderError("PROVIDER_ERROR", "This Gemini client does not support video file upload.");
     }
 
+    // T1.1 Issue #1, Fix 2 -- the SAME effective budget drives both our
+    // own AbortController (below) AND the SDK's internal HTTP timeout
+    // (passed as generateContent's own timeoutMs, since the client was
+    // constructed with the shorter, un-widened default/configured value).
+    // Before this fix, only the AbortController was widened -- the SDK's
+    // own httpOptions.timeout silently stayed at the shorter value,
+    // so it could cut off a real video analysis call before our intended
+    // 3-minute floor ever had a chance to apply.
+    const effectiveTimeoutMs = Math.max(this.timeoutMs, GEMINI_LEARNING_EXTRACTOR_VIDEO_MIN_TIMEOUT_MS);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), Math.max(this.timeoutMs, GEMINI_LEARNING_EXTRACTOR_VIDEO_MIN_TIMEOUT_MS));
+    const timer = setTimeout(() => controller.abort(), effectiveTimeoutMs);
 
     try {
       const professionalNote = input.evidence.professionalNote?.trim() ?? "";
@@ -559,6 +580,7 @@ export class GeminiProfessionalLearningExtractor implements ProfessionalLearning
         model: this.model,
         signal: controller.signal,
         videoPart: { mimeType: uploaded.mimeType, fileUri: uploaded.fileUri },
+        timeoutMs: effectiveTimeoutMs,
         onUsage: (usage, requestId) => {
           this.lastUsage = mapGeminiUsageMetadata(usage);
           this.lastProviderRequestId = requestId;
@@ -861,7 +883,7 @@ function createDefaultGeminiLearningExtractorClient(apiKey: string, timeoutMs: n
   const ai = new GoogleGenAI({ apiKey });
 
   return {
-    async generateContent({ prompt, model, signal, imagePart, videoPart, onUsage }: GeminiLearningExtractorGenerateInput) {
+    async generateContent({ prompt, model, signal, imagePart, videoPart, timeoutMs: callTimeoutMs, onUsage }: GeminiLearningExtractorGenerateInput) {
       const parts: Array<
         { text: string } | { inlineData: { mimeType: string; data: string } } | { fileData: { mimeType: string; fileUri: string }; videoMetadata?: { startOffset: string; endOffset: string } }
       > = [{ text: prompt }];
@@ -885,7 +907,10 @@ function createDefaultGeminiLearningExtractorClient(apiKey: string, timeoutMs: n
         contents: [{ role: "user", parts }],
         config: {
           abortSignal: signal,
-          httpOptions: { timeout: timeoutMs },
+          // T1.1 Issue #1, Fix 2 -- honor a per-call override (video's own
+          // widened budget) when supplied; otherwise fall back to the
+          // client's construction-time default exactly as before.
+          httpOptions: { timeout: callTimeoutMs ?? timeoutMs },
           responseMimeType: "application/json",
           responseSchema: videoPart ? VIDEO_RESPONSE_SCHEMA : RESPONSE_SCHEMA,
         },

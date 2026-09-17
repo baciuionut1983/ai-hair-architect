@@ -76,6 +76,76 @@ export interface ExtractedFieldDisplay {
   readonly source: string;
 }
 
+// T1.1 Issue #1, Fix 1 -- FAIL-HONEST extraction errors (never a silent,
+// blank "draft" with no explanation). Deliberately a small, closed
+// lookup table rather than displaying the server's own `message` text
+// verbatim: every code below is one this app itself throws with a
+// controlled, non-secret message (professional-learning-extractor-
+// selection.ts / professional-learning-extractor-gemini.ts /
+// professional-learning-draft-service.ts), but resolving through a fixed
+// Romanian label here -- instead of trusting raw text from the response
+// -- means a future new error code can never leak something inappropriate
+// (a stack trace, provider internals) into this UI merely by being
+// thrown; unrecognized codes fall back to the same generic, safe message.
+const EXTRACTION_ERROR_LABELS: Record<string, string> = {
+  REAL_EXTRACTION_MISCONFIGURED: "Extracția reală AI nu este configurată corect. Contactează un administrator.",
+  NOT_CONFIGURED: "Extracția reală AI nu este configurată corect. Contactează un administrator.",
+  TIMEOUT: "Analiza materialului a durat prea mult și a fost întreruptă. Poți încerca din nou.",
+  RATE_LIMITED: "Prea multe cereri către AI în acest moment. Încearcă din nou în câteva minute.",
+  INVALID_RESPONSE: "AI-ul a răspuns într-un format neașteptat. Poți încerca din nou.",
+  PROVIDER_ERROR: "Serviciul AI nu a putut analiza materialul acum. Poți încerca din nou.",
+  EVIDENCE_NOT_FOUND: "Materialul nu a fost găsit.",
+  VIDEO_MEDIA_UNAVAILABLE: "Materialul video încărcat nu a putut fi citit. Încearcă să îl reîncarci.",
+  IMAGE_MEDIA_UNAVAILABLE: "Materialul încărcat nu a putut fi citit. Încearcă să îl reîncarci.",
+};
+
+const EXTRACTION_ERROR_GENERIC_LABEL = "Analiza materialului nu a putut fi finalizată. Poți încerca din nou.";
+
+export function extractionErrorLabel(code: string | null | undefined): string {
+  if (!code) return EXTRACTION_ERROR_GENERIC_LABEL;
+  return EXTRACTION_ERROR_LABELS[code] ?? EXTRACTION_ERROR_GENERIC_LABEL;
+}
+
+// A failed attempt must never look like a successful reanalysis --
+// "Reanalizează" only ever labels the button after a PRIOR SUCCESSFUL
+// analysis (a real draft or a genuine skip), never after an error.
+export function draftActionButtonLabel(expanded: boolean, hasError: boolean): string {
+  if (hasError) return "Încearcă din nou";
+  return expanded ? "Reanalizează" : "Analizează material (draft)";
+}
+
+export type DraftAnalysisOutcome =
+  | { readonly kind: "draft"; readonly draft: unknown }
+  | { readonly kind: "skipped"; readonly reason: string }
+  | { readonly kind: "error"; readonly message: string };
+
+// T1.1 Issue #1, Fix 1 -- the ONE place that decides what a POST
+// /api/v1/learning-evidence/[evidenceId]/drafts response means. Pure and
+// fully testable, unlike the fetch call itself: given the response's
+// `ok` flag and its parsed body (or null, when the body could not be
+// parsed as JSON at all), it classifies the outcome into exactly one of
+// three shapes -- never silently falling through to "nothing to show"
+// the way the pre-fix component did. A non-ok response is ALWAYS an
+// error, regardless of its body shape; an ok response that matches
+// neither the "skipped" nor the "draft" success shape is ALSO treated as
+// an error (a defensive floor -- a 2xx response this UI cannot make
+// sense of must never be presented as if nothing happened).
+export function classifyDraftAnalysisResponse(
+  ok: boolean,
+  body: { status?: unknown; reason?: unknown; draft?: unknown; error?: unknown; message?: unknown } | null,
+): DraftAnalysisOutcome {
+  if (!ok) {
+    return { kind: "error", message: extractionErrorLabel(typeof body?.error === "string" ? body.error : undefined) };
+  }
+  if (body?.status === "skipped") {
+    return { kind: "skipped", reason: typeof body.reason === "string" ? body.reason : "SKIPPED" };
+  }
+  if (body?.draft) {
+    return { kind: "draft", draft: body.draft };
+  }
+  return { kind: "error", message: extractionErrorLabel(undefined) };
+}
+
 // Never claims registry activation for APPROVED -- the caller must show
 // this note alongside any APPROVED status (Part 28: PROFESSIONAL REVIEW
 // APPROVED, never REGISTRY ACTIVATED).

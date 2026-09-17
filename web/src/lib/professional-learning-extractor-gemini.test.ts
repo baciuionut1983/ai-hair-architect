@@ -162,4 +162,23 @@ describe("GeminiProfessionalLearningExtractor (Stage 8.5L4.R1 real adapter, zero
     await extractor.extract({ evidence: evidence(""), evidenceReferences: {}, relevantRegistry: registry });
     expect(called).toBe(false);
   });
+
+  // T1.1 Issue #1, Fix 2 -- the TEXT path must NOT regress: it never
+  // computes or passes a per-call timeoutMs override, so the injected
+  // client (and, in real use, the SDK's own httpOptions.timeout) keeps
+  // relying on the client's construction-time default exactly as before
+  // this fix. Only extractFromVideo (professional-learning-extractor-
+  // gemini-video.test.ts) ever supplies this field.
+  it("never passes a per-call timeoutMs override for the TEXT path (non-video behavior unchanged)", async () => {
+    let captured: GeminiLearningExtractorGenerateInput | undefined;
+    const client: GeminiLearningExtractorGenerateClient = {
+      async generateContent(input) {
+        captured = input;
+        return JSON.stringify({ discernmentCategory: "IRRELEVANT", discernmentReason: "x", extractedFields: [] });
+      },
+    };
+    const extractor = new GeminiProfessionalLearningExtractor({ apiKey: "key", model: "m" }, client);
+    await extractor.extract({ evidence: evidence("some text"), evidenceReferences: {}, relevantRegistry: registry });
+    expect(captured?.timeoutMs).toBeUndefined();
+  });
 });

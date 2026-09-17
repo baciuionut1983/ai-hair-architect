@@ -161,4 +161,16 @@ describe("GeminiProfessionalLearningExtractor -- IMAGE/DIAGRAM path (Stage 8.5L4
     expect((output.extraction as Record<string, unknown>).brandName).toBeUndefined();
     expect(output.extraction.tool).toEqual({ value: "scissors", source: "OBSERVED", confidence: 0.9 });
   });
+
+  // T1.1 Issue #1, Fix 2 -- the IMAGE path must NOT regress either: only
+  // extractFromVideo computes and passes a per-call timeoutMs override.
+  it("never passes a per-call timeoutMs override for the IMAGE path (non-video behavior unchanged)", async () => {
+    let captured: GeminiLearningExtractorGenerateInput | undefined;
+    const extractor = new GeminiProfessionalLearningExtractor(
+      { apiKey: "key", model: "m" },
+      fakeClient({ discernmentCategory: "IRRELEVANT", discernmentReason: "x", extractedFields: [] }, (input) => (captured = input)),
+    );
+    await extractor.extract({ evidence: imageEvidence(), evidenceReferences: {}, relevantRegistry: registry, imageMedia: dummyImageMedia });
+    expect(captured?.timeoutMs).toBeUndefined();
+  });
 });

@@ -2,10 +2,13 @@
 
 import { useState } from "react";
 
+import { Alert } from "@/components/ui";
 import {
   APPROVED_NOTE_TEXT,
+  classifyDraftAnalysisResponse,
   comparisonLabel,
   discernmentLabel,
+  draftActionButtonLabel,
   draftStatusLabel,
   formatExtractionForDisplay,
   LEARNING_DRAFT_HEADING_TEXT,
@@ -40,20 +43,38 @@ interface LearningDraft {
 export function LearningDraftReview({ evidenceId }: { evidenceId: string }) {
   const [draft, setDraft] = useState<LearningDraft | null>(null);
   const [skipped, setSkipped] = useState<string | null>(null);
+  // T1.1 Issue #1, Fix 1 -- a non-2xx response (misconfiguration, a real
+  // provider timeout/rate-limit/invalid-response, or a validation
+  // failure -- route.ts's own catch block) must never be treated the
+  // same as "nothing to show." Cleared at the start of every attempt, so
+  // a fresh success/skip after a prior failure is never shown alongside
+  // a stale error, and a fresh failure never leaves a prior draft/skip
+  // visible as if it still applied to THIS attempt.
+  const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
   async function runDiscernment() {
     setLoading(true);
     setSkipped(null);
+    setError(null);
+    setDraft(null);
     try {
       const response = await fetch(`/api/v1/learning-evidence/${evidenceId}/drafts`, { method: "POST" });
-      const body = await response.json();
-      if (body.status === "skipped") {
-        setSkipped(body.reason ?? "SKIPPED");
-      } else if (body.draft) {
-        setDraft(body.draft);
-      }
+      const body = await response.json().catch(() => null);
+      // The uploaded evidence itself is never touched here -- only this
+      // attempt's own draft-creation call is being classified. A retry
+      // (the same button, now labeled "Încearcă din nou" on failure)
+      // simply calls this function again; no fake extraction content is
+      // ever fabricated for a failed attempt.
+      const outcome = classifyDraftAnalysisResponse(response.ok, body);
+      if (outcome.kind === "error") setError(outcome.message);
+      else if (outcome.kind === "skipped") setSkipped(outcome.reason);
+      else setDraft(outcome.draft as LearningDraft);
+      setExpanded(true);
+    } catch {
+      const failure = classifyDraftAnalysisResponse(false, null);
+      if (failure.kind === "error") setError(failure.message);
       setExpanded(true);
     } finally {
       setLoading(false);
@@ -79,14 +100,18 @@ export function LearningDraftReview({ evidenceId }: { evidenceId: string }) {
   return (
     <div className="mt-1 text-xs">
       <button type="button" onClick={() => void runDiscernment()} disabled={loading} className="text-muted underline hover:text-foreground">
-        {expanded ? "Reanalizează" : "Analizează material (draft)"}
+        {draftActionButtonLabel(expanded, error !== null)}
       </button>
 
       {expanded ? (
         <div className="mt-1 rounded-md border border-border p-2">
           <p className="font-medium">{LEARNING_DRAFT_HEADING_TEXT}</p>
 
-          {skipped ? (
+          {error ? (
+            <div className="mt-1">
+              <Alert variant="error">{error}</Alert>
+            </div>
+          ) : skipped ? (
             <p className="mt-1 text-muted">Materialul nu a fost procesat: {skipped}.</p>
           ) : draft ? (
             <>
