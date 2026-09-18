@@ -12,7 +12,6 @@ import type { ProfessionalLearningExtractor, ProfessionalLearningExtractorInput,
 import { matchTechniqueNameToRegistry } from "@/lib/professional-learning-technique-name-matcher";
 import type { AiUsageQuantities } from "@/lib/ai-usage-contracts";
 import type { ProfessionalSkillDefinitionRecord } from "@/lib/professional-skill-registry-repository";
-import { buildProfessionalLearningVideoMetadataDiagnostic } from "@/lib/professional-learning-video-metadata-diagnostic";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L4.R1 -- the
 // FIRST real Professional Learning extractor adapter, implementing the
@@ -978,14 +977,6 @@ function createDefaultGeminiLearningExtractorClient(apiKey: string, timeoutMs: n
       if (current.state !== FileState.ACTIVE || !current.uri || !current.mimeType) {
         throw createProviderError("PROVIDER_ERROR", `Gemini video file failed to become ACTIVE (state=${String(current.state)}).`);
       }
-
-      // Stage 8.5T1.3.R2 -- TEMPORARY, REMOVABLE diagnostic observability
-      // ONLY (see professional-learning-video-metadata-diagnostic.ts's own
-      // header). Fires exactly once per real provider file-processing
-      // operation, immediately alongside (never inside, never altering)
-      // parseGeminiFileVideoDurationSeconds below -- this line does not
-      // change what duration value this method returns.
-      console.log(JSON.stringify({ gate: "PROFESSIONAL_LEARNING_VIDEO_METADATA_DIAGNOSTIC", ...buildProfessionalLearningVideoMetadataDiagnostic(current.videoMetadata) }));
 
       return { fileUri: current.uri, mimeType: current.mimeType, durationSeconds: parseGeminiFileVideoDurationSeconds(current.videoMetadata) };
     },
