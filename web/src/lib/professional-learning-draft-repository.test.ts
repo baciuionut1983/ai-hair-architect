@@ -13,9 +13,12 @@ import {
   findDraftForOwner,
   listDraftsForOwner,
   ProfessionalLearningDraftStateError,
+  ProfessionalLearningProceduralReviewStateError,
+  recordProceduralClaimReview,
   revertFailedReanalysis,
   transitionDraftStatus,
 } from "@/lib/professional-learning-draft-repository";
+import type { ProceduralClaimReviewEntry } from "@/lib/professional-learning-procedural-review-validators";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L4 -- durable
 // repository layer tests, real Postgres, no mocks. Mirrors
@@ -281,6 +284,178 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
       await claimDraftForReanalysis(ownerUserId, original.id);
 
       expect(await claimDraftForReanalysis(ownerUserId, original.id)).toBe(false);
+    });
+  });
+
+  describe("recordProceduralClaimReview (Stage 8.5T1.4.b.1)", () => {
+    function confirmedEntry(overrides: Partial<ProceduralClaimReviewEntry> = {}): ProceduralClaimReviewEntry {
+      return {
+        claimId: "COMBING",
+        claimType: "PROCEDURAL_PATTERN",
+        decision: "PROFESSIONALLY_CONFIRMED",
+        originalValue: { kind: "COMBING", occurrenceCount: 5 },
+        originalProvenance: "INFERRED",
+        reviewedByUserId: "reviewer-1",
+        reviewedAt: new Date().toISOString(),
+        ...overrides,
+      };
+    }
+
+    async function createApprovedDraft(ownerUserId: string) {
+      const evidence = await createEvidence(ownerUserId);
+      const original = await createDraft(ownerUserId, randomUUID(), input(evidence.id));
+      await transitionDraftStatus(ownerUserId, original.id, "READY_FOR_REVIEW");
+      return transitionDraftStatus(ownerUserId, original.id, "APPROVED");
+    }
+
+    it("DRAFT/READY_FOR_REVIEW/REJECTED drafts cannot receive procedural review -- only APPROVED can", async () => {
+      const { ownerUserId } = await createOwner();
+
+      const draftEvidence = await createEvidence(ownerUserId);
+      const draftDraft = await createDraft(ownerUserId, randomUUID(), input(draftEvidence.id));
+      await expect(recordProceduralClaimReview(ownerUserId, draftDraft.id, { claimId: "COMBING", entry: confirmedEntry() })).rejects.toBeInstanceOf(
+        ProfessionalLearningProceduralReviewStateError,
+      );
+
+      const readyEvidence = await createEvidence(ownerUserId);
+      const readyDraft = await createDraft(ownerUserId, randomUUID(), input(readyEvidence.id));
+      await transitionDraftStatus(ownerUserId, readyDraft.id, "READY_FOR_REVIEW");
+      await expect(recordProceduralClaimReview(ownerUserId, readyDraft.id, { claimId: "COMBING", entry: confirmedEntry() })).rejects.toMatchObject({
+        code: "DRAFT_NOT_APPROVED",
+      });
+
+      const rejectedEvidence = await createEvidence(ownerUserId);
+      const rejectedDraft = await createDraft(ownerUserId, randomUUID(), input(rejectedEvidence.id));
+      await transitionDraftStatus(ownerUserId, rejectedDraft.id, "READY_FOR_REVIEW");
+      await transitionDraftStatus(ownerUserId, rejectedDraft.id, "REJECTED");
+      await expect(recordProceduralClaimReview(ownerUserId, rejectedDraft.id, { claimId: "COMBING", entry: confirmedEntry() })).rejects.toMatchObject({
+        code: "DRAFT_NOT_APPROVED",
+      });
+    });
+
+    it("an APPROVED draft can receive procedural review, persisted and readable afterward", async () => {
+      const { ownerUserId } = await createOwner();
+      const approved = await createApprovedDraft(ownerUserId);
+      const theEntry = confirmedEntry();
+
+      const result = await recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "COMBING", entry: theEntry });
+      expect(result.proceduralReview).toEqual({ claims: { COMBING: theEntry } });
+
+      const reloaded = await findDraftForOwner(ownerUserId, approved.id);
+      expect(reloaded?.proceduralReview).toEqual({ claims: { COMBING: theEntry } });
+    });
+
+    it("PROFESSIONALLY_CORRECTED preserves the original AI-derived value alongside the professional's own correction -- never overwritten", async () => {
+      const { ownerUserId } = await createOwner();
+      const approved = await createApprovedDraft(ownerUserId);
+
+      const result = await recordProceduralClaimReview(ownerUserId, approved.id, {
+        claimId: "CUTTING_ACTION",
+        entry: confirmedEntry({ claimId: "CUTTING_ACTION", decision: "PROFESSIONALLY_CORRECTED", correctedValue: "45 Interior", originalValue: { kind: "CUTTING_ACTION", occurrenceCount: 4 } }),
+      });
+
+      const stored = result.proceduralReview?.claims.CUTTING_ACTION;
+      expect(stored?.decision).toBe("PROFESSIONALLY_CORRECTED");
+      expect(stored?.correctedValue).toBe("45 Interior");
+      // The original AI-derived value is NEVER rewritten into the correction.
+      expect(stored?.originalValue).toEqual({ kind: "CUTTING_ACTION", occurrenceCount: 4 });
+    });
+
+    it("PROFESSIONALLY_REJECTED and PROFESSIONALLY_UNKNOWN persist as distinct decisions", async () => {
+      const { ownerUserId } = await createOwner();
+      const approved = await createApprovedDraft(ownerUserId);
+
+      await recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "COMBING", entry: confirmedEntry({ decision: "PROFESSIONALLY_REJECTED" }) });
+      const afterReject = await recordProceduralClaimReview(ownerUserId, approved.id, {
+        claimId: "CUTTING_ACTION",
+        entry: confirmedEntry({ claimId: "CUTTING_ACTION", decision: "PROFESSIONALLY_UNKNOWN" }),
+      });
+
+      expect(afterReject.proceduralReview?.claims.COMBING.decision).toBe("PROFESSIONALLY_REJECTED");
+      expect(afterReject.proceduralReview?.claims.CUTTING_ACTION.decision).toBe("PROFESSIONALLY_UNKNOWN");
+      // UNKNOWN is never the same value as REJECTED.
+      expect(afterReject.proceduralReview?.claims.CUTTING_ACTION.decision).not.toBe(afterReject.proceduralReview?.claims.COMBING.decision);
+    });
+
+    it("submitting the exact same decision twice is idempotent -- no error, no duplicate/altered content", async () => {
+      const { ownerUserId } = await createOwner();
+      const approved = await createApprovedDraft(ownerUserId);
+      const claim = { claimId: "COMBING", entry: confirmedEntry() };
+
+      const first = await recordProceduralClaimReview(ownerUserId, approved.id, claim);
+      const second = await recordProceduralClaimReview(ownerUserId, approved.id, claim);
+
+      expect(second.proceduralReview).toEqual(first.proceduralReview);
+    });
+
+    it("two genuinely concurrent writes to DIFFERENT claims never corrupt/lose either decision -- a lost race fails closed, never silently, and a client retry always succeeds", async () => {
+      const { ownerUserId } = await createOwner();
+      const approved = await createApprovedDraft(ownerUserId);
+
+      // Real, simultaneous concurrency (not simulated) -- two real
+      // overlapping calls against the same row, each for a DIFFERENT
+      // claim. Whichever one loses the optimistic-concurrency race must
+      // fail with the recognized CONCURRENT_MODIFICATION error and
+      // nothing else (never corrupt the row, never silently vanish).
+      const [combingResult, cuttingResult] = await Promise.allSettled([
+        recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "COMBING", entry: confirmedEntry({ decision: "PROFESSIONALLY_CONFIRMED" }) }),
+        recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "CUTTING_ACTION", entry: confirmedEntry({ claimId: "CUTTING_ACTION", decision: "PROFESSIONALLY_REJECTED" }) }),
+      ]);
+
+      for (const outcome of [combingResult, cuttingResult]) {
+        if (outcome.status === "rejected") {
+          expect(outcome.reason).toBeInstanceOf(ProfessionalLearningProceduralReviewStateError);
+          expect((outcome.reason as ProfessionalLearningProceduralReviewStateError).code).toBe("CONCURRENT_MODIFICATION");
+        }
+      }
+
+      // A real client retries a CONCURRENT_MODIFICATION exactly like it
+      // already retries a normal "reload and try again" conflict
+      // elsewhere in this codebase -- never a new mechanism.
+      if (combingResult.status === "rejected") {
+        await recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "COMBING", entry: confirmedEntry({ decision: "PROFESSIONALLY_CONFIRMED" }) });
+      }
+      if (cuttingResult.status === "rejected") {
+        await recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "CUTTING_ACTION", entry: confirmedEntry({ claimId: "CUTTING_ACTION", decision: "PROFESSIONALLY_REJECTED" }) });
+      }
+
+      // After settling (with retry where needed), BOTH decisions exist --
+      // neither was silently lost by the other's concurrent write.
+      const reloaded = await findDraftForOwner(ownerUserId, approved.id);
+      expect(reloaded?.proceduralReview?.claims.COMBING.decision).toBe("PROFESSIONALLY_CONFIRMED");
+      expect(reloaded?.proceduralReview?.claims.CUTTING_ACTION.decision).toBe("PROFESSIONALLY_REJECTED");
+    });
+
+    it("cannot review another owner's draft (IDOR)", async () => {
+      const { ownerUserId: userA } = await createOwner();
+      const userB = (await createOwner()).ownerUserId;
+      const approved = await createApprovedDraft(userA);
+
+      await expect(recordProceduralClaimReview(userB, approved.id, { claimId: "COMBING", entry: confirmedEntry() })).rejects.toBeInstanceOf(ProfessionalLearningProceduralReviewStateError);
+      const row = await findDraftForOwner(userA, approved.id);
+      expect(row?.proceduralReview).toBeNull();
+    });
+
+    it("procedural review never mutates the original extraction/temporalEvidence -- Layer 1/2 stay exactly as they were", async () => {
+      const { ownerUserId } = await createOwner();
+      const approved = await createApprovedDraft(ownerUserId);
+      const beforeExtraction = approved.extraction;
+      const beforeTemporalEvidence = approved.temporalEvidence;
+
+      const result = await recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "COMBING", entry: confirmedEntry() });
+
+      expect(result.extraction).toEqual(beforeExtraction);
+      expect(result.temporalEvidence).toEqual(beforeTemporalEvidence);
+    });
+
+    it("an APPROVED draft that has received procedural review remains permanently protected from reanalysis", async () => {
+      const { ownerUserId } = await createOwner();
+      const approved = await createApprovedDraft(ownerUserId);
+      await recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "COMBING", entry: confirmedEntry() });
+
+      expect(await claimDraftForReanalysis(ownerUserId, approved.id)).toBe(false);
+      const row = await prisma.professionalLearningDraft.findUniqueOrThrow({ where: { id: approved.id } });
+      expect(row.status).toBe("APPROVED");
     });
   });
 });

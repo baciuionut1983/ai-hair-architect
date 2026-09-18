@@ -3406,6 +3406,23 @@ model ProfessionalLearningDraft {
   // any historical row.
   temporalEvidence Json?
 
+  // Stage 8.5T1.4.b.1 -- ADDITIVE, nullable. LAYER 3 of the strict
+  // three-layer authority separation this stage establishes: LAYER 1 is
+  // temporalEvidence above (immutable AI-observed evidence), LAYER 2 is
+  // the T1.4.a procedural interpretation (derived fresh on every read,
+  // never persisted at all), LAYER 3 is THIS column -- the professional's
+  // own review decisions about that derived interpretation. Shape:
+  // { claims: { [claimId]: { claimId, claimType, decision, originalValue,
+  // originalProvenance, correctedValue?, note?, reviewedByUserId,
+  // reviewedAt } } } -- see professional-learning-procedural-review-
+  // validators.ts for the canonical type. Never written to unless the
+  // owning draft's own status is APPROVED (professional-learning-draft-
+  // repository.ts's recordProceduralClaimReview enforces this at the
+  // exact same WHERE clause as the write itself, never as a separate,
+  // racy pre-check). Every existing and future draft that has never
+  // received a procedural review simply has this column NULL.
+  proceduralReview Json?
+
   // Populated only when comparisonOutcome is POSSIBLE_CONFLICT (Part 13):
   // { existingClaim, newClaim, existingAuthority, newEvidenceId, reason,
   // reviewRequired }. The system NEVER picks a winner automatically --

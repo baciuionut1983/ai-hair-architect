@@ -9,9 +9,11 @@ import {
   draftStatusLabel,
   extractionErrorLabel,
   formatExtractionForDisplay,
+  formatProceduralInterpretationForDisplay,
   formatTemporalEvidenceForDisplay,
   LEARNING_DRAFT_HEADING_TEXT,
   nextRequestMode,
+  PROCEDURAL_INTERPRETATION_HEADING_TEXT,
   provenanceLabel,
   TEMPORAL_EVIDENCE_HEADING_TEXT,
 } from "./teach-ai-learning-draft-review-logic";
@@ -253,6 +255,85 @@ describe("teach-ai-learning-draft-review-logic", () => {
 
     it("any attempt after a successful draft has been shown is REANALYZE", () => {
       expect(nextRequestMode(true)).toBe("REANALYZE");
+    });
+  });
+
+  // Stage 8.5T1.4.a coverage-debt closure (T1.4.b audit's own explicit
+  // recommendation) -- formatProceduralInterpretationForDisplay had no
+  // dedicated tests since T1.4.a shipped. Pure formatting only, no
+  // behavior change to the bridge/adapter itself.
+  describe("formatProceduralInterpretationForDisplay", () => {
+    it("returns null (renders nothing) when there is no candidate at all", () => {
+      expect(formatProceduralInterpretationForDisplay(null)).toBeNull();
+      expect(formatProceduralInterpretationForDisplay(undefined)).toBeNull();
+    });
+
+    it("the heading text never implies AI truth -- it names the interpretation as derived", () => {
+      expect(PROCEDURAL_INTERPRETATION_HEADING_TEXT.toLowerCase()).toContain("dedus");
+    });
+
+    it("maps ordered actions to range/kind/transition-label display entries, in order", () => {
+      const display = formatProceduralInterpretationForDisplay({
+        orderedActions: [
+          { action: { kind: "COMBING" }, absoluteInterval: { timeStartSeconds: 0, timeEndSeconds: 6 }, precedingTransition: "START" },
+          { action: { kind: "CUTTING_ACTION" }, absoluteInterval: { timeStartSeconds: 7, timeEndSeconds: 14 }, precedingTransition: "ADJACENT" },
+        ],
+        repetitionByKind: {},
+        zoneCompletionByKind: {},
+        coreChainSummary: {},
+      });
+      expect(display?.actionSequence).toEqual([
+        { rangeLabel: "0s–6s", kind: "COMBING", transitionLabel: "Început" },
+        { rangeLabel: "7s–14s", kind: "CUTTING_ACTION", transitionLabel: "Continuă imediat" },
+      ]);
+    });
+
+    it("falls back to the raw transition code for an unrecognized value, never throwing", () => {
+      const display = formatProceduralInterpretationForDisplay({
+        orderedActions: [{ action: { kind: "COMBING" }, absoluteInterval: { timeStartSeconds: 0, timeEndSeconds: 6 }, precedingTransition: "SOMETHING_NEW" }],
+        repetitionByKind: {},
+        zoneCompletionByKind: {},
+        coreChainSummary: {},
+      });
+      expect(display?.actionSequence[0].transitionLabel).toBe("SOMETHING_NEW");
+    });
+
+    it("maps repetitionByKind to occurrence counts", () => {
+      const display = formatProceduralInterpretationForDisplay({
+        orderedActions: [],
+        repetitionByKind: { COMBING: { occurrenceActionCandidateIds: ["a", "b", "c"] } },
+        zoneCompletionByKind: {},
+        coreChainSummary: {},
+      });
+      expect(display?.repetitions).toEqual([{ kind: "COMBING", occurrenceCount: 3 }]);
+    });
+
+    it("maps zoneCompletionByKind to Romanian state labels, never silently claiming completion", () => {
+      const display = formatProceduralInterpretationForDisplay({
+        orderedActions: [],
+        repetitionByKind: {},
+        zoneCompletionByKind: { COMBING: "UNKNOWN", CUTTING_ACTION: "NOT_ESTABLISHED" },
+        coreChainSummary: {},
+      });
+      expect(display?.zoneCompletion).toEqual([
+        { kind: "COMBING", stateLabel: "Nedeterminat din material" },
+        { kind: "CUTTING_ACTION", stateLabel: "Neestablit din material" },
+      ]);
+    });
+
+    it("renders the core chain summary in a fixed, deterministic stage order -- never Object.keys insertion order", () => {
+      const display = formatProceduralInterpretationForDisplay({
+        orderedActions: [],
+        repetitionByKind: {},
+        zoneCompletionByKind: {},
+        coreChainSummary: { VALIDATION: "NOT_OBSERVED", START: "SUPPORTED", ACTION: "SUPPORTED" },
+      });
+      expect(display?.coreChainSummary.map((entry) => entry.stageLabel)).toEqual(["Început", "Acțiune", "Validare"]);
+    });
+
+    it("omits a core chain stage the candidate did not report at all, rather than fabricating one", () => {
+      const display = formatProceduralInterpretationForDisplay({ orderedActions: [], repetitionByKind: {}, zoneCompletionByKind: {}, coreChainSummary: { START: "SUPPORTED" } });
+      expect(display?.coreChainSummary).toEqual([{ stageLabel: "Început", supportLabel: "Susținut de dovezi" }]);
     });
   });
 });
