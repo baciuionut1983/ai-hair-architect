@@ -233,6 +233,123 @@ export function formatTemporalEvidenceForDisplay(
   return withStart.sort((a, b) => a.startSeconds - b.startSeconds).map((item) => item.entry);
 }
 
+// T1.4.a -- TEMPORAL EVIDENCE -> PROCEDURAL INTERPRETATION (read-only,
+// derived, non-authoritative). This function does NOT recompute
+// anything -- the server already ran the existing (previously dormant)
+// procedural-reasoning engine and sent the plain result; this file only
+// maps it to Romanian display labels, exactly mirroring
+// formatTemporalEvidenceForDisplay's own established convention.
+// Deliberately has ZERO import from any @/lib file that pulls in
+// node:crypto (professional-learning-video-temporal-reasoning.ts /
+// -segmentation.ts / -video-temporal-to-procedural-adapter.ts) -- this
+// module is loaded into a "use client" component, and those files are
+// server-only, real-I/O-adjacent constructors. The shapes below are a
+// deliberate, duck-typed mirror, matching this file's own
+// TemporalObservationLike/TemporalActionLike precedent exactly.
+export const PROCEDURAL_INTERPRETATION_HEADING_TEXT = "Interpretare procedurală (dedusă din dovezi, nu este adevăr profesional confirmat)";
+
+interface ProceduralActionEntryLike {
+  readonly action: { readonly kind: string };
+  readonly absoluteInterval: { readonly timeStartSeconds: number; readonly timeEndSeconds: number };
+  readonly precedingTransition: string;
+}
+interface RepetitionAssessmentLike {
+  readonly occurrenceActionCandidateIds: readonly string[];
+}
+interface ProceduralCandidateLike {
+  readonly orderedActions?: readonly ProceduralActionEntryLike[];
+  readonly repetitionByKind?: Readonly<Record<string, RepetitionAssessmentLike>>;
+  readonly zoneCompletionByKind?: Readonly<Record<string, string>>;
+  readonly coreChainSummary?: Readonly<Record<string, string>>;
+}
+
+export interface ProceduralActionSequenceDisplayEntry {
+  readonly rangeLabel: string;
+  readonly kind: string;
+  readonly transitionLabel: string;
+}
+export interface ProceduralRepetitionDisplayEntry {
+  readonly kind: string;
+  readonly occurrenceCount: number;
+}
+export interface ProceduralZoneCompletionDisplayEntry {
+  readonly kind: string;
+  readonly stateLabel: string;
+}
+export interface ProceduralChainStageDisplayEntry {
+  readonly stageLabel: string;
+  readonly supportLabel: string;
+}
+export interface ProceduralInterpretationDisplay {
+  readonly actionSequence: readonly ProceduralActionSequenceDisplayEntry[];
+  readonly repetitions: readonly ProceduralRepetitionDisplayEntry[];
+  readonly zoneCompletion: readonly ProceduralZoneCompletionDisplayEntry[];
+  readonly coreChainSummary: readonly ProceduralChainStageDisplayEntry[];
+}
+
+const ACTION_TRANSITION_LABELS: Record<string, string> = {
+  START: "Început",
+  ADJACENT: "Continuă imediat",
+  UNKNOWN_TRANSITION: "Tranziție neclară",
+  DISCONTINUOUS_EDITED: "Întrerupt de o editare video",
+};
+const ZONE_COMPLETION_STATE_LABELS: Record<string, string> = {
+  NOT_ESTABLISHED: "Neestablit din material",
+  IN_PROGRESS: "În desfășurare",
+  COMPLETED: "Finalizat",
+  UNKNOWN: "Nedeterminat din material",
+};
+// Fixed, deterministic display order -- never derived from Object.keys
+// (whose iteration order is an implementation detail, not a
+// professional-meaningful sequence).
+const CORE_CHAIN_STAGE_ORDER = ["START", "ACTION", "PROGRESSION", "ITERATION", "ZONE_COMPLETE", "RESULT_OBSERVATION", "VALIDATION"] as const;
+const CORE_CHAIN_STAGE_LABELS: Record<string, string> = {
+  START: "Început",
+  ACTION: "Acțiune",
+  PROGRESSION: "Progresie",
+  ITERATION: "Repetiție",
+  ZONE_COMPLETE: "Zonă finalizată",
+  RESULT_OBSERVATION: "Observare rezultat",
+  VALIDATION: "Validare",
+};
+const CORE_CHAIN_SUPPORT_LABELS: Record<string, string> = {
+  SUPPORTED: "Susținut de dovezi",
+  PARTIALLY_SUPPORTED: "Parțial susținut",
+  UNKNOWN: "Nedeterminat din material",
+  NOT_OBSERVED: "Neobservat",
+};
+
+// Returns null (never a fabricated placeholder) when the server sent no
+// derivable interpretation -- the caller renders nothing for this
+// section in that case, exactly like formatTemporalEvidenceForDisplay's
+// own empty-array convention.
+export function formatProceduralInterpretationForDisplay(candidate: ProceduralCandidateLike | null | undefined): ProceduralInterpretationDisplay | null {
+  if (!candidate) return null;
+
+  const actionSequence = (candidate.orderedActions ?? []).map((entry) => ({
+    rangeLabel: `${entry.absoluteInterval.timeStartSeconds}s–${entry.absoluteInterval.timeEndSeconds}s`,
+    kind: entry.action.kind,
+    transitionLabel: ACTION_TRANSITION_LABELS[entry.precedingTransition] ?? entry.precedingTransition,
+  }));
+
+  const repetitions = Object.entries(candidate.repetitionByKind ?? {}).map(([kind, r]) => ({
+    kind,
+    occurrenceCount: r.occurrenceActionCandidateIds.length,
+  }));
+
+  const zoneCompletion = Object.entries(candidate.zoneCompletionByKind ?? {}).map(([kind, state]) => ({
+    kind,
+    stateLabel: ZONE_COMPLETION_STATE_LABELS[state] ?? state,
+  }));
+
+  const coreChainSummary = CORE_CHAIN_STAGE_ORDER.filter((stage) => candidate.coreChainSummary?.[stage] !== undefined).map((stage) => {
+    const support = candidate.coreChainSummary![stage];
+    return { stageLabel: CORE_CHAIN_STAGE_LABELS[stage] ?? stage, supportLabel: CORE_CHAIN_SUPPORT_LABELS[support] ?? support };
+  });
+
+  return { actionSequence, repetitions, zoneCompletion, coreChainSummary };
+}
+
 // T1.2.R1 -- EXPLICIT REANALYSIS SEMANTICS. The ONE place the component
 // decides what to send the server: REANALYZE only once a successful
 // draft has genuinely been shown in this session, exactly matching the

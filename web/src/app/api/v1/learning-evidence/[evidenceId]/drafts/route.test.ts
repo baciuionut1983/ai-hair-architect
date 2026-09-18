@@ -120,7 +120,10 @@ describe("POST /api/v1/learning-evidence/[evidenceId]/drafts", () => {
     const response = await invokePost("evidence-1");
     expect(response.status).toBe(201);
     const body = await response.json();
-    expect(body).toEqual({ status: "created", draft });
+    // Stage 8.5T1.4.a -- proceduralInterpretation is a NEW, additive,
+    // computed-at-response-time-only field; null here because this
+    // fixture's draft has no temporalEvidence at all.
+    expect(body).toEqual({ status: "created", draft: { ...draft, proceduralInterpretation: null } });
     expect(serviceMock.processEvidenceIntoDraft).toHaveBeenCalledWith(
       expect.objectContaining({ ownerUserId: "owner-1", evidenceId: "evidence-1" }),
     );

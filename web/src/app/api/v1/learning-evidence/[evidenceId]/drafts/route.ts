@@ -13,6 +13,7 @@ import {
   selectProfessionalLearningExtractor,
 } from "@/lib/professional-learning-extractor-selection";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
+import { buildProceduralInterpretation } from "@/lib/professional-learning-video-temporal-to-procedural-adapter";
 import { randomUUID } from "crypto";
 
 // Professional Skill Engine, Stage 8.5L4 -- PROFESSIONAL LEARNING DRAFT,
@@ -68,7 +69,14 @@ export async function POST(request: Request, context: { params: Promise<{ eviden
     if (outcome.kind === "skipped") {
       return NextResponse.json({ status: "skipped", reason: outcome.reason }, { status: 200 });
     }
-    return NextResponse.json({ status: outcome.kind, draft: outcome.draft }, { status: outcome.kind === "created" ? 201 : 200 });
+    // Stage 8.5T1.4.a -- TEMPORAL EVIDENCE -> PROCEDURAL INTERPRETATION.
+    // Computed at response time ONLY, never persisted: a pure, read-only,
+    // INFERRED-authority derivation over this exact draft's own already-
+    // persisted temporalEvidence, reusing the existing (previously
+    // dormant) procedural reasoning engine verbatim. Absent (null) is
+    // the honest result whenever there is no derivable action sequence.
+    const proceduralInterpretation = buildProceduralInterpretation(outcome.draft.id, outcome.draft.temporalEvidence);
+    return NextResponse.json({ status: outcome.kind, draft: { ...outcome.draft, proceduralInterpretation } }, { status: outcome.kind === "created" ? 201 : 200 });
   } catch (error) {
     if (error instanceof ProfessionalLearningExtractorSelectionError) {
       return NextResponse.json({ error: error.code, message: error.message }, { status: error.httpStatus });

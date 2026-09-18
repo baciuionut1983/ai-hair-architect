@@ -7,6 +7,7 @@ import {
   transitionDraftStatus,
 } from "@/lib/professional-learning-draft-repository";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
+import { buildProceduralInterpretation } from "@/lib/professional-learning-video-temporal-to-procedural-adapter";
 
 // Professional Skill Engine, Stage 8.5L4 -- Part 28/29 ("record
 // professional review decision"). APPROVED here means PROFESSIONAL REVIEW
@@ -30,7 +31,13 @@ export async function POST(request: Request, context: { params: Promise<{ draftI
 
   try {
     const draft = await transitionDraftStatus(user.id, draftId, body.decision, { reviewedByUserId: user.id, reviewedAt: new Date() });
-    return NextResponse.json({ draft, note: "This records professional review approval of the INTERPRETATION only -- it does not activate any ProfessionalSkillDefinition." });
+    // Stage 8.5T1.4.a -- see the drafts route's own identical comment:
+    // computed at response time only, never persisted.
+    const proceduralInterpretation = buildProceduralInterpretation(draft.id, draft.temporalEvidence);
+    return NextResponse.json({
+      draft: { ...draft, proceduralInterpretation },
+      note: "This records professional review approval of the INTERPRETATION only -- it does not activate any ProfessionalSkillDefinition.",
+    });
   } catch (error) {
     if (error instanceof ProfessionalLearningDraftStateError) {
       return NextResponse.json({ error: error.code, message: error.message }, { status: error.fromStatus === "NOT_FOUND" ? 404 : error.httpStatus });

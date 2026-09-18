@@ -11,9 +11,11 @@ import {
   draftActionButtonLabel,
   draftStatusLabel,
   formatExtractionForDisplay,
+  formatProceduralInterpretationForDisplay,
   formatTemporalEvidenceForDisplay,
   LEARNING_DRAFT_HEADING_TEXT,
   nextRequestMode,
+  PROCEDURAL_INTERPRETATION_HEADING_TEXT,
   TEMPORAL_EVIDENCE_HEADING_TEXT,
 } from "./teach-ai-learning-draft-review-logic";
 
@@ -43,6 +45,22 @@ interface DraftTemporalEvidence {
   readonly editGaps?: readonly { readonly beforeTimeSeconds: number; readonly afterTimeSeconds: number; readonly source: string }[];
 }
 
+// T1.4.a -- TEMPORAL EVIDENCE -> PROCEDURAL INTERPRETATION. Mirrors the
+// server's ProceduralCandidate JSON shape exactly (professional-
+// learning-video-procedural-candidate.ts) -- computed at response time
+// only, never persisted, never professional truth on its own. Absent
+// (null) whenever the server found nothing derivable.
+interface DraftProceduralInterpretation {
+  readonly orderedActions: readonly {
+    readonly action: { readonly kind: string };
+    readonly absoluteInterval: { readonly timeStartSeconds: number; readonly timeEndSeconds: number };
+    readonly precedingTransition: string;
+  }[];
+  readonly repetitionByKind: Readonly<Record<string, { readonly occurrenceActionCandidateIds: readonly string[] }>>;
+  readonly zoneCompletionByKind: Readonly<Record<string, string>>;
+  readonly coreChainSummary: Readonly<Record<string, string>>;
+}
+
 interface LearningDraft {
   readonly id: string;
   readonly status: string;
@@ -51,6 +69,7 @@ interface LearningDraft {
   readonly comparedSkillId: string | null;
   readonly extraction: Record<string, DraftExtractionEntry | undefined>;
   readonly temporalEvidence: DraftTemporalEvidence | null;
+  readonly proceduralInterpretation: DraftProceduralInterpretation | null;
   readonly conflictDetail: { readonly existingClaim: string; readonly newClaim: string; readonly reason: string } | null;
 }
 
@@ -185,6 +204,52 @@ export function LearningDraftReview({ evidenceId }: { evidenceId: string }) {
                   </ul>
                 </div>
               ) : null}
+
+              {(() => {
+                const procedural = formatProceduralInterpretationForDisplay(draft.proceduralInterpretation);
+                if (!procedural) return null;
+                return (
+                  <div className="mt-2 rounded-md border border-border p-1.5">
+                    <p className="font-medium">{PROCEDURAL_INTERPRETATION_HEADING_TEXT}</p>
+                    {procedural.actionSequence.length > 0 ? (
+                      <ul className="mt-1 space-y-0.5">
+                        {procedural.actionSequence.map((entry, index) => (
+                          <li key={index}>
+                            {entry.rangeLabel}: {entry.kind} ({entry.transitionLabel})
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {procedural.repetitions.length > 0 ? (
+                      <ul className="mt-1 space-y-0.5 text-muted">
+                        {procedural.repetitions.map((entry) => (
+                          <li key={entry.kind}>
+                            {entry.kind}: {entry.occurrenceCount}x
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {procedural.zoneCompletion.length > 0 ? (
+                      <ul className="mt-1 space-y-0.5 text-muted">
+                        {procedural.zoneCompletion.map((entry) => (
+                          <li key={entry.kind}>
+                            Finalizare zonă ({entry.kind}): {entry.stateLabel}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    {procedural.coreChainSummary.length > 0 ? (
+                      <ul className="mt-1 space-y-0.5 text-muted">
+                        {procedural.coreChainSummary.map((entry) => (
+                          <li key={entry.stageLabel}>
+                            {entry.stageLabel}: {entry.supportLabel}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                );
+              })()}
 
               <p className="mt-1 text-muted">Stare: {draftStatusLabel(draft.status)}</p>
               {draft.status === "APPROVED" ? <p className="text-muted">{APPROVED_NOTE_TEXT}</p> : null}
