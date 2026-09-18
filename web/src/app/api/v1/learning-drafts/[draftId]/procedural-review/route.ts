@@ -7,6 +7,7 @@ import {
 } from "@/lib/professional-learning-draft-repository";
 import { ProfessionalLearningProceduralReviewServiceError, submitProceduralClaimReview } from "@/lib/professional-learning-procedural-review-service";
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
+import { isExpectedProceduralReviewRevision } from "@/lib/professional-learning-procedural-read";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5T1.4.b.1 --
 // PROFESSIONAL PROCEDURAL REVIEW. Records exactly ONE professional
@@ -29,7 +30,7 @@ export async function POST(request: Request, context: { params: Promise<{ draftI
   }
 
   const { draftId } = await context.params;
-  const body = (await request.json().catch(() => null)) as { claimId?: unknown; decision?: unknown; correctedValue?: unknown; note?: unknown } | null;
+  const body = (await request.json().catch(() => null)) as { claimId?: unknown; decision?: unknown; correctedValue?: unknown; note?: unknown; expectedProceduralReviewRevision?: unknown } | null;
 
   if (typeof body?.claimId !== "string" || body.claimId.length === 0) {
     return NextResponse.json({ error: "INVALID_REQUEST", message: "claimId is required." }, { status: 400 });
@@ -38,12 +39,17 @@ export async function POST(request: Request, context: { params: Promise<{ draftI
     return NextResponse.json({ error: "INVALID_REQUEST", message: "decision is required." }, { status: 400 });
   }
 
+  if (!isExpectedProceduralReviewRevision(body.expectedProceduralReviewRevision)) {
+    return NextResponse.json({ error: "INVALID_EXPECTED_REVISION", message: "A valid expectedProceduralReviewRevision is required." }, { status: 400 });
+  }
+
   try {
     const draft = await submitProceduralClaimReview({
       ownerUserId: user.id,
       draftId,
       claimId: body.claimId,
       decision: body.decision,
+      expectedProceduralReviewRevision: body.expectedProceduralReviewRevision,
       ...(typeof body.correctedValue === "string" ? { correctedValue: body.correctedValue } : {}),
       ...(typeof body.note === "string" ? { note: body.note } : {}),
       // Stage 8.5T1.4.b audit, Part 2 -- ALWAYS the authenticated

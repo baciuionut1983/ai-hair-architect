@@ -54,7 +54,7 @@ function invokePost(draftId: string, body: unknown): Promise<Response> {
     new Request(`http://localhost/api/v1/learning-drafts/${draftId}/procedural-review`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: JSON.stringify({ expectedProceduralReviewRevision: 0, ...(body as object) }),
     }),
     { params: Promise.resolve({ draftId }) },
   );

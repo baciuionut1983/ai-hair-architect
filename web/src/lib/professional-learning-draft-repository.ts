@@ -12,6 +12,7 @@ import type { ReferenceDependencyRelationship } from "@/lib/professional-learnin
 import type { ReviewedComparisonResult } from "@/lib/professional-learning-reviewed-comparison";
 import type { ProfessionalLearningTemporalEvidence } from "@/lib/professional-learning-video-temporal-evidence";
 import { isSameProceduralReviewDecision, isValidProceduralReviewState, type ProceduralClaimReviewEntry, type ProceduralReviewState } from "@/lib/professional-learning-procedural-review-validators";
+import { isExpectedProceduralReviewRevision } from "@/lib/professional-learning-procedural-read";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L4 -- PROFESSIONAL
 // LEARNING DRAFT, the durable repository layer. Mirrors this repo's own
@@ -93,6 +94,7 @@ export interface ProfessionalLearningDraftRecord {
   // three-layer authority argument). Null for every draft that has
   // never received a procedural review -- never backfilled.
   readonly proceduralReview: ProceduralReviewState | null;
+  readonly proceduralReviewRevision: number;
   readonly conflictDetail: DraftConflictDetail | null;
   readonly correctsDraftId: string | null;
   readonly supersededByDraftId: string | null;
@@ -133,6 +135,7 @@ function toRecord(row: {
   extraction: unknown;
   temporalEvidence: unknown;
   proceduralReview: unknown;
+  proceduralReviewRevision: number;
   conflictDetail: unknown;
   correctsDraftId: string | null;
   supersededByDraftId: string | null;
@@ -159,6 +162,7 @@ function toRecord(row: {
     // never validated at all; a non-null value is only ever trusted if
     // it still matches the exact expected shape.
     proceduralReview: row.proceduralReview !== null && row.proceduralReview !== undefined && isValidProceduralReviewState(row.proceduralReview) ? row.proceduralReview : null,
+    proceduralReviewRevision: row.proceduralReviewRevision,
     conflictDetail: (row.conflictDetail as DraftConflictDetail | null) ?? null,
     correctsDraftId: row.correctsDraftId,
     supersededByDraftId: row.supersededByDraftId,
@@ -385,20 +389,12 @@ export async function revertFailedReanalysis(ownerUserId: string, id: string): P
 // whose status is DRAFT/READY_FOR_REVIEW -- an APPROVED row is
 // structurally, permanently unreachable by that function. By requiring
 // status === "APPROVED" here too, a draft that has ever received a
-// procedural review can therefore NEVER be reanalyzed afterward -- no
-// new staleness/versioning mechanism is needed; this stage reuses an
-// invariant the codebase already enforces elsewhere.
+// procedural review cannot normally have its AI interpretation reanalyzed.
+// The explicit review revision below protects Layer 3 changes between sessions.
 //
-// OPTIMISTIC CONCURRENCY, reusing the existing `updatedAt` column
-// (mirrors transitionDraftStatus's own `status: fromStatus` CAS
-// discipline, extended with a timestamp guard since this write also
-// needs to detect a concurrent SIBLING claim's update, not just a
-// status change): the exact `updatedAt` value just read is included in
-// the WHERE clause of the write. A lost race (count === 0) is NEVER
-// silently retried -- it is either recognized as an idempotent
-// re-submission of the identical decision (safe no-op, see
-// isSameProceduralReviewDecision) or reported honestly as a genuine
-// conflict, exactly like transitionDraftStatus's own lost-race handling.
+// R1: client-observed revision is the CAS authority. Stale retries always
+// conflict. Identical content at the current revision is a no-op. State changes
+// atomically match owner, APPROVED lifecycle and expected revision and increment once.
 export class ProfessionalLearningProceduralReviewStateError extends Error {
   readonly httpStatus: number;
   constructor(
@@ -415,10 +411,14 @@ export class ProfessionalLearningProceduralReviewStateError extends Error {
 export interface RecordProceduralClaimReviewInput {
   readonly claimId: string;
   readonly entry: ProceduralClaimReviewEntry;
+  readonly expectedProceduralReviewRevision: number;
 }
 
 export async function recordProceduralClaimReview(ownerUserId: string, draftId: string, input: RecordProceduralClaimReviewInput): Promise<ProfessionalLearningDraftRecord> {
   return runDraftQuery(async () => {
+    if (!isExpectedProceduralReviewRevision(input.expectedProceduralReviewRevision)) {
+      throw new ProfessionalLearningProceduralReviewStateError("CONCURRENT_MODIFICATION", "Invalid procedural review revision; refetch the draft.");
+    }
     const current = await prisma.professionalLearningDraft.findFirst({ where: { id: draftId, ownerUserId } });
     if (!current) throw new ProfessionalLearningProceduralReviewStateError("DRAFT_NOT_FOUND", "Draft not found.");
     if (current.status !== "APPROVED") {
@@ -428,25 +428,21 @@ export async function recordProceduralClaimReview(ownerUserId: string, draftId: 
       );
     }
 
-    const existingState = current.proceduralReview !== null && isValidProceduralReviewState(current.proceduralReview) ? current.proceduralReview : { claims: {} };
+    const existingState: ProceduralReviewState = current.proceduralReview !== null && isValidProceduralReviewState(current.proceduralReview) ? current.proceduralReview : { claims: {} };
+    // Never hide intervening authority changes behind an identical stale retry.
+    if (current.proceduralReviewRevision !== input.expectedProceduralReviewRevision) {
+      throw new ProfessionalLearningProceduralReviewStateError("CONCURRENT_MODIFICATION", "Procedural review changed; refetch the draft before submitting again.");
+    }
+    const existingEntry = Object.hasOwn(existingState.claims, input.claimId) ? existingState.claims[input.claimId] : undefined;
+    if (existingEntry && isSameProceduralReviewDecision(existingEntry, input.entry)) return toRecord(current);
     const nextState: ProceduralReviewState = { claims: { ...existingState.claims, [input.claimId]: input.entry } };
 
     const result = await prisma.professionalLearningDraft.updateMany({
-      where: { id: draftId, ownerUserId, status: "APPROVED", updatedAt: current.updatedAt },
-      data: { proceduralReview: nextState as unknown as Prisma.InputJsonValue },
+      where: { id: draftId, ownerUserId, status: "APPROVED", proceduralReviewRevision: input.expectedProceduralReviewRevision },
+      data: { proceduralReview: nextState as unknown as Prisma.InputJsonValue, proceduralReviewRevision: { increment: 1 } },
     });
 
     if (result.count === 0) {
-      const fresh = await prisma.professionalLearningDraft.findFirst({ where: { id: draftId, ownerUserId } });
-      if (!fresh) throw new ProfessionalLearningDraftPersistenceError();
-      const freshState = fresh.proceduralReview !== null && isValidProceduralReviewState(fresh.proceduralReview) ? fresh.proceduralReview : null;
-      const freshEntry = freshState?.claims[input.claimId];
-      // Idempotent no-op: a concurrent/duplicate submission already
-      // applied the IDENTICAL decision -- never a silent overwrite of a
-      // genuinely different, newer professional decision.
-      if (freshEntry && isSameProceduralReviewDecision(freshEntry, input.entry)) {
-        return toRecord(fresh);
-      }
       throw new ProfessionalLearningProceduralReviewStateError("CONCURRENT_MODIFICATION", "This draft's procedural review changed concurrently; reload and try again.");
     }
 

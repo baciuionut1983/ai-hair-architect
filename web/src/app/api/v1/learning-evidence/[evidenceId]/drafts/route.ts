@@ -15,6 +15,7 @@ import {
 import { authenticateSessionRequest } from "@/lib/session-request-auth";
 import { buildProceduralInterpretation } from "@/lib/professional-learning-video-temporal-to-procedural-adapter";
 import { randomUUID } from "crypto";
+import { hydrateProceduralDraft } from "@/lib/professional-learning-procedural-read";
 
 // Professional Skill Engine, Stage 8.5L4 -- PROFESSIONAL LEARNING DRAFT,
 // service boundary (Part 28). POST runs the full evidence -> discernment
@@ -106,7 +107,7 @@ export async function GET(request: Request, context: { params: Promise<{ evidenc
 
   try {
     const drafts = await listDraftsForOwner(user.id, { sourceEvidenceId: evidenceId });
-    return NextResponse.json({ drafts });
+    return NextResponse.json({ drafts: drafts.map(hydrateProceduralDraft) }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     if (isProfessionalLearningDraftPersistenceError(error)) return professionalLearningDraftPersistenceUnavailableResponse();
     throw error;

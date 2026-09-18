@@ -259,10 +259,13 @@ describe("GET /api/v1/learning-evidence/[evidenceId]/drafts", () => {
   });
 
   it("lists drafts scoped to the authenticated owner and the given evidenceId", async () => {
-    draftRepoMock.listDraftsForOwner.mockResolvedValue([{ id: "draft-1" }]);
+    draftRepoMock.listDraftsForOwner.mockResolvedValue([{ id: "draft-1", proceduralReviewRevision: 0, proceduralReview: null, temporalEvidence: null }]);
     const response = await invokeGet("evidence-1");
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ drafts: [{ id: "draft-1" }] });
+    expect(await response.json()).toEqual({ drafts: [{ id: "draft-1", proceduralReviewRevision: 0, proceduralReview: null, temporalEvidence: null, proceduralInterpretation: null, reviewableProceduralClaims: [] }] });
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(serviceMock.processEvidenceIntoDraft).not.toHaveBeenCalled();
+    expect(extractorSelectionMock.selectProfessionalLearningExtractor).not.toHaveBeenCalled();
     expect(draftRepoMock.listDraftsForOwner).toHaveBeenCalledWith("owner-1", { sourceEvidenceId: "evidence-1" });
   });
 });

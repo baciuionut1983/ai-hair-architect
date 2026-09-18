@@ -313,14 +313,14 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
 
       const draftEvidence = await createEvidence(ownerUserId);
       const draftDraft = await createDraft(ownerUserId, randomUUID(), input(draftEvidence.id));
-      await expect(recordProceduralClaimReview(ownerUserId, draftDraft.id, { claimId: "COMBING", entry: confirmedEntry() })).rejects.toBeInstanceOf(
+      await expect(recordProceduralClaimReview(ownerUserId, draftDraft.id, { expectedProceduralReviewRevision: 0, claimId: "COMBING", entry: confirmedEntry() })).rejects.toBeInstanceOf(
         ProfessionalLearningProceduralReviewStateError,
       );
 
       const readyEvidence = await createEvidence(ownerUserId);
       const readyDraft = await createDraft(ownerUserId, randomUUID(), input(readyEvidence.id));
       await transitionDraftStatus(ownerUserId, readyDraft.id, "READY_FOR_REVIEW");
-      await expect(recordProceduralClaimReview(ownerUserId, readyDraft.id, { claimId: "COMBING", entry: confirmedEntry() })).rejects.toMatchObject({
+      await expect(recordProceduralClaimReview(ownerUserId, readyDraft.id, { expectedProceduralReviewRevision: 0, claimId: "COMBING", entry: confirmedEntry() })).rejects.toMatchObject({
         code: "DRAFT_NOT_APPROVED",
       });
 
@@ -328,7 +328,7 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
       const rejectedDraft = await createDraft(ownerUserId, randomUUID(), input(rejectedEvidence.id));
       await transitionDraftStatus(ownerUserId, rejectedDraft.id, "READY_FOR_REVIEW");
       await transitionDraftStatus(ownerUserId, rejectedDraft.id, "REJECTED");
-      await expect(recordProceduralClaimReview(ownerUserId, rejectedDraft.id, { claimId: "COMBING", entry: confirmedEntry() })).rejects.toMatchObject({
+      await expect(recordProceduralClaimReview(ownerUserId, rejectedDraft.id, { expectedProceduralReviewRevision: 0, claimId: "COMBING", entry: confirmedEntry() })).rejects.toMatchObject({
         code: "DRAFT_NOT_APPROVED",
       });
     });
@@ -338,7 +338,7 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
       const approved = await createApprovedDraft(ownerUserId);
       const theEntry = confirmedEntry();
 
-      const result = await recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "COMBING", entry: theEntry });
+      const result = await recordProceduralClaimReview(ownerUserId, approved.id, { expectedProceduralReviewRevision: 0, claimId: "COMBING", entry: theEntry });
       expect(result.proceduralReview).toEqual({ claims: { COMBING: theEntry } });
 
       const reloaded = await findDraftForOwner(ownerUserId, approved.id);
@@ -349,7 +349,7 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
       const { ownerUserId } = await createOwner();
       const approved = await createApprovedDraft(ownerUserId);
 
-      const result = await recordProceduralClaimReview(ownerUserId, approved.id, {
+      const result = await recordProceduralClaimReview(ownerUserId, approved.id, { expectedProceduralReviewRevision: 0,
         claimId: "CUTTING_ACTION",
         entry: confirmedEntry({ claimId: "CUTTING_ACTION", decision: "PROFESSIONALLY_CORRECTED", correctedValue: "45 Interior", originalValue: { kind: "CUTTING_ACTION", occurrenceCount: 4 } }),
       });
@@ -365,8 +365,8 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
       const { ownerUserId } = await createOwner();
       const approved = await createApprovedDraft(ownerUserId);
 
-      await recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "COMBING", entry: confirmedEntry({ decision: "PROFESSIONALLY_REJECTED" }) });
-      const afterReject = await recordProceduralClaimReview(ownerUserId, approved.id, {
+      await recordProceduralClaimReview(ownerUserId, approved.id, { expectedProceduralReviewRevision: 0, claimId: "COMBING", entry: confirmedEntry({ decision: "PROFESSIONALLY_REJECTED" }) });
+      const afterReject = await recordProceduralClaimReview(ownerUserId, approved.id, { expectedProceduralReviewRevision: 1,
         claimId: "CUTTING_ACTION",
         entry: confirmedEntry({ claimId: "CUTTING_ACTION", decision: "PROFESSIONALLY_UNKNOWN" }),
       });
@@ -377,13 +377,15 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
       expect(afterReject.proceduralReview?.claims.CUTTING_ACTION.decision).not.toBe(afterReject.proceduralReview?.claims.COMBING.decision);
     });
 
-    it("submitting the exact same decision twice is idempotent -- no error, no duplicate/altered content", async () => {
+    it("stale identical retry conflicts; after refetch identical content is an idempotent no-op", async () => {
       const { ownerUserId } = await createOwner();
       const approved = await createApprovedDraft(ownerUserId);
-      const claim = { claimId: "COMBING", entry: confirmedEntry() };
+      const claim = { expectedProceduralReviewRevision: 0, claimId: "COMBING", entry: confirmedEntry() };
 
       const first = await recordProceduralClaimReview(ownerUserId, approved.id, claim);
-      const second = await recordProceduralClaimReview(ownerUserId, approved.id, claim);
+      await expect(recordProceduralClaimReview(ownerUserId, approved.id, claim)).rejects.toMatchObject({ code: "CONCURRENT_MODIFICATION" });
+      const second = await recordProceduralClaimReview(ownerUserId, approved.id, { ...claim, expectedProceduralReviewRevision: first.proceduralReviewRevision });
+      expect(second.proceduralReviewRevision).toBe(first.proceduralReviewRevision);
 
       expect(second.proceduralReview).toEqual(first.proceduralReview);
     });
@@ -398,8 +400,8 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
       // fail with the recognized CONCURRENT_MODIFICATION error and
       // nothing else (never corrupt the row, never silently vanish).
       const [combingResult, cuttingResult] = await Promise.allSettled([
-        recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "COMBING", entry: confirmedEntry({ decision: "PROFESSIONALLY_CONFIRMED" }) }),
-        recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "CUTTING_ACTION", entry: confirmedEntry({ claimId: "CUTTING_ACTION", decision: "PROFESSIONALLY_REJECTED" }) }),
+        recordProceduralClaimReview(ownerUserId, approved.id, { expectedProceduralReviewRevision: 0, claimId: "COMBING", entry: confirmedEntry({ decision: "PROFESSIONALLY_CONFIRMED" }) }),
+        recordProceduralClaimReview(ownerUserId, approved.id, { expectedProceduralReviewRevision: 0, claimId: "CUTTING_ACTION", entry: confirmedEntry({ claimId: "CUTTING_ACTION", decision: "PROFESSIONALLY_REJECTED" }) }),
       ]);
 
       for (const outcome of [combingResult, cuttingResult]) {
@@ -413,10 +415,10 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
       // already retries a normal "reload and try again" conflict
       // elsewhere in this codebase -- never a new mechanism.
       if (combingResult.status === "rejected") {
-        await recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "COMBING", entry: confirmedEntry({ decision: "PROFESSIONALLY_CONFIRMED" }) });
+        await recordProceduralClaimReview(ownerUserId, approved.id, { expectedProceduralReviewRevision: 1, claimId: "COMBING", entry: confirmedEntry({ decision: "PROFESSIONALLY_CONFIRMED" }) });
       }
       if (cuttingResult.status === "rejected") {
-        await recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "CUTTING_ACTION", entry: confirmedEntry({ claimId: "CUTTING_ACTION", decision: "PROFESSIONALLY_REJECTED" }) });
+        await recordProceduralClaimReview(ownerUserId, approved.id, { expectedProceduralReviewRevision: 1, claimId: "CUTTING_ACTION", entry: confirmedEntry({ claimId: "CUTTING_ACTION", decision: "PROFESSIONALLY_REJECTED" }) });
       }
 
       // After settling (with retry where needed), BOTH decisions exist --
@@ -431,7 +433,7 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
       const userB = (await createOwner()).ownerUserId;
       const approved = await createApprovedDraft(userA);
 
-      await expect(recordProceduralClaimReview(userB, approved.id, { claimId: "COMBING", entry: confirmedEntry() })).rejects.toBeInstanceOf(ProfessionalLearningProceduralReviewStateError);
+      await expect(recordProceduralClaimReview(userB, approved.id, { expectedProceduralReviewRevision: 0, claimId: "COMBING", entry: confirmedEntry() })).rejects.toBeInstanceOf(ProfessionalLearningProceduralReviewStateError);
       const row = await findDraftForOwner(userA, approved.id);
       expect(row?.proceduralReview).toBeNull();
     });
@@ -442,7 +444,7 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
       const beforeExtraction = approved.extraction;
       const beforeTemporalEvidence = approved.temporalEvidence;
 
-      const result = await recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "COMBING", entry: confirmedEntry() });
+      const result = await recordProceduralClaimReview(ownerUserId, approved.id, { expectedProceduralReviewRevision: 0, claimId: "COMBING", entry: confirmedEntry() });
 
       expect(result.extraction).toEqual(beforeExtraction);
       expect(result.temporalEvidence).toEqual(beforeTemporalEvidence);
@@ -451,7 +453,7 @@ suite("professional-learning-draft-repository (durable domain layer)", () => {
     it("an APPROVED draft that has received procedural review remains permanently protected from reanalysis", async () => {
       const { ownerUserId } = await createOwner();
       const approved = await createApprovedDraft(ownerUserId);
-      await recordProceduralClaimReview(ownerUserId, approved.id, { claimId: "COMBING", entry: confirmedEntry() });
+      await recordProceduralClaimReview(ownerUserId, approved.id, { expectedProceduralReviewRevision: 0, claimId: "COMBING", entry: confirmedEntry() });
 
       expect(await claimDraftForReanalysis(ownerUserId, approved.id)).toBe(false);
       const row = await prisma.professionalLearningDraft.findUniqueOrThrow({ where: { id: approved.id } });

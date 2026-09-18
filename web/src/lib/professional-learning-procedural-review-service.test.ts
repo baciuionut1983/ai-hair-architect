@@ -41,11 +41,11 @@ suite("submitProceduralClaimReview (Stage 8.5T1.4.b.1)", () => {
     const { ownerUserId } = await createOwner();
     const approved = await createApprovedDraftWithTemporalEvidence(ownerUserId);
 
-    const confirmed = await submitProceduralClaimReview({ ownerUserId, draftId: approved.id, claimId: "COMBING", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: ownerUserId });
+    const confirmed = await submitProceduralClaimReview({ expectedProceduralReviewRevision: 0, ownerUserId, draftId: approved.id, claimId: "COMBING", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: ownerUserId });
     expect(confirmed.proceduralReview?.claims.COMBING.decision).toBe("PROFESSIONALLY_CONFIRMED");
     expect(confirmed.proceduralReview?.claims.COMBING.originalValue).toEqual({ kind: "COMBING", occurrenceCount: 2 });
 
-    const corrected = await submitProceduralClaimReview({
+    const corrected = await submitProceduralClaimReview({ expectedProceduralReviewRevision: confirmed.proceduralReviewRevision,
       ownerUserId,
       draftId: approved.id,
       claimId: "CUTTING_ACTION",
@@ -64,7 +64,7 @@ suite("submitProceduralClaimReview (Stage 8.5T1.4.b.1)", () => {
     const approved = await createApprovedDraftWithTemporalEvidence(ownerUserId);
 
     await expect(
-      submitProceduralClaimReview({ ownerUserId, draftId: approved.id, claimId: "COMBING", decision: "PROFESSIONALLY_CORRECTED", reviewedByUserId: ownerUserId }),
+      submitProceduralClaimReview({ expectedProceduralReviewRevision: 0, ownerUserId, draftId: approved.id, claimId: "COMBING", decision: "PROFESSIONALLY_CORRECTED", reviewedByUserId: ownerUserId }),
     ).rejects.toMatchObject({ code: "MISSING_CORRECTED_VALUE" });
 
     const row = await prisma.professionalLearningDraft.findUniqueOrThrow({ where: { id: approved.id } });
@@ -76,7 +76,7 @@ suite("submitProceduralClaimReview (Stage 8.5T1.4.b.1)", () => {
     const approved = await createApprovedDraftWithTemporalEvidence(ownerUserId);
 
     await expect(
-      submitProceduralClaimReview({ ownerUserId, draftId: approved.id, claimId: "COMBING", decision: "MADE_UP_DECISION", reviewedByUserId: ownerUserId }),
+      submitProceduralClaimReview({ expectedProceduralReviewRevision: 0, ownerUserId, draftId: approved.id, claimId: "COMBING", decision: "MADE_UP_DECISION", reviewedByUserId: ownerUserId }),
     ).rejects.toMatchObject({ code: "INVALID_DECISION" });
   });
 
@@ -85,7 +85,7 @@ suite("submitProceduralClaimReview (Stage 8.5T1.4.b.1)", () => {
     const approved = await createApprovedDraftWithTemporalEvidence(ownerUserId);
 
     await expect(
-      submitProceduralClaimReview({ ownerUserId, draftId: approved.id, claimId: "FABRICATED_CLAIM_ID", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: ownerUserId }),
+      submitProceduralClaimReview({ expectedProceduralReviewRevision: 0, ownerUserId, draftId: approved.id, claimId: "FABRICATED_CLAIM_ID", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: ownerUserId }),
     ).rejects.toMatchObject({ code: "PROCEDURAL_CLAIM_NOT_FOUND" });
   });
 
@@ -97,14 +97,14 @@ suite("submitProceduralClaimReview (Stage 8.5T1.4.b.1)", () => {
     const approved = await transitionDraftStatus(ownerUserId, draft.id, "APPROVED");
 
     await expect(
-      submitProceduralClaimReview({ ownerUserId, draftId: approved.id, claimId: "COMBING", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: ownerUserId }),
+      submitProceduralClaimReview({ expectedProceduralReviewRevision: 0, ownerUserId, draftId: approved.id, claimId: "COMBING", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: ownerUserId }),
     ).rejects.toMatchObject({ code: "PROCEDURAL_CLAIM_NOT_FOUND" });
   });
 
   it("a nonexistent draft is rejected", async () => {
     const { ownerUserId } = await createOwner();
     await expect(
-      submitProceduralClaimReview({ ownerUserId, draftId: randomUUID(), claimId: "COMBING", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: ownerUserId }),
+      submitProceduralClaimReview({ expectedProceduralReviewRevision: 0, ownerUserId, draftId: randomUUID(), claimId: "COMBING", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: ownerUserId }),
     ).rejects.toMatchObject({ code: "DRAFT_NOT_FOUND" });
   });
 
@@ -114,7 +114,7 @@ suite("submitProceduralClaimReview (Stage 8.5T1.4.b.1)", () => {
     const draft = await createDraft(ownerUserId, randomUUID(), { ...draftInput(evidence.id), temporalEvidence: REAL_SHAPED_TEMPORAL_EVIDENCE });
 
     await expect(
-      submitProceduralClaimReview({ ownerUserId, draftId: draft.id, claimId: "COMBING", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: ownerUserId }),
+      submitProceduralClaimReview({ expectedProceduralReviewRevision: 0, ownerUserId, draftId: draft.id, claimId: "COMBING", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: ownerUserId }),
     ).rejects.toMatchObject({ code: "DRAFT_NOT_APPROVED" });
   });
 
@@ -124,14 +124,14 @@ suite("submitProceduralClaimReview (Stage 8.5T1.4.b.1)", () => {
     const approved = await createApprovedDraftWithTemporalEvidence(userA);
 
     await expect(
-      submitProceduralClaimReview({ ownerUserId: userB, draftId: approved.id, claimId: "COMBING", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: userB }),
+      submitProceduralClaimReview({ expectedProceduralReviewRevision: 0, ownerUserId: userB, draftId: approved.id, claimId: "COMBING", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: userB }),
     ).rejects.toMatchObject({ code: "DRAFT_NOT_FOUND" });
   });
 
   it("errors thrown by this service are always ProfessionalLearningProceduralReviewServiceError instances with a recognized httpStatus", async () => {
     const { ownerUserId } = await createOwner();
     try {
-      await submitProceduralClaimReview({ ownerUserId, draftId: randomUUID(), claimId: "COMBING", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: ownerUserId });
+      await submitProceduralClaimReview({ expectedProceduralReviewRevision: 0, ownerUserId, draftId: randomUUID(), claimId: "COMBING", decision: "PROFESSIONALLY_CONFIRMED", reviewedByUserId: ownerUserId });
       throw new Error("expected rejection");
     } catch (error) {
       expect(error).toBeInstanceOf(ProfessionalLearningProceduralReviewServiceError);

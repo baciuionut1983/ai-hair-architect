@@ -1,5 +1,5 @@
 import { findDraftForOwner, recordProceduralClaimReview, type ProfessionalLearningDraftRecord } from "@/lib/professional-learning-draft-repository";
-import { buildProceduralInterpretation } from "@/lib/professional-learning-video-temporal-to-procedural-adapter";
+import { hydrateProceduralDraft, isExpectedProceduralReviewRevision } from "@/lib/professional-learning-procedural-read";
 import {
   isProceduralClaimReviewDecision,
   type ProceduralClaimReviewDecision,
@@ -48,9 +48,13 @@ export interface SubmitProceduralClaimReviewInput {
   readonly correctedValue?: string;
   readonly note?: string;
   readonly reviewedByUserId: string;
+  readonly expectedProceduralReviewRevision: number;
 }
 
 export async function submitProceduralClaimReview(input: SubmitProceduralClaimReviewInput): Promise<ProfessionalLearningDraftRecord> {
+  if (!isExpectedProceduralReviewRevision(input.expectedProceduralReviewRevision)) {
+    throw new ProfessionalLearningProceduralReviewServiceError("INVALID_EXPECTED_REVISION", 400, "expectedProceduralReviewRevision must be a non-negative 32-bit integer with room for an increment.");
+  }
   if (!isProceduralClaimReviewDecision(input.decision)) {
     throw new ProfessionalLearningProceduralReviewServiceError("INVALID_DECISION", 400, "decision must be one of the recognized procedural review decisions.");
   }
@@ -74,9 +78,8 @@ export async function submitProceduralClaimReview(input: SubmitProceduralClaimRe
 
   // Stage 8.5T1.4.a's own bridge, called verbatim -- zero Gemini call,
   // deterministic from the draft's own already-persisted temporalEvidence.
-  const interpretation = buildProceduralInterpretation(draft.id, draft.temporalEvidence);
-  const repetition = interpretation?.repetitionByKind[input.claimId];
-  if (!repetition) {
+  const claim = hydrateProceduralDraft(draft).reviewableProceduralClaims.find((candidate) => candidate.claimId === input.claimId);
+  if (!claim) {
     throw new ProfessionalLearningProceduralReviewServiceError(
       "PROCEDURAL_CLAIM_NOT_FOUND",
       404,
@@ -90,7 +93,7 @@ export async function submitProceduralClaimReview(input: SubmitProceduralClaimRe
     decision,
     // LAYER 2 snapshot, taken NOW, from the SAME fresh recomputation
     // just validated above -- never a stale/cached value.
-    originalValue: { kind: input.claimId, occurrenceCount: repetition.occurrenceActionCandidateIds.length },
+    originalValue: claim.originalValue,
     originalProvenance: "INFERRED",
     ...(input.correctedValue !== undefined ? { correctedValue: input.correctedValue } : {}),
     ...(input.note !== undefined ? { note: input.note } : {}),
@@ -98,5 +101,5 @@ export async function submitProceduralClaimReview(input: SubmitProceduralClaimRe
     reviewedAt: new Date().toISOString(),
   };
 
-  return recordProceduralClaimReview(input.ownerUserId, input.draftId, { claimId: input.claimId, entry });
+  return recordProceduralClaimReview(input.ownerUserId, input.draftId, { claimId: input.claimId, entry, expectedProceduralReviewRevision: input.expectedProceduralReviewRevision });
 }

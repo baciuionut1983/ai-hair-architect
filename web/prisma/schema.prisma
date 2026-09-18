@@ -3422,6 +3422,7 @@ model ProfessionalLearningDraft {
   // racy pre-check). Every existing and future draft that has never
   // received a procedural review simply has this column NULL.
   proceduralReview Json?
+  proceduralReviewRevision Int @default(0)
 
   // Populated only when comparisonOutcome is POSSIBLE_CONFLICT (Part 13):
   // { existingClaim, newClaim, existingAuthority, newEvidenceId, reason,
