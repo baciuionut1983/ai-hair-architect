@@ -11,6 +11,8 @@ import { isHairStateSnapshotPayload } from "@/lib/hair-state-snapshot-validators
 import { computeHairStateDelta, type HairStateDelta } from "@/lib/hair-state-delta";
 import { selectCandidateSkillsForDelta, type HairStateDeltaSkillSelectionResult } from "@/lib/hair-state-delta-skill-candidate-selector";
 import { buildProfessionalReasoningContext, type ProfessionalReasoningContext } from "@/lib/professional-reasoning-contracts";
+import { listOwnerKnowledgeEligibility } from "@/lib/owner-knowledge-eligibility-listing";
+import { sealOwnerKnowledgeEligibility, type OwnerKnowledgeEligibilityPackageExtension } from "@/lib/owner-knowledge-eligibility-section";
 import {
   confirmDraftReasoningProposal,
   findCurrentConfirmedReasoningProposal,
@@ -280,7 +282,7 @@ export async function selectCandidateSkills(ownerUserId: string, clientId: strin
 // paid Stage 5 call needs, and STOPS. ZERO provider calls.
 // ---------------------------------------------------------------------------
 
-export interface ReasoningRequestPackage {
+export interface ReasoningRequestPackage extends OwnerKnowledgeEligibilityPackageExtension {
   clientId: string;
   currentSnapshotId: string;
   currentSnapshotVersion: number;
@@ -308,7 +310,8 @@ export async function prepareReasoningRequestPackage(
     buildCanonicalCandidateSkillRegistry(),
   );
   const context = buildProfessionalReasoningContext({ selection, professionalRequestText: options.professionalRequestText });
-  return {
+  const eligibility = await listOwnerKnowledgeEligibility({ ownerUserId, hasGlobalConstraintConflict: selection.rejectedMatches.some(match => Boolean(match.preserveConstraintConflict)) });
+  return sealOwnerKnowledgeEligibility({
     clientId,
     currentSnapshotId: current.id,
     currentSnapshotVersion: current.snapshotVersion,
@@ -317,8 +320,8 @@ export async function prepareReasoningRequestPackage(
     context,
     candidateSkillCount: context.candidateSkills.length,
     unresolvedDeltaCount: context.unresolvedDeltas.length,
-    requiresPaidReasoningCall: true,
-  };
+    requiresPaidReasoningCall: true as const,
+  }, ownerUserId, eligibility);
 }
 
 // ---------------------------------------------------------------------------

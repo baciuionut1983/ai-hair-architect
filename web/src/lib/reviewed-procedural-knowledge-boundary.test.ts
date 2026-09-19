@@ -51,6 +51,8 @@ describe("T1.5 representation/activation boundary", () => {
       "lib/professional-knowledge-entry-contracts.ts",
       "lib/reviewed-procedural-knowledge-projector.ts",
       "lib/reviewed-procedural-knowledge-service.ts",
+      "lib/owner-knowledge-eligibility.ts",
+      "lib/owner-knowledge-eligibility-listing.ts",
       "app/api/v1/learning-drafts/[draftId]/reviewed-procedural-knowledge/route.ts",
     ]);
     expect(inbound.length).toBeGreaterThan(0);
