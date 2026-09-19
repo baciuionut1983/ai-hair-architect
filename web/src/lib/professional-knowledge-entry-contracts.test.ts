@@ -23,9 +23,9 @@ function baseFields() {
   return { vertical: "cutting", createdAt: "2026-09-15T00:00:00.000Z" };
 }
 
-describe("PROFESSIONAL_KNOWLEDGE_ENTRY_KINDS -- exactly 7 closed values", () => {
-  it("test 1: has exactly 7 kinds", () => {
-    expect(PROFESSIONAL_KNOWLEDGE_ENTRY_KINDS).toHaveLength(7);
+describe("PROFESSIONAL_KNOWLEDGE_ENTRY_KINDS -- exactly 8 closed values", () => {
+  it("test 1: has exactly 8 kinds", () => {
+    expect(PROFESSIONAL_KNOWLEDGE_ENTRY_KINDS).toHaveLength(8);
   });
 
   it("test 2: isProfessionalKnowledgeEntryKind rejects an unknown kind", () => {

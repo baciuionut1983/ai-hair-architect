@@ -1,4 +1,5 @@
 import { createHash } from "crypto";
+import { isValidReviewedProceduralKnowledgeEntry, type ReviewedProceduralKnowledgeEntry } from "@/lib/reviewed-procedural-knowledge-contracts";
 
 import { isRecord } from "@/lib/technical-visual-map-validators";
 import {
@@ -102,6 +103,7 @@ export const PROFESSIONAL_KNOWLEDGE_ENTRY_KINDS = [
   "CONTEXTUAL_KNOWLEDGE",
   "EVIDENCE_SUPPORT",
   "PENDING_OBSERVATION",
+  "REVIEWED_PROCEDURAL_CLAIM",
 ] as const;
 export type ProfessionalKnowledgeEntryKind = (typeof PROFESSIONAL_KNOWLEDGE_ENTRY_KINDS)[number];
 
@@ -314,6 +316,7 @@ interface ProfessionalKnowledgeEntryBase {
 }
 
 export type ProfessionalKnowledgeEntry =
+  | ReviewedProceduralKnowledgeEntry
   | (ProfessionalKnowledgeEntryBase & { readonly kind: "TECHNIQUE_IDENTITY"; readonly status: ProfessionalKnowledgeEntryStatus; readonly payload: TechniqueIdentityKnowledgePayload })
   | (ProfessionalKnowledgeEntryBase & { readonly kind: "TECHNIQUE_PURPOSE"; readonly status: ProfessionalKnowledgeEntryStatus; readonly payload: TechniquePurposeKnowledgePayload })
   | (ProfessionalKnowledgeEntryBase & { readonly kind: "EFFECT_RELATIONSHIP"; readonly status: ProfessionalKnowledgeEntryStatus; readonly payload: EffectRelationshipKnowledgePayload })
@@ -332,6 +335,8 @@ export function isValidProfessionalKnowledgeEntry(value: unknown): value is Prof
   if (!isProfessionalKnowledgeEntryKind(value.kind)) return false;
 
   switch (value.kind) {
+    case "REVIEWED_PROCEDURAL_CLAIM":
+      return isValidReviewedProceduralKnowledgeEntry(value);
     case "TECHNIQUE_IDENTITY":
       return isValidTechniqueIdentityKnowledgePayload(value.payload);
     case "TECHNIQUE_PURPOSE":
