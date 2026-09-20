@@ -114,11 +114,11 @@ export type ProfessionalFieldDecisionRequest = { [F in StructuredProfessionalFie
 
 export const PROFESSIONAL_NOTE_MAX_LENGTH = 1000;
 export function isValidProfessionalFieldNote(value: unknown): value is string {
-  if (typeof value !== "string" || value.length > PROFESSIONAL_NOTE_MAX_LENGTH) return false;
+  if (typeof value !== "string" || value.length > PROFESSIONAL_NOTE_MAX_LENGTH || value.trim().length === 0) return false;
   // Permit presentation selectors only inside intact emoji sequences. This
   // temporary safety scan never replaces the original annotation returned.
   const safetyText = value.replace(/(?:\p{Extended_Pictographic}[\ufe0e\ufe0f]|[0-9#*]\ufe0f\u20e3)/gu, "");
-  return !/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\p{Cf}\p{Cs}\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2800\u3164\ufe00-\ufe0f\uffa0\u{e0100}-\u{e01ef}]/u.test(safetyText);
+  return !/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\p{Cf}\p{Cs}\u2028\u2029\u034f\u115f\u1160\u17b4\u17b5\u180b-\u180f\u2800\u3164\ufe00-\ufe0f\uffa0\u{e0100}-\u{e01ef}]/u.test(safetyText);
 }
 
 export type DecisionValidationResult =

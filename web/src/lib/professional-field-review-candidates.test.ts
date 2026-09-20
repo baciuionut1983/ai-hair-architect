@@ -167,7 +167,20 @@ describe("professional decision matrix", () => {
 });
 
 describe("professional notes", () => {
-  it.each(["", "Română: ăâîșț ĂÂÎȘȚ", "🎥 ✂️", "1️⃣", "line\nline", "a\tb", "x".repeat(1000), "🎥".repeat(500)])("accepts annotation %j unchanged", note => expect(noteValid(note)).toBe(true));
+  it.each(["Română: ăâîșț ĂÂÎȘȚ", "🎥 ✂️", "1️⃣", "line\nline", "a\tb", "x".repeat(1000), "🎥".repeat(500)])("accepts annotation %j unchanged", note => expect(noteValid(note)).toBe(true));
   it.each(["\u0000", "\u0008", "\u000b", "\r", "\u001f", "\u007f", "\u0085", "\u009f", "\u200b", "\u200d", "\u2060", "\ufeff", "\u202e", "\u2067", "\ud800", "\udfff", "\u034f", "\u3164", "\ufe0f", "\ufe00"])("rejects unsafe %j", control => expect(noteValid(`a${control}b`)).toBe(false));
   it.each([null, 1, {}, "x".repeat(1001), "🎥".repeat(501)])("rejects invalid/oversize note", note => expect(noteValid(note)).toBe(false));
+  it.each(["", "   ", "\t\n", "\u00a0", "a\u2028b", "a\u2029b"])("rejects empty/whitespace/separator annotation %j", note => expect(noteValid(note)).toBe(false));
+  it.each(["\ue000", "\ufdd0", "\uffff", "\u0378", "\u{f0000}", "\u{10ffff}"])("does not broaden policy for deferred Unicode %j", note => expect(noteValid(note)).toBe(true));
+  it("preserves absence and exact present text without trimming", () => {
+    const candidate = one();
+    const absent = validate(candidate, request(candidate));
+    expect(absent.ok && Object.hasOwn(absent.request, "note")).toBe(false);
+    const explicit = validate(candidate, request(candidate, "CONFIRMED", { note: undefined }));
+    expect(explicit.ok && explicit.request.note).toBeUndefined();
+    const text = " \tȘuviță 🎥\n ";
+    const result = validate(candidate, request(candidate, "CONFIRMED", { note: text }));
+    expect(result.ok && result.request.note).toBe(text);
+    for (const note of ["", " \n\t", "x\u2028y", "x\u2029y"]) expect(validate(candidate, request(candidate, "CONFIRMED", { note }))).toEqual({ ok: false, reason: "INVALID_NOTE" });
+  });
 });

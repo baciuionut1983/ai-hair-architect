@@ -27,7 +27,9 @@ Raw strings are preserved exactly; trim is used only to check presence. Structur
 validation admits only OBSERVED, INFERRED, UNKNOWN and string/null/absent values for
 these enum-oriented fields; nonstring objects/numbers are INVALID_OBSERVATION, not
 coerced. Extra field members and malformed temporal references are rejected per field.
-At most 100 segments and 100 string frame references per segment are retained.
+More than 100 segments, or more than 100 frame references in a segment, rejects
+that field as INVALID_OBSERVATION. Nothing is truncated; no "first 100" are retained.
+Valid arrays of up to 100 retain all their existing provenance.
 Outputs are independently cloned/deeply frozen; input is never frozen or modified.
 
 No semantic classifier is added. `45°`, `approximately 45 degrees`, `45° Interior`
@@ -83,14 +85,16 @@ values use the existing exact validator; optional professional notes use a separ
 1000 UTF-16-unit limit. Notes allow Romanian, ordinary Unicode, intact emoji including
 emoji variation selectors, LF and tab; reject other C0 (including CR), C1, format/bidi
 controls, zero-width joiners, isolated surrogates and additional invisible fillers.
-Empty annotation is allowed. ZWJ emoji sequences are rejected by the format-control
+T1.6.2.b.0.1 rejects present empty/whitespace-only notes and U+2028/U+2029; absent
+notes remain absent. ZWJ emoji sequences are rejected by the format-control
 rule. No silent trimming or sanitizing; future rendering must treat all text as text.
 
 ## Versioning, stale vocabulary and boundaries
 
 Future persisted decisions pin the exact specification version. Changes to meaning,
-allowed values or normalization/validation semantics require explicit version-bump
-review before persistence. Current version remains `1.0.0-t162a`: removing the unused
+allowed values or normalization/validation semantics require a version review/bump
+and new reviewed specification golden under T1.6.2.b.0.1 governance. Current field
+version remains `1.0.0-t162a`: removing the unused
 potentiallySkillBindable metadata does not change canonical semantics. The digest
 format has its own version; changing its canonicalization requires a format revision.
 No automatic migration of either version exists.

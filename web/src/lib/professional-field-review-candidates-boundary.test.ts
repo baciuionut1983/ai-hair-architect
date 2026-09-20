@@ -6,8 +6,7 @@ import { describe, expect, it } from "vitest";
 function sources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory() ? sources(path.join(dir, entry.name)) : /\.tsx?$/.test(entry.name) && !/\.test\./.test(entry.name) ? [path.join(dir, entry.name)] : []);
 }
-const moduleName = "professional-field-review-candidates";
-describe("b.0 inert architecture", () => {
+describe.each(["professional-field-review-candidates", "professional-field-specification-governance"])("%s inert architecture", moduleName => {
   it("has zero source consumers: routes, UI, Brain, provider, selector, compiler, TD, video and consult", () => {
     const consumers: string[] = [];
     for (const file of sources(path.resolve("src"))) {
@@ -55,7 +54,7 @@ describe("b.0 inert architecture", () => {
     walk(path.resolve(`src/lib/${moduleName}.ts`));
     expect([...externals]).toEqual(["node:crypto"]);
     expect([...visited].map(file => path.basename(file)).sort()).toEqual([
-      "professional-field-review-candidates.ts", "professional-learning-draft-validators.ts", "proposal-validators.ts", "structured-professional-field-claims.ts",
-    ]);
+      `${moduleName}.ts`, "professional-learning-draft-validators.ts", "proposal-validators.ts", "structured-professional-field-claims.ts",
+    ].sort());
   });
 });
