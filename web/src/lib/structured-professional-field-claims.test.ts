@@ -21,6 +21,7 @@ describe("structured professional field claims", () => {
     ["elevation", ELEVATION_OPTIONS], ["sectioning", SECTIONING_OPTIONS], ["guideType", GUIDELINE_OPTIONS],
   ] as const)("reuses every canonical %s value for extraction and future correction", (field, values) => {
     expect(specs[field].allowedValues).toEqual(values);
+    expect(specs[field]).not.toHaveProperty("potentiallySkillBindable");
     for (const value of values) {
       expect(validate(field, value)).toBe(true);
       expect(hydrate(snapshot({ [field]: observed(value) })).ok).toBe(true);

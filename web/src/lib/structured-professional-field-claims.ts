@@ -12,7 +12,7 @@ function specification<F extends ProfessionalLearningExtractionFieldName, V exte
     field, sourceExtractionField: field, semanticCategory: field,
     version: STRUCTURED_FIELD_SPEC_VERSION, valueKind: "enum" as const,
     normalization: "EXACT_IDENTITY" as const, unknownRepresentable: true,
-    professionalCorrectionAllowed: true, potentiallySkillBindable: true,
+    professionalCorrectionAllowed: true,
     allowedValues,
     validate: (value: unknown): value is V => isSafeProfessionalText(value) && allowedValues.includes(value as V),
   });

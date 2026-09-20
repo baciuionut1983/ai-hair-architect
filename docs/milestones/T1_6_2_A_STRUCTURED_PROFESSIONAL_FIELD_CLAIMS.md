@@ -5,18 +5,19 @@ Pure, unconsumed bridge over the frozen Professional Learning extraction. Baseli
 
 ## Field specifications
 
-| Identity / extraction field | Canonical vocabulary | Semantic category | Kind / normalization | Unknown | Future correction | Potential future parameter |
-| --- | --- | --- | --- | --- | --- | --- |
-| elevation | proposal-validators ELEVATION_OPTIONS, TechnicalCutElevation | elevation only | enum / exact identity | yes | yes | yes |
-| sectioning | proposal-validators SECTIONING_OPTIONS, TechnicalCutSectioning | sectioning only | enum / exact identity | yes | yes | yes |
-| guideType | proposal-validators GUIDELINE_OPTIONS, TechnicalCutGuideline | guide type only | enum / exact identity | yes | yes | yes |
+| Identity / extraction field | Canonical vocabulary | Semantic category | Kind / normalization | Unknown | Future correction |
+| --- | --- | --- | --- | --- | --- |
+| elevation | proposal-validators ELEVATION_OPTIONS, TechnicalCutElevation | elevation only | enum / exact identity | yes | yes |
+| sectioning | proposal-validators SECTIONING_OPTIONS, TechnicalCutSectioning | sectioning only | enum / exact identity | yes | yes |
+| guideType | proposal-validators GUIDELINE_OPTIONS, TechnicalCutGuideline | guide type only | enum / exact identity | yes | yes |
 
 Every specification carries `1.0.0-t162a` and a validator. Learning field names are
 type-constrained to the existing extraction contract. Values are imported from
 the same primitive arrays used by TD, never copied as independent enums. These
 enum primitives are compatible with SkillParameterDefinition's enum allowedValues
-shape. No particular skill is loaded, selected or validated. Potential bindability
-is metadata, not an approved relationship.
+shape. No particular skill is loaded, selected or validated. T1.6.2.b.0 removes
+`potentiallySkillBindable`; actual bindability belongs to future T1.6.2.d registry
+evaluation. This metadata removal does not change field meaning or validation.
 
 The TD override validator module also imports derivation logic. This layer instead
 imports the underlying pure primitive validators. Prisma imports there are type-only;
@@ -75,9 +76,11 @@ No review history/persistence, binding, eligibility activation, API, UI, migrati
 provider, prompts, Brain decisions, selector, compiler, video or consult integration.
 Temporal evidence is provenance only. T1.5 storage and projection are untouched;
 T1.6.1 remains INELIGIBLE-only. Future review history must be append-only and separate.
-Future binding owns evidence verification/digest and revocation; none is implemented.
+Future layers own evidence verification and revocation. b.0 adds an observation
+digest without authenticating evidence or activating binding.
 
-Boundary tests scan production sources for consumers, inspect transitive runtime
+Boundary tests allow only the pure b.0 candidate module as a consumer (it has no
+production consumers), inspect transitive runtime
 imports, and lock protected T1.5/T1.6.1/Brain/provider/compiler files to baseline hashes.
 Behavioral tests cover canonical values, determinism, identity, duplicate selection,
 UNKNOWN, original independence, semantic separation, text safety and provenance.

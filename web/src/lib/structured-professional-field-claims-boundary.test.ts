@@ -8,7 +8,7 @@ function sources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap(item => item.isDirectory() ? sources(path.join(dir, item.name)) : /\.tsx?$/.test(item.name) && !/\.test\./.test(item.name) ? [path.join(dir, item.name)] : []);
 }
 describe("T1.6.2.a architecture boundary", () => {
-  it("has zero production consumers, including Brain, UI, routes, video and consult", () => {
+  it("allows only the inert b.0 candidate dependency, never Brain, UI, routes, video or consult", () => {
     const consumers: string[] = [];
     for (const file of sources(path.resolve("src"))) {
       const ast = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
@@ -18,7 +18,7 @@ describe("T1.6.2.a architecture boundary", () => {
       }
       visit(ast);
     }
-    expect(consumers).toEqual([]);
+    expect(consumers).toEqual([path.resolve("src/lib/professional-field-review-candidates.ts")]);
   });
   it("transitive runtime dependency graph is pure primitive validators only", () => {
     const visited = new Set<string>();
