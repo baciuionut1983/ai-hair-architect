@@ -7,7 +7,7 @@ function sources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory() ? sources(path.join(dir, entry.name)) : /\.tsx?$/.test(entry.name) && !/\.test\./.test(entry.name) ? [path.join(dir, entry.name)] : []);
 }
 describe.each(["professional-field-review-candidates", "professional-field-specification-governance"])("%s inert architecture", moduleName => {
-  it("has zero source consumers: routes, UI, Brain, provider, selector, compiler, TD, video and consult", () => {
+  it("allows only the isolated b.1 service, never downstream consumers", () => {
     const consumers: string[] = [];
     for (const file of sources(path.resolve("src"))) {
       const ast = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
@@ -17,7 +17,7 @@ describe.each(["professional-field-review-candidates", "professional-field-speci
       };
       visit(ast);
     }
-    expect(consumers).toEqual([]);
+    expect(consumers).toEqual([path.resolve("src/lib/professional-field-claim-decision-service.ts")]);
   });
   it("permits only Node hashing and the existing pure validator graph, no persistence or registry", () => {
     const visited = new Set<string>();

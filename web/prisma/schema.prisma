@@ -3456,12 +3456,40 @@ model ProfessionalLearningDraft {
 
   owner User @relation(fields: [ownerUserId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
+  fieldClaimDecisions ProfessionalFieldClaimDecision[]
+
+  @@unique([id, ownerUserId])
   // Idempotency key (Part 32): the same evidence processed by the same
   // extractor version never produces more than one draft row.
   @@unique([sourceEvidenceId, extractorVersion])
   @@index([ownerUserId, status, createdAt, id])
   @@index([sourceEvidenceId])
   @@index([correctsDraftId])
+}
+
+// T1.6.2.b.1: immutable professional decisions, not binding or activation.
+// Application access is insert/read only. Revision uniqueness is the race guard.
+model ProfessionalFieldClaimDecision {
+  id                       String   @id @default(uuid())
+  ownerUserId              String
+  draftId                  String
+  field                    String
+  revision                 Int
+  decision                 String
+  professionalValue        String?
+  candidateResolution      String
+  observationDigest        String
+  observationDigestVersion String
+  specificationVersion     String
+  specificationDigest      String
+  note                     String?
+  reviewedByUserId         String
+  createdAt                DateTime @default(now()) @db.Timestamp(6)
+
+  draft ProfessionalLearningDraft @relation(fields: [draftId, ownerUserId], references: [id, ownerUserId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([draftId, field, revision])
+  @@index([ownerUserId, draftId, field, revision])
 }
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L5.R2 -- PROFESSIONAL

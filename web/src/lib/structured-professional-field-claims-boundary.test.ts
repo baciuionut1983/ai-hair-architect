@@ -19,6 +19,7 @@ describe("T1.6.2.a architecture boundary", () => {
       visit(ast);
     }
     expect(consumers.sort()).toEqual([
+      path.resolve("src/lib/professional-field-claim-decision-service.ts"),
       path.resolve("src/lib/professional-field-review-candidates.ts"),
       path.resolve("src/lib/professional-field-specification-governance.ts"),
     ].sort());
