@@ -1,7 +1,7 @@
 import { Prisma, type ProfessionalFieldClaimDecision, type ProfessionalLearningDraft } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { isStructuredProfessionalField, validateProfessionalFieldValue, type StructuredProfessionalField } from "@/lib/structured-professional-field-claims";
-import { deriveProfessionalFieldReviewCandidates, OBSERVATION_DIGEST_VERSION, validateProfessionalFieldDecisionRequest, type ProfessionalFieldStaleReason } from "@/lib/professional-field-review-candidates";
+import { isStructuredProfessionalField, validateProfessionalFieldValue, STRUCTURED_FIELD_SPECIFICATIONS, type StructuredProfessionalField } from "@/lib/structured-professional-field-claims";
+import { deriveProfessionalFieldReviewCandidates, OBSERVATION_DIGEST_VERSION, PROFESSIONAL_FIELD_DECISIONS, validateProfessionalFieldDecisionRequest, type ProfessionalFieldStaleReason } from "@/lib/professional-field-review-candidates";
 import { getProfessionalFieldSpecification, matchesSpecificationGolden, pinProfessionalFieldSpecification } from "@/lib/professional-field-specification-governance";
 import { isProfessionalLearningEvidenceType, isValidEvidenceAssetPointerCombination } from "@/lib/professional-learning-evidence-validators";
 
@@ -60,8 +60,18 @@ function current(draft: ProfessionalLearningDraft, field: StructuredProfessional
   const derived = deriveProfessionalFieldReviewCandidates(draft, [field]);
   const candidate = derived.ok ? derived.candidates[0] : undefined;
   // field has passed the runtime guard at both exported boundaries.
-  const pin = pinProfessionalFieldSpecification(getProfessionalFieldSpecification(field));
-  return { candidate, pin, approved: matchesSpecificationGolden(pin) };
+  const specification = getProfessionalFieldSpecification(field);
+  const pin = pinProfessionalFieldSpecification(specification);
+  const outcome = derived.ok ? derived.outcomes[0] : undefined;
+  const reason = outcome && outcome.status !== "CANDIDATE" ? outcome.status : "INVALID_OBSERVATION";
+  return { candidate, pin, specification, reason, approved: matchesSpecificationGolden(pin) };
+}
+function decisionStaleReason(latest: ProfessionalFieldClaimDecision, field: StructuredProfessionalField, state: ReturnType<typeof current>): ProfessionalFieldStaleReason | null {
+  const { candidate, pin, approved } = state;
+  if (!approved || latest.specificationVersion !== pin.specificationVersion || latest.specificationDigest !== pin.specificationDigest) return "SPEC_VERSION_CHANGED";
+  if (latest.professionalValue !== null && !validateProfessionalFieldValue(field, latest.professionalValue)) return "VALUE_NOT_IN_CURRENT_SPEC";
+  if (!candidate || latest.observationDigestVersion !== OBSERVATION_DIGEST_VERSION || latest.observationDigest !== candidate.observationDigest) return "OBSERVATION_DIGEST_MISMATCH";
+  return null;
 }
 async function transaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
   try {
@@ -129,12 +139,60 @@ export async function readProfessionalFieldClaimDecisions(ownerUserId: string, d
     const latest = history.at(-1) ?? null;
     let staleReason = await lifecycle(tx, draft);
     if (latest && !staleReason) {
-      const { candidate, pin, approved } = current(draft, field);
-      if (!approved || latest.specificationVersion !== pin.specificationVersion || latest.specificationDigest !== pin.specificationDigest) staleReason = "SPEC_VERSION_CHANGED";
-      else if (latest.professionalValue !== null && !validateProfessionalFieldValue(field, latest.professionalValue)) staleReason = "VALUE_NOT_IN_CURRENT_SPEC";
-      else if (!candidate || latest.observationDigestVersion !== OBSERVATION_DIGEST_VERSION || latest.observationDigest !== candidate.observationDigest) staleReason = "OBSERVATION_DIGEST_MISMATCH";
+      staleReason = decisionStaleReason(latest, field, current(draft, field));
     }
     // Never search historical revisions for a substitute current decision.
     return { latest, staleReason, history };
+  });
+}
+
+export const PROFESSIONAL_FIELD_DECISION_FIELDS = Object.freeze(Object.keys(STRUCTURED_FIELD_SPECIFICATIONS));
+
+// Explicit allowlist shared by GET and POST: no row/owner/reviewer IDs or row digests.
+export function toProfessionalFieldDecisionDto(row: ProfessionalFieldClaimDecision) {
+  return { field: row.field, revision: row.revision, decision: row.decision,
+    professionalValue: row.professionalValue, note: row.note, createdAt: row.createdAt.toISOString() };
+}
+
+// Server-only aggregate adapter for b.2. No I/O outside this single snapshot;
+// historical rows never substitute for the newest row, even when it is stale.
+export async function readProfessionalFieldDecisionReview(ownerUserId: string, draftId: string) {
+  return transaction(async tx => {
+    const draft = await ownedDraft(tx, ownerUserId, draftId);
+    const blockedBy = await lifecycle(tx, draft);
+    const fields = [];
+    for (const field of PROFESSIONAL_FIELD_DECISION_FIELDS) {
+      identity(ownerUserId, draftId, field);
+      const state = current(draft, field);
+      const { candidate, pin, specification, approved } = state;
+      const rows = await tx.professionalFieldClaimDecision.findMany({ where: { ownerUserId, draftId, field }, orderBy: { revision: "desc" }, take: 11 });
+      const latest = rows[0] ?? null;
+      const staleReason = latest ? blockedBy ?? decisionStaleReason(latest, field, state) : null;
+      const blockedReason = blockedBy ?? (!approved ? "SPEC_VERSION_CHANGED" : !candidate ? state.reason : null);
+      // Probe the existing validator, including whether ANY governed correction
+      // is valid. No independent decision matrix or canonical vocabulary.
+      const allowedDecisions = candidate ? PROFESSIONAL_FIELD_DECISIONS.filter(decision => {
+        const base = { candidateId: candidate.id, field, draftId, sourceEvidenceId: draft.sourceEvidenceId,
+          extractorVersion: draft.extractorVersion, specificationVersion: pin.specificationVersion,
+          observationDigest: candidate.observationDigest, decision };
+        return decision === "CORRECTED"
+          ? specification.allowedValues.some(correctedValue => validateProfessionalFieldDecisionRequest(candidate, { ...base, correctedValue }).ok)
+          : validateProfessionalFieldDecisionRequest(candidate, base).ok;
+      }) : [];
+      fields.push({ field,
+        review: candidate ? { reviewable: true as const, candidate: {
+          resolution: candidate.resolution, normalizedValue: candidate.normalizedValue, observation: candidate.original,
+          provenance: { sourceEvidenceId: draft.sourceEvidenceId, extractorVersion: draft.extractorVersion },
+          pins: { observationDigest: candidate.observationDigest, observationDigestVersion: OBSERVATION_DIGEST_VERSION,
+            specificationVersion: pin.specificationVersion, specificationDigest: pin.specificationDigest },
+        } } : { reviewable: false as const, reason: state.reason },
+        specification: { version: pin.specificationVersion, digest: pin.specificationDigest, allowedValues: specification.allowedValues },
+        latestRevision: latest?.revision ?? 0, authority: !latest ? "NONE" as const : staleReason ? "STALE" as const : "CURRENT" as const,
+        latest: latest ? toProfessionalFieldDecisionDto(latest) : null, staleReason,
+        actions: { canSubmit: blockedReason === null, ...(blockedReason ? { blockedReason } : {}), allowedDecisions },
+        history: rows.slice(0, 10).map(toProfessionalFieldDecisionDto), historyTruncated: rows.length > 10,
+      });
+    }
+    return { draftId, lifecycle: { open: blockedBy === null, blockedBy }, fields };
   });
 }

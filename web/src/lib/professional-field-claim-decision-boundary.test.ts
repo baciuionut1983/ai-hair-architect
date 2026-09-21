@@ -8,18 +8,22 @@ function sources(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap(entry => entry.isDirectory() ? sources(path.join(dir, entry.name)) : /\.tsx?$/.test(entry.name) && !/\.test\./.test(entry.name) ? [path.join(dir, entry.name)] : []);
 }
 describe("b.1 persistence boundary", () => {
-  it("has no production consumer and no table access outside its service", () => {
+  it("allows only b.2 HTTP adapters and no direct/nested table access outside its service", () => {
     const consumers: string[] = []; const tableUsers = new Set<string>();
     for (const file of sources(path.resolve("src"))) {
       const ast = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true);
       function visit(node: ts.Node) {
         if (ts.isStringLiteralLike(node) && node.text.includes("professional-field-claim-decision-service")) consumers.push(file);
-        if (ts.isIdentifier(node) && node.text === "professionalFieldClaimDecision") tableUsers.add(file);
+        if ((ts.isIdentifier(node) || ts.isStringLiteralLike(node)) && ["professionalFieldClaimDecision", "fieldClaimDecisions"].includes(node.text)) tableUsers.add(file);
         ts.forEachChild(node, visit);
       }
       visit(ast);
     }
-    expect(consumers).toEqual([]);
+    expect(consumers.sort()).toEqual([
+      path.resolve("src/app/api/v1/learning-drafts/[draftId]/professional-field-decisions/route.ts"),
+      path.resolve("src/app/api/v1/learning-drafts/[draftId]/professional-field-decisions/[field]/route.ts"),
+      path.resolve("src/lib/professional-field-decision-http.ts"),
+    ].sort());
     expect([...tableUsers]).toEqual([servicePath]);
   });
   it("only uses read/insert DB operations, with no raw SQL, mutation, storage, provider or registry imports", () => {
