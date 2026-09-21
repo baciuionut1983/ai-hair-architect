@@ -19,6 +19,7 @@ import {
 
 import { canReanalyze, createReviewController, initialReviewState, reviewCopy } from "./teach-ai-procedural-review-logic";
 import { ProceduralReviewSection } from "./teach-ai-procedural-review-section";
+import { ProfessionalFieldReviewSection } from "./teach-ai-professional-field-review-section";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5L4 -- MINIMAL
 // review UI (Part 29). Deliberately small and self-contained: one button
@@ -140,6 +141,7 @@ export function LearningDraftReview({ evidenceId }: { evidenceId: string }) {
                 );
               })()}
 
+              <ProfessionalFieldReviewSection draftId={draft.id} status={draft.status} />
               <ProceduralReviewSection key={draft.id + ":" + view.editEpoch} draft={draft} locked={loading || view.refreshRequired} saving={loading} save={controller.save} />
 
               <p className="mt-1 text-muted">Stare: {draftStatusLabel(draft.status)}</p>
