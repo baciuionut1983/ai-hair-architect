@@ -19,7 +19,7 @@ function entry(decision: ProceduralClaimReviewDecision): ProceduralClaimReviewEn
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 function harness(draft = fixture()) {
   const fetcher = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>();
-  fetcher.mockResolvedValueOnce(response({ drafts: [draft] }));
+  fetcher.mockResolvedValueOnce(response({ status: "already_processed", draft: { id: draft.id } })).mockResolvedValueOnce(response({ draft }));
   const controller = createReviewController(fetcher, vi.fn());
   return { fetcher, controller, load: () => controller.analyze("evidence-1") };
 }
@@ -88,49 +88,94 @@ describe("procedural claim presentation", () => {
 });
 
 describe("request sequencing and concurrency", () => {
-  it("does no mount requests; GET-first recovers existing state without Analyze", async () => {
+  it("does no mount requests; Analyze POSTs directly without a draft-list GET or client version authority", async () => {
     const { fetcher, controller, load } = harness();
     expect(fetcher).not.toHaveBeenCalled();
     await load();
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(fetcher.mock.calls[0][1]).toEqual({ cache: "no-store" });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[0]).toEqual(["/api/v1/learning-evidence/evidence-1/drafts", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "ANALYZE" }) }]);
+    expect(fetcher.mock.calls[1]).toEqual(["/api/v1/learning-drafts/draft-1", { cache: "no-store" }]);
     expect(controller.getState().draft?.status).toBe("APPROVED");
   });
-  it.each(["DRAFT", "APPROVED", "REJECTED", "SUPERSEDED", "REANALYZING"])("recovers existing %s without a provider request", async status => {
-    const { fetcher, load } = harness(fixture(status)); await load();
-    expect(fetcher).toHaveBeenCalledTimes(1);
+  it.each(["DRAFT", "APPROVED", "REJECTED", "SUPERSEDED", "REANALYZING"])("hydrates the server-selected current %s draft without selecting history", async status => {
+    const { fetcher, controller, load } = harness(fixture(status)); await load();
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(controller.getState().draft?.status).toBe(status);
   });
-  it("uses server ordering and prefers current over superseded history", async () => {
-    const { fetcher, controller, load } = harness();
-    fetcher.mockReset().mockResolvedValueOnce(response({ drafts: [{ ...fixture("SUPERSEDED"), id: "history" }, fixture("REJECTED")] }));
-    await load(); expect(controller.getState().draft?.id).toBe("draft-1");
+  it.each(["DRAFT", "APPROVED"])("historical approved draft cannot short-circuit POST selecting current %s", async status => {
+    const historical = { ...fixture(), id: "historical" };
+    const current = { ...fixture(status, 0), id: "current" };
+    const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith("/drafts")) return response(init?.method === "POST" ? { status: "already_processed", draft: { id: current.id } } : { drafts: [historical] });
+      return response({ draft: current });
+    });
+    const controller = createReviewController(fetcher, vi.fn());
+    await controller.analyze("evidence-1");
+    expect(fetcher.mock.calls[0][1]?.method).toBe("POST");
+    expect(controller.getState().draft).toEqual(current);
+    expect(historical.id).toBe("historical");
   });
-  it("falls back to Analyze only for a successful empty GET and then hydrates", async () => {
+  it("hydrates the exact newly created draft returned by POST", async () => {
     const { fetcher, controller, load } = harness();
-    fetcher.mockReset().mockResolvedValueOnce(response({ drafts: [] })).mockResolvedValueOnce(response({ draft: { id: "draft-1" } })).mockResolvedValueOnce(response({ draft: fixture("DRAFT") }));
+    fetcher.mockReset().mockResolvedValueOnce(response({ status: "created", draft: { id: "draft-1" } }, 201)).mockResolvedValueOnce(response({ draft: fixture("DRAFT") }));
     await load();
-    expect(JSON.parse(fetcher.mock.calls[1][1]!.body as string)).toEqual({ mode: "ANALYZE" });
-    expect(fetcher.mock.calls[2][0]).toBe("/api/v1/learning-drafts/draft-1");
+    expect(controller.getState().draft?.status).toBe("DRAFT");
     expect(controller.getState().draft?.reviewableProceduralClaims).toHaveLength(2);
   });
-  it.each([401, 404, 500])("GET failure %s never falls back to Analyze", async status => {
+  it.each([401, 404, 500])("POST failure %s fails safely without fallback or retry", async status => {
     const { fetcher, controller, load } = harness();
     fetcher.mockReset().mockResolvedValueOnce(response({}, status)); await load();
     expect(fetcher).toHaveBeenCalledTimes(1); expect(controller.getState().error).toBeTruthy();
+    expect(controller.getState().draft).toBeNull(); expect(controller.getState().busy).toBe(false);
   });
-  it("malformed existing hydration fails closed without Analyze", async () => {
-    const { fetcher, load } = harness(); fetcher.mockReset().mockResolvedValueOnce(response({ drafts: [{ id: "existing" }] }));
-    await load(); expect(fetcher).toHaveBeenCalledTimes(1);
+  it.each([{}, { drafts: [fixture()] }, { draft: {} }, null])("malformed POST result %j fails closed", async body => {
+    const { fetcher, controller, load } = harness(); fetcher.mockReset().mockResolvedValueOnce(response(body));
+    await load(); expect(fetcher).toHaveBeenCalledTimes(1); expect(controller.getState().draft).toBeNull(); expect(controller.getState().error).toBeTruthy();
+  });
+  it("malformed or mismatched hydration cannot display another draft", async () => {
+    for (const draft of [{ id: "draft-1" }, { ...fixture(), id: "different" }]) {
+      const { fetcher, controller, load } = harness();
+      fetcher.mockReset().mockResolvedValueOnce(response({ draft: { id: "draft-1" } })).mockResolvedValueOnce(response({ draft }));
+      await load(); expect(controller.getState()).toMatchObject({ draft: null, refreshRequired: true });
+      expect(controller.getState().error).toBeTruthy();
+    }
+  });
+  it("ordinary double-click starts only one POST while pending", async () => {
+    const { fetcher, controller, load } = harness();
+    let finish!: (response: Response) => void;
+    fetcher.mockReset().mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValueOnce(response({ draft: fixture("DRAFT") }));
+    const pending = load(); await load();
+    expect(controller.getState().busy).toBe(true); expect(fetcher).toHaveBeenCalledTimes(1);
+    finish(response({ draft: { id: "draft-1" } })); await pending;
+    expect(controller.getState().busy).toBe(false);
+  });
+  it("repeated completed Analyze uses the same idempotent mode and hydrates the server result", async () => {
+    const { fetcher, controller, load } = harness(fixture("DRAFT")); await load();
+    fetcher.mockResolvedValueOnce(response({ status: "already_processed", draft: { id: "draft-1" } })).mockResolvedValueOnce(response({ draft: fixture("DRAFT") }));
+    await load();
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => JSON.parse(init!.body as string))).toEqual([{ mode: "ANALYZE" }, { mode: "ANALYZE" }]);
+    expect(controller.getState().draft?.status).toBe("DRAFT");
+  });
+  it("aborted request clears busy and surfaces an error without an automatic retry", async () => {
+    const { fetcher, controller, load } = harness();
+    fetcher.mockReset().mockRejectedValueOnce(new DOMException("Aborted", "AbortError"));
+    await load(); expect(controller.getState()).toMatchObject({ busy: false, draft: null });
+    expect(controller.getState().error).toBeTruthy(); expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+  it("server skip displays its reason without hydration", async () => {
+    const { fetcher, controller, load } = harness();
+    fetcher.mockReset().mockResolvedValueOnce(response({ status: "skipped", reason: "EVIDENCE_NOT_ACTIVE" }));
+    await load(); expect(fetcher).toHaveBeenCalledTimes(1); expect(controller.getState().skipped).toBe("EVIDENCE_NOT_ACTIVE");
   });
   it.each(Object.keys(reviewCopy.actions) as ProceduralClaimReviewDecision[])("submits %s with revision N; next request uses N+1", async decision => {
     const { fetcher, controller, load } = harness(); await load();
     fetcher.mockResolvedValueOnce(response({ draft: partialUpdate(decision) })).mockResolvedValueOnce(response({ draft: partialUpdate("PROFESSIONALLY_UNKNOWN", 9) }));
     expect(await controller.save("server-opaque-id", decision, "Două apariții clare")).toBe(true);
-    const payload = JSON.parse(fetcher.mock.calls[1][1]!.body as string);
+    const payload = JSON.parse(fetcher.mock.calls[2][1]!.body as string);
     expect(payload).toEqual({ claimId: "server-opaque-id", decision, expectedProceduralReviewRevision: 7, ...(decision === "PROFESSIONALLY_CORRECTED" ? { correctedValue: "Două apariții clare" } : {}) });
     expect(controller.getState().draft?.proceduralReviewRevision).toBe(8);
     await controller.save("second-id", "PROFESSIONALLY_UNKNOWN");
-    expect(JSON.parse(fetcher.mock.calls[2][1]!.body as string).expectedProceduralReviewRevision).toBe(8);
+    expect(JSON.parse(fetcher.mock.calls[3][1]!.body as string).expectedProceduralReviewRevision).toBe(8);
     expect(controller.getState().draft?.reviewableProceduralClaims).toHaveLength(2);
   });
   it("blocks rapid double submission and sibling submission synchronously", async () => {
@@ -141,7 +186,7 @@ describe("request sequencing and concurrency", () => {
     expect(controller.getState().busy).toBe(true);
     expect(await controller.save("second-id", "PROFESSIONALLY_UNKNOWN")).toBe(false);
     expect(await controller.save("server-opaque-id", "PROFESSIONALLY_CONFIRMED")).toBe(false);
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenCalledTimes(3);
     finish(response({ draft: partialUpdate("PROFESSIONALLY_CONFIRMED") })); await first;
     expect(controller.getState().busy).toBe(false);
   });
@@ -152,7 +197,7 @@ describe("request sequencing and concurrency", () => {
     expect(await controller.save("server-opaque-id", "PROFESSIONALLY_CONFIRMED")).toBe(false);
     expect(controller.getState()).toMatchObject({ draft: latest, notice: reviewCopy.stale, error: null, refreshRequired: false });
     expect(controller.getState().editEpoch).toBeGreaterThan(0);
-    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2);
   });
   it("failed conflict refresh locks writes until an explicit successful refresh", async () => {
     const { fetcher, controller, load } = harness(); await load();
@@ -176,7 +221,7 @@ describe("request sequencing and concurrency", () => {
     const { fetcher, controller, load } = harness(); await load();
     expect(await controller.save("server-opaque-id", "PROFESSIONALLY_CORRECTED", "  ")).toBe(false);
     expect(await controller.save("COMBING", "PROFESSIONALLY_CONFIRMED")).toBe(false);
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -185,7 +230,7 @@ describe("whole draft lifecycle", () => {
     const { fetcher, controller, load } = harness(fixture("DRAFT")); await load();
     fetcher.mockResolvedValueOnce(response({ draft: { id: "draft-1", status: "READY_FOR_REVIEW" } })).mockResolvedValueOnce(response({ draft: { id: "draft-1", status: decision } })).mockResolvedValueOnce(response({ draft: fixture(decision) }));
     await controller.review(decision);
-    expect(fetcher.mock.calls.slice(1).map(([url]) => url)).toEqual(["/api/v1/learning-drafts/draft-1/ready-for-review", "/api/v1/learning-drafts/draft-1/review", "/api/v1/learning-drafts/draft-1"]);
+    expect(fetcher.mock.calls.slice(2).map(([url]) => url)).toEqual(["/api/v1/learning-drafts/draft-1/ready-for-review", "/api/v1/learning-drafts/draft-1/review", "/api/v1/learning-drafts/draft-1"]);
     expect(controller.getState().draft?.status).toBe(decision);
     expect(controller.getState().draft?.reviewableProceduralClaims).toHaveLength(2);
   });
@@ -221,15 +266,15 @@ describe("whole draft lifecycle", () => {
   it.each(["APPROVED", "REJECTED", "SUPERSEDED", "REANALYZING"])("never reanalyzes %s", async status => {
     expect(canReanalyze(status)).toBe(false);
     const { fetcher, controller, load } = harness(fixture(status)); await load(); await controller.analyze("evidence-1");
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(fetcher).toHaveBeenCalledTimes(2);
     if (status !== "APPROVED") expect(await controller.save("server-opaque-id", "PROFESSIONALLY_CONFIRMED")).toBe(false);
   });
-  it("reanalysis keeps current content pending and on failure", async () => {
+  it("repeated Analyze stays idempotent and keeps current content pending and on failure", async () => {
     const { fetcher, controller, load } = harness(fixture("DRAFT")); await load(); const draft = controller.getState().draft;
     let finish!: (response: Response) => void;
     fetcher.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     const pending = controller.analyze("evidence-1"); expect(controller.getState().draft).toBe(draft);
-    expect(JSON.parse(fetcher.mock.calls[1][1]!.body as string)).toEqual({ mode: "REANALYZE" });
+    expect(JSON.parse(fetcher.mock.calls[2][1]!.body as string)).toEqual({ mode: "ANALYZE" });
     finish(response({}, 500)); await pending;
     expect(controller.getState().draft).toBe(draft); expect(controller.getState().error).toBeTruthy();
   });

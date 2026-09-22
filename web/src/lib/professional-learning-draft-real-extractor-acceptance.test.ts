@@ -64,10 +64,12 @@ suite("Stage 8.5T1.1 -- real Gemini extractor class through the real draft pipel
     const { ownerUserId } = await createOwner();
     const literal = "the hair section is held outward between the fingers while cutting";
     const evidence = await createLearningEvidence(ownerUserId, textInput(literal));
-    const extractor = new GeminiProfessionalLearningExtractor({ apiKey: "fake", model: "fixture" }, fakeGeminiClient({
+    let providerCalls = 0;
+    const client = fakeGeminiClient({
       discernmentCategory: "PROFESSIONAL_TECHNIQUE", discernmentReason: "synthetic",
       extractedFields: [{ field: "elevation", value: null, rawObservation: literal, source: "OBSERVED", confidence: 0.8, note: "" }],
-    }));
+    });
+    const extractor = new GeminiProfessionalLearningExtractor({ apiKey: "fake", model: "fixture" }, { async generateContent(input) { providerCalls += 1; return client.generateContent(input); } });
     const oldExtractor = { extractorVersion: "gemini-real-v1:fixture", async extract() { return {
       discernment: { category: "PROFESSIONAL_TECHNIQUE" as const, reason: "historical fixture" },
       extraction: { elevation: { value: null, source: "UNKNOWN" as const } }, comparisonSkillIdHint: null, relatedSkillIdHints: [],
@@ -84,8 +86,23 @@ suite("Stage 8.5T1.1 -- real Gemini extractor class through the real draft pipel
     expect(next.draft.extraction.elevation).toMatchObject({ value: null, source: "OBSERVED", rawObservation: literal });
     expect(await prisma.professionalLearningDraft.findUniqueOrThrow({ where: { id: old.draft.id } })).toEqual(before);
     expect(before.extractorVersion).toBe("gemini-real-v1:fixture");
-    const repeat = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor, registry });
-    expect(repeat.kind).toBe("already_processed");
+    expect(next.draft.status).toBe("DRAFT");
+    expect(next.draft.proceduralReview).toBeNull();
+    expect(next.draft.proceduralReviewRevision).toBe(0);
+    expect(providerCalls).toBe(1);
+    // c.1b: repeat Analyze reuses the exact current version in every lifecycle,
+    // including the marginal SUPERSEDED case, without another provider call.
+    for (const status of ["DRAFT", "APPROVED", "SUPERSEDED"] as const) {
+      await prisma.professionalLearningDraft.update({ where: { id: next.draft.id }, data: { status } });
+      const currentBefore = await prisma.professionalLearningDraft.findUniqueOrThrow({ where: { id: next.draft.id } });
+      const repeat = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor, registry, mode: "ANALYZE" });
+      expect(repeat.kind).toBe("already_processed");
+      if (repeat.kind !== "already_processed") throw Error("current draft not reused");
+      expect(repeat.draft.id).toBe(next.draft.id); expect(repeat.draft.status).toBe(status);
+      expect(providerCalls).toBe(1);
+      expect(await prisma.professionalLearningDraft.findUniqueOrThrow({ where: { id: next.draft.id } })).toEqual(currentBefore);
+      expect(await prisma.professionalLearningDraft.findUniqueOrThrow({ where: { id: old.draft.id } })).toEqual(before);
+    }
   });
 
   it("a real provider success produces a real, persisted draft through the existing, unmodified pipeline", async () => {

@@ -145,15 +145,9 @@ export function createReviewController(fetcher: Fetcher, publish: (state: Review
       if (state.refreshRequired || (state.draft && !canReanalyze(state.draft.status)) || !start()) return;
       const url = `/api/v1/learning-evidence/${encodeURIComponent(evidenceId)}/drafts`;
       try {
-        if (!state.draft) {
-          const body = await request(url);
-          if (!Array.isArray(body.drafts)) throw new Error(reviewCopy.refreshFailed);
-          // Server orders newest first. Prefer its non-superseded current record;
-          // if only history exists, render it read-only instead of invoking AI.
-          const existing = body.drafts.find((d: LearningDraft) => d.status !== "SUPERSEDED") ?? body.drafts[0];
-          if (existing) { set({ draft: hydrated(existing) }); return; }
-        }
-        const body = await request(url, { mode: state.draft ? "REANALYZE" : "ANALYZE" });
+        // Current extractor identity and draft reuse belong exclusively to the
+        // server. Repeated Analyze requests must not become paid reanalysis.
+        const body = await request(url, { mode: "ANALYZE" });
         const outcome = classifyDraftAnalysisResponse(true, body);
         if (outcome.kind === "error") throw new Error(outcome.message);
         if (outcome.kind === "skipped") { set({ skipped: outcome.reason }); return; }
