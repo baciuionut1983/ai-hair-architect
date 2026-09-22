@@ -33,7 +33,7 @@ describe("selectProfessionalLearningExtractor -- fail-closed provider selection"
   it("selects the real Gemini extractor when the flag is 'true' and AI_ANALYSIS_* is valid", () => {
     const extractor = selectProfessionalLearningExtractor({ PROFESSIONAL_LEARNING_REAL_EXTRACTION_ENABLED: "true", ...REAL_ANALYSIS_ENV });
     expect(extractor).toBeInstanceOf(GeminiProfessionalLearningExtractor);
-    expect(extractor.extractorVersion).toBe("gemini-real-v1:gemini-3.6-flash");
+    expect(extractor.extractorVersion).toBe("gemini-real-v2:gemini-3.6-flash");
   });
 
   it("FAILS CLOSED: throws ProfessionalLearningExtractorSelectionError (never silently falls back to mock) when the flag is enabled but AI_ANALYSIS_* is not configured", () => {

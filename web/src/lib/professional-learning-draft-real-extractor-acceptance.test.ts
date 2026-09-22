@@ -60,6 +60,34 @@ suite("Stage 8.5T1.1 -- real Gemini extractor class through the real draft pipel
     owners.clear();
   });
 
+  it("c.1a version gating creates a new raw-observation draft without rewriting an old approved draft", async () => {
+    const { ownerUserId } = await createOwner();
+    const literal = "the hair section is held outward between the fingers while cutting";
+    const evidence = await createLearningEvidence(ownerUserId, textInput(literal));
+    const extractor = new GeminiProfessionalLearningExtractor({ apiKey: "fake", model: "fixture" }, fakeGeminiClient({
+      discernmentCategory: "PROFESSIONAL_TECHNIQUE", discernmentReason: "synthetic",
+      extractedFields: [{ field: "elevation", value: null, rawObservation: literal, source: "OBSERVED", confidence: 0.8, note: "" }],
+    }));
+    const oldExtractor = { extractorVersion: "gemini-real-v1:fixture", async extract() { return {
+      discernment: { category: "PROFESSIONAL_TECHNIQUE" as const, reason: "historical fixture" },
+      extraction: { elevation: { value: null, source: "UNKNOWN" as const } }, comparisonSkillIdHint: null, relatedSkillIdHints: [],
+    }; } };
+    const old = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor: oldExtractor, registry });
+    if (old.kind !== "created") throw Error("old fixture not created");
+    await prisma.professionalLearningDraft.update({ where: { id: old.draft.id }, data: { status: "APPROVED" } });
+    const before = await prisma.professionalLearningDraft.findUniqueOrThrow({ where: { id: old.draft.id } });
+    const next = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor, registry });
+    expect(next.kind).toBe("created");
+    if (next.kind !== "created") throw Error("new version reused old draft");
+    expect(next.draft.id).not.toBe(old.draft.id);
+    expect(next.draft.extractorVersion).toBe("gemini-real-v2:fixture");
+    expect(next.draft.extraction.elevation).toMatchObject({ value: null, source: "OBSERVED", rawObservation: literal });
+    expect(await prisma.professionalLearningDraft.findUniqueOrThrow({ where: { id: old.draft.id } })).toEqual(before);
+    expect(before.extractorVersion).toBe("gemini-real-v1:fixture");
+    const repeat = await processEvidenceIntoDraft({ ownerUserId, evidenceId: evidence.id, draftId: randomUUID(), extractor, registry });
+    expect(repeat.kind).toBe("already_processed");
+  });
+
   it("a real provider success produces a real, persisted draft through the existing, unmodified pipeline", async () => {
     const { ownerUserId } = await createOwner();
     const evidence = await createLearningEvidence(
@@ -82,7 +110,7 @@ suite("Stage 8.5T1.1 -- real Gemini extractor class through the real draft pipel
 
     expect(outcome.kind).toBe("created");
     if (outcome.kind !== "created") throw new Error("expected created");
-    expect(outcome.draft.extractorVersion).toBe("gemini-real-v1:gemini-3.6-flash");
+    expect(outcome.draft.extractorVersion).toBe("gemini-real-v2:gemini-3.6-flash");
 
     // Provenance survives integration EXACTLY as the (fake) provider
     // reported it -- never upgraded, never downgraded, never rewritten.
@@ -99,7 +127,7 @@ suite("Stage 8.5T1.1 -- real Gemini extractor class through the real draft pipel
 
     // The draft round-trips from the real DB unchanged.
     const persisted = await prisma.professionalLearningDraft.findUnique({ where: { id: outcome.draft.id } });
-    expect(persisted?.extractorVersion).toBe("gemini-real-v1:gemini-3.6-flash");
+    expect(persisted?.extractorVersion).toBe("gemini-real-v2:gemini-3.6-flash");
 
     // Zero active-knowledge mutation occurred merely because a real
     // extraction + draft creation happened.

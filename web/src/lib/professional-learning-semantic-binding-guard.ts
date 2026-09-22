@@ -195,7 +195,17 @@ export function applySemanticBindingGuard(extraction: ProfessionalLearningExtrac
     const entry = extraction[field];
     if (!entry) continue;
     if (entry.source === "PROFESSIONAL_INPUT" || entry.source === "UNKNOWN") continue;
+    const rawObservation = typeof entry.rawObservation === "string" ? entry.rawObservation.trim() : "";
+    // Raw-only evidence makes no canonical claim. Reviewability is separate
+    // from provenance; keep direct evidence OBSERVED and inference INFERRED.
+    if ((entry.value === null || entry.value === undefined) && rawObservation) continue;
+    // Supporting raw text must never launder an unsafe canonical claim.
     if (isClaimSemanticallyBound(field, entry.value, entry.note)) continue;
+    if (rawObservation) {
+      next[field] = { ...entry, value: null, rawObservation };
+      changed = true;
+      continue;
+    }
 
     const observation = rawObservationText(entry);
     next[field] = { value: null, source: "UNKNOWN", ...(observation ? { rawObservation: observation } : {}) };
