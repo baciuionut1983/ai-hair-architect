@@ -6,6 +6,8 @@ Baseline this audit was performed against: `e7ddd483bddfc5a5eaabac7eedffb85ba16d
 
 Wherever the audit marked something `NEEDS EXTERNAL RESEARCH`, `NEEDS IONUȚ VALIDATION`, `AMBIGUOUS`, `UNRESOLVED`, or `P0`, that exact state is preserved below — nothing in this document resolves a professional-content question the audit itself left open, and nothing here should be read as inventing a definition that was not already established from repository evidence or explicitly supplied professional context.
 
+**Errata #1 (contract clarity only, no professional content changed):** the first version of this document overloaded the word "status"/"classification" for two genuinely different axes — a token's own lifecycle/binding-safety state (`LegacyTokenStatus`, section N) and how completely a legacy token's meaning corresponds to a richer target model such as the six-dimension guide capability (`LegacyMappingCorrespondence`, also section N, now explicitly separated). Section N, the `ProfessionalCanonicalValue` contract (H), the O1 handoff (S), the P0 worklist (X), and the guide/matrix fixtures were corrected to keep these two axes textually and structurally distinct. No legacy token's actual classification changed as a result — every value already established by the audit is preserved, only which of two now-separate fields it lives in changed.
+
 ---
 
 ## A. Executive architecture decision
@@ -98,7 +100,8 @@ None of these five systems references a shared concept identity. The same real-w
 | `executionRole` | reference into K, **composed via `conceptType`**, never a separate redundant field | — | semantic | **YES** | O1 placeholder / O2 real | Reuses `SkillParameterDefinition`/`AtomicActionKind`, never redefines them. |
 | `effectRole` | reference to a future effect/causal-claim entry (see the audit's §22 finding) | OPTIONAL | semantic | **YES** | O2 | Not populated in O1. |
 | `professionalAuthorityPolicy` | **DELIBERATELY OMITTED as a per-concept field** | — | — | — | — | Cross-cutting policy, not per-concept data — a concept references a policy, never embeds one (see V). |
-| `legacyMappings` | array of legacy-token classifications (N) | OPTIONAL, shell only in O1 | semantic | **YES** | **O1 shell only, real population is O3** | Needs real O2 definitions to classify against first. |
+| `status` | reference into `LegacyTokenStatus` (N) — the concept's own overall lifecycle/binding-safety state | OPTIONAL (defaults to `CANONICAL` when a concept's canonical values are already all in an existing, actively-used governed enum with no known conflation issue) | semantic | **YES** | O1 | The single, authoritative gate for binding safety at concept granularity. **Distinct from `legacyMappingCorrespondence` on H** — this field never carries correspondence-quality values like `PARTIAL`/`EXACT`; see N for the full separation. When set, it applies uniformly to every `ProfessionalCanonicalValue` under this concept, and is always at least as strict as any individual value's own `status` (never looser). |
+| `legacyMappings` | array of legacy-token classifications, reusing exactly `LegacyTokenStatus` (N) — **never** `LegacyMappingCorrespondence` values | OPTIONAL, shell only in O1 | semantic | **YES** | **O1 shell only, real population is O3** | Needs real O2 definitions to classify against first. Kept for concepts whose member tokens might eventually carry *different* statuses from the concept's own `status`; today every registered concept sets one uniform `status` instead (see S). |
 | `specificationVersion` | string, reuses the exact `STRUCTURED_FIELD_SPEC_VERSION` pattern | **REQUIRED** | meta | n/a (this IS the version, not hashed content) | O1 | |
 | `specificationDigest` | SHA-256, reuses `pinProfessionalFieldSpecification`'s exact `canonicalJson` mechanism | **REQUIRED** | meta | n/a (this is the digest itself) | O1 (computed even over placeholder content, so the mechanism is tested before anything real depends on it) | |
 
@@ -137,17 +140,27 @@ ProfessionalCanonicalValue {
   conceptId: string                // references ProfessionalConcept
   semanticMeaning: reference       // -> a ProfessionalDefinition scoped to this specific value
   localizedLabels: {ro, en, ...}   // PRESENTATION ONLY, reuses teach-ai-professional-field-review-labels.ts's proven pattern
-  legacyAliases?: readonly {alias, classification}[]
+  legacyAliases?: readonly {alias, classification: LegacyTokenStatus}[]   // same-concept synonym handling (e.g. "graduation" as an alias of "elevation") -- NOT the guide-style cross-model case below
   observability?: reference        // may differ per value within the same concept
   executionSemantics?: reference   // -> OperationalSemanticContract
   semanticVersion, semanticDigest
-  status: CANONICAL | LEGACY_ALIAS | DEPRECATED | AMBIGUOUS | NEEDS_SPLIT   // see N
+  status: LegacyTokenStatus        // CANONICAL | LEGACY_ALIAS | DEPRECATED | AMBIGUOUS | NEEDS_SPLIT -- see N. Governs binding safety. Never inherits a value from legacyMappingCorrespondence below.
+  legacyMappingCorrespondence?: readonly LegacyCorrespondenceEntry[]   // OPTIONAL -- see N. Describes how completely THIS token's meaning corresponds to a richer, already-existing target model (e.g. the six-dimension guide capability). Purely descriptive/research metadata; never itself a binding-safety gate.
+}
+
+LegacyCorrespondenceEntry {
+  targetModelRef: string           // e.g. "GuideRelationshipCapability"
+  targetDimension: string          // e.g. "GuideBehavior"
+  targetValue?: string             // e.g. "STATIONARY" -- omitted when correspondence is NO_MAPPING
+  correspondence: LegacyMappingCorrespondence   // EXACT | PARTIAL | AMBIGUOUS_CORRESPONDENCE | MIXED | NO_MAPPING -- see N
+  note?: string
 }
 ```
 
-- **O1 may contain**: `valueToken`, `conceptId`, `status` (all legacy-sourced tokens start `CANONICAL` if they already appear in an existing governed enum like `ELEVATION_OPTIONS`), `localizedLabels` (reused verbatim from existing label files where they already exist), an empty/placeholder `semanticMeaning` reference, `semanticVersion`/`semanticDigest` (computed even over the placeholder).
-- **MUST wait for O2**: real `semanticMeaning` content, `legacyAliases`, `observability`, `executionSemantics`.
-- **Authority-bearing vs. presentation, explicit**: `valueToken`, `semanticVersion`, `semanticDigest`, `status` drive b.0's canonical-membership check and review reproducibility — authority tier. `localizedLabels` is presentation-only, never enters any POST body or authority decision (verified extensively across the whole T1.6.2.c review chain) and **must never affect `semanticDigest`**.
+- **Two axes, deliberately never merged (Errata #1):** `status` (`LegacyTokenStatus`) is the sole, authoritative binding-safety gate. `legacyMappingCorrespondence` (`LegacyMappingCorrespondence`, entries of type `LegacyCorrespondenceEntry`) is separate, purely descriptive metadata about how well a legacy token's meaning has been decomposed against a newer, richer model — it never gates or loosens what `status` already decides. See N for the full rule and the exact stationary/traveling worked example.
+- **O1 may contain**: `valueToken`, `conceptId`, `status` (all legacy-sourced tokens start `CANONICAL` if they already appear in an existing governed enum like `ELEVATION_OPTIONS`, unless the audit already flagged the owning concept `AMBIGUOUS`/`NEEDS_SPLIT` — see S), `localizedLabels` (reused verbatim from existing label files where they already exist), an empty/placeholder `semanticMeaning` reference, `semanticVersion`/`semanticDigest` (computed even over the placeholder). `legacyMappingCorrespondence` **may also** be populated in O1 wherever the target model already exists in code today (e.g. the guide case, since `GuideRelationshipCapability` is already real, shipped code — mapping `stationary` → `GuideBehavior.STATIONARY` is a mechanical fact, not a research-dependent professional-content decision).
+- **MUST wait for O2**: real `semanticMeaning` content, `legacyAliases`, `observability`, `executionSemantics`. `legacyMappingCorrespondence` entries whose target model does **not** yet exist in code must also wait for O2/O3.
+- **Authority-bearing vs. presentation, explicit**: `valueToken`, `semanticVersion`, `semanticDigest`, `status` drive b.0's canonical-membership check and review reproducibility — authority tier. `legacyMappingCorrespondence` is semantic research content (see P) but is **never** consulted for binding-safety decisions — only `status` is. `localizedLabels` is presentation-only, never enters any POST body or authority decision (verified extensively across the whole T1.6.2.c review chain) and **must never affect `semanticDigest`**.
 
 ---
 
@@ -279,7 +292,11 @@ O1 adds a thin, additive **mapping table** only (which existing vocabulary membe
 
 ## N. Legacy-token classification model
 
-**Locked five-state model:**
+**Two deliberately separate axes (Errata #1).** The completed audit used two conceptually distinct classifications and the first version of this document accidentally merged their vocabularies under one overloaded word ("status"). They are corrected here as two named, independent contracts. Neither replaces or loosens the other.
+
+### N.1 — `LegacyTokenStatus` (lifecycle / binding-safety — the sole gate)
+
+**Locked five-state model, unchanged from the original lock:**
 
 ```
 CANONICAL
@@ -297,21 +314,57 @@ NEEDS_SPLIT
 | `AMBIGUOUS` | **MUST FAIL CLOSED** — structurally excluded from any new automatic binding path; an explicit professional override is required to proceed anyway. |
 | `NEEDS_SPLIT` | **MUST FAIL CLOSED**, identical treatment to `AMBIGUOUS`. |
 
+`LegacyTokenStatus` applies at **concept granularity by default** (see F's new `status` field): when the audit found the owning concept itself problematic — as it did for elevation, sectioning, and guideType — every canonical value under that concept inherits the same status uniformly, regardless of how well-formed any individual token looks in isolation. A concept may instead assign a stricter status to an individual value (via H's own `status` field), but never a looser one than its own concept-level status.
+
 **Historical data remains reproducible, by construction**: no legacy token's underlying value ever changes as a result of this classification — `ELEVATION_OPTIONS`/`SECTIONING_OPTIONS`/`GUIDELINE_OPTIONS` etc. are never edited. Classification is purely additive metadata layered on top; a decision reviewed under an old semantic version remains reproducible against that exact version forever (reuses O's mechanism unchanged).
 
-**Real classifications already established by the audit (not invented here — restated from the completed audit):**
+**Concept-level statuses already established by the audit (not invented here — restated from the completed audit):**
 
-| Token | Classification | Basis |
+| Concept | `LegacyTokenStatus` | Basis |
 |---|---|---|
-| `elevation` enum's 5 members | **AMBIGUOUS** (whole concept, pending split) | mixes pure angle / named technique-result / directional relationship |
-| `sectioning` enum's 5 members | **AMBIGUOUS** (whole concept, pending split) | possible global/local scale mixing |
-| `guideType: stationary` | **PARTIAL** mapping only (see the six-dimension mapping, T) | — |
-| `guideType: traveling` | **PARTIAL** mapping only | — |
-| `guideType: visual_perimeter` | **AMBIGUOUS** — actually names a *source*, not a *behavior*, in a flat enum that mixes both | self-documented conflation in the guide-relationship contract's own header |
-| `guideType: multiple_reference` | **AMBIGUOUS** — no clean single-dimension target identified | — |
-| `cuttingAngle`, `cuttingLine` | **no tokens exist yet** — placeholder free-text fields only, nothing to classify | — |
+| `haircutting.elevation` (all 5 tokens uniformly) | **AMBIGUOUS** (whole concept, pending split) | mixes pure angle / named technique-result / directional relationship |
+| `haircutting.sectioning` (all 5 tokens uniformly) | **AMBIGUOUS** (whole concept, pending split) | possible global/local scale mixing |
+| `haircutting.guideType` (all 4 tokens uniformly — `stationary`, `traveling`, `visual_perimeter`, `multiple_reference`) | **AMBIGUOUS** (whole concept, pending split) | self-documented conflation of source and behavior in the guide-relationship contract's own header — see N.2 for why this applies uniformly even though `stationary`/`traveling` individually look better-formed than `visual_perimeter`/`multiple_reference` |
+| `haircutting.cuttingAngle`, `haircutting.cuttingLine` | **n/a — no tokens exist yet** | placeholder free-text fields only, nothing to classify |
 
-No other token is classified by this document beyond what the completed audit already concluded.
+No other token or concept is classified by this document beyond what the completed audit already concluded.
+
+### N.2 — `LegacyMappingCorrespondence` (mapping quality — descriptive research metadata only, never a binding gate)
+
+**A separate, additive, five-value model**, used only when a legacy token is being compared against a newer, richer target model (such as the six-dimension guide capability). This is the vocabulary the audit's own guide-decomposition work (`EXACT`/`PARTIAL`/`AMBIGUOUS`/`MIXED`/`NO_MAPPING`) actually used — kept intact here, with one purely textual change: its own `AMBIGUOUS` value is renamed `AMBIGUOUS_CORRESPONDENCE` so it is never mistaken, in any table that shows both axes side by side, for `LegacyTokenStatus`'s `AMBIGUOUS`. No classification outcome changes — only the label.
+
+```
+EXACT
+PARTIAL
+AMBIGUOUS_CORRESPONDENCE
+MIXED
+NO_MAPPING
+```
+
+| Value | Structural meaning |
+|---|---|
+| `EXACT` | the legacy token corresponds to exactly one target dimension/value, with nothing lost or added. |
+| `PARTIAL` | the legacy token correctly corresponds to one (or some) target dimension(s) but is silent about others the richer model distinguishes — the legacy token is not *wrong*, only *less granular*. |
+| `AMBIGUOUS_CORRESPONDENCE` | the legacy token's own category is unclear relative to the target model — e.g. it names a value that belongs to a *different* target dimension than the one it was flatly grouped with. |
+| `MIXED` | the legacy token corresponds to more than one target dimension simultaneously, in a way that cannot be cleanly separated without further research. |
+| `NO_MAPPING` | no defensible single target has been identified at all. |
+
+**This axis never gates automatic binding by itself.** Binding safety is governed exclusively by `LegacyTokenStatus` (N.1) / the owning concept's `status` (F). A `PARTIAL` or `AMBIGUOUS_CORRESPONDENCE` mapping-correspondence value does **not** independently block anything beyond what the token's/concept's own `LegacyTokenStatus` already blocks — and it never *permits* binding that `LegacyTokenStatus` would otherwise forbid. For the guide case specifically (N.3 below), this is moot in practice: `haircutting.guideType`'s concept-level status is already `AMBIGUOUS`, which already fails closed for all four tokens regardless of how well each one individually corresponds to the richer model.
+
+### N.3 — Worked resolution: `stationary` / `traveling`
+
+The exact case that surfaced this contradiction, resolved explicitly:
+
+| | `stationary` | `traveling` |
+|---|---|---|
+| Legacy token | `stationary` (member of `GUIDELINE_OPTIONS`) | `traveling` (member of `GUIDELINE_OPTIONS`) |
+| Owning concept | `haircutting.guideType` | `haircutting.guideType` |
+| `LegacyTokenStatus` (N.1) | **AMBIGUOUS**, inherited from the concept — same as every other `guideType` token | **AMBIGUOUS**, inherited from the concept |
+| `legacyMappingCorrespondence` (N.2) | `{targetModelRef: "GuideRelationshipCapability", targetDimension: "GuideBehavior", targetValue: "STATIONARY", correspondence: PARTIAL}` — captures exactly 1 of 6 guide dimensions | `{targetModelRef: "GuideRelationshipCapability", targetDimension: "GuideBehavior", targetValue: "TRAVELLING", correspondence: PARTIAL}` |
+| Automatic mapping allowed? | **NO** — blocked by `LegacyTokenStatus: AMBIGUOUS`, independent of the `PARTIAL` correspondence quality | **NO**, same reason |
+| Professional validation still required? | **YES** — per P0.D | **YES** |
+
+Both tokens remain perfectly valid, currently-shipped, usable `GUIDELINE_OPTIONS` members in production today (nothing about this errata touches the enum itself) — they are simply not yet eligible for *new, automatic* Skill-parameter binding until `haircutting.guideType`'s concept-level ambiguity is resolved in O2/O3, exactly as strictly as `visual_perimeter`/`multiple_reference` are, and exactly as strictly as this document's first version already, correctly, intended — Errata #1 makes that intent explicit and consistent instead of contradictory.
 
 ---
 
@@ -335,6 +388,8 @@ Reuses the exact, already-proven mechanism verbatim — `STRUCTURED_FIELD_SPEC_V
 | `executionRole`/`executionRoles` | **YES** | |
 | `distinguishFrom` | **YES** | |
 | `legacyAliases` (the classification itself) | **YES** | an alias reclassification is a semantic event |
+| `status` (`LegacyTokenStatus`, concept- or value-level) | **YES** | a lifecycle/binding-safety change is a semantic event |
+| `legacyMappingCorrespondence` (`LegacyMappingCorrespondence` entries) | **YES** | a correspondence upgrade (e.g. `PARTIAL` → `EXACT` once a richer model is fully adopted) is genuine new understanding, not presentation — but note this field never itself participates in a binding-safety decision (N.2) |
 | `localizedLabels` (all languages) | **NO** | presentation only |
 | UI ordering/grouping | **NO** | presentation only |
 | `presentationDetail`/help-text formatting | **NO** | presentation only |
@@ -373,9 +428,9 @@ Rationale, evidenced: every vocabulary audited across all five existing systems 
 - **Purpose**: introduce the O1-tier fields from F/G/H as pure, contract-only types with `is*` guards — no wiring, no consumers, no behavior change anywhere in production.
 - **Types**: `ProfessionalConcept`, `ProfessionalCanonicalValue`, `ProfessionalDefinition` (O1-shape only — placeholder content permitted/required for `definition`, `observability`, `executionRole`).
 - **Registry content — exact, locked**: five entries, all vertical `"cutting"`, all marked with the exact placeholder text `[NEEDS PROFESSIONAL VALIDATION]` wherever content would require domain expertise:
-  1. `haircutting.elevation` — `canonicalValues` references reuse `ELEVATION_OPTIONS` verbatim (5 tokens, never re-declared); `status: AMBIGUOUS` (whole-concept, per N).
-  2. `haircutting.sectioning` — `canonicalValues` references reuse `SECTIONING_OPTIONS` verbatim (5 tokens); `status: AMBIGUOUS` (whole-concept, per N).
-  3. `haircutting.guideType` — `canonicalValues` references reuse `GUIDELINE_OPTIONS` verbatim (4 tokens); per-token status per N (`stationary`/`traveling`: PARTIAL; `visual_perimeter`/`multiple_reference`: AMBIGUOUS).
+  1. `haircutting.elevation` — `canonicalValues` references reuse `ELEVATION_OPTIONS` verbatim (5 tokens, never re-declared); concept-level `status: AMBIGUOUS` (whole-concept, per N.1), applied uniformly to all 5 values.
+  2. `haircutting.sectioning` — `canonicalValues` references reuse `SECTIONING_OPTIONS` verbatim (5 tokens); concept-level `status: AMBIGUOUS` (whole-concept, per N.1), applied uniformly to all 5 values.
+  3. `haircutting.guideType` — `canonicalValues` references reuse `GUIDELINE_OPTIONS` verbatim (4 tokens); concept-level `status: AMBIGUOUS` (per N.1), applied uniformly to all 4 tokens (`stationary`, `traveling`, `visual_perimeter`, `multiple_reference` — none is exempted, none gets a looser status). **Separately**, each of the 4 tokens' `legacyMappingCorrespondence` (per N.2, N.3) may be populated now, since the target model (`GuideRelationshipCapability`) already exists in code: `stationary`/`traveling` → `PARTIAL` (1 of 6 dimensions each); `visual_perimeter`/`multiple_reference` → `AMBIGUOUS_CORRESPONDENCE`/`NO_MAPPING` respectively. This correspondence data is informational only and never loosens the concept-level `AMBIGUOUS` binding-safety gate.
   4. `haircutting.cuttingAngle` — **no `canonicalValues` yet** (none exist in the repository); registered as a concept shell only, `status: n/a — no tokens to classify`.
   5. `haircutting.cuttingLine` — same as (4).
 - **Concepts explicitly NOT registered in O1**: every other of the 33 Professional Learning extraction fields, every TD-only field (fingerAngle, toolOrientation, subsectioning, etc.), every guide-relationship dimension individually (they remain reachable only via the existing `professional-skill-guide-relationship-contracts.ts` file, not re-declared as concepts yet), all color/styling concepts. Registering these now would be scope creep beyond the P0 set this audit prioritized.
@@ -384,8 +439,8 @@ Rationale, evidenced: every vocabulary audited across all five existing systems 
 - **Observability types**: exactly J's two axes, no others.
 - **Execution roles**: exactly K's 8 identifiers, multi-valued, no others.
 - **Relationship types**: exactly L's 13 identifiers, registered as an empty/shell structure per concept in O1 (no relationship instances asserted).
-- **Legacy statuses**: exactly N's 5 states.
-- **Digest fields**: exactly P's boundary table.
+- **Legacy statuses**: exactly N.1's 5 `LegacyTokenStatus` states — the only axis that gates automatic binding. **Separately**, `legacyMappingCorrespondence` (N.2's 5-value `LegacyMappingCorrespondence`) may also be populated in O1 wherever the target model already exists in code (the guide case) — it is informational research metadata only and is never a second, competing binding gate.
+- **Digest fields**: exactly P's boundary table, now including both `status` and `legacyMappingCorrespondence`.
 - **Registry validation rules**: unique `conceptId`s (Set-cardinality check, mirrors `isValidAtomicActionSequence`'s id-uniqueness pattern); digest computed and stable even over placeholder content; every `distinguishFrom`/relationship reference must resolve to a real `conceptId` in the same registry (referential integrity, mirrors `AtomicAction.requiresActionIds` validity check); no cycles in `PRECEDES`/`FOLLOWS`/`PART_OF` relationships (reuse the exact DFS algorithm from `isValidAtomicActionSequence`).
 - **Boundary/inertness requirements**: **zero existing production file may import or reference this new module.** No extractor, guard, b.0, b.0.1, b.1, b.2, c, TD, or Skill file changes. This must be verifiable by a boundary/AST test mirroring the existing b.0/b.1/b.2 boundary-test pattern.
 - **Migration**: **NO.**
@@ -481,7 +536,7 @@ Before Professional Brain may consume any learned knowledge, all of the followin
 **D. Guide semantics**
 - Existing repo identities: flat `GUIDELINE_OPTIONS` (4 values) vs. the already-built `GuideRelationshipCapability` 6-dimension model (see the exact mapping in section T of this document, "Guide decomposition" below).
 - Known semantic mixing: self-documented conflation of source and behavior in the flat enum.
-- What O1 may safely encode: the `haircutting.guideType` concept shell referencing the 4 existing flat tokens, per-token legacy status (N).
+- What O1 may safely encode: the `haircutting.guideType` concept shell referencing the 4 existing flat tokens, with a single uniform concept-level `LegacyTokenStatus: AMBIGUOUS` (N.1) applied to all 4, plus per-token `legacyMappingCorrespondence` (N.2/N.3, informational only, never a binding gate).
 - What O1 MUST NOT encode: a redesigned guideType enum; any claim about which of the 6 richer dimensions each flat token fully maps to.
 - External research questions: is the 6-dimension model's exact split professionally correct and complete?
 - Ionuț validation questions: does "45° Interior" use a traveling or stationary guide, and what serves as its structural authority?
@@ -582,16 +637,16 @@ Source: `professional-skill-guide-relationship-contracts.ts`.
 | E. Progression | `GuideProgressionState` | `FIXED_THROUGHOUT, PROGRESSES_EACH_UNIT, UNKNOWN` |
 | F. Reference progression | `ReferenceProgressionState` | `REFERENCE_PROGRESSES_WITH_EXECUTION, REFERENCE_FIXED, UNKNOWN` |
 
-Legacy `GUIDELINE_OPTIONS` mapping:
+Legacy `GUIDELINE_OPTIONS` mapping — every cell below is a `LegacyMappingCorrespondence` (N.2) value, **not** a `LegacyTokenStatus`. All four tokens additionally share one uniform concept-level `LegacyTokenStatus: AMBIGUOUS` (N.1/N.3), which is what actually governs binding safety — restated here so this table is never read in isolation as the binding-safety answer:
 
-| Legacy value | Maps to | Classification |
+| Legacy value | Maps to | Legacy mapping correspondence (N.2) |
 |---|---|---|
 | `stationary` | `GuideBehavior: STATIONARY` | **PARTIAL** — one of six dimensions only |
 | `traveling` | `GuideBehavior: TRAVELLING` | **PARTIAL** |
-| `visual_perimeter` | `GuideSource: PERIMETER_CONTOUR_GUIDE` | **AMBIGUOUS** — names a source, not a behavior; direct proof of the flat enum's conflation |
-| `multiple_reference` | no single clean target identified | **AMBIGUOUS**, needs professional research |
+| `visual_perimeter` | `GuideSource: PERIMETER_CONTOUR_GUIDE` | **AMBIGUOUS_CORRESPONDENCE** — names a source, not a behavior; direct proof of the flat enum's conflation |
+| `multiple_reference` | no single clean target identified | **NO_MAPPING** — needs professional research |
 
-No mapping beyond this table is asserted; none is invented.
+No mapping beyond this table is asserted; none is invented. See N.3 for the full stationary/traveling worked resolution, including the binding-safety answer.
 
 ### Color finding (corrected, restated for the record)
 
@@ -621,19 +676,21 @@ Classified as **future HairColor ontology-pack input (O7), no refactor now**. Se
 
 *(Concepts with real, verified evidence from the completed audit. `techniqueCandidate, professionalObjective, startingState, tool, iteration, prerequisites, incompatibilities, safety, professionalRationale, stylingRelationship, domain, discipline` were not individually re-verified against TD/Skill usage during the audit and are marked unaudited here rather than assumed absent.)*
 
-| Concept | Source(s) | Token(s) | Semantic status | Scope capability | Observability | Execution role | Skill usage | TD usage | Definition status | Duplication/conflict | Legacy status | Research priority | O1 membership | O2 requirement | Recommended role |
+*(The "Legacy status" column below is exclusively `LegacyTokenStatus` (N.1) — the binding-safety axis. Where a concept has no actual token enum to classify, the cell reads "n/a, no tokens." Per-token `LegacyMappingCorrespondence` (N.2) detail, where it exists, is documented separately in the guide-decomposition fixture, never inline here, to keep the two axes visibly distinct.)*
+
+| Concept | Source(s) | Token(s) | Semantic status | Scope capability | Observability | Execution role | Skill usage | TD usage | Definition status | Duplication/conflict | Legacy status (`LegacyTokenStatus`) | Research priority | O1 membership | O2 requirement | Recommended role |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | elevation | shared enum | 5 tokens | mixed axes, flagged | mixed within enum | not yet classified | PARAMETER | none direct | direct, phase-scoped | none | none (single source) | AMBIGUOUS | **P0** | **YES** | **YES** | PARAMETER |
 | sectioning | shared enum | 5 tokens | scope-mixed, flagged | global/local mixed | not yet classified | PARAMETER | none direct | direct | none | none (single source) | AMBIGUOUS | **P0** | **YES** | **YES** | PARAMETER |
-| guideType | shared enum + richer capability model | 4 tokens (+6-dim model) | self-documented conflation | unclear | not yet classified | STRUCTURAL_RELATIONSHIP-shaped PARAMETER | via `SkillParameterDefinition` (3 skills, ad hoc) | direct | none | **yes — 2 models, unreconciled** | mixed (see mapping above) | **P0** | **YES** | **YES** | PARAMETER, pending guide-dimension reconciliation |
-| guideSource | free text (Learning) / closed enum (guide contract) | none / 5 values | maturity mismatch | n/a | not yet classified | PARAMETER | via guide contract | n/a | none | yes | n/a | P0 (folded into guideType) | NO (folded) | folded into guideType | STRUCTURAL_RELATIONSHIP |
+| guideType | shared enum + richer capability model | 4 tokens (+6-dim model) | self-documented conflation | unclear | not yet classified | STRUCTURAL_RELATIONSHIP-shaped PARAMETER | via `SkillParameterDefinition` (3 skills, ad hoc) | direct | none | **yes — 2 models, unreconciled** | AMBIGUOUS (concept-level, uniform across all 4 tokens — see N.3 for per-token `LegacyMappingCorrespondence` detail) | **P0** | **YES** | **YES** | PARAMETER, pending guide-dimension reconciliation |
+| guideSource | free text (Learning) / closed enum (guide contract) | none / 5 values | maturity mismatch | n/a | not yet classified | PARAMETER | via guide contract | n/a | none | yes | n/a, no tokens (folded into guideType) | P0 (folded into guideType) | NO (folded) | folded into guideType | STRUCTURAL_RELATIONSHIP |
 | cuttingAngle | free text ×2 | none | placeholder | undefined | not yet classified | PARAMETER (pending) | none | placeholder field only | none | consistent placeholder | n/a, no tokens | **P0** | **YES (shell only)** | **YES** | PARAMETER (pending) |
 | cuttingLine | free text ×2 | none | placeholder | undefined | not yet classified | PARAMETER (pending) | none | placeholder field only | none | consistent placeholder | n/a, no tokens | **P0** | **YES (shell only)** | **YES** | PARAMETER (pending) |
 | distribution | shared enum | 5 tokens | clear | scope unclear | not yet classified | PARAMETER, TD-derived | none direct | direct | none | none | CANONICAL | P1 | no | P1 | PARAMETER |
-| overdirection | boolean (TD) / 4-value relation (guide contract) | — | two granularities, complementary | n/a | n/a | EFFECT/derived | via guide contract | boolean flag | none | flagged, not blocking | mixed | P1 | no | P1 | STRUCTURAL_RELATIONSHIP |
-| fingerAngle/fingerPosition/toolOrientation | free text ×2 each | none | placeholder | undefined | not yet classified | PARAMETER (pending) | none | placeholder fields only | none | consistent placeholder | n/a | P2 | no | P2 | PARAMETER (pending) |
-| subsectioning/subsectionThickness | free text ×2 each | none | placeholder | undefined | not yet classified | PARAMETER (pending) | none | placeholder fields only | none | consistent placeholder | n/a | P2 | no | P2 | PARAMETER (pending) |
-| progression | free text (TD, unified) / 2 typed enums (guide contract, deliberately split) | — | already correctly split in the richer model, not propagated | n/a | n/a | CONTROL_FLOW / STRUCTURAL_RELATIONSHIP (mixed) | via guide contract | free text | none | yes, self-documented | mixed | P1 | no | P1 | mixed |
+| overdirection | boolean (TD) / 4-value relation (guide contract) | — | two granularities, complementary | n/a | n/a | EFFECT/derived | via guide contract | boolean flag | none | flagged, not blocking | n/a, no token enum (a boolean field, not an enum, in TD; the 4-value `OverdirectionRelationship` enum lives under the guide concept, not here) | P1 | no | P1 | STRUCTURAL_RELATIONSHIP |
+| fingerAngle/fingerPosition/toolOrientation | free text ×2 each | none | placeholder | undefined | not yet classified | PARAMETER (pending) | none | placeholder fields only | none | consistent placeholder | n/a, no tokens | P2 | no | P2 | PARAMETER (pending) |
+| subsectioning/subsectionThickness | free text ×2 each | none | placeholder | undefined | not yet classified | PARAMETER (pending) | none | placeholder fields only | none | consistent placeholder | n/a, no tokens | P2 | no | P2 | PARAMETER (pending) |
+| progression | free text (TD, unified) / 2 typed enums (guide contract, deliberately split) | — | already correctly split in the richer model, not propagated | n/a | n/a | CONTROL_FLOW / STRUCTURAL_RELATIONSHIP (multi-valued, per K) | via guide contract | free text | none | yes, self-documented | n/a, no token enum (typed fields, not a token enum, on both sides) | P1 | no | P1 | CONTROL_FLOW + STRUCTURAL_RELATIONSHIP (multi-valued) |
 | crossCheck | boolean (TD) / free text (Learning) | — | maturity mismatch | n/a | evidence-oriented | CONTROL_FLOW | none | boolean | none | minor | n/a | P2 | no | P2 | CONTROL_FLOW |
 | applicableZones | free text (Learning) / closed `HeadZone` enum (TD) | — / 6 values | maturity mismatch | HEAD_REGION | directly observable | CONTEXT | none | direct | none | not conflicting, unpropagated | CANONICAL (TD side) | P1 | no | P1 | CONTEXT |
 | completionCondition | free text | none | placeholder | undefined | evidence-oriented | CONTROL_FLOW | none | none | none | none | n/a | P2 | no | P2 | CONTROL_FLOW |
