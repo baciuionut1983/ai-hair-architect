@@ -43,7 +43,7 @@ describe("O1 registry and real-case boundaries", () => {
       "haircutting.cuttingAngle": "sha256:3f0b4021c4797f2800bb224ba82e036876acc8039e1f63550f63e26bb8fabd58",
       "haircutting.cuttingLine": "sha256:81b9136cafcee80741f964030df07ea4f355d6e03070a7e3105a16e2ec276823",
     } };
-    expect(pack.specificationVersion).toBe("1.1.0-t162c2a1");
+    expect(pack.specificationVersion).toBe("1.2.0-t162c2b");
     expect(Object.fromEntries(pack.concepts.slice(0, 5).map(c => [c.conceptId, c.specificationDigest]))).toEqual(goldens["1.0.0-t162c2a"]);
   });
   it("rejects duplicate IDs, values, references and stale versions/digests", () => {

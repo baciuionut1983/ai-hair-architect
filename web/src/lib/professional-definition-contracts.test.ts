@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { PROFESSIONAL_CONCEPT_SPEC_VERSION, PROFESSIONAL_VALIDATION_REQUIRED } from "./professional-concept-contracts";
 import { definitionDigest, isProfessionalDefinition, type ProfessionalDefinition } from "./professional-definition-contracts";
-import { CUTTING_PROFESSIONAL_CONCEPT_PACK } from "./professional-concept-cutting-pack";
 
 describe("O1 future definition shape", () => {
   const seed: Omit<ProfessionalDefinition, "specificationDigest"> = { definitionId: "test.fixture", conceptId: "haircutting.elevation", text: PROFESSIONAL_VALIDATION_REQUIRED, scope: PROFESSIONAL_VALIDATION_REQUIRED, provenance: { sourceId: "test-only", authorityType: "test-only", reviewedAt: "2026-01-01T00:00:00Z" }, specificationVersion: PROFESSIONAL_CONCEPT_SPEC_VERSION };
   const fixture = { ...seed, specificationDigest: definitionDigest(seed) };
-  it("ships no definitions, validates placeholder test fixtures without creating authority", () => {
-    expect(CUTTING_PROFESSIONAL_CONCEPT_PACK.definitions).toEqual([]);
+  it("validates placeholder test fixtures without creating authority", () => {
     expect(isProfessionalDefinition(fixture)).toBe(true);
     for (const change of [{ provenance: {} }, { ownerUserId: "private" }, { text: "" }, { scope: "GLOBAL" }, { distinguishFrom: ["bad"] }]) expect(isProfessionalDefinition({ ...fixture, ...change })).toBe(false);
   });

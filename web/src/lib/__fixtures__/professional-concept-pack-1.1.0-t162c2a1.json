@@ -1,0 +1,437 @@
+{
+  "vertical": "cutting",
+  "specificationVersion": "1.1.0-t162c2a1",
+  "concepts": [
+    {
+      "conceptId": "haircutting.elevation",
+      "vertical": "cutting",
+      "canonicalName": "elevation",
+      "conceptType": [
+        "PARAMETER"
+      ],
+      "scope": "[NEEDS PROFESSIONAL VALIDATION]",
+      "observability": "[NEEDS PROFESSIONAL VALIDATION]",
+      "status": "AMBIGUOUS",
+      "canonicalValues": [
+        {
+          "conceptId": "haircutting.elevation",
+          "valueToken": "0_deg_blunt",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:3a107f01badea59a163e963ccc8ead583d7b8f627435f86ca774bda6651041b3"
+        },
+        {
+          "conceptId": "haircutting.elevation",
+          "valueToken": "45_deg_graduation",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:e178fcaa0fd0ad3e2738caf647220aef9fa3a4b3028640e89d72f5ce8c1c841d"
+        },
+        {
+          "conceptId": "haircutting.elevation",
+          "valueToken": "90_deg_uniform_layer",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:f92b6f6b662dceaf8edaafe4c64aa8ca733db9371ae550e77e86dfd5565fbd4c"
+        },
+        {
+          "conceptId": "haircutting.elevation",
+          "valueToken": "135_deg_long_layer",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:47820ed6e0d7afefefd7ac45e0ae988d41ecfc46891e17559bf46694bcae5cc4"
+        },
+        {
+          "conceptId": "haircutting.elevation",
+          "valueToken": "180_deg_overdirection",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:21907679be5f9048f7a4e9e48fbb2a4d8bdb749f45e52e258a56650d82a318b2"
+        }
+      ],
+      "relationships": [],
+      "legacyMappings": [],
+      "specificationVersion": "1.1.0-t162c2a1",
+      "specificationDigest": "sha256:ec9b50d9826f25ef21c233901710ac9a8281eca9e50c0240fc2538f033a57e78"
+    },
+    {
+      "conceptId": "haircutting.sectioning",
+      "vertical": "cutting",
+      "canonicalName": "sectioning",
+      "conceptType": [
+        "PARAMETER"
+      ],
+      "scope": "[NEEDS PROFESSIONAL VALIDATION]",
+      "observability": "[NEEDS PROFESSIONAL VALIDATION]",
+      "status": "AMBIGUOUS",
+      "canonicalValues": [
+        {
+          "conceptId": "haircutting.sectioning",
+          "valueToken": "4_quadrant_profile_radial",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:7a07aa2c490f719d1df4a62d113989767d49ef464970d581437eeb7b87a16a32"
+        },
+        {
+          "conceptId": "haircutting.sectioning",
+          "valueToken": "horseshoe_crown",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:908a83fc08f955044395fdbef536997f23cd795f103b602a424725586f42aa0e"
+        },
+        {
+          "conceptId": "haircutting.sectioning",
+          "valueToken": "diagonal_back",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:f311b3434a0e29bd424465858b79e1e2ee04ca0506046e5c5e6126dd2249dedd"
+        },
+        {
+          "conceptId": "haircutting.sectioning",
+          "valueToken": "pivot_radial",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:5abaeadbd22b71f8f6374583ebea19e8c224640e578063b17c2f80c0c20eba68"
+        },
+        {
+          "conceptId": "haircutting.sectioning",
+          "valueToken": "horseshoe_fringe",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:3843b71b294718b327659111900496735bb1369ff5e5233b8073847e5c224788"
+        }
+      ],
+      "relationships": [],
+      "legacyMappings": [],
+      "specificationVersion": "1.1.0-t162c2a1",
+      "specificationDigest": "sha256:686436a6666bb69bec32ab12d585763b12d79ab9083291b57fa80e35b52b6fb7"
+    },
+    {
+      "conceptId": "haircutting.guideType",
+      "vertical": "cutting",
+      "canonicalName": "guideType",
+      "conceptType": [
+        "PARAMETER"
+      ],
+      "scope": "[NEEDS PROFESSIONAL VALIDATION]",
+      "observability": "[NEEDS PROFESSIONAL VALIDATION]",
+      "status": "AMBIGUOUS",
+      "canonicalValues": [
+        {
+          "conceptId": "haircutting.guideType",
+          "valueToken": "stationary",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:132e111c62c26632f3d35626722f977b5f8af7af1eb61d8a668a40b360e6a31b"
+        },
+        {
+          "conceptId": "haircutting.guideType",
+          "valueToken": "traveling",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:06a40051f1479a6bd66b70005d1f98d3c004c40fbfe66b828d0dd202b0abe9e3"
+        },
+        {
+          "conceptId": "haircutting.guideType",
+          "valueToken": "visual_perimeter",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:ffce99cbc72b7432a3d11998e62becf79ce274289cebed14950074b0dbe44a5c"
+        },
+        {
+          "conceptId": "haircutting.guideType",
+          "valueToken": "multiple_reference",
+          "semanticVersion": "1.1.0-t162c2a1",
+          "semanticDigest": "sha256:f92f1055d974dc61eaecd1ac627063b1ac2109014982cece238642e5f7d34f13"
+        }
+      ],
+      "relationships": [],
+      "legacyMappings": [],
+      "specificationVersion": "1.1.0-t162c2a1",
+      "specificationDigest": "sha256:065e87ddd29c86bcf00a61a2bb0706f6f1712dbb16c7b4688d761b1892376714"
+    },
+    {
+      "conceptId": "haircutting.cuttingAngle",
+      "vertical": "cutting",
+      "canonicalName": "cuttingAngle",
+      "conceptType": "[NEEDS PROFESSIONAL VALIDATION]",
+      "scope": "[NEEDS PROFESSIONAL VALIDATION]",
+      "observability": "[NEEDS PROFESSIONAL VALIDATION]",
+      "relationships": [],
+      "legacyMappings": [],
+      "specificationVersion": "1.1.0-t162c2a1",
+      "specificationDigest": "sha256:3f0b4021c4797f2800bb224ba82e036876acc8039e1f63550f63e26bb8fabd58"
+    },
+    {
+      "conceptId": "haircutting.cuttingLine",
+      "vertical": "cutting",
+      "canonicalName": "cuttingLine",
+      "conceptType": "[NEEDS PROFESSIONAL VALIDATION]",
+      "scope": "[NEEDS PROFESSIONAL VALIDATION]",
+      "observability": "[NEEDS PROFESSIONAL VALIDATION]",
+      "relationships": [],
+      "legacyMappings": [],
+      "specificationVersion": "1.1.0-t162c2a1",
+      "specificationDigest": "sha256:81b9136cafcee80741f964030df07ea4f355d6e03070a7e3105a16e2ec276823"
+    },
+    {
+      "conceptId": "haircutting.section",
+      "vertical": "cutting",
+      "canonicalName": "section",
+      "conceptType": "[NEEDS PROFESSIONAL VALIDATION]",
+      "scope": "[NEEDS PROFESSIONAL VALIDATION]",
+      "observability": "[NEEDS PROFESSIONAL VALIDATION]",
+      "relationships": [],
+      "legacyMappings": [],
+      "specificationVersion": "1.1.0-t162c2a1",
+      "specificationDigest": "sha256:08437c8d59395e7a8177303aba41bdca8c6793cc31469742f6d84e3feddb7ab0"
+    },
+    {
+      "conceptId": "haircutting.subsection",
+      "vertical": "cutting",
+      "canonicalName": "subsection",
+      "conceptType": "[NEEDS PROFESSIONAL VALIDATION]",
+      "scope": "[NEEDS PROFESSIONAL VALIDATION]",
+      "observability": "[NEEDS PROFESSIONAL VALIDATION]",
+      "relationships": [],
+      "legacyMappings": [],
+      "specificationVersion": "1.1.0-t162c2a1",
+      "specificationDigest": "sha256:4cbd9591cd18a178d892c42e95563f6c2bd4976930db4eab2ef7e7638e941fc6"
+    },
+    {
+      "conceptId": "haircutting.subsectioning",
+      "vertical": "cutting",
+      "canonicalName": "subsectioning",
+      "conceptType": "[NEEDS PROFESSIONAL VALIDATION]",
+      "scope": "[NEEDS PROFESSIONAL VALIDATION]",
+      "observability": "[NEEDS PROFESSIONAL VALIDATION]",
+      "relationships": [],
+      "legacyMappings": [],
+      "specificationVersion": "1.1.0-t162c2a1",
+      "specificationDigest": "sha256:c167fde94a9bfb3c4b1fe1c47fe7d4c664143b0a76309e3549f95adcf09a41b1"
+    },
+    {
+      "conceptId": "haircutting.parting",
+      "vertical": "cutting",
+      "canonicalName": "parting",
+      "conceptType": "[NEEDS PROFESSIONAL VALIDATION]",
+      "scope": "[NEEDS PROFESSIONAL VALIDATION]",
+      "observability": "[NEEDS PROFESSIONAL VALIDATION]",
+      "relationships": [],
+      "legacyMappings": [],
+      "specificationVersion": "1.1.0-t162c2a1",
+      "specificationDigest": "sha256:fdb78223fdcb3627335de3f6bba88c530c8a9d44f56e016dd3968c623bf6fe21"
+    },
+    {
+      "conceptId": "haircutting.projection",
+      "vertical": "cutting",
+      "canonicalName": "projection",
+      "conceptType": "[NEEDS PROFESSIONAL VALIDATION]",
+      "scope": "[NEEDS PROFESSIONAL VALIDATION]",
+      "observability": "[NEEDS PROFESSIONAL VALIDATION]",
+      "relationships": [],
+      "legacyMappings": [],
+      "specificationVersion": "1.1.0-t162c2a1",
+      "specificationDigest": "sha256:f81fc0510cf248bb4623cc784a8c18251d90843f3364c1d3755c3084207c0e6a"
+    },
+    {
+      "conceptId": "haircutting.overdirection",
+      "vertical": "cutting",
+      "canonicalName": "overdirection",
+      "conceptType": "[NEEDS PROFESSIONAL VALIDATION]",
+      "scope": "[NEEDS PROFESSIONAL VALIDATION]",
+      "observability": "[NEEDS PROFESSIONAL VALIDATION]",
+      "relationships": [],
+      "legacyMappings": [],
+      "specificationVersion": "1.1.0-t162c2a1",
+      "specificationDigest": "sha256:d98bd2553e70b8301d758cbeeb792ac748e493628a0fc6de8e6655ba5d087521"
+    },
+    {
+      "conceptId": "haircutting.guide",
+      "vertical": "cutting",
+      "canonicalName": "guide",
+      "conceptType": "[NEEDS PROFESSIONAL VALIDATION]",
+      "scope": "[NEEDS PROFESSIONAL VALIDATION]",
+      "observability": "[NEEDS PROFESSIONAL VALIDATION]",
+      "relationships": [],
+      "legacyMappings": [],
+      "specificationVersion": "1.1.0-t162c2a1",
+      "specificationDigest": "sha256:395d58fda9c55157671a58e71f7c37b2378ec2363e3d67e0977b1d61b7b399ba"
+    }
+  ],
+  "canonicalValues": [
+    {
+      "conceptId": "haircutting.elevation",
+      "valueToken": "0_deg_blunt",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "0° blunt"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "semanticDigest": "sha256:3a107f01badea59a163e963ccc8ead583d7b8f627435f86ca774bda6651041b3"
+    },
+    {
+      "conceptId": "haircutting.elevation",
+      "valueToken": "45_deg_graduation",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "45° graduation"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "semanticDigest": "sha256:e178fcaa0fd0ad3e2738caf647220aef9fa3a4b3028640e89d72f5ce8c1c841d"
+    },
+    {
+      "conceptId": "haircutting.elevation",
+      "valueToken": "90_deg_uniform_layer",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "90° uniform layer"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "semanticDigest": "sha256:f92b6f6b662dceaf8edaafe4c64aa8ca733db9371ae550e77e86dfd5565fbd4c"
+    },
+    {
+      "conceptId": "haircutting.elevation",
+      "valueToken": "135_deg_long_layer",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "135° long layer"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "semanticDigest": "sha256:47820ed6e0d7afefefd7ac45e0ae988d41ecfc46891e17559bf46694bcae5cc4"
+    },
+    {
+      "conceptId": "haircutting.elevation",
+      "valueToken": "180_deg_overdirection",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "180° overdirection"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "semanticDigest": "sha256:21907679be5f9048f7a4e9e48fbb2a4d8bdb749f45e52e258a56650d82a318b2"
+    },
+    {
+      "conceptId": "haircutting.sectioning",
+      "valueToken": "4_quadrant_profile_radial",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "4-quadrant profile radial"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "semanticDigest": "sha256:7a07aa2c490f719d1df4a62d113989767d49ef464970d581437eeb7b87a16a32"
+    },
+    {
+      "conceptId": "haircutting.sectioning",
+      "valueToken": "horseshoe_crown",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "Horseshoe crown"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "semanticDigest": "sha256:908a83fc08f955044395fdbef536997f23cd795f103b602a424725586f42aa0e"
+    },
+    {
+      "conceptId": "haircutting.sectioning",
+      "valueToken": "diagonal_back",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "Diagonal back"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "semanticDigest": "sha256:f311b3434a0e29bd424465858b79e1e2ee04ca0506046e5c5e6126dd2249dedd"
+    },
+    {
+      "conceptId": "haircutting.sectioning",
+      "valueToken": "pivot_radial",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "Pivot radial"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "semanticDigest": "sha256:5abaeadbd22b71f8f6374583ebea19e8c224640e578063b17c2f80c0c20eba68"
+    },
+    {
+      "conceptId": "haircutting.sectioning",
+      "valueToken": "horseshoe_fringe",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "Horseshoe fringe"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "semanticDigest": "sha256:3843b71b294718b327659111900496735bb1369ff5e5233b8073847e5c224788"
+    },
+    {
+      "conceptId": "haircutting.guideType",
+      "valueToken": "stationary",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "Stationary"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "legacyMappingCorrespondence": [
+        {
+          "targetModelRef": "GuideRelationshipCapability",
+          "targetDimension": "GuideBehavior",
+          "targetValue": "STATIONARY",
+          "correspondence": "PARTIAL"
+        }
+      ],
+      "semanticDigest": "sha256:132e111c62c26632f3d35626722f977b5f8af7af1eb61d8a668a40b360e6a31b"
+    },
+    {
+      "conceptId": "haircutting.guideType",
+      "valueToken": "traveling",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "Traveling"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "legacyMappingCorrespondence": [
+        {
+          "targetModelRef": "GuideRelationshipCapability",
+          "targetDimension": "GuideBehavior",
+          "targetValue": "TRAVELLING",
+          "correspondence": "PARTIAL"
+        }
+      ],
+      "semanticDigest": "sha256:06a40051f1479a6bd66b70005d1f98d3c004c40fbfe66b828d0dd202b0abe9e3"
+    },
+    {
+      "conceptId": "haircutting.guideType",
+      "valueToken": "visual_perimeter",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "Visual perimeter"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "legacyMappingCorrespondence": [
+        {
+          "targetModelRef": "GuideRelationshipCapability",
+          "targetDimension": "GuideSource",
+          "targetValue": "PERIMETER_CONTOUR_GUIDE",
+          "correspondence": "AMBIGUOUS_CORRESPONDENCE"
+        }
+      ],
+      "semanticDigest": "sha256:ffce99cbc72b7432a3d11998e62becf79ce274289cebed14950074b0dbe44a5c"
+    },
+    {
+      "conceptId": "haircutting.guideType",
+      "valueToken": "multiple_reference",
+      "semanticMeaning": "[NEEDS PROFESSIONAL VALIDATION]",
+      "localizedLabels": {
+        "en": "Multiple reference"
+      },
+      "semanticVersion": "1.1.0-t162c2a1",
+      "status": "AMBIGUOUS",
+      "legacyMappingCorrespondence": [
+        {
+          "targetModelRef": "GuideRelationshipCapability",
+          "targetDimension": "[NEEDS PROFESSIONAL VALIDATION]",
+          "correspondence": "NO_MAPPING"
+        }
+      ],
+      "semanticDigest": "sha256:f92f1055d974dc61eaecd1ac627063b1ac2109014982cece238642e5f7d34f13"
+    }
+  ],
+  "definitions": []
+}

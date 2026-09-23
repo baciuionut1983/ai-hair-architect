@@ -27,11 +27,11 @@ describe("O1 cutting pack", () => {
     expect(pack.concepts).toHaveLength(12);
     expect(Object.keys(pack).sort()).toEqual(["canonicalValues", "concepts", "definitions", "specificationVersion", "vertical"]);
   });
-  it("retains the O2 placeholders and has no other verticals or professional decisions", () => {
+  it("retains unresolved concept metadata and has no private decisions or other verticals", () => {
     expect(pack.vertical).toBe("cutting");
     expect(pack.concepts.every(c => c.vertical === "cutting" && c.scope === PROFESSIONAL_VALIDATION_REQUIRED && c.observability === PROFESSIONAL_VALIDATION_REQUIRED)).toBe(true);
-    expect(pack.definitions).toEqual([]);
-    expect(JSON.stringify(pack)).not.toMatch(/ownerUserId|reviewedByUserId|45° Interior|CONFIRMED|APPROVED|ACTIVE/);
+    expect(pack.definitions).toHaveLength(8);
+    expect(JSON.stringify(pack)).not.toMatch(/ownerUserId|reviewedByUserId|45° Interior|APPROVED|ACTIVE/);
   });
   it("references real guide dimensions without deriving any other dimension", () => {
     for (const value of pack.canonicalValues.filter(v => v.conceptId === "haircutting.guideType")) {

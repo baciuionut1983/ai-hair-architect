@@ -3,6 +3,7 @@ import { CUT_ELEVATION_OPTIONS, CUT_SECTIONING_OPTIONS, CUT_GUIDELINE_OPTIONS } 
 import { conceptDigest, PROFESSIONAL_CONCEPT_SPEC_VERSION, PROFESSIONAL_VALIDATION_REQUIRED, type ProfessionalConcept } from "./professional-concept-contracts";
 import { canonicalValueDigest, type LegacyCorrespondenceEntry, type ProfessionalCanonicalValue } from "./professional-canonical-value-contracts";
 import { freezeProfessionalPack } from "./professional-concept-registry";
+import { definitionDigest, type ProfessionalDefinition } from "./professional-definition-contracts";
 
 // Only the mechanical correspondences explicitly approved in errata #1.
 // No target dimension is invented for multiple_reference: its unknown target
@@ -48,10 +49,39 @@ const concepts: ProfessionalConcept[] = seeds.map(seed => {
   return { ...concept, specificationDigest: conceptDigest(concept) };
 });
 
-// Identity expansion authorizes seven additional shells only. Definitions,
-// detailed scope/roles and new values remain deferred to O2. Existing legacy
-// sectioning/guideType semantics and the original five digests are preserved.
+// Direct professional input supplied in the O2 task, recorded in the milestone.
+// Scope, observability, execution roles and value meanings are not inferred.
+// These concept definitions do not resolve the legacy enums' ambiguity.
+const definitionSeeds = [
+  { name: "elevation", text: "Elevation is the angle at which a selected hair strand or subsection is lifted and held relative to the shape/curvature of the head during haircutting.", distinguishFrom: ["projection", "overdirection", "cuttingAngle", "cuttingLine", "guide"] },
+  { name: "section", text: "A section is a larger deliberately separated working area of the hair/head used to organize and execute the haircut.", distinguishFrom: ["parting", "subsection", "subsectioning"] },
+  { name: "subsection", text: "A subsection is a smaller working portion or strand selected from within a larger section for the actual cutting/work operation. Multiple subsections may be worked successively across a section.", distinguishFrom: ["section", "subsectioning", "parting"] },
+  { name: "subsectioning", text: "Subsectioning is the process of dividing/selecting smaller working subsections from within a larger section so they can be worked successively.", distinguishFrom: ["subsection"] },
+  { name: "parting", text: "A parting is the line/separation used to divide sections or subsections.", distinguishFrom: ["section", "subsection", "sectioning"] },
+  { name: "projection", text: "Projection is the directional positioning of a selected strand in the direction or angular position in which it is intended to be worked or cut.", distinguishFrom: ["elevation"] },
+  { name: "overdirection", text: "Overdirection is directing a selected strand away from its natural position/fall toward an established guide or cutting reference. It is used to create controlled differences in resulting length or shape after the hair returns to its natural position.", distinguishFrom: ["projection", "elevation"], interpretationRequired: "Guide mobility and overdirection are independent axes: guide mobility asks whether the cutting reference remains fixed or progresses through the haircut; overdirection asks whether hair is directed away from its natural position/fall toward a guide/reference." },
+  { name: "guide", text: "A haircutting guide is a previously established hair strand/reference that determines the cutting length/reference for subsequent hair. The guide provides the reference from which subsequent cutting continues.", distinguishFrom: ["elevation", "projection", "overdirection", "cuttingAngle", "cuttingLine", "guideType"] },
+] as const;
+const definitions: ProfessionalDefinition[] = definitionSeeds.map(seed => {
+  const definition: Omit<ProfessionalDefinition, "specificationDigest"> = {
+    definitionId: `haircutting.${seed.name}.definition`, conceptId: `haircutting.${seed.name}`,
+    text: seed.text, scope: PROFESSIONAL_VALIDATION_REQUIRED,
+    distinguishFrom: seed.distinguishFrom.map(name => `haircutting.${name}`),
+    ...("interpretationRequired" in seed ? { interpretationRequired: seed.interpretationRequired } : {}),
+    sourceLanguage: "en",
+    provenance: {
+      sourceId: "T1_6_2_C_2B_PROFESSIONALLY_VALIDATED_CANONICAL_DEFINITIONS#professional-input",
+      authorityType: "CONFIRMED",
+      // Date the supplied validation was recorded by this task, not an invented
+      // timestamp for the earlier professional review. See milestone provenance.
+      reviewedAt: "2026-09-24",
+    },
+    specificationVersion: PROFESSIONAL_CONCEPT_SPEC_VERSION,
+  };
+  return { ...definition, specificationDigest: definitionDigest(definition) };
+});
+
 export const CUTTING_PROFESSIONAL_CONCEPT_PACK = freezeProfessionalPack({
   vertical: "cutting", specificationVersion: PROFESSIONAL_CONCEPT_SPEC_VERSION,
-  concepts, canonicalValues, definitions: [],
+  concepts, canonicalValues, definitions,
 });
