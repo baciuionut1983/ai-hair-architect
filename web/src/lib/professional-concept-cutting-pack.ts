@@ -19,6 +19,13 @@ const seeds = [
   { name: "guideType", tokens: GUIDELINE_OPTIONS, labels: CUT_GUIDELINE_OPTIONS },
   { name: "cuttingAngle", tokens: [], labels: [] },
   { name: "cuttingLine", tokens: [], labels: [] },
+  { name: "section", tokens: [], labels: [] },
+  { name: "subsection", tokens: [], labels: [] },
+  { name: "subsectioning", tokens: [], labels: [] },
+  { name: "parting", tokens: [], labels: [] },
+  { name: "projection", tokens: [], labels: [] },
+  { name: "overdirection", tokens: [], labels: [] },
+  { name: "guide", tokens: [], labels: [] },
 ] as const;
 
 const canonicalValues: ProfessionalCanonicalValue[] = seeds.flatMap(seed => seed.tokens.map(valueToken => {
@@ -33,7 +40,7 @@ const canonicalValues: ProfessionalCanonicalValue[] = seeds.flatMap(seed => seed
 const concepts: ProfessionalConcept[] = seeds.map(seed => {
   const concept: Omit<ProfessionalConcept, "specificationDigest"> = {
     conceptId: `haircutting.${seed.name}`, vertical: "cutting", canonicalName: seed.name,
-    conceptType: seed.name === "cuttingAngle" || seed.name === "cuttingLine" ? PROFESSIONAL_VALIDATION_REQUIRED : ["PARAMETER"],
+    conceptType: seed.tokens.length ? ["PARAMETER"] : PROFESSIONAL_VALIDATION_REQUIRED,
     scope: PROFESSIONAL_VALIDATION_REQUIRED, observability: PROFESSIONAL_VALIDATION_REQUIRED,
     ...(seed.tokens.length ? { status: "AMBIGUOUS" as const, canonicalValues: canonicalValues.filter(v => v.conceptId === `haircutting.${seed.name}`).map(v => ({ conceptId: v.conceptId, valueToken: v.valueToken, semanticVersion: v.semanticVersion, semanticDigest: v.semanticDigest })) } : {}),
     relationships: [], legacyMappings: [], specificationVersion: PROFESSIONAL_CONCEPT_SPEC_VERSION,
@@ -41,8 +48,9 @@ const concepts: ProfessionalConcept[] = seeds.map(seed => {
   return { ...concept, specificationDigest: conceptDigest(concept) };
 });
 
-// P0 / NEEDS_RESEARCH / NEEDS_IONUȚ_VALIDATION for all five concepts. The
-// architecture milestone owns that worklist; no professional definitions here.
+// Identity expansion authorizes seven additional shells only. Definitions,
+// detailed scope/roles and new values remain deferred to O2. Existing legacy
+// sectioning/guideType semantics and the original five digests are preserved.
 export const CUTTING_PROFESSIONAL_CONCEPT_PACK = freezeProfessionalPack({
   vertical: "cutting", specificationVersion: PROFESSIONAL_CONCEPT_SPEC_VERSION,
   concepts, canonicalValues, definitions: [],
