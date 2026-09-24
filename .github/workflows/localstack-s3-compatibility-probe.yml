@@ -1,0 +1,303 @@
+name: LocalStack S3 compatibility probe
+
+# Diagnostic only. Pushing this file does not run it or the path-filtered Web CI.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  s3-compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+        shell: bash
+    env:
+      LOCALSTACK_IMAGE: localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
+      LOCALSTACK_CONTAINER: c2c-s3-probe-${{ github.run_id }}-${{ github.run_attempt }}
+      OBJECT_STORAGE_ENDPOINT: http://127.0.0.1:9000
+      AWS_REGION: us-east-1
+      # Disposable emulator credentials; no repository secrets or AWS account.
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_EC2_METADATA_DISABLED: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+
+      - name: Start exact pinned LocalStack Community image
+        run: |
+          echo "LocalStack version: 4.14.0"
+          echo "Requested image: $LOCALSTACK_IMAGE"
+          docker pull "$LOCALSTACK_IMAGE"
+          docker image inspect "$LOCALSTACK_IMAGE" --format 'Resolved image ID: {{.Id}}; repository digests: {{json .RepoDigests}}; platform: {{.Os}}/{{.Architecture}}'
+          docker run -d --name "$LOCALSTACK_CONTAINER" \
+            -p 127.0.0.1:9000:4566 \
+            -e SERVICES=s3 \
+            -e AWS_DEFAULT_REGION="$AWS_REGION" \
+            "$LOCALSTACK_IMAGE"
+
+      - name: Bounded S3 readiness
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const resultFile = path.join(process.env.RUNNER_TEMP, 'c2c-s3-probe.json');
+          (async () => {
+            for (let attempt = 1; attempt <= 30; attempt++) {
+              try {
+                const response = await fetch('http://127.0.0.1:9000/_localstack/health', { signal: AbortSignal.timeout(2000), redirect: 'error' });
+                const health = await response.json();
+                if (response.ok && ['available', 'running'].includes(health.services?.s3)) {
+                  fs.writeFileSync(resultFile, JSON.stringify({ 'LocalStack readiness': { status: 'PASS' } }));
+                  console.log('LocalStack readiness: PASS');
+                  return;
+                }
+              } catch { /* Retry only inside the bounded readiness window. */ }
+              if (attempt < 30) await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+            fs.writeFileSync(resultFile, JSON.stringify({ 'LocalStack readiness': { status: 'FAIL' } }));
+            console.error('LocalStack readiness: FAIL');
+            process.exitCode = 1;
+          })();
+          NODE
+
+      - name: Probe actual S3 contract without changing application or tests
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const crypto = require('node:crypto');
+          const {
+            S3Client, CreateBucketCommand, HeadBucketCommand, DeleteBucketCommand,
+            PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand,
+            CreateMultipartUploadCommand, UploadPartCommand, ListPartsCommand,
+            CompleteMultipartUploadCommand, AbortMultipartUploadCommand,
+          } = require('@aws-sdk/client-s3');
+          const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
+
+          const resultFile = path.join(process.env.RUNNER_TEMP, 'c2c-s3-probe.json');
+          const results = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+          const record = (stage, status, detail = {}) => {
+            results[stage] = { status, ...detail };
+            fs.writeFileSync(resultFile, JSON.stringify(results));
+            console.log(JSON.stringify({ stage, ...results[stage] }));
+          };
+          // Never log raw errors, URLs, SDK request objects or credentials.
+          const safeError = error => ({
+            name: String(error?.name ?? 'UnknownError').replace(/[^a-zA-Z0-9_]/g, '').slice(0, 80),
+            httpStatus: Number.isInteger(error?.$metadata?.httpStatusCode) ? error.$metadata.httpStatusCode : null,
+          });
+          const check = async (stage, operation) => {
+            try { const detail = await operation(); record(stage, 'PASS', detail ?? {}); }
+            catch (error) {
+              record(stage, 'FAIL', { ...safeError(error),
+                ...(stage === 'IfNoneMatch existing' && conditionalError ? { observedS3Error: safeError(conditionalError) } : {}) });
+              process.exitCode = 1;
+            }
+          };
+
+          // Replicate the current classifier's branch order and safe output.
+          // Pin its entire source first: a later source change requires review
+          // instead of silently treating this replica as equivalence evidence.
+          const classifyCurrentError = error => {
+            if (error?.name === 'AbortError' || error?.name === 'TimeoutError') return 'timeout';
+            const name = error?.name ?? '';
+            const status = error?.$metadata?.httpStatusCode;
+            if (name === 'NoSuchKey' || name === 'NotFound' || status === 404) return 'not_found';
+            if (name === 'AccessDenied' || status === 401 || status === 403) return 'access_denied';
+            if (name === 'SlowDown' || name === 'Throttling' || status === 429) return 'throttled';
+            return 'provider_unavailable';
+          };
+          const endpoint = 'http://127.0.0.1:9000';
+          assert.equal(process.env.OBJECT_STORAGE_ENDPOINT, endpoint);
+          const client = new S3Client({
+            endpoint, region: 'us-east-1', forcePathStyle: true, maxAttempts: 3,
+            credentials: { accessKeyId: 'test', secretAccessKey: 'test' },
+          });
+          const bucket = `c2c-probe-${crypto.randomUUID()}`;
+          const objects = new Set();
+          const uploads = new Map();
+          let bucketCreated = false;
+          let conditionalError;
+          let uploadId;
+          let abortId;
+          let directETag;
+          let signedETag;
+          const body = Buffer.from('c2c synthetic private object\n');
+          const firstPart = Buffer.alloc(5 * 1024 * 1024, 97);
+          const finalPart = Buffer.from('c2c final part');
+          const send = command => client.send(command, { abortSignal: AbortSignal.timeout(10000) });
+          const objectInput = key => ({ Bucket: bucket, Key: key });
+          const putInput = key => ({ ...objectInput(key), Body: body, ContentLength: body.length,
+            ContentType: 'application/octet-stream', Metadata: { 'content-sha256': crypto.createHash('sha256').update(body).digest('hex') } });
+          const readBytes = async key => {
+            const response = await send(new GetObjectCommand(objectInput(key)));
+            return Buffer.from(await response.Body.transformToByteArray());
+          };
+          const expectAbsent = async command => {
+            let failure;
+            try { await send(command); } catch (error) { failure = error; }
+            assert.ok(failure, 'Expected absent resource');
+            assert.equal(failure.$metadata?.httpStatusCode, 404);
+          };
+          (async () => {
+            try {
+              await check('CreateBucket', async () => {
+                await send(new CreateBucketCommand({ Bucket: bucket })); bucketCreated = true;
+              });
+              await check('HeadBucket', () => send(new HeadBucketCommand({ Bucket: bucket })).then(() => undefined));
+              await check('PutObject', async () => {
+                objects.add('object'); await send(new PutObjectCommand(putInput('object')));
+              });
+              await check('HeadObject', async () => {
+                const response = await send(new HeadObjectCommand(objectInput('object')));
+                assert.equal(response.ContentLength, body.length);
+                assert.equal(response.ContentType, 'application/octet-stream');
+                assert.equal(response.Metadata?.['content-sha256'], putInput('object').Metadata['content-sha256']);
+              });
+              await check('GetObject', async () => assert.deepEqual(await readBytes('object'), body));
+              await check('IfNoneMatch absent', async () => {
+                await expectAbsent(new HeadObjectCommand(objectInput('conditional')));
+                objects.add('conditional');
+                await send(new PutObjectCommand({ ...putInput('conditional'), IfNoneMatch: '*' }));
+              });
+              await check('IfNoneMatch existing', async () => {
+                assert.equal(results['IfNoneMatch absent']?.status, 'PASS');
+                try {
+                  await send(new PutObjectCommand({ ...putInput('conditional'), Body: Buffer.from('overwrite'), ContentLength: 9, IfNoneMatch: '*' }));
+                } catch (error) { conditionalError = error; }
+                if (conditionalError) console.log(JSON.stringify({ stage: 'IfNoneMatch existing', observedS3Error: safeError(conditionalError) }));
+                assert.ok(conditionalError, 'Conditional overwrite unexpectedly succeeded');
+                // Require both signals: an unrelated 4xx/5xx is not compatibility.
+                assert.equal(conditionalError.$metadata?.httpStatusCode, 412);
+                assert.equal(conditionalError.name, 'PreconditionFailed');
+                assert.deepEqual(await readBytes('conditional'), body);
+                return safeError(conditionalError);
+              });
+              await check('Classifier equivalence', async () => {
+                assert.equal(results['IfNoneMatch existing']?.status, 'PASS');
+                const source = fs.readFileSync('src/lib/object-storage-errors.ts', 'utf8').replace(/\r\n/g, '\n');
+                assert.equal(crypto.createHash('sha256').update(source).digest('hex'), 'ec0736a11199915bc6f3af167d6e97ff76c77dfcac4ff76aa9ed33bee6bb37ff');
+                const classification = classifyCurrentError(conditionalError);
+                assert.equal(classification, 'provider_unavailable');
+                return { ...safeError(conditionalError), classification };
+              });
+              await check('Anonymous/private denial', async () => {
+                assert.equal(results.PutObject?.status, 'PASS');
+                const statuses = [];
+                // Existing private object AND the current CI's nonexistent-key canary.
+                for (const key of ['object', 'missing-anonymous-canary']) {
+                  const response = await fetch(`${endpoint}/${bucket}/${key}`, { signal: AbortSignal.timeout(10000), redirect: 'error' });
+                  statuses.push(response.status);
+                  await response.body?.cancel();
+                }
+                console.log(JSON.stringify({ stage: 'Anonymous/private denial', httpStatuses: statuses }));
+                assert.deepEqual(statuses, [403, 403]);
+                return { httpStatuses: statuses };
+              });
+              await check('DeleteObject', async () => {
+                assert.equal(results.PutObject?.status, 'PASS');
+                await send(new DeleteObjectCommand(objectInput('object')));
+                objects.delete('object');
+                await expectAbsent(new HeadObjectCommand(objectInput('object')));
+              });
+              await check('Multipart create', async () => {
+                const response = await send(new CreateMultipartUploadCommand({ ...objectInput('multipart'), ContentType: 'application/octet-stream' }));
+                uploadId = response.UploadId; assert.ok(uploadId); uploads.set(uploadId, 'multipart');
+              });
+              await check('UploadPart', async () => {
+                assert.ok(uploadId);
+                const response = await send(new UploadPartCommand({ ...objectInput('multipart'), UploadId: uploadId, PartNumber: 1, Body: firstPart }));
+                directETag = response.ETag; assert.ok(directETag);
+              });
+              await check('Presigned UploadPart', async () => {
+                assert.ok(uploadId);
+                const url = await getSignedUrl(client, new UploadPartCommand({ ...objectInput('multipart'), UploadId: uploadId, PartNumber: 2 }), { expiresIn: 60 });
+                assert.equal(new URL(url).origin, endpoint);
+                const response = await fetch(url, { method: 'PUT', body: finalPart, signal: AbortSignal.timeout(10000), redirect: 'error' });
+                await response.body?.cancel();
+                assert.equal(response.status, 200);
+                signedETag = response.headers.get('etag'); assert.ok(signedETag);
+              });
+              await check('ListParts', async () => {
+                assert.ok(uploadId); assert.ok(directETag); assert.ok(signedETag);
+                const response = await send(new ListPartsCommand({ ...objectInput('multipart'), UploadId: uploadId }));
+                assert.deepEqual(response.Parts?.map(p => [p.PartNumber, p.ETag, p.Size]), [[1, directETag, firstPart.length], [2, signedETag, finalPart.length]]);
+              });
+              await check('CompleteMultipart', async () => {
+                assert.equal(results.ListParts?.status, 'PASS');
+                objects.add('multipart');
+                await send(new CompleteMultipartUploadCommand({ ...objectInput('multipart'), UploadId: uploadId,
+                  MultipartUpload: { Parts: [{ PartNumber: 1, ETag: directETag }, { PartNumber: 2, ETag: signedETag }] } }));
+                uploads.delete(uploadId);
+                assert.deepEqual(await readBytes('multipart'), Buffer.concat([firstPart, finalPart]));
+                const head = await send(new HeadObjectCommand(objectInput('multipart')));
+                assert.equal(head.ContentLength, firstPart.length + finalPart.length);
+                assert.equal(head.ContentType, 'application/octet-stream');
+              });
+              await check('AbortMultipart', async () => {
+                const response = await send(new CreateMultipartUploadCommand(objectInput('aborted')));
+                abortId = response.UploadId; assert.ok(abortId); uploads.set(abortId, 'aborted');
+                await send(new AbortMultipartUploadCommand({ ...objectInput('aborted'), UploadId: abortId }));
+                uploads.delete(abortId);
+                await expectAbsent(new ListPartsCommand({ ...objectInput('aborted'), UploadId: abortId }));
+              });
+            } finally {
+              // Attempt every cleanup even when a preceding probe failed.
+              for (const [id, key] of uploads) {
+                try { await send(new AbortMultipartUploadCommand({ ...objectInput(key), UploadId: id })); }
+                catch (error) { record('Cleanup multipart', 'FAIL', safeError(error)); process.exitCode = 1; }
+              }
+              for (const key of objects) {
+                try { await send(new DeleteObjectCommand(objectInput(key))); }
+                catch (error) { record('Cleanup object', 'FAIL', safeError(error)); process.exitCode = 1; }
+              }
+              await check('DeleteBucket', async () => {
+                assert.ok(bucketCreated);
+                await send(new DeleteBucketCommand({ Bucket: bucket }));
+                await expectAbsent(new HeadBucketCommand({ Bucket: bucket }));
+              });
+              client.destroy();
+            }
+          })().catch(error => { record('Unexpected probe failure', 'FAIL', safeError(error)); process.exitCode = 1; });
+          NODE
+
+      - name: Remove disposable emulator even on failure
+        if: always()
+        run: |
+          if docker container inspect "$LOCALSTACK_CONTAINER" >/dev/null 2>&1; then
+            docker rm -f "$LOCALSTACK_CONTAINER"
+          fi
+
+      - name: Required machine-verifiable results
+        if: always()
+        working-directory: ${{ runner.temp }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const required = ['LocalStack readiness', 'CreateBucket', 'HeadBucket', 'PutObject', 'GetObject', 'HeadObject',
+            'IfNoneMatch absent', 'IfNoneMatch existing', 'Classifier equivalence', 'DeleteObject', 'Multipart create',
+            'UploadPart', 'ListParts', 'CompleteMultipart', 'AbortMultipart', 'Presigned UploadPart', 'Anonymous/private denial', 'DeleteBucket'];
+          const file = path.join(process.env.RUNNER_TEMP, 'c2c-s3-probe.json');
+          const results = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+          for (const stage of required) results[stage] ??= { status: 'FAIL', reason: 'NOT_RUN' };
+          console.log(JSON.stringify({ image: process.env.LOCALSTACK_IMAGE, results }, null, 2));
+          const rows = Object.entries(results).map(([stage, result]) => `| ${stage} | ${result.status} | ${JSON.stringify(result)} |`);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, ['## LocalStack S3 compatibility', '', process.env.LOCALSTACK_IMAGE, '',
+            '| Stage | Result | Evidence |', '|---|---|---|', ...rows, ''].join('\n'));
+          if (Object.values(results).some(result => result.status !== 'PASS')) process.exitCode = 1;
+          NODE
