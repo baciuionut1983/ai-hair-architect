@@ -24,6 +24,11 @@ jobs:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_EC2_METADATA_DISABLED: "true"
+      # Shared by initialization, validation and the always-run summary.
+      PROBE_REQUIRED_STAGES: >-
+        ["LocalStack readiness", "CreateBucket", "HeadBucket", "PutObject", "GetObject", "HeadObject",
+        "IfNoneMatch absent", "IfNoneMatch existing", "Classifier equivalence", "DeleteObject", "Multipart create",
+        "UploadPart", "ListParts", "CompleteMultipart", "AbortMultipart", "Presigned UploadPart", "Anonymous/private denial", "DeleteBucket"]
 
     steps:
       - uses: actions/checkout@v4
@@ -35,6 +40,20 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+
+      - name: Initialize all required results before startup
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const required = JSON.parse(process.env.PROBE_REQUIRED_STAGES);
+          const resultFile = path.join(process.env.RUNNER_TEMP, 'c2c-s3-probe.json');
+          const results = Object.fromEntries(required.map(stage => [stage, { status: 'FAIL', reason: 'NOT_RUN' }]));
+          // Same-directory rename publishes complete JSON; writers are sequential.
+          fs.writeFileSync(`${resultFile}.tmp`, JSON.stringify(results));
+          fs.renameSync(`${resultFile}.tmp`, resultFile);
+          console.log(`Initialized ${required.length} required stages: NOT_RUN`);
+          NODE
 
       - name: Start exact pinned LocalStack Community image
         run: |
@@ -54,23 +73,37 @@ jobs:
           const fs = require('node:fs');
           const path = require('node:path');
           const resultFile = path.join(process.env.RUNNER_TEMP, 'c2c-s3-probe.json');
+          let results;
+          try {
+            results = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+            if (!results || Array.isArray(results) || !JSON.parse(process.env.PROBE_REQUIRED_STAGES).every(stage =>
+              ['PASS', 'FAIL'].includes(results[stage]?.status))) throw new Error();
+          } catch { throw new Error('Readiness result file missing, corrupt or incomplete; initialization required'); }
+          const recordReadiness = detail => {
+            results['LocalStack readiness'] = detail;
+            fs.writeFileSync(`${resultFile}.tmp`, JSON.stringify(results));
+            fs.renameSync(`${resultFile}.tmp`, resultFile);
+            console.log(JSON.stringify({ stage: 'LocalStack readiness', ...detail }));
+          };
           (async () => {
+            let lastHealth = { reason: 'NO_HEALTH_RESPONSE' };
             for (let attempt = 1; attempt <= 30; attempt++) {
               try {
                 const response = await fetch('http://127.0.0.1:9000/_localstack/health', { signal: AbortSignal.timeout(2000), redirect: 'error' });
                 const health = await response.json();
+                const s3 = String(health.services?.s3 ?? 'unknown').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40);
+                lastHealth = { httpStatus: response.status, s3 };
                 if (response.ok && ['available', 'running'].includes(health.services?.s3)) {
-                  fs.writeFileSync(resultFile, JSON.stringify({ 'LocalStack readiness': { status: 'PASS' } }));
-                  console.log('LocalStack readiness: PASS');
+                  recordReadiness({ status: 'PASS', attempts: attempt, ...lastHealth });
                   return;
                 }
-              } catch { /* Retry only inside the bounded readiness window. */ }
+              } catch { lastHealth = { reason: 'HEALTH_REQUEST_OR_RESPONSE_FAILED' }; }
+              console.log(JSON.stringify({ stage: 'LocalStack readiness', attempt, ...lastHealth }));
               if (attempt < 30) await new Promise(resolve => setTimeout(resolve, 2000));
             }
-            fs.writeFileSync(resultFile, JSON.stringify({ 'LocalStack readiness': { status: 'FAIL' } }));
-            console.error('LocalStack readiness: FAIL');
+            recordReadiness({ status: 'FAIL', attempts: 30, reason: 'READINESS_EXHAUSTED', lastHealth });
             process.exitCode = 1;
-          })();
+          })().catch(() => { console.error('Readiness failed to record result'); process.exitCode = 1; });
           NODE
 
       - name: Probe actual S3 contract without changing application or tests
@@ -89,10 +122,17 @@ jobs:
           const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
           const resultFile = path.join(process.env.RUNNER_TEMP, 'c2c-s3-probe.json');
-          const results = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+          let results;
+          try {
+            results = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+            if (!results || Array.isArray(results) || !JSON.parse(process.env.PROBE_REQUIRED_STAGES).every(stage =>
+              ['PASS', 'FAIL'].includes(results[stage]?.status))) throw new Error();
+          } catch { throw new Error('Semantic probe result file missing, corrupt or incomplete; initialization required'); }
+          assert.equal(results['LocalStack readiness'].status, 'PASS', 'Semantic probe requires recorded readiness PASS');
           const record = (stage, status, detail = {}) => {
             results[stage] = { status, ...detail };
-            fs.writeFileSync(resultFile, JSON.stringify(results));
+            fs.writeFileSync(`${resultFile}.tmp`, JSON.stringify(results));
+            fs.renameSync(`${resultFile}.tmp`, resultFile);
             console.log(JSON.stringify({ stage, ...results[stage] }));
           };
           // Never log raw errors, URLs, SDK request objects or credentials.
@@ -289,15 +329,17 @@ jobs:
           node <<'NODE'
           const fs = require('node:fs');
           const path = require('node:path');
-          const required = ['LocalStack readiness', 'CreateBucket', 'HeadBucket', 'PutObject', 'GetObject', 'HeadObject',
-            'IfNoneMatch absent', 'IfNoneMatch existing', 'Classifier equivalence', 'DeleteObject', 'Multipart create',
-            'UploadPart', 'ListParts', 'CompleteMultipart', 'AbortMultipart', 'Presigned UploadPart', 'Anonymous/private denial', 'DeleteBucket'];
+          const required = JSON.parse(process.env.PROBE_REQUIRED_STAGES);
           const file = path.join(process.env.RUNNER_TEMP, 'c2c-s3-probe.json');
-          const results = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+          let results;
+          try {
+            results = JSON.parse(fs.readFileSync(file, 'utf8'));
+            if (!results || typeof results !== 'object' || Array.isArray(results)) throw new Error();
+          } catch { results = { 'Result file': { status: 'FAIL', reason: 'MISSING_OR_CORRUPT' } }; }
           for (const stage of required) results[stage] ??= { status: 'FAIL', reason: 'NOT_RUN' };
           console.log(JSON.stringify({ image: process.env.LOCALSTACK_IMAGE, results }, null, 2));
           const rows = Object.entries(results).map(([stage, result]) => `| ${stage} | ${result.status} | ${JSON.stringify(result)} |`);
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, ['## LocalStack S3 compatibility', '', process.env.LOCALSTACK_IMAGE, '',
             '| Stage | Result | Evidence |', '|---|---|---|', ...rows, ''].join('\n'));
-          if (Object.values(results).some(result => result.status !== 'PASS')) process.exitCode = 1;
+          if (Object.values(results).some(result => result?.status !== 'PASS')) process.exitCode = 1;
           NODE
