@@ -70,6 +70,7 @@ jobs:
       - name: Bounded S3 readiness
         run: |
           node <<'NODE'
+          console.log('READINESS_START');
           const fs = require('node:fs');
           const path = require('node:path');
           const resultFile = path.join(process.env.RUNNER_TEMP, 'c2c-s3-probe.json');
@@ -104,6 +105,27 @@ jobs:
             recordReadiness({ status: 'FAIL', attempts: 30, reason: 'READINESS_EXHAUSTED', lastHealth });
             process.exitCode = 1;
           })().catch(() => { console.error('Readiness failed to record result'); process.exitCode = 1; });
+          NODE
+
+      - name: Verify readiness recorded a genuine terminal result
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const fail = reason => { console.error(`READINESS_WATCHDOG_FAIL: ${reason}`); process.exit(1); };
+          let results;
+          try {
+            results = JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'c2c-s3-probe.json'), 'utf8'));
+          } catch { fail('RESULT_FILE_MISSING_OR_CORRUPT'); }
+          if (!results || typeof results !== 'object' || Array.isArray(results)) fail('INVALID_RESULTS_OBJECT');
+          if (!Object.hasOwn(results, 'LocalStack readiness')) fail('MISSING_READINESS_ENTRY');
+          const readiness = results['LocalStack readiness'];
+          if (!readiness || typeof readiness !== 'object' || Array.isArray(readiness)) fail('INVALID_READINESS_ENTRY');
+          if (!['PASS', 'FAIL'].includes(readiness.status)) fail('INVALID_READINESS_STATUS');
+          if (readiness.reason === 'NOT_RUN') fail('READINESS_DID_NOT_RECORD_TERMINAL_RESULT');
+          // Even a genuine terminal failure must block the semantic probe.
+          if (readiness.status !== 'PASS') fail('READINESS_RECORDED_FAILURE');
+          console.log('READINESS_WATCHDOG_PASS');
           NODE
 
       - name: Probe actual S3 contract without changing application or tests
