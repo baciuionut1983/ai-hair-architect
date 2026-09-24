@@ -3,7 +3,10 @@ import { randomUUID } from "crypto";
 import {
   CreateBucketCommand,
   DeleteBucketCommand,
-  S3Client
+  ListPartsCommand,
+  PutObjectCommand,
+  S3Client,
+  UploadPartCommand
 } from "@aws-sdk/client-s3";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -24,34 +27,34 @@ let adminClient: S3Client | null = null;
 let storage: S3ObjectStorage | null = null;
 let bucket: string | null = null;
 let createdObject: ObjectIdentity | null = null;
+let pendingUpload: { key: string; uploadId: string } | null = null;
 
 suite("M15 isolated S3-compatible adapter", () => {
   afterEach(async () => {
-    if (storage && createdObject) {
-      await storage.delete(createdObject).catch(() => undefined);
+    try {
+      // Attempt every cleanup even after an assertion or another cleanup fails.
+      const results = await Promise.allSettled([
+        ...(storage && pendingUpload ? [storage.abortMultipartUpload(pendingUpload)] : []),
+        ...(storage && createdObject ? [storage.delete(createdObject)] : [])
+      ]);
+      if (adminClient && bucket) {
+        await adminClient.send(new DeleteBucketCommand({ Bucket: bucket }));
+      }
+      for (const result of results) {
+        if (result.status === "rejected") throw result.reason;
+      }
+    } finally {
+      adminClient?.destroy();
+      adminClient = null;
+      storage = null;
+      bucket = null;
+      createdObject = null;
+      pendingUpload = null;
     }
-    if (adminClient && bucket) {
-      await adminClient.send(new DeleteBucketCommand({ Bucket: bucket }));
-    }
-    adminClient?.destroy();
-    adminClient = null;
-    storage = null;
-    bucket = null;
-    createdObject = null;
-  });
+  }, 30_000);
 
   it("round-trips synthetic bytes and verifies cleanup", async () => {
-    const runId = randomUUID();
-    bucket = `m15-phase1-${runId}`;
-    const config = isolatedConfig(bucket, `m15-phase1/${runId}`);
-    adminClient = new S3Client({
-      region: config.region,
-      endpoint: config.endpoint,
-      forcePathStyle: config.forcePathStyle,
-      maxAttempts: 1
-    });
-    await adminClient.send(new CreateBucketCommand({ Bucket: bucket }));
-    storage = new S3ObjectStorage(config);
+    const { adapter: storage } = await createIsolatedStorage();
 
     const body = new Uint8Array([77, 49, 53]);
     const reference = await storage.put({
@@ -73,7 +76,98 @@ suite("M15 isolated S3-compatible adapter", () => {
     createdObject = null;
     await expect(storage.head(reference)).rejects.toMatchObject({ code: "not_found" });
   });
+
+  it("IfNoneMatch creates an absent key, rejects overwrite with 412 PreconditionFailed, and preserves bytes", async () => {
+    const { adapter, client, config } = await createIsolatedStorage();
+    const key = "conditional-original";
+    createdObject = { bucketAlias: config.bucketAlias, key: `${config.prefix}/${key}` };
+    const original = new Uint8Array([11, 22, 33, 44]);
+    // The production adapter sends IfNoneMatch: "*" on this fresh key.
+    await adapter.put({ key, body: original, contentType: "application/octet-stream", contentSha256: "c".repeat(64) });
+    // Use the real SDK to inspect provider status/name before the unchanged
+    // application classifier maps this error to provider_unavailable.
+    await expect(client.send(new PutObjectCommand({
+      Bucket: config.bucket, Key: createdObject.key,
+      Body: new Uint8Array([99]), IfNoneMatch: "*"
+    }))).rejects.toMatchObject({ name: "PreconditionFailed", $metadata: { httpStatusCode: 412 } });
+    await expect(adapter.put({ key, body: new Uint8Array([88]), contentType: "application/octet-stream", contentSha256: "d".repeat(64) }))
+      .rejects.toMatchObject({ code: "provider_unavailable" });
+    const downloaded = await adapter.get(createdObject);
+    await expect(readAll(downloaded.body)).resolves.toEqual(original);
+  }, 30_000);
+
+  it("completes real multipart direct and presigned HTTP uploads with exact final bytes", async () => {
+    const { adapter, client, config } = await createIsolatedStorage();
+    const key = "multipart-complete";
+    createdObject = { bucketAlias: config.bucketAlias, key: `${config.prefix}/${key}` };
+    const upload = await adapter.createMultipartUpload({ key, contentType: "application/octet-stream" });
+    pendingUpload = upload;
+    // S3 requires every nonfinal part to contain at least 5 MiB.
+    const first = new Uint8Array(5 * 1024 * 1024).fill(41);
+    const last = new Uint8Array([42, 43, 44, 45]);
+    const direct = await client.send(new UploadPartCommand({
+      Bucket: config.bucket, Key: upload.key, UploadId: upload.uploadId, PartNumber: 1, Body: first
+    }));
+    expect(direct.ETag).toBeTruthy();
+    const url = await adapter.presignUploadPart({ ...upload, partNumber: 2 }, 60);
+    expect(new URL(url).origin).toBe(new URL(config.endpoint!).origin);
+    const response = await fetch(url, { method: "PUT", body: last, signal: AbortSignal.timeout(10_000), redirect: "error" });
+    await response.arrayBuffer();
+    expect(response.status).toBe(200);
+    const etag = response.headers.get("etag");
+    expect(etag).toBeTruthy();
+    const parts = [{ partNumber: 1, etag: direct.ETag! }, { partNumber: 2, etag: etag! }];
+    await expect(adapter.listParts(upload)).resolves.toEqual(parts);
+    const completed = await adapter.completeMultipartUpload({ ...upload, parts });
+    pendingUpload = null;
+    expect(completed.etag).toBeTruthy();
+    await expect(adapter.head(completed)).resolves.toMatchObject({ sizeBytes: first.length + last.length });
+    const downloaded = await adapter.get(completed);
+    const actual = await readAll(downloaded.body);
+    const expected = new Uint8Array(first.length + last.length);
+    expected.set(first);
+    expected.set(last, first.length);
+    // Byte equality without a multi-megabyte assertion diff on failure.
+    expect(actual.byteLength).toBe(expected.byteLength);
+    expect(Buffer.from(actual).equals(Buffer.from(expected))).toBe(true);
+  }, 30_000);
+
+  it("aborts a real multipart upload and rejects subsequent ListParts with 404 NoSuchUpload", async () => {
+    const { adapter, client, config } = await createIsolatedStorage();
+    const key = "multipart-abort";
+    createdObject = { bucketAlias: config.bucketAlias, key: `${config.prefix}/${key}` };
+    const upload = await adapter.createMultipartUpload({ key, contentType: "application/octet-stream" });
+    pendingUpload = upload;
+    const part = await client.send(new UploadPartCommand({
+      Bucket: config.bucket, Key: upload.key, UploadId: upload.uploadId, PartNumber: 1, Body: new Uint8Array([7, 8, 9])
+    }));
+    expect(part.ETag).toBeTruthy();
+    await expect(adapter.listParts(upload)).resolves.toEqual([{ partNumber: 1, etag: part.ETag }]);
+    await adapter.abortMultipartUpload(upload);
+    pendingUpload = null;
+    await expect(client.send(new ListPartsCommand({
+      Bucket: config.bucket, Key: upload.key, UploadId: upload.uploadId
+    }))).rejects.toMatchObject({ name: "NoSuchUpload", $metadata: { httpStatusCode: 404 } });
+    await expect(adapter.head(createdObject)).rejects.toMatchObject({ code: "not_found" });
+  }, 30_000);
 });
+
+async function createIsolatedStorage() {
+  const runId = randomUUID();
+  const config = isolatedConfig(`m15-phase1-${runId}`, `m15-phase1/${runId}`);
+  const client = new S3Client({
+    region: config.region, endpoint: config.endpoint,
+    forcePathStyle: config.forcePathStyle, maxAttempts: 1,
+    requestHandler: { connectionTimeout: 3000, requestTimeout: 10_000 }
+  });
+  adminClient = client;
+  await client.send(new CreateBucketCommand({ Bucket: config.bucket }));
+  bucket = config.bucket;
+  // A real SDK client shared with the adapter so teardown closes its sockets.
+  const adapter = new S3ObjectStorage(config, () => client);
+  storage = adapter;
+  return { adapter, client, config };
+}
 
 function isolatedConfig(syntheticBucket: string, syntheticPrefix: string): S3ObjectStorageConfig {
   const validation = validateObjectStorageConfig(process.env, "test");

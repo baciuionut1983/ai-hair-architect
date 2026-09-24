@@ -44,13 +44,13 @@ jobs:
       OBJECT_STORAGE_BACKEND: s3
       OBJECT_STORAGE_ENDPOINT: http://127.0.0.1:9000
       OBJECT_STORAGE_BUCKET_ALIAS: ci-isolated-alias
-      OBJECT_STORAGE_BUCKET: ci-isolated-bucket
+      OBJECT_STORAGE_BUCKET: ci-privacy-${{ github.run_id }}-${{ github.run_attempt }}
       OBJECT_STORAGE_REGION: us-east-1
       OBJECT_STORAGE_SERVER_SIDE_ENCRYPTION: none
       OBJECT_STORAGE_FORCE_PATH_STYLE: "true"
-      AWS_ACCESS_KEY_ID: ci_test_minio_root_not_for_prod
-      AWS_SECRET_ACCESS_KEY: ci_test_minio_root_secret_not_for_prod
-      MINIO_CONTAINER_NAME: ci-minio-${{ github.run_id }}-${{ github.run_attempt }}
+      AWS_ACCESS_KEY_ID: ci_test_localstack_not_for_prod
+      AWS_SECRET_ACCESS_KEY: ci_test_localstack_secret_not_for_prod
+      LOCALSTACK_CONTAINER_NAME: ci-localstack-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - uses: actions/checkout@v4
@@ -73,78 +73,79 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
 
-      # GitHub Actions "services:" cannot pass a custom container command, and
-      # the official MinIO image requires one ("server /data") to actually
-      # start serving -- so MinIO is started explicitly via `docker run`
-      # instead of as a service container (per approved Decision B).
-      - name: Start pinned MinIO container
+      - name: Start pinned LocalStack S3 container
         run: |
           docker run -d \
-            --name "$MINIO_CONTAINER_NAME" \
-            -p 9000:9000 \
-            -e "MINIO_ROOT_USER=$AWS_ACCESS_KEY_ID" \
-            -e "MINIO_ROOT_PASSWORD=$AWS_SECRET_ACCESS_KEY" \
-            quay.io/minio/minio:RELEASE.2025-04-08T15-41-24Z \
-            server /data
+            --name "$LOCALSTACK_CONTAINER_NAME" \
+            -p 127.0.0.1:9000:4566 \
+            -e SERVICES=s3 \
+            localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
 
-      - name: Wait for MinIO readiness (bounded)
+      - name: Wait for LocalStack readiness (bounded)
         run: |
           for i in $(seq 1 30); do
-            if curl -sf "http://127.0.0.1:9000/minio/health/live" > /dev/null; then
-              echo "MinIO is ready."
+            if curl --fail --silent --connect-timeout 2 --max-time 3 \
+              "$OBJECT_STORAGE_ENDPOINT/_localstack/health" > /dev/null; then
+              echo "LocalStack health endpoint is ready."
               exit 0
             fi
-            echo "Waiting for MinIO... ($i/30)"
+            echo "Waiting for LocalStack health endpoint... ($i/30)"
             sleep 2
           done
-          echo "::error::MinIO did not become ready within the bounded wait window."
-          docker logs "$MINIO_CONTAINER_NAME" || true
+          echo "::error::CI storage infrastructure failure: LocalStack health endpoint did not become ready after 30 bounded attempts."
           exit 1
 
-      - name: Create the dedicated private test bucket
+      # No test requires a shared pre-created bucket: the real S3 suite
+      # creates its own unique buckets. This bucket belongs only to the
+      # workflow privacy check and is removed with the disposable container.
+      - name: Create and verify the private privacy-check fixture with AWS SDK
+        timeout-minutes: 2
         run: |
-          docker run --rm \
-            --network host \
-            -e "MC_HOST_ciminio=http://$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY@127.0.0.1:9000" \
-            quay.io/minio/mc:RELEASE.2025-07-16T15-35-03Z \
-            mb --ignore-existing "ciminio/$OBJECT_STORAGE_BUCKET"
+          node <<'NODE'
+          const { S3Client, CreateBucketCommand, HeadBucketCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
+          const client = new S3Client({
+            region: process.env.OBJECT_STORAGE_REGION,
+            endpoint: process.env.OBJECT_STORAGE_ENDPOINT,
+            forcePathStyle: true,
+            maxAttempts: 1,
+            requestHandler: { connectionTimeout: 3000, requestTimeout: 10000 }
+          });
+          (async () => {
+            try {
+              const Bucket = process.env.OBJECT_STORAGE_BUCKET;
+              await client.send(new CreateBucketCommand({ Bucket }));
+              await client.send(new HeadBucketCommand({ Bucket }));
+              await client.send(new PutObjectCommand({
+                Bucket, Key: "existing-private-canary", Body: "synthetic-private-ci-bytes",
+                IfNoneMatch: "*"
+              }));
+              console.log("Private privacy-check bucket and existing object created.");
+            } finally {
+              client.destroy();
+            }
+          })().catch(() => {
+            console.error("CI storage fixture failure: AWS SDK bucket/object bootstrap failed.");
+            process.exitCode = 1;
+          });
+          NODE
 
-      - name: Verify the test bucket exists
+      # Plain unsigned HTTP: no auth headers, signing, public ACL or policy.
+      # Both cases must deny access with 403, regardless of object existence.
+      - name: Confirm existing-object and missing-key anonymous denial (fail-closed)
         run: |
-          docker run --rm \
-            --network host \
-            -e "MC_HOST_ciminio=http://$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY@127.0.0.1:9000" \
-            quay.io/minio/mc:RELEASE.2025-07-16T15-35-03Z \
-            ls "ciminio/$OBJECT_STORAGE_BUCKET"
-
-      # No step anywhere in this workflow ever applies an anonymous/public
-      # policy (no `mc anonymous set public`, no `mc policy set`) -- the
-      # bucket is guaranteed private by never being made otherwise. This is
-      # verified below by behavior rather than by parsing `mc`'s
-      # human-readable policy-status text, which is not reliably stable
-      # across client versions: an unauthenticated, unsigned request for a
-      # definitely-nonexistent object is sent directly to the S3 API. Per
-      # S3/MinIO semantics, a private bucket answers any anonymous request
-      # (regardless of whether the object exists) with 403 Access Denied,
-      # before object existence is even checked; only a bucket with a public
-      # policy would instead answer 404 Not Found (NoSuchKey) for a missing
-      # object. This holds regardless of `mc` version and touches no real
-      # object or credential.
-      - name: Confirm the test bucket denies unauthenticated access (fail-closed)
-        run: |
-          canary_key="ci-privacy-canary-$(date +%s)-$RANDOM"
-          response_file="$(mktemp)"
-          status="$(curl -s -o "$response_file" -w "%{http_code}" \
-            "http://127.0.0.1:9000/$OBJECT_STORAGE_BUCKET/$canary_key")"
-          if [ "$status" != "403" ]; then
-            echo "::error::Unauthenticated request to the test bucket returned HTTP $status, expected 403 Access Denied. The bucket may not be private."
-            echo "Sanitized response body (no credentials, no real object data):"
-            cat "$response_file"
-            rm -f "$response_file"
-            exit 1
-          fi
-          rm -f "$response_file"
-          echo "Confirmed: unauthenticated access to the test bucket is denied (403)."
+          for key in existing-private-canary definitely-missing-canary; do
+            if ! status="$(curl --disable --silent --show-error --noproxy '*' \
+              --connect-timeout 2 --max-time 10 -o /dev/null -w "%{http_code}" \
+              "$OBJECT_STORAGE_ENDPOINT/$OBJECT_STORAGE_BUCKET/$key")"; then
+              echo "::error::Anonymous-access check transport failure for $key."
+              exit 1
+            fi
+            if [ "$status" != "403" ]; then
+              echo "::error::Anonymous-access failure for $key: HTTP $status, expected 403 Access Denied."
+              exit 1
+            fi
+            echo "Confirmed anonymous denial for $key (403)."
+          done
 
       # @prisma/client's own postinstall hook already runs `prisma generate`
       # during `npm ci` above -- no separate generate step is required by the
@@ -191,6 +192,6 @@ jobs:
 
       - run: npm run build
 
-      - name: Remove the temporary MinIO container
+      - name: Remove the temporary LocalStack container
         if: always()
-        run: docker rm -f "$MINIO_CONTAINER_NAME" || true
+        run: docker rm -f "$LOCALSTACK_CONTAINER_NAME" || true
