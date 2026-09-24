@@ -32,7 +32,9 @@ export function isValidProfessionalConceptPack(v: unknown): v is ProfessionalCon
     // S explicitly requires uniform O1 statuses. Do not invent an ordering of
     // the five lifecycle states to enable future per-value exceptions here.
     // Correspondence is intentionally not read in this safety check.
-    if (concept.status !== undefined && value.status !== concept.status) return false;
+    const override = concept.legacyMappings?.find(m => m.token === value.valueToken);
+    const expectedStatus = override ? override.classification : concept.status;
+    if (expectedStatus !== undefined && value.status !== expectedStatus) return false;
     if (value.semanticMeaning !== PROFESSIONAL_VALIDATION_REQUIRED && definitions.get(value.semanticMeaning)?.conceptId !== value.conceptId) return false;
     for (const alias of value.legacyAliases ?? []) {
       const key = valueKey({ conceptId: value.conceptId, valueToken: alias.alias });

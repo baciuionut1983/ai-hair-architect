@@ -3,7 +3,7 @@ import { isHeadZone, type HeadZone } from "@/lib/technical-visual-map-validators
 
 // O1 is an inert structural vocabulary. None of these records grants authority.
 export const PROFESSIONAL_VALIDATION_REQUIRED = "[NEEDS PROFESSIONAL VALIDATION]" as const;
-export const PROFESSIONAL_CONCEPT_SPEC_VERSION = "1.2.0-t162c2b";
+export const PROFESSIONAL_CONCEPT_SPEC_VERSION = "1.3.0-t162c2c";
 export const PROFESSIONAL_SCOPES = ["TECHNIQUE_GLOBAL", "HEAD_REGION", "SECTION", "SUBSECTION", "STRAND", "ACTION", "PHASE", "OBSERVATION_WINDOW"] as const;
 export const OBSERVABILITY_CLASSES = ["DIRECTLY_OBSERVABLE", "PARTIALLY_OBSERVABLE", "VOICE_OR_TEXT_EXPLAINABLE", "PROFESSIONAL_INTERPRETATION_REQUIRED", "NOT_RELIABLY_VISUAL"] as const;
 export const OBSERVABILITY_CHANNELS = ["VISUAL", "AUDIO", "BOTH", "TEXT"] as const;

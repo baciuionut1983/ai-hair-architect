@@ -1,3 +1,4 @@
+import historicalPack from "./__fixtures__/professional-concept-pack-1.2.0-t162c2b.json";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
@@ -9,7 +10,8 @@ import { definitionDigest } from "./professional-definition-contracts";
 import { freezeProfessionalPack, isValidProfessionalConceptPack, type ProfessionalConceptPack } from "./professional-concept-registry";
 import { CUTTING_PROFESSIONAL_CONCEPT_PACK as pack } from "./professional-concept-cutting-pack";
 
-const clone = () => structuredClone(pack);
+// Existing uniform-status adversarial fixtures remain historical; c.2c adds live override tests.
+const clone = () => structuredClone(historicalPack as typeof pack);
 // Re-pin deliberate synthetic mutations so tests reach structural checks rather
 // than merely failing because the mutation left a stale digest.
 function repin(p: ProfessionalConceptPack): ProfessionalConceptPack {
@@ -24,14 +26,14 @@ function repin(p: ProfessionalConceptPack): ProfessionalConceptPack {
   return { ...p, concepts, canonicalValues, definitions: p.definitions.map(d => ({ ...d, specificationDigest: definitionDigest(d) })) };
 }
 describe("O1 registry and real-case boundaries", () => {
-  it("registers exactly twelve identities and only existing value tokens", () => {
+  it("registers twelve identities while retaining the historical value prefixes", () => {
     expect(pack.concepts.map(c => c.conceptId)).toEqual(["haircutting.elevation", "haircutting.sectioning", "haircutting.guideType", "haircutting.cuttingAngle", "haircutting.cuttingLine", "haircutting.section", "haircutting.subsection", "haircutting.subsectioning", "haircutting.parting", "haircutting.projection", "haircutting.overdirection", "haircutting.guide"]);
-    for (const [i, tokens] of [ELEVATION_OPTIONS, SECTIONING_OPTIONS, GUIDELINE_OPTIONS].entries()) expect(pack.concepts[i].canonicalValues?.map(v => v.valueToken)).toEqual(tokens);
-    expect(pack.canonicalValues).toHaveLength(14);
+    for (const [i, tokens] of [ELEVATION_OPTIONS, SECTIONING_OPTIONS, GUIDELINE_OPTIONS].entries()) expect(pack.concepts[i].canonicalValues?.slice(0, tokens.length).map(v => v.valueToken)).toEqual(tokens);
+    expect(pack.canonicalValues).toHaveLength(19);
     expect(pack.concepts.slice(3).every(c => c.canonicalValues === undefined && c.status === undefined)).toBe(true);
     expect(isValidProfessionalConceptPack(pack)).toBe(true);
     expect(isValidProfessionalConceptPack(clone())).toBe(true);
-    expect(JSON.stringify(freezeProfessionalPack(clone()))).toBe(JSON.stringify(pack));
+    expect(JSON.stringify(freezeProfessionalPack(clone()))).toBe(JSON.stringify(historicalPack));
     expect(Object.isFrozen(pack.canonicalValues[0].localizedLabels)).toBe(true);
   });
   it("preserves the five original semantic goldens across the version-label change", () => {
@@ -43,8 +45,8 @@ describe("O1 registry and real-case boundaries", () => {
       "haircutting.cuttingAngle": "sha256:3f0b4021c4797f2800bb224ba82e036876acc8039e1f63550f63e26bb8fabd58",
       "haircutting.cuttingLine": "sha256:81b9136cafcee80741f964030df07ea4f355d6e03070a7e3105a16e2ec276823",
     } };
-    expect(pack.specificationVersion).toBe("1.2.0-t162c2b");
-    expect(Object.fromEntries(pack.concepts.slice(0, 5).map(c => [c.conceptId, c.specificationDigest]))).toEqual(goldens["1.0.0-t162c2a"]);
+    expect(pack.specificationVersion).toBe("1.3.0-t162c2c");
+    expect(Object.fromEntries(historicalPack.concepts.slice(0, 5).map(c => [c.conceptId, c.specificationDigest]))).toEqual(goldens["1.0.0-t162c2a"]);
   });
   it("rejects duplicate IDs, values, references and stale versions/digests", () => {
     expect(isValidProfessionalConceptPack({ ...pack, concepts: [...pack.concepts, pack.concepts[0]] })).toBe(false);

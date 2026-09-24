@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import historicalPack from "./__fixtures__/professional-concept-pack-1.1.0-t162c2a1.json";
-import { CUTTING_PROFESSIONAL_CONCEPT_PACK as pack } from "./professional-concept-cutting-pack";
+import o2Pack from "./__fixtures__/professional-concept-pack-1.2.0-t162c2b.json";
 import { conceptDigest, PROFESSIONAL_VALIDATION_REQUIRED, semanticFingerprint } from "./professional-concept-contracts";
 import { canonicalValueDigest } from "./professional-canonical-value-contracts";
 import { definitionDigest, isProfessionalDefinition } from "./professional-definition-contracts";
 import { freezeProfessionalPack, isValidProfessionalConceptPack, type ProfessionalConceptPack } from "./professional-concept-registry";
 
+// O2 assertions retain their original meaning against its frozen release.
+const pack = freezeProfessionalPack(o2Pack as ProfessionalConceptPack);
 const owners = ["elevation", "section", "subsection", "subsectioning", "parting", "projection", "overdirection", "guide"].map(n => `haircutting.${n}`);
 const definition = (name: string) => pack.definitions.find(d => d.conceptId === `haircutting.${name}`)!;
 const withoutVersions = (value: unknown) => JSON.parse(JSON.stringify(value), (key, v) => ["specificationVersion", "semanticVersion"].includes(key) ? undefined : v);

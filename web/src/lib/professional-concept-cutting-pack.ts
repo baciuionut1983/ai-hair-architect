@@ -14,6 +14,15 @@ const guideCorrespondence: Readonly<Record<string, LegacyCorrespondenceEntry>> =
   visual_perimeter: { targetModelRef: "GuideRelationshipCapability", targetDimension: "GuideSource", targetValue: "PERIMETER_CONTOUR_GUIDE", correspondence: "AMBIGUOUS_CORRESPONDENCE" },
   multiple_reference: { targetModelRef: "GuideRelationshipCapability", targetDimension: PROFESSIONAL_VALIDATION_REQUIRED, correspondence: "NO_MAPPING" },
 };
+// c.2c maps only the angle component, never the whole mixed legacy meaning.
+const elevationAngleTargets: Readonly<Record<string, string>> = {
+  "0_deg_blunt": "0_deg",
+  "45_deg_graduation": "45_deg",
+  "90_deg_uniform_layer": "90_deg",
+  "135_deg_long_layer": "135_deg",
+  "180_deg_overdirection": "180_deg",
+};
+const cleanElevationTokens = ["0_deg", "45_deg", "90_deg", "135_deg", "180_deg"] as const;
 const seeds = [
   { name: "elevation", tokens: ELEVATION_OPTIONS, labels: CUT_ELEVATION_OPTIONS },
   { name: "sectioning", tokens: SECTIONING_OPTIONS, labels: CUT_SECTIONING_OPTIONS },
@@ -29,22 +38,38 @@ const seeds = [
   { name: "guide", tokens: [], labels: [] },
 ] as const;
 
-const canonicalValues: ProfessionalCanonicalValue[] = seeds.flatMap(seed => seed.tokens.map(valueToken => {
-  const value: Omit<ProfessionalCanonicalValue, "semanticDigest"> = {
-    conceptId: `haircutting.${seed.name}`, valueToken, semanticMeaning: PROFESSIONAL_VALIDATION_REQUIRED,
-    localizedLabels: { en: seed.labels.find(label => label.value === valueToken)!.label },
-    semanticVersion: PROFESSIONAL_CONCEPT_SPEC_VERSION, status: "AMBIGUOUS",
-    ...(seed.name === "guideType" ? { legacyMappingCorrespondence: [guideCorrespondence[valueToken]] } : {}),
-  };
-  return { ...value, semanticDigest: canonicalValueDigest(value) };
-}));
+const canonicalValues: ProfessionalCanonicalValue[] = seeds.flatMap(seed => {
+  const legacyValues = seed.tokens.map(valueToken => {
+    const value: Omit<ProfessionalCanonicalValue, "semanticDigest"> = {
+      conceptId: `haircutting.${seed.name}`, valueToken, semanticMeaning: PROFESSIONAL_VALIDATION_REQUIRED,
+      localizedLabels: { en: seed.labels.find(label => label.value === valueToken)!.label },
+      semanticVersion: PROFESSIONAL_CONCEPT_SPEC_VERSION, status: "AMBIGUOUS",
+      ...(seed.name === "guideType" ? { legacyMappingCorrespondence: [guideCorrespondence[valueToken]] } : {}),
+      ...(seed.name === "elevation" ? { legacyMappingCorrespondence: [{ targetModelRef: "haircutting.elevation", targetDimension: "AngleComponent", targetValue: elevationAngleTargets[valueToken], correspondence: "PARTIAL" as const }] } : {}),
+    };
+    return { ...value, semanticDigest: canonicalValueDigest(value) };
+  });
+  if (seed.name !== "elevation") return legacyValues;
+  const cleanValues = cleanElevationTokens.map(valueToken => {
+    const value: Omit<ProfessionalCanonicalValue, "semanticDigest"> = {
+      conceptId: "haircutting.elevation", valueToken,
+      semanticMeaning: PROFESSIONAL_VALIDATION_REQUIRED,
+      localizedLabels: { en: valueToken.replace("_deg", "°") },
+      semanticVersion: PROFESSIONAL_CONCEPT_SPEC_VERSION, status: "CANONICAL",
+    };
+    return { ...value, semanticDigest: canonicalValueDigest(value) };
+  });
+  return [...legacyValues, ...cleanValues];
+});
 const concepts: ProfessionalConcept[] = seeds.map(seed => {
   const concept: Omit<ProfessionalConcept, "specificationDigest"> = {
     conceptId: `haircutting.${seed.name}`, vertical: "cutting", canonicalName: seed.name,
     conceptType: seed.tokens.length ? ["PARAMETER"] : PROFESSIONAL_VALIDATION_REQUIRED,
     scope: PROFESSIONAL_VALIDATION_REQUIRED, observability: PROFESSIONAL_VALIDATION_REQUIRED,
     ...(seed.tokens.length ? { status: "AMBIGUOUS" as const, canonicalValues: canonicalValues.filter(v => v.conceptId === `haircutting.${seed.name}`).map(v => ({ conceptId: v.conceptId, valueToken: v.valueToken, semanticVersion: v.semanticVersion, semanticDigest: v.semanticDigest })) } : {}),
-    relationships: [], legacyMappings: [], specificationVersion: PROFESSIONAL_CONCEPT_SPEC_VERSION,
+    // Clean values are not legacy tokens. The existing legacyMappings field is
+    // the architecture-approved explicit status override, not a binding adapter.
+    relationships: [], legacyMappings: seed.name === "elevation" ? cleanElevationTokens.map(token => ({ token, classification: "CANONICAL" as const })) : [], specificationVersion: PROFESSIONAL_CONCEPT_SPEC_VERSION,
   };
   return { ...concept, specificationDigest: conceptDigest(concept) };
 });
