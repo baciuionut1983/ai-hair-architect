@@ -95,14 +95,14 @@ jobs:
           echo "::error::CI storage infrastructure failure: LocalStack health endpoint did not become ready after 30 bounded attempts."
           exit 1
 
-      # No test requires a shared pre-created bucket: the real S3 suite
-      # creates its own unique buckets. This bucket belongs only to the
-      # workflow privacy check and is removed with the disposable container.
-      - name: Create and verify the private privacy-check fixture with AWS SDK
+      # Retain the bucket bootstrap; the real S3 suite owns separate buckets.
+      # LocalStack Community does not verify bucket-level anonymous denial.
+      # Application route auth/owner-scope tests retain privacy coverage.
+      - name: Create and verify the test bucket with AWS SDK
         timeout-minutes: 2
         run: |
           node <<'NODE'
-          const { S3Client, CreateBucketCommand, HeadBucketCommand, PutObjectCommand } = require("@aws-sdk/client-s3");
+          const { S3Client, CreateBucketCommand, HeadBucketCommand } = require("@aws-sdk/client-s3");
           const client = new S3Client({
             region: process.env.OBJECT_STORAGE_REGION,
             endpoint: process.env.OBJECT_STORAGE_ENDPOINT,
@@ -115,37 +115,15 @@ jobs:
               const Bucket = process.env.OBJECT_STORAGE_BUCKET;
               await client.send(new CreateBucketCommand({ Bucket }));
               await client.send(new HeadBucketCommand({ Bucket }));
-              await client.send(new PutObjectCommand({
-                Bucket, Key: "existing-private-canary", Body: "synthetic-private-ci-bytes",
-                IfNoneMatch: "*"
-              }));
-              console.log("Private privacy-check bucket and existing object created.");
+              console.log("Test bucket created and verified.");
             } finally {
               client.destroy();
             }
           })().catch(() => {
-            console.error("CI storage fixture failure: AWS SDK bucket/object bootstrap failed.");
+            console.error("CI storage fixture failure: AWS SDK bucket bootstrap failed.");
             process.exitCode = 1;
           });
           NODE
-
-      # Plain unsigned HTTP: no auth headers, signing, public ACL or policy.
-      # Both cases must deny access with 403, regardless of object existence.
-      - name: Confirm existing-object and missing-key anonymous denial (fail-closed)
-        run: |
-          for key in existing-private-canary definitely-missing-canary; do
-            if ! status="$(curl --disable --silent --show-error --noproxy '*' \
-              --connect-timeout 2 --max-time 10 -o /dev/null -w "%{http_code}" \
-              "$OBJECT_STORAGE_ENDPOINT/$OBJECT_STORAGE_BUCKET/$key")"; then
-              echo "::error::Anonymous-access check transport failure for $key."
-              exit 1
-            fi
-            if [ "$status" != "403" ]; then
-              echo "::error::Anonymous-access failure for $key: HTTP $status, expected 403 Access Denied."
-              exit 1
-            fi
-            echo "Confirmed anonymous denial for $key (403)."
-          done
 
       # @prisma/client's own postinstall hook already runs `prisma generate`
       # during `npm ci` above -- no separate generate step is required by the
