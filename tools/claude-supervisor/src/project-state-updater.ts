@@ -1,0 +1,270 @@
+// Explicit, local-only outer snapshot writer. No callers/CLI/dispatch are wired.
+// Like persistence.ts, every persisted field and mutation is allow-listed.
+// Raw actor/evidence labels are attestations, NOT authenticated provenance.
+// A trusted local caller must supply authorized reports; this API does no polling.
+import * as fs from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { hostname } from "node:os";
+import { canonicalJson } from "./canonical-json.js";
+import { parseAgentReportFooter, validateAgentReportFooter, type AgentReportFooter } from "./agent-report-footer.js";
+import { parseProjectState, validateProjectState, type ProjectState } from "./project-state.js";
+
+type Status = ProjectState["operational"]["status"];
+type Actor = AgentReportFooter["actor"];
+type TaskType = AgentReportFooter["task_type"];
+type Reason = "state_read_failed" | "state_invalid" | "footer_missing" | "footer_invalid"
+  | "duplicate_conflict" | "stale_revision" | "unexpected_task" | "unexpected_actor"
+  | "invalid_transition" | "human_approval_required" | "lock_busy" | "write_failed"
+  | "post_write_validation_failed";
+export type UpdateResult = (
+  | { ok: true; kind: "UPDATED"; revision: number; operationalStatus: Status; nextActor: Actor }
+  | { ok: true; kind: "DUPLICATE_NOOP"; revision: number }
+  | { ok: false; reason: Reason; step: string }
+) & { anomalies: string[] };
+type FileSystem = Pick<typeof fs, "openSync" | "readFileSync" | "writeSync" | "fsyncSync" | "closeSync" | "renameSync" | "unlinkSync" | "lstatSync" | "fstatSync">;
+export interface UpdateDependencies {
+  fs?: FileSystem;
+  now?: () => Date;
+  sleep?: (ms: number) => void;
+}
+
+// Public digest helper also validates: even direct callers cannot hash raw JSON.
+export function footerDigest(value: unknown): string {
+  const validated = validateAgentReportFooter(value);
+  if (!validated.ok) throw new Error(`footer_invalid:${validated.reason}`);
+  return createHash("sha256").update(canonicalJson(validated.footer)).digest("hex");
+}
+
+// Explicit schema order, including every nested record. Never enumerate caller keys.
+export function serializeProjectState(input: ProjectState): string {
+  const validated = validateProjectState(input);
+  if (!validated.ok) throw new Error(validated.reason);
+  const s = validated.state;
+  const task = (t: NonNullable<ProjectState["activeTask"]> | NonNullable<ProjectState["lastTask"]>) => ({
+    task_id: t.task_id, attempt: t.attempt, task_type: t.task_type, actor: t.actor,
+  });
+  return JSON.stringify({
+    schemaVersion: s.schemaVersion, stateRevision: s.stateRevision,
+    activeTask: s.activeTask && { ...task(s.activeTask), startedAt: s.activeTask.startedAt },
+    lastTask: s.lastTask && { ...task(s.lastTask), verdict: s.lastTask.verdict, footerDigest: s.lastTask.footerDigest, at: s.lastTask.at },
+    project: s.project,
+    repository: { canonical: s.repository.canonical, branch: s.repository.branch, originSha: s.repository.originSha, approvedSha: s.repository.approvedSha, evidence: s.repository.evidence },
+    operational: { milestone: s.operational.milestone, phase: s.operational.phase, status: s.operational.status },
+    product: { lastClosed: s.product.lastClosed, status: s.product.status, nextAfterOrchestratorMvp: s.product.nextAfterOrchestratorMvp, laterRoadmap: s.product.laterRoadmap, evidence: s.product.evidence },
+    ci: { status: s.ci.status, runId: s.ci.runId, evidence: s.ci.evidence },
+    production: { sha: s.production.sha, project: s.production.project, environment: s.production.environment, service: s.production.service, deploymentId: s.production.deploymentId,
+      evidence: s.production.evidence, releaseGate: s.production.releaseGate, releaseGateEvidence: s.production.releaseGateEvidence,
+      migrations: { applied: s.production.migrations.applied, pending: s.production.migrations.pending } },
+    blockers: s.blockers,
+    deferred: s.deferred.map((d) => ({ project: d.project, action: d.action, blocking: d.blocking, deletionRequiresHumanApproval: d.deletionRequiresHumanApproval })),
+    next: { actor: s.next.actor, task: s.next.task, taskId: s.next.taskId, taskType: s.next.taskType, humanApprovalRequired: s.next.humanApprovalRequired, humanApprovalReason: s.next.humanApprovalReason },
+  }, null, 2) + "\n";
+}
+
+const compatible: Record<Status, readonly TaskType[]> = {
+  AWAITING_ARCHITECTURE: ["ARCHITECTURE_AUDIT"],
+  AWAITING_IMPLEMENTATION: ["IMPLEMENTATION"], IMPLEMENTATION_IN_PROGRESS: ["IMPLEMENTATION"],
+  AWAITING_REVIEW: ["INDEPENDENT_REVIEW"], REVIEW_HOLD: ["ARCHITECTURE_AUDIT", "IMPLEMENTATION"],
+  AWAITING_PUSH_AUTHORIZATION: ["CONTROLLED_PUSH"], AWAITING_CI: ["CI_VERIFICATION"],
+  CI_FAILED: ["ARCHITECTURE_AUDIT", "IMPLEMENTATION"],
+  AWAITING_PRODUCTION_VERIFICATION: ["PRODUCTION_VERIFICATION"],
+  READY_FOR_HUMAN_CLOSURE: ["STATE_MAINTENANCE"], CLOSED: [],
+};
+const actors: Record<TaskType, readonly Actor[]> = {
+  ARCHITECTURE_AUDIT: ["CLAUDE"], IMPLEMENTATION: ["CODEX"], INDEPENDENT_REVIEW: ["CLAUDE"],
+  CONTROLLED_PUSH: ["HUMAN"], CI_VERIFICATION: ["CI"], PRODUCTION_VERIFICATION: ["HUMAN", "RAILWAY"], STATE_MAINTENANCE: ["HUMAN"],
+};
+type Route = { status: Status; actor: Actor; taskType: TaskType };
+const correction: Route = { status: "REVIEW_HOLD", actor: "HUMAN", taskType: "ARCHITECTURE_AUDIT" };
+// HUMAN architecture records are a deliberate stop for a human decision, not
+// executable raw audit reports. This module neither dispatches nor clears gates.
+function route(f: AgentReportFooter): Route {
+  switch (f.task_type) {
+    case "ARCHITECTURE_AUDIT": return f.verdict === "READY_FOR_IMPLEMENTATION"
+      ? { status: "AWAITING_IMPLEMENTATION", actor: "CODEX", taskType: "IMPLEMENTATION" } : correction;
+    case "IMPLEMENTATION": return f.verdict === "READY_FOR_REVIEW"
+      ? { status: "AWAITING_REVIEW", actor: "CLAUDE", taskType: "INDEPENDENT_REVIEW" } : correction;
+    case "INDEPENDENT_REVIEW": return f.verdict === "GO"
+      ? { status: "AWAITING_PUSH_AUTHORIZATION", actor: "HUMAN", taskType: "CONTROLLED_PUSH" } : correction;
+    case "CONTROLLED_PUSH": return f.verdict === "PASS"
+      ? { status: "AWAITING_CI", actor: "CI", taskType: "CI_VERIFICATION" } : correction;
+    case "CI_VERIFICATION": return f.verdict === "PASS"
+      ? { status: "AWAITING_PRODUCTION_VERIFICATION", actor: "HUMAN", taskType: "PRODUCTION_VERIFICATION" }
+      : { ...correction, status: f.verdict === "FAIL" ? "CI_FAILED" : "REVIEW_HOLD" };
+    case "PRODUCTION_VERIFICATION": return f.verdict === "PASS"
+      ? { status: "READY_FOR_HUMAN_CLOSURE", actor: "HUMAN", taskType: "STATE_MAINTENANCE" } : correction;
+    case "STATE_MAINTENANCE": return { status: "CLOSED", actor: "HUMAN", taskType: "STATE_MAINTENANCE" };
+  }
+}
+const descriptions: Record<TaskType, string> = {
+  ARCHITECTURE_AUDIT: "Human decision required before correction.",
+  IMPLEMENTATION: "Implement the reviewed task.", INDEPENDENT_REVIEW: "Independently review the implementation.",
+  CONTROLLED_PUSH: "Human authorization and controlled push report required.", CI_VERIFICATION: "Report CI verification.",
+  PRODUCTION_VERIFICATION: "Human production verification required.", STATE_MAINTENANCE: "Human closure decision required.",
+};
+
+function patchedState(current: ProjectState, f: AgentReportFooter, digest: string, at: string): ProjectState {
+  const next = structuredClone(current);
+  let routing = route(f);
+  const replacesBlockers = ["ARCHITECTURE_AUDIT", "INDEPENDENT_REVIEW", "STATE_MAINTENANCE"].includes(f.task_type);
+  if (replacesBlockers) next.blockers = f.blockers.map((b) => b.description);
+  // Preserve blockers on tasks without permission to replace them. Stored
+  // blockers have no flags, so conservatively require a human for any remainder.
+  const humanGate = f.human_approval_required || (!replacesBlockers && next.blockers.length > 0);
+  if (humanGate && routing.status !== "CLOSED") routing = correction;
+  next.operational.status = routing.status;
+  if (f.task_type === "CONTROLLED_PUSH" && f.verdict === "PASS") {
+    // The footer requires result_sha; no independent Git verification is claimed.
+    next.repository.originSha = f.result_sha!.toLowerCase();
+    next.repository.approvedSha = f.result_sha!.toLowerCase();
+    next.repository.evidence = "CLAIMED";
+  }
+  if (f.task_type === "CI_VERIFICATION") {
+    next.ci.status = f.verdict === "PASS" ? "SUCCESS" : f.verdict === "FAIL" ? "FAILURE" : "PENDING";
+    next.ci.evidence = "CLAIMED"; // runId is the unchanged prior snapshot fact.
+  }
+  if (f.task_type === "PRODUCTION_VERIFICATION") {
+    next.production.evidence = f.actor === "HUMAN" && f.evidence === "HUMAN_VERIFIED" ? "HUMAN_VERIFIED" : "CLAIMED";
+    // No deployment fact or release-gate evidence is inferred from this report.
+  }
+  next.stateRevision++;
+  next.activeTask = null; // terminal report completes a task; routing does not start one.
+  next.lastTask = { task_id: f.task_id, attempt: f.attempt, task_type: f.task_type, actor: f.actor, verdict: f.verdict, footerDigest: digest, at };
+  const terminal = routing.status === "CLOSED";
+  const humanApprovalRequired = !terminal && routing.actor === "HUMAN";
+  next.next = {
+    actor: routing.actor, taskType: routing.taskType,
+    // Global revision provides a deterministic, bounded, collision-free sequence.
+    taskId: terminal ? f.task_id : `ORCH-B2-${routing.taskType.replaceAll("_", "-")}-${String(next.stateRevision).padStart(3, "0")}`,
+    task: terminal ? "Closed; no executable next task." : descriptions[routing.taskType],
+    humanApprovalRequired,
+    humanApprovalReason: humanApprovalRequired ? (humanGate ? f.human_approval_reason ?? "Unresolved blockers require a human decision." : descriptions[routing.taskType]) : null,
+  };
+  return next;
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === "object" && error !== null && "code" in error ? String(error.code) : undefined;
+}
+function sameFile(a: fs.Stats, b: fs.Stats): boolean { return a.dev === b.dev && a.ino === b.ino; }
+
+export function ingestAgentReport(reportText: string, stateFilePath: string, dependencies: UpdateDependencies = {}): UpdateResult {
+  const io = dependencies.fs ?? fs;
+  const now = dependencies.now ?? (() => new Date());
+  const sleep = dependencies.sleep ?? ((ms: number) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); });
+  const anomalies: string[] = [];
+  const fail = (reason: Reason, step: string): UpdateResult => ({ ok: false, reason, step, anomalies });
+  const lockPath = `${stateFilePath}.lock`;
+  let lockFd: number | undefined;
+  let lockIdentity: fs.Stats | undefined;
+  let lockBytes: string | undefined;
+  let lockInitialized = false;
+  let step = "acquire_lock";
+  function ownedLock(): boolean {
+    return lockIdentity !== undefined && lockBytes !== undefined && sameFile(lockIdentity, io.lstatSync(lockPath)) && io.readFileSync(lockPath, "utf8") === lockBytes;
+  }
+  function writeAll(fd: number, text: string): void {
+    const buffer = Buffer.from(text);
+    for (let offset = 0; offset < buffer.length;) {
+      const written = io.writeSync(fd, buffer, offset, buffer.length - offset);
+      if (written <= 0) throw new Error("short_write");
+      offset += written;
+    }
+  }
+  try {
+    // Exactly one stale-lock removal/reacquisition, never a waiting loop.
+    try { lockFd = io.openSync(lockPath, "wx"); }
+    catch (error) {
+      if (errorCode(error) !== "EEXIST") return fail("lock_busy", step);
+      try {
+        const stat = io.lstatSync(lockPath);
+        if (!stat.isFile() || stat.isSymbolicLink()) return fail("lock_busy", "malformed_lock");
+        const raw = io.readFileSync(lockPath, "utf8");
+        const lock = JSON.parse(raw) as Record<string, unknown>;
+        if (!lock || typeof lock !== "object" || !Number.isSafeInteger(lock.pid) || Number(lock.pid) <= 0 || typeof lock.hostname !== "string" || !lock.hostname.trim()
+          || typeof lock.acquiredAt !== "string" || !Number.isFinite(Date.parse(lock.acquiredAt)) || new Date(lock.acquiredAt).toISOString() !== lock.acquiredAt) return fail("lock_busy", "malformed_lock");
+        if (now().getTime() - Date.parse(lock.acquiredAt) <= 60_000) return fail("lock_busy", "fresh_lock");
+        if (!sameFile(stat, io.lstatSync(lockPath)) || io.readFileSync(lockPath, "utf8") !== raw) return fail("lock_busy", "lock_changed");
+        io.unlinkSync(lockPath);
+        anomalies.push("stale_lock_removed");
+        lockFd = io.openSync(lockPath, "wx");
+      } catch { return fail("lock_busy", "stale_lock_recovery"); }
+    }
+    lockIdentity = io.fstatSync(lockFd);
+    lockBytes = JSON.stringify({ pid: process.pid, hostname: hostname(), acquiredAt: now().toISOString() });
+    writeAll(lockFd, lockBytes);
+    lockInitialized = true;
+    io.fsyncSync(lockFd);
+    step = "read_state";
+    let raw: string;
+    try { raw = io.readFileSync(stateFilePath, "utf8"); } catch { return fail("state_read_failed", step); }
+    step = "validate_state";
+    const loaded = parseProjectState(raw);
+    if (!loaded.ok) return fail("state_invalid", step);
+    const current = loaded.state;
+    // Reject normalization that would rewrite protected snapshot fields incidentally.
+    if (canonicalJson(JSON.parse(raw)) !== canonicalJson(current)) return fail("state_invalid", "state_normalization");
+    step = "parse_footer";
+    const parsed = parseAgentReportFooter(reportText);
+    if (!parsed.ok) return fail(parsed.reason === "missing_footer" ? "footer_missing" : "footer_invalid", step);
+    const validated = validateAgentReportFooter(parsed.footer);
+    if (!validated.ok) return fail("footer_invalid", "validate_footer");
+    const f = validated.footer;
+    const digest = footerDigest(f);
+    if (current.lastTask?.task_id === f.task_id && current.lastTask.attempt === f.attempt) {
+      return current.lastTask.footerDigest === digest
+        ? { ok: true, kind: "DUPLICATE_NOOP", revision: current.stateRevision, anomalies }
+        : fail("duplicate_conflict", "duplicate_check");
+    }
+    if (f.expected_state_revision !== current.stateRevision) return fail("stale_revision", "revision_check");
+    if (f.task_id !== current.next.taskId) return fail("unexpected_task", "task_check");
+    if (f.actor !== current.next.actor) return fail("unexpected_actor", "actor_check");
+    if (!actors[f.task_type].includes(f.actor)) return fail("human_approval_required", "authority_check");
+    if (f.task_type !== current.next.taskType || !compatible[current.operational.status].includes(f.task_type)
+      || (f.task_type === "STATE_MAINTENANCE" && f.verdict === "UPDATED")) return fail("invalid_transition", "transition_check");
+    if (current.next.humanApprovalRequired && f.actor !== "HUMAN") return fail("human_approval_required", "human_gate");
+    if (f.verdict === "CLOSED" && (f.human_approval_required || f.blockers.some((b) => b.blocking || b.requiresHuman))) return fail("human_approval_required", "closure_gate");
+    if (current.activeTask && (current.activeTask.task_id !== f.task_id || current.activeTask.attempt !== f.attempt || current.activeTask.actor !== f.actor || current.activeTask.task_type !== f.task_type)) return fail("invalid_transition", "active_task_check");
+    step = "validate_new_state";
+    const updated = validateProjectState(patchedState(current, f, digest, now().toISOString()));
+    if (!updated.ok) return fail("state_invalid", step);
+    const serialized = serializeProjectState(updated.state);
+    step = "write_temp";
+    const tempPath = `${stateFilePath}.tmp-${process.pid}-${now().getTime()}-${randomUUID()}`;
+    const tempFd = io.openSync(tempPath, "wx");
+    try { writeAll(tempFd, serialized); io.fsyncSync(tempFd); } finally { io.closeSync(tempFd); }
+    step = "validate_temp";
+    // readFileSync(path) re-opens the fully closed file before parsing it.
+    const tempBytes = io.readFileSync(tempPath, "utf8");
+    if (tempBytes !== serialized || !parseProjectState(tempBytes).ok) return fail("write_failed", step);
+    step = "rename";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      // A displaced/expired writer must not persist after another acquired its lock.
+      if (!ownedLock()) return fail("lock_busy", "lock_ownership_lost");
+      try { io.renameSync(tempPath, stateFilePath); break; }
+      catch (error) {
+        if (!["EPERM", "EBUSY"].includes(errorCode(error) ?? "") || attempt === 2) return fail("write_failed", step);
+        sleep([50, 150][attempt]); // Three TOTAL attempts, two bounded intervening waits.
+      }
+    }
+    step = "post_write_validation";
+    try {
+      const disk = io.readFileSync(stateFilePath, "utf8");
+      if (disk !== serialized || !parseProjectState(disk).ok) return fail("post_write_validation_failed", step);
+    } catch { return fail("post_write_validation_failed", step); }
+    return { ok: true, kind: "UPDATED", revision: updated.state.stateRevision, operationalStatus: updated.state.operational.status, nextActor: updated.state.next.actor, anomalies };
+  } catch {
+    return fail(step === "acquire_lock" ? "lock_busy" : "write_failed", step);
+  } finally {
+    // Only remove our own lock. Never remove a replacement lock on failure.
+    if (lockFd !== undefined) {
+      try { io.closeSync(lockFd); } catch { anomalies.push("lock_close_failed"); }
+      try {
+        if (lockIdentity && sameFile(lockIdentity, io.lstatSync(lockPath)) && (!lockInitialized || ownedLock())) {
+          // Partial initialization failure still owns the exclusively created inode.
+          io.unlinkSync(lockPath);
+        } else anomalies.push("lock_ownership_lost");
+      } catch { anomalies.push("lock_release_failed"); }
+    }
+  }
+}
