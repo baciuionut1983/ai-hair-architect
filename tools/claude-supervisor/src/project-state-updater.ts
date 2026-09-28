@@ -103,7 +103,43 @@ const descriptions: Record<TaskType, string> = {
   PRODUCTION_VERIFICATION: "Human production verification required.", STATE_MAINTENANCE: "Human closure decision required.",
 };
 
-function patchedState(current: ProjectState, f: AgentReportFooter, digest: string, at: string): ProjectState {
+const bootstrapTaskId = "ORCH-B2-STATE-MAINTENANCE-BOOTSTRAP-001";
+function bootstrapEligible(s: ProjectState, f: AgentReportFooter): boolean {
+  return s.schemaVersion === 2 && s.stateRevision === 1 && s.lastTask === null && s.activeTask === null
+    && s.operational.phase === "PHASE_B_2B" && s.operational.status === "AWAITING_IMPLEMENTATION"
+    && s.next.actor === "CODEX" && s.next.taskId === "ORCH-B2-IMPL-001" && s.next.taskType === "IMPLEMENTATION"
+    && !s.next.humanApprovalRequired && s.next.humanApprovalReason === null && s.blockers.length === 0
+    && s.product.lastClosed === "T1.6.2.c.2c" && s.product.status === "CLOSED" && s.product.nextAfterOrchestratorMvp === "B"
+    && s.product.laterRoadmap.length === 1 && s.product.laterRoadmap[0] === "T1.6.2.d"
+    && f.actor === "HUMAN" && f.task_type === "STATE_MAINTENANCE" && f.verdict === "BOOTSTRAP_SYNC"
+    && f.task_id === bootstrapTaskId && f.attempt === 1 && f.expected_state_revision === 1
+    && f.baseline_sha === null && f.result_sha === null && f.scope.length === 0 && f.evidence === "HUMAN_VERIFIED"
+    && f.blockers.length === 0 && !f.human_approval_required && f.human_approval_reason === null;
+}
+
+// No generic maintenance patch: synchronize only the initial orchestration record.
+function bootstrapState(current: ProjectState, f: AgentReportFooter, digest: string, at: string): ProjectState {
+  const next = structuredClone(current);
+  next.stateRevision++;
+  next.operational.phase = "PHASE_B_3";
+  next.operational.status = "AWAITING_IMPLEMENTATION";
+  next.activeTask = null;
+  next.lastTask = { task_id: f.task_id, attempt: f.attempt, task_type: f.task_type, actor: f.actor, verdict: f.verdict, footerDigest: digest, at };
+  next.next = { actor: "CODEX", taskType: "IMPLEMENTATION", taskId: "ORCH-B3-IMPL-001",
+    task: "Implement Project Operations Orchestrator Phase B.3 task generation and evidence verification.",
+    humanApprovalRequired: false, humanApprovalReason: null };
+  return next;
+}
+
+function taskPrefix(phase: string): string | null {
+  switch (phase) {
+    case "PHASE_B_2B": return "ORCH-B2";
+    case "PHASE_B_3": return "ORCH-B3";
+    default: return null;
+  }
+}
+
+function patchedState(current: ProjectState, f: AgentReportFooter, digest: string, at: string, prefix: string | null): ProjectState {
   const next = structuredClone(current);
   let routing = route(f);
   const replacesBlockers = ["ARCHITECTURE_AUDIT", "INDEPENDENT_REVIEW", "STATE_MAINTENANCE"].includes(f.task_type);
@@ -135,7 +171,7 @@ function patchedState(current: ProjectState, f: AgentReportFooter, digest: strin
   next.next = {
     actor: routing.actor, taskType: routing.taskType,
     // Global revision provides a deterministic, bounded, collision-free sequence.
-    taskId: terminal ? f.task_id : `ORCH-B2-${routing.taskType.replaceAll("_", "-")}-${String(next.stateRevision).padStart(3, "0")}`,
+    taskId: terminal ? f.task_id : `${prefix}-${routing.taskType.replaceAll("_", "-")}-${String(next.stateRevision).padStart(3, "0")}`,
     task: terminal ? "Closed; no executable next task." : descriptions[routing.taskType],
     humanApprovalRequired,
     humanApprovalReason: humanApprovalRequired ? (humanGate ? f.human_approval_reason ?? "Unresolved blockers require a human decision." : descriptions[routing.taskType]) : null,
@@ -217,16 +253,26 @@ export function ingestAgentReport(reportText: string, stateFilePath: string, dep
         : fail("duplicate_conflict", "duplicate_check");
     }
     if (f.expected_state_revision !== current.stateRevision) return fail("stale_revision", "revision_check");
-    if (f.task_id !== current.next.taskId) return fail("unexpected_task", "task_check");
-    if (f.actor !== current.next.actor) return fail("unexpected_actor", "actor_check");
-    if (!actors[f.task_type].includes(f.actor)) return fail("human_approval_required", "authority_check");
-    if (f.task_type !== current.next.taskType || !compatible[current.operational.status].includes(f.task_type)
-      || (f.task_type === "STATE_MAINTENANCE" && f.verdict === "UPDATED")) return fail("invalid_transition", "transition_check");
-    if (current.next.humanApprovalRequired && f.actor !== "HUMAN") return fail("human_approval_required", "human_gate");
-    if (f.verdict === "CLOSED" && (f.human_approval_required || f.blockers.some((b) => b.blocking || b.requiresHuman))) return fail("human_approval_required", "closure_gate");
-    if (current.activeTask && (current.activeTask.task_id !== f.task_id || current.activeTask.attempt !== f.attempt || current.activeTask.actor !== f.actor || current.activeTask.task_type !== f.task_type)) return fail("invalid_transition", "active_task_check");
+    let candidate: ProjectState;
+    if (f.verdict === "BOOTSTRAP_SYNC") {
+      if (f.expected_state_revision !== 1) return fail("stale_revision", "revision_check");
+      if (!bootstrapEligible(current, f)) return fail("invalid_transition", "bootstrap_eligibility");
+      candidate = bootstrapState(current, f, digest, now().toISOString());
+    } else {
+      if (f.task_id !== current.next.taskId) return fail("unexpected_task", "task_check");
+      if (f.actor !== current.next.actor) return fail("unexpected_actor", "actor_check");
+      if (!actors[f.task_type].includes(f.actor)) return fail("human_approval_required", "authority_check");
+      if (f.task_type !== current.next.taskType || !compatible[current.operational.status].includes(f.task_type)
+        || (f.task_type === "STATE_MAINTENANCE" && f.verdict === "UPDATED")) return fail("invalid_transition", "transition_check");
+      if (current.next.humanApprovalRequired && f.actor !== "HUMAN") return fail("human_approval_required", "human_gate");
+      if (f.verdict === "CLOSED" && (f.human_approval_required || f.blockers.some((b) => b.blocking || b.requiresHuman))) return fail("human_approval_required", "closure_gate");
+      if (current.activeTask && (current.activeTask.task_id !== f.task_id || current.activeTask.attempt !== f.attempt || current.activeTask.actor !== f.actor || current.activeTask.task_type !== f.task_type)) return fail("invalid_transition", "active_task_check");
+      const prefix = taskPrefix(current.operational.phase);
+      if (f.verdict !== "CLOSED" && prefix === null) return fail("invalid_transition", "task_id_policy");
+      candidate = patchedState(current, f, digest, now().toISOString(), prefix);
+    }
     step = "validate_new_state";
-    const updated = validateProjectState(patchedState(current, f, digest, now().toISOString()));
+    const updated = validateProjectState(candidate);
     if (!updated.ok) return fail("state_invalid", step);
     const serialized = serializeProjectState(updated.state);
     step = "write_temp";

@@ -11,7 +11,7 @@ const verdicts = {
   CONTROLLED_PUSH: ["PASS", "FAIL"],
   CI_VERIFICATION: ["PASS", "FAIL", "PENDING"],
   PRODUCTION_VERIFICATION: ["PASS", "FAIL", "UNKNOWN"],
-  STATE_MAINTENANCE: ["CLOSED", "UPDATED"],
+  STATE_MAINTENANCE: ["CLOSED", "UPDATED", "BOOTSTRAP_SYNC"],
 } as const;
 const taskType = z.enum([
   "ARCHITECTURE_AUDIT", "IMPLEMENTATION", "INDEPENDENT_REVIEW", "CONTROLLED_PUSH",
@@ -41,7 +41,7 @@ const schema = z.strictObject({
   baseline_sha: sha,
   result_sha: sha,
   scope: z.array(path),
-  verdict: z.enum(["READY_FOR_IMPLEMENTATION", "HOLD", "READY_FOR_REVIEW", "BLOCKED", "GO", "PASS", "FAIL", "PENDING", "UNKNOWN", "CLOSED", "UPDATED"]),
+  verdict: z.enum(["READY_FOR_IMPLEMENTATION", "HOLD", "READY_FOR_REVIEW", "BLOCKED", "GO", "PASS", "FAIL", "PENDING", "UNKNOWN", "CLOSED", "UPDATED", "BOOTSTRAP_SYNC"]),
   evidence: z.enum(["CLAIMED", "MACHINE_VERIFIED", "HUMAN_VERIFIED", "UNKNOWN"]),
   blockers: z.array(z.strictObject({ description: nonempty, blocking: z.boolean(), requiresHuman: z.boolean() })),
   next_actor_suggested: actor.nullable(), // Advisory only; B.2b/B.3 derive routing.
@@ -67,6 +67,7 @@ export function validateAgentReportFooter(value: unknown): AgentReportResult {
   const f = parsed.data;
   const fail = (reason: string): AgentReportResult => ({ ok: false, reason });
   if (!(verdicts[f.task_type] as readonly string[]).includes(f.verdict)) return fail("invalid_task_verdict");
+  if (f.verdict === "BOOTSTRAP_SYNC" && f.actor !== "HUMAN") return fail("human_only_bootstrap");
   if (!actorTasks[f.actor].includes(f.task_type)) return fail("invalid_actor_task");
   if (f.verdict === "CLOSED" && f.actor !== "HUMAN") return fail("human_only_closure");
   if (f.evidence === "HUMAN_VERIFIED" && f.actor !== "HUMAN") return fail("human_only_evidence");

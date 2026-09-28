@@ -285,6 +285,140 @@ describe("authority, routing and explicit patches", () => {
   });
 });
 
+describe("one-shot HUMAN bootstrap", () => {
+  const bootstrap = (changes: Partial<AgentReportFooter> = {}) => report({
+    task_id: "ORCH-B2-STATE-MAINTENANCE-BOOTSTRAP-001", actor: "HUMAN", task_type: "STATE_MAINTENANCE",
+    verdict: "BOOTSTRAP_SYNC", baseline_sha: null, result_sha: null, scope: [], evidence: "HUMAN_VERIFIED", ...changes,
+  });
+  it("synchronizes only the allowed orchestration fields and records the actual event", () => {
+    const { path } = fixture(); const before = state(path); const f = bootstrap();
+    expect(ingest(path, f)).toMatchObject({ ok: true, kind: "UPDATED", revision: 2, operationalStatus: "AWAITING_IMPLEMENTATION", nextActor: "CODEX" });
+    const after = state(path);
+    const expected = structuredClone(before);
+    expected.stateRevision = 2; expected.operational.phase = "PHASE_B_3";
+    expected.next = { actor: "CODEX", taskType: "IMPLEMENTATION", taskId: "ORCH-B3-IMPL-001",
+      task: "Implement Project Operations Orchestrator Phase B.3 task generation and evidence verification.", humanApprovalRequired: false, humanApprovalReason: null };
+    expected.lastTask = { task_id: f.task_id, attempt: 1, actor: "HUMAN", task_type: "STATE_MAINTENANCE", verdict: "BOOTSTRAP_SYNC", footerDigest: footerDigest(f), at: timestamp };
+    expect(after).toEqual(expected);
+    for (const field of ["project", "schemaVersion", "repository", "product", "ci", "production", "blockers", "deferred", "activeTask"] as const) {
+      expect(canonicalJson(after[field])).toBe(canonicalJson(before[field]));
+    }
+    expect(after.operational.milestone).toBe(before.operational.milestone);
+    expect(fs.readFileSync(path, "utf8")).toBe(serializeProjectState(expected));
+    expect(parseProjectState(serializeProjectState(expected))).toEqual({ ok: true, state: expected });
+  });
+  const stateChanges: [string, (s: ProjectState) => void][] = [
+    ["lastTask", (s) => { s.lastTask = { task_id: "OTHER-TASK-001", attempt: 1, task_type: "IMPLEMENTATION", actor: "CODEX", verdict: "READY_FOR_REVIEW", footerDigest: "a".repeat(64), at: timestamp }; }],
+    ["activeTask", (s) => { s.activeTask = { task_id: "ORCH-B2-IMPL-001", attempt: 1, actor: "CODEX", task_type: "IMPLEMENTATION", startedAt: timestamp }; }],
+    ["phase", (s) => { s.operational.phase = "PHASE_B_3"; }],
+    ["status", (s) => { s.operational.status = "READY_FOR_HUMAN_CLOSURE"; }],
+    ["next actor", (s) => { s.next.actor = "HUMAN"; }],
+    ["next task ID", (s) => { s.next.taskId = "OTHER-TASK-001"; }],
+    ["next task type", (s) => { s.next.taskType = "STATE_MAINTENANCE"; }],
+    ["human gate", (s) => { s.next.humanApprovalRequired = true; s.next.humanApprovalReason = "Unresolved"; }],
+    ["blockers", (s) => { s.blockers = ["Nonempty"]; }],
+    ["empty roadmap", (s) => { s.product.laterRoadmap = []; }],
+    ["duplicated roadmap", (s) => { s.product.laterRoadmap = ["T1.6.2.d", "T1.6.2.d"]; }],
+  ];
+  it.each(stateChanges)("rejects changed %s with bootstrap_eligibility", (_, change) => {
+    const { path } = fixture(); const s = state(path); change(s); save(path, s);
+    const before = fs.readFileSync(path);
+    expect(ingest(path, bootstrap())).toMatchObject({ ok: false, reason: "invalid_transition", step: "bootstrap_eligibility" });
+    expect(fs.readFileSync(path)).toEqual(before); expect(loadProjectState(path).ok).toBe(true); expect(fs.existsSync(`${path}.lock`)).toBe(false);
+  });
+  it.each([
+    ["lastClosed", "T1.6.2.d"], ["status", "OPEN"], ["nextAfterOrchestratorMvp", "T1.6.2.d"],
+  ])("invalid product %s fails full state validation first", (key, value) => {
+    const { path } = fixture(); const s = state(path); const bad = { ...s, product: { ...s.product, [key]: value } };
+    const raw = JSON.stringify(bad); fs.writeFileSync(path, raw);
+    expect(ingest(path, bootstrap())).toMatchObject({ ok: false, reason: "state_invalid" }); expect(fs.readFileSync(path, "utf8")).toBe(raw);
+    expect(fs.existsSync(`${path}.lock`)).toBe(false);
+  });
+  it.each([{ humanApprovalRequired: true }, { humanApprovalReason: "Unresolved" }])("inconsistent stored approval fields fail state validation: %j", (change) => {
+    const { path } = fixture(); const s = state(path); const raw = JSON.stringify({ ...s, next: { ...s.next, ...change } }); fs.writeFileSync(path, raw);
+    expect(ingest(path, bootstrap())).toMatchObject({ ok: false, reason: "state_invalid" }); expect(fs.readFileSync(path, "utf8")).toBe(raw);
+  });
+  it.each([0, 2, 3])("rejects footer revision %d", (revision) => {
+    const { path } = fixture(); rejected(path, bootstrap({ expected_state_revision: revision }), "stale_revision");
+  });
+  it.each([2, 3])("rejects matching state/footer revision %d", (revision) => {
+    const { path } = fixture(); const s = state(path); s.stateRevision = revision; save(path, s);
+    rejected(path, bootstrap({ expected_state_revision: revision }), "stale_revision");
+  });
+  it.each([
+    { task_id: "OTHER-BOOTSTRAP-001" }, { attempt: 2 }, { evidence: "CLAIMED" }, { evidence: "UNKNOWN" },
+    { blockers: [{ description: "Even nonblocking", blocking: false, requiresHuman: false }] },
+    { human_approval_required: true, human_approval_reason: "Gate" },
+    { blockers: [{ description: "Blocking", blocking: true, requiresHuman: true }], human_approval_required: true, human_approval_reason: "Gate" },
+  ] satisfies Partial<AgentReportFooter>[])("rejects bootstrap footer policy mismatch %j", (change) => {
+    const { path } = fixture(); const f = bootstrap(change); expect(validateAgentReportFooter(f).ok).toBe(true);
+    rejected(path, f, "invalid_transition");
+  });
+  it.each([
+    { baseline_sha: sha }, { result_sha: sha }, { scope: ["tools/file.ts"] }, { evidence: "MACHINE_VERIFIED" },
+    { human_approval_required: true }, { human_approval_reason: "Unexpected" },
+  ] satisfies Partial<AgentReportFooter>[])("keeps structural errors ahead of bootstrap eligibility: %j", (change) => {
+    const { path } = fixture(); rejected(path, bootstrap(change), "footer_invalid");
+  });
+  it.each(["CLAUDE", "CODEX", "CI", "RAILWAY", "ORCHESTRATOR"] as const)("never ingests %s bootstrap", (actor) => {
+    const { path } = fixture(); rejected(path, bootstrap({ actor, evidence: "CLAIMED" }), "footer_invalid");
+  });
+  it.each(["HUMAN", "CLAUDE", "CI", "RAILWAY", "ORCHESTRATOR", null] as const)("ignores advisory actor %s", (next_actor_suggested) => {
+    const { path } = fixture(); expect(ingest(path, bootstrap({ next_actor_suggested })).ok).toBe(true);
+    expect(state(path).next).toMatchObject({ actor: "CODEX", taskType: "IMPLEMENTATION", taskId: "ORCH-B3-IMPL-001" });
+  });
+  it("does not pin prose, historical SHAs, or existing evidence", () => {
+    const { path } = fixture(); const s = state(path); s.next.task = "Different human wording";
+    s.repository.originSha = "c".repeat(40); s.repository.approvedSha = "d".repeat(40); s.repository.evidence = "CLAIMED";
+    s.production.sha = "e".repeat(40); s.product.evidence = "UNKNOWN"; save(path, s);
+    expect(ingest(path, bootstrap()).ok).toBe(true);
+    expect(state(path).repository).toEqual(s.repository); expect(state(path).production).toEqual(s.production); expect(state(path).product).toEqual(s.product);
+  });
+  it("replays exactly once, conflicts before stale revision, and rejects altered attempts", () => {
+    const { path, dir } = fixture(); const f = bootstrap(); expect(ingest(path, f).ok).toBe(true);
+    const bytes = fs.readFileSync(path); const entries = fs.readdirSync(dir);
+    expect(ingest(path, reverseKeys(f))).toMatchObject({ ok: true, kind: "DUPLICATE_NOOP", revision: 2 });
+    expect(fs.readFileSync(path)).toEqual(bytes); expect(fs.readdirSync(dir)).toEqual(entries);
+    rejected(path, bootstrap({ next_actor_suggested: "HUMAN" }), "duplicate_conflict");
+    rejected(path, bootstrap({ expected_state_revision: 2 }), "duplicate_conflict");
+    rejected(path, bootstrap({ attempt: 2 }), "stale_revision");
+    rejected(path, bootstrap({ attempt: 2, expected_state_revision: 2 }), "stale_revision");
+    rejected(path, bootstrap({ evidence: "MACHINE_VERIFIED" }), "footer_invalid");
+  });
+  it("resumes normal rules with B.3 IDs and rejects bootstrap after later progress", () => {
+    const { path } = fixture(); expect(ingest(path, bootstrap()).ok).toBe(true);
+    const implementation = report({ task_id: "ORCH-B3-IMPL-001", expected_state_revision: 2 });
+    rejected(path, { ...implementation, task_id: "ORCH-B2-IMPL-001" }, "unexpected_task");
+    expect(ingest(path, implementation)).toMatchObject({ ok: true, revision: 3, operationalStatus: "AWAITING_REVIEW" });
+    expect(state(path).next.taskId).toBe("ORCH-B3-INDEPENDENT-REVIEW-003"); rejected(path, bootstrap(), "stale_revision");
+  });
+  it("unsupported phases reject generated IDs without guessing; duplicates precede this check", () => {
+    const { path } = fixture(); const s = state(path); s.operational.phase = "PHASE_B_4"; save(path, s);
+    const bytes = fs.readFileSync(path);
+    expect(ingest(path)).toMatchObject({ ok: false, reason: "invalid_transition", step: "task_id_policy" }); expect(fs.readFileSync(path)).toEqual(bytes);
+    s.operational.phase = "PHASE_B_2B"; save(path, s); expect(ingest(path).ok).toBe(true);
+    const updated = state(path); updated.operational.phase = "PHASE_B_4"; save(path, updated);
+    expect(ingest(path)).toMatchObject({ kind: "DUPLICATE_NOOP", revision: 2 });
+  });
+  it("terminal closure does not require a generated prefix", () => {
+    const { path } = fixture(); const f = forTask(path, "READY_FOR_HUMAN_CLOSURE", "STATE_MAINTENANCE", "HUMAN", "CLOSED");
+    const s = state(path); s.operational.phase = "Future reviewed phase"; save(path, s);
+    expect(ingest(path, f)).toMatchObject({ ok: true, operationalStatus: "CLOSED" }); expect(state(path).next.taskId).toBe(f.task_id);
+  });
+  it("bootstrap failures retain the same lock and atomic-write protections", () => {
+    const { path } = fixture(); const before = fs.readFileSync(path); lock(path);
+    expect(ingest(path, bootstrap())).toMatchObject({ ok: false, reason: "lock_busy" }); expect(fs.readFileSync(path)).toEqual(before);
+    fs.unlinkSync(`${path}.lock`);
+    rejected(path, bootstrap(), "write_failed", { fs: { ...fs, renameSync: () => { throw fault("EIO"); } } });
+    let renamed = false;
+    const renameSync = (a: fs.PathLike, b: fs.PathLike) => { fs.renameSync(a, b); renamed = true; };
+    const readFileSync = ((...args: Parameters<typeof fs.readFileSync>) => { if (renamed && args[0] === path) throw fault("EIO"); return fs.readFileSync(...args); }) as typeof fs.readFileSync;
+    expect(ingest(path, bootstrap(), { fs: { ...fs, renameSync, readFileSync } })).toMatchObject({ ok: false, reason: "post_write_validation_failed" });
+    expect(state(path).stateRevision).toBe(2); const bytes = fs.readFileSync(path);
+    expect(ingest(path, bootstrap())).toMatchObject({ kind: "DUPLICATE_NOOP", revision: 2 }); expect(fs.readFileSync(path)).toEqual(bytes);
+  });
+});
+
 describe("deterministic state serialization", () => {
   it("orders all fields explicitly, prettifies with two spaces and terminates with newline", () => {
     const { path } = fixture(); ingest(path); const s = state(path);
