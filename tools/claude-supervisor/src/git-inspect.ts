@@ -20,13 +20,13 @@ export interface GitSnapshot {
 // review needs -- deliberately gathered together so orchestrator.ts
 // never has to remember to call each piece separately, and so a test
 // can assert on one coherent object.
-export async function captureGitSnapshot(cwd: string): Promise<GitSnapshot> {
+export async function captureGitSnapshot(cwd: string, execute: typeof execSafe = execSafe): Promise<GitSnapshot> {
   const [headResult, originResult, statusResult, diffNameResult, diffStatResult] = await Promise.all([
-    execSafe("git", gitRevParseArgs("HEAD"), { cwd }),
-    execSafe("git", gitRevParseArgs("origin/master"), { cwd }),
-    execSafe("git", [...GIT_STATUS_ARGS], { cwd }),
-    execSafe("git", [...GIT_DIFF_NAME_ONLY_ARGS], { cwd }),
-    execSafe("git", [...GIT_DIFF_STAT_ARGS], { cwd }),
+    execute("git", gitRevParseArgs("HEAD"), { cwd }),
+    execute("git", gitRevParseArgs("origin/master"), { cwd }),
+    execute("git", [...GIT_STATUS_ARGS], { cwd }),
+    execute("git", [...GIT_DIFF_NAME_ONLY_ARGS], { cwd }),
+    execute("git", [...GIT_DIFF_STAT_ARGS], { cwd }),
   ]);
 
   const headSha = headResult.stdout.trim();

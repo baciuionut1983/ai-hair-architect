@@ -18,7 +18,14 @@ function fixture() {
   const dir = fs.mkdtempSync(join(tmpdir(), "orch-b2b2-")); dirs.push(dir);
   const path = join(dir, "PROJECT_STATE.json");
   // Writes only to the freshly created temporary fixture, never the real path.
-  fs.writeFileSync(path, realBefore);
+  const initial = JSON.parse(realBefore.toString()) as ProjectState;
+  // Explicit historical B.2 fixture; the real snapshot has advanced to B.3.
+  initial.stateRevision = 1; initial.lastTask = null; initial.activeTask = null;
+  initial.operational.phase = "PHASE_B_2B";
+  initial.next = { actor: "CODEX", taskId: "ORCH-B2-IMPL-001", taskType: "IMPLEMENTATION",
+    task: "Implement Project Operations Orchestrator Phase B.2b-2 controlled project-state updater.",
+    humanApprovalRequired: false, humanApprovalReason: null };
+  fs.writeFileSync(path, serializeProjectState(initial));
   return { path, dir };
 }
 function state(path: string): ProjectState {

@@ -13,13 +13,13 @@ describe("read-only outer project state", () => {
   it("loads the explicit v2 migration without inventing repository provenance or task history", () => {
     const state = bootstrap();
     expect(state.schemaVersion).toBe(2);
-    expect(state.stateRevision).toBe(1);
+    expect(state.stateRevision).toBe(2);
     expect(state.repository.evidence).toBe("UNKNOWN");
     expect(state.activeTask).toBeNull();
-    expect(state.lastTask).toBeNull();
-    expect(state.operational).toMatchObject({ phase: "PHASE_B_2B", status: "AWAITING_IMPLEMENTATION" });
-    expect(state.next).toEqual({ actor: "CODEX", taskId: "ORCH-B2-IMPL-001", taskType: "IMPLEMENTATION",
-      task: "Implement Project Operations Orchestrator Phase B.2b-2 controlled project-state updater.",
+    expect(state.lastTask).toMatchObject({ actor: "HUMAN", verdict: "BOOTSTRAP_SYNC", task_id: "ORCH-B2-STATE-MAINTENANCE-BOOTSTRAP-001" });
+    expect(state.operational).toMatchObject({ phase: "PHASE_B_3", status: "AWAITING_IMPLEMENTATION" });
+    expect(state.next).toEqual({ actor: "CODEX", taskId: "ORCH-B3-IMPL-001", taskType: "IMPLEMENTATION",
+      task: "Implement Project Operations Orchestrator Phase B.3 task generation and evidence verification.",
       humanApprovalRequired: false, humanApprovalReason: null });
   });
 

@@ -113,6 +113,13 @@ function runApproveProduction(taskId: string, stateDir: string): void {
 }
 
 async function main(): Promise<void> {
+  if (process.argv[2] === "project") {
+    const { runProjectCommand } = await import("./project-cli.js");
+    const result = await runProjectCommand(process.argv.slice(3));
+    console.log(result.output);
+    process.exitCode = result.exitCode;
+    return;
+  }
   const options = parseCliArgs(process.argv.slice(2));
   if ("error" in options) {
     console.error(`[SUPERVISOR] ${options.error}`);
