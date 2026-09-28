@@ -2,27 +2,33 @@
 // Uses persistence.ts's explicit field boundary and ok/reason convention, with
 // strict validation via the package's existing Zod dependency. Git is history.
 // Evidence labels are recorded attestations, never live verification by this loader.
-// Phase B.2 will add the structured report footer and reviewed update/transition
-// path. A real activeTaskId may be added then; no fabricated task identity now.
+// V2 is an explicit Git migration, never migration-on-read. B.2b-2 will add
+// the controlled update path; this module still only reads and validates.
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { agentReportFieldSchemas as task } from "./agent-report-footer.js";
 
 const text = z.string().trim().min(1);
 const sha = z.string().regex(/^[0-9a-f]{40}$/);
 const evidence = z.enum(["CLAIMED", "MACHINE_VERIFIED", "HUMAN_VERIFIED", "UNKNOWN"]);
 const count = z.number().int().nonnegative().safe();
 
-// Version 1 deliberately admits only the approved milestone vocabulary.
+const taskFields = { task_id: task.taskId, attempt: task.attempt, task_type: task.taskType, actor: task.actor };
+const timestamp = z.iso.datetime({ precision: 3 });
+// Version 2 deliberately admits only the approved milestone vocabulary.
 // Extending the roadmap is a reviewed schema edit, not a silent coercion.
 const projectStateSchema = z.strictObject({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
+  stateRevision: z.number().int().positive().safe(),
+  activeTask: z.strictObject({ ...taskFields, startedAt: timestamp }).nullable(),
+  lastTask: z.strictObject({ ...taskFields, verdict: task.verdict, footerDigest: z.string().regex(/^[a-fA-F0-9]{64}$/), at: timestamp }).nullable(),
   project: text,
-  repository: z.strictObject({ canonical: text, branch: text, originSha: sha, approvedSha: sha }),
+  repository: z.strictObject({ canonical: text, branch: text, originSha: sha, approvedSha: sha, evidence }),
   operational: z.strictObject({
     milestone: z.enum(["PROJECT_OPERATIONS_ORCHESTRATOR"]),
-    phase: z.enum(["PHASE_B_1"]),
-    status: z.enum(["IMPLEMENTING", "LOCAL_IMPLEMENTATION_READY_FOR_REVIEW"]),
+    phase: text,
+    status: z.enum(["AWAITING_ARCHITECTURE", "AWAITING_IMPLEMENTATION", "IMPLEMENTATION_IN_PROGRESS", "AWAITING_REVIEW", "REVIEW_HOLD", "AWAITING_PUSH_AUTHORIZATION", "AWAITING_CI", "CI_FAILED", "AWAITING_PRODUCTION_VERIFICATION", "READY_FOR_HUMAN_CLOSURE", "CLOSED"]),
   }),
   product: z.strictObject({
     lastClosed: z.enum(["T1.6.2.c.2c"]),
@@ -50,7 +56,9 @@ const projectStateSchema = z.strictObject({
     blocking: z.literal(false),
     deletionRequiresHumanApproval: z.literal(true),
   })),
-  next: z.strictObject({ actor: text, task: text, humanApprovalRequired: z.boolean() }),
+  next: z.strictObject({ actor: task.actor, task: text, taskId: task.taskId, taskType: task.taskType,
+    humanApprovalRequired: z.boolean(), humanApprovalReason: text.nullable() })
+    .refine((next) => next.humanApprovalRequired === (next.humanApprovalReason !== null)),
 });
 
 export type ProjectState = z.infer<typeof projectStateSchema>;

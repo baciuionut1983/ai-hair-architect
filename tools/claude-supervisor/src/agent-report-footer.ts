@@ -51,6 +51,14 @@ const schema = z.strictObject({
 });
 
 export type AgentReportFooter = z.infer<typeof schema>;
+// Shared structural fields only; the footer's version and refinements stay separate.
+export const agentReportFieldSchemas = {
+  taskId: schema.shape.task_id,
+  attempt: schema.shape.attempt,
+  actor: schema.shape.actor,
+  taskType: schema.shape.task_type,
+  verdict: schema.shape.verdict,
+};
 export type AgentReportResult = { ok: true; footer: AgentReportFooter } | { ok: false; reason: string };
 
 export function validateAgentReportFooter(value: unknown): AgentReportResult {

@@ -1,16 +1,20 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "stateRevision": 1,
+  "activeTask": null,
+  "lastTask": null,
   "project": "AI Hair Architect",
   "repository": {
     "canonical": "baciuionut1983/ai-hair-architect",
     "branch": "master",
     "originSha": "441705a435fd0bf04d8738e214bfc50cc43dff0c",
-    "approvedSha": "441705a435fd0bf04d8738e214bfc50cc43dff0c"
+    "approvedSha": "441705a435fd0bf04d8738e214bfc50cc43dff0c",
+    "evidence": "UNKNOWN"
   },
   "operational": {
     "milestone": "PROJECT_OPERATIONS_ORCHESTRATOR",
-    "phase": "PHASE_B_1",
-    "status": "LOCAL_IMPLEMENTATION_READY_FOR_REVIEW"
+    "phase": "PHASE_B_2B",
+    "status": "AWAITING_IMPLEMENTATION"
   },
   "product": {
     "lastClosed": "T1.6.2.c.2c",
@@ -41,8 +45,11 @@
     { "project": "celebrated-solace", "action": "REVIEW_LATER", "blocking": false, "deletionRequiresHumanApproval": true }
   ],
   "next": {
-    "actor": "CLAUDE",
-    "task": "ORCHESTRATOR_PHASE_B_1_INDEPENDENT_REVIEW",
-    "humanApprovalRequired": false
+    "actor": "CODEX",
+    "task": "Implement Project Operations Orchestrator Phase B.2b-2 controlled project-state updater.",
+    "taskId": "ORCH-B2-IMPL-001",
+    "taskType": "IMPLEMENTATION",
+    "humanApprovalRequired": false,
+    "humanApprovalReason": null
   }
 }
