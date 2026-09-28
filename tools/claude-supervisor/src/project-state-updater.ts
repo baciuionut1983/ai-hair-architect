@@ -131,6 +131,39 @@ function bootstrapState(current: ProjectState, f: AgentReportFooter, digest: str
   return next;
 }
 
+const closureTaskId = "ORCH-B3-STATE-MAINTENANCE-CLOSURE-001";
+function closureEligible(s: ProjectState, f: AgentReportFooter): boolean {
+  return s.schemaVersion === 2 && s.stateRevision === 2 && s.activeTask === null
+    && s.operational.milestone === "PROJECT_OPERATIONS_ORCHESTRATOR"
+    && s.operational.phase === "PHASE_B_3" && s.operational.status === "AWAITING_IMPLEMENTATION"
+    && s.lastTask !== null && s.lastTask.task_id === bootstrapTaskId && s.lastTask.attempt === 1
+    && s.lastTask.task_type === "STATE_MAINTENANCE" && s.lastTask.actor === "HUMAN" && s.lastTask.verdict === "BOOTSTRAP_SYNC"
+    && s.lastTask.footerDigest === "deaa10e76d1194031df3a00fc8a9002ae634d285f9ce2ba42ee60b7c7b6b778b"
+    && s.lastTask.at === "2026-09-28T19:45:03.794Z"
+    && s.next.actor === "CODEX" && s.next.taskId === "ORCH-B3-IMPL-001" && s.next.taskType === "IMPLEMENTATION"
+    && !s.next.humanApprovalRequired && s.next.humanApprovalReason === null && s.blockers.length === 0
+    && s.product.lastClosed === "T1.6.2.c.2c" && s.product.status === "CLOSED" && s.product.nextAfterOrchestratorMvp === "B"
+    && s.product.laterRoadmap.length === 1 && s.product.laterRoadmap[0] === "T1.6.2.d"
+    && f.actor === "HUMAN" && f.task_type === "STATE_MAINTENANCE" && f.verdict === "MVP_CLOSURE_SYNC"
+    && f.task_id === closureTaskId && f.attempt === 1 && f.expected_state_revision === 2
+    && f.baseline_sha === null && f.result_sha === null && f.scope.length === 0 && f.evidence === "HUMAN_VERIFIED"
+    && f.blockers.length === 0 && !f.human_approval_required && f.human_approval_reason === null;
+}
+
+// Only close this operational milestone; preserve every historical product/evidence fact.
+function closureState(current: ProjectState, f: AgentReportFooter, digest: string, at: string): ProjectState {
+  const next = structuredClone(current);
+  next.stateRevision++;
+  next.operational.phase = "ORCHESTRATOR_MVP_CLOSED";
+  next.operational.status = "CLOSED";
+  next.activeTask = null;
+  next.lastTask = { task_id: f.task_id, attempt: f.attempt, task_type: f.task_type, actor: f.actor, verdict: f.verdict, footerDigest: digest, at };
+  next.next = { actor: "HUMAN", taskType: "STATE_MAINTENANCE", taskId: closureTaskId,
+    task: "Orchestrator MVP CLOSED. No next executable task; the architecture/scope decision for product work B is a separate, later human-initiated action.",
+    humanApprovalRequired: false, humanApprovalReason: null };
+  return next;
+}
+
 function taskPrefix(phase: string): string | null {
   switch (phase) {
     case "PHASE_B_2B": return "ORCH-B2";
@@ -258,6 +291,10 @@ export function ingestAgentReport(reportText: string, stateFilePath: string, dep
       if (f.expected_state_revision !== 1) return fail("stale_revision", "revision_check");
       if (!bootstrapEligible(current, f)) return fail("invalid_transition", "bootstrap_eligibility");
       candidate = bootstrapState(current, f, digest, now().toISOString());
+    } else if (f.verdict === "MVP_CLOSURE_SYNC") {
+      if (f.expected_state_revision !== 2) return fail("stale_revision", "revision_check");
+      if (!closureEligible(current, f)) return fail("invalid_transition", "closure_sync_eligibility");
+      candidate = closureState(current, f, digest, now().toISOString());
     } else {
       if (f.task_id !== current.next.taskId) return fail("unexpected_task", "task_check");
       if (f.actor !== current.next.actor) return fail("unexpected_actor", "actor_check");

@@ -7,6 +7,7 @@ import { canonicalJson, type JsonValue } from "./canonical-json.js";
 import { footerDigest, ingestAgentReport, serializeProjectState, type UpdateDependencies } from "./project-state-updater.js";
 import { loadProjectState, parseProjectState, PROJECT_STATE_PATH, type ProjectState } from "./project-state.js";
 import { validateAgentReportFooter, type AgentReportFooter } from "./agent-report-footer.js";
+import { nextTask } from "./project-task.js";
 
 const realBefore = fs.readFileSync(PROJECT_STATE_PATH);
 const realHash = createHash("sha256").update(realBefore).digest("hex");
@@ -67,6 +68,135 @@ afterEach(() => {
   expect(fs.readFileSync(PROJECT_STATE_PATH)).toEqual(realBefore);
   expect(createHash("sha256").update(fs.readFileSync(PROJECT_STATE_PATH)).digest("hex")).toBe(realHash);
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+});
+
+describe("one-shot HUMAN MVP closure sync", () => {
+  const closure = (changes: Partial<AgentReportFooter> = {}) => report({
+    task_id: "ORCH-B3-STATE-MAINTENANCE-CLOSURE-001", actor: "HUMAN", task_type: "STATE_MAINTENANCE",
+    verdict: "MVP_CLOSURE_SYNC", baseline_sha: null, result_sha: null, scope: [], evidence: "HUMAN_VERIFIED",
+    next_actor_suggested: "HUMAN", expected_state_revision: 2, ...changes });
+  function closureFixture() {
+    const result = fixture(); save(result.path, JSON.parse(realBefore.toString()) as ProjectState); return result;
+  }
+  it("closes only the operational milestone, records the actual event and leaves no executable task", () => {
+    const { path } = closureFixture(); const before = state(path); const f = closure();
+    expect(ingest(path, f)).toEqual({ ok: true, kind: "UPDATED", revision: 3, operationalStatus: "CLOSED", nextActor: "HUMAN", anomalies: [] });
+    const after = state(path);
+    const lastTask = { task_id: f.task_id, attempt: 1, task_type: "STATE_MAINTENANCE", actor: "HUMAN",
+      verdict: "MVP_CLOSURE_SYNC", footerDigest: footerDigest(f), at: timestamp };
+    const next = { actor: "HUMAN", taskType: "STATE_MAINTENANCE", taskId: f.task_id,
+      task: "Orchestrator MVP CLOSED. No next executable task; the architecture/scope decision for product work B is a separate, later human-initiated action.",
+      humanApprovalRequired: false, humanApprovalReason: null };
+    expect(after).toEqual({ ...before, stateRevision: 3, activeTask: null, lastTask, next,
+      operational: { ...before.operational, phase: "ORCHESTRATOR_MVP_CLOSED", status: "CLOSED" } });
+    expect(nextTask(after)).toEqual({ kind: "CLOSED", reason: "TERMINAL", card: "CLOSED. No next executable task." });
+    expect(JSON.stringify(after)).not.toContain("ORCH-B3-IMPL-001");
+  });
+  const stateChanges: [string, (s: ProjectState) => void][] = [
+    ["phase", s => { s.operational.phase = "PHASE_B_2B"; }],
+    ["terminal phase", s => { s.operational.phase = "ORCHESTRATOR_MVP_CLOSED"; }],
+    ["status", s => { s.operational.status = "AWAITING_REVIEW"; }],
+    ["CLOSED", s => { s.operational.status = "CLOSED"; }],
+    ["activeTask", s => { s.activeTask = { task_id: s.next.taskId, attempt: 1, actor: "CODEX", task_type: "IMPLEMENTATION", startedAt: timestamp }; }],
+    ["null lastTask", s => { s.lastTask = null; }],
+    ["last task ID", s => { s.lastTask!.task_id = "ORCH-B2-OTHER-001"; }],
+    ["last attempt", s => { s.lastTask!.attempt = 2; }],
+    ["last type", s => { s.lastTask!.task_type = "IMPLEMENTATION"; }],
+    ["last actor", s => { s.lastTask!.actor = "CODEX"; }],
+    ["last verdict", s => { s.lastTask!.verdict = "CLOSED"; }],
+    ["last digest", s => { s.lastTask!.footerDigest = "a".repeat(64); }],
+    ["last timestamp", s => { s.lastTask!.at = timestamp; }],
+    ["next actor", s => { s.next.actor = "HUMAN"; }],
+    ["next task ID", s => { s.next.taskId = "ORCH-B3-IMPL-002"; }],
+    ["next type", s => { s.next.taskType = "STATE_MAINTENANCE"; }],
+    ["approval gate", s => { s.next.humanApprovalRequired = true; s.next.humanApprovalReason = "Review"; }],
+    ["blockers", s => { s.blockers = ["Unresolved"]; }],
+    ["empty roadmap", s => { s.product.laterRoadmap = []; }],
+    ["duplicate roadmap", s => { s.product.laterRoadmap = ["T1.6.2.d", "T1.6.2.d"]; }],
+  ];
+  it.each(stateChanges)("rejects changed %s without normal maintenance fallback", (_, change) => {
+    const { path } = closureFixture(); const s = state(path); change(s); save(path, s); const before = fs.readFileSync(path);
+    expect(ingest(path, closure())).toMatchObject({ ok: false, reason: "invalid_transition", step: "closure_sync_eligibility" });
+    expect(fs.readFileSync(path)).toEqual(before); expect(fs.existsSync(`${path}.lock`)).toBe(false);
+  });
+  it.each([
+    ["schemaVersion", 1], ["operational.milestone", "OTHER"], ["product.lastClosed", "Orchestrator"],
+    ["product.status", "OPEN"], ["product.nextAfterOrchestratorMvp", "C"], ["product.laterRoadmap", ["B"]],
+    ["lastTask", undefined], ["next.humanApprovalRequired", true], ["next.humanApprovalReason", "Unexpected"],
+  ])("rejects invalid state %s before closure eligibility", (key, value) => {
+    const { path } = closureFixture(); const s = JSON.parse(fs.readFileSync(path, "utf8"));
+    const parts = String(key).split("."); const parent = parts.length === 1 ? s : s[parts[0]];
+    parent[parts.at(-1)!] = value; const raw = JSON.stringify(s); fs.writeFileSync(path, raw);
+    expect(ingest(path, closure())).toMatchObject({ ok: false, reason: "state_invalid" });
+    expect(fs.readFileSync(path, "utf8")).toBe(raw);
+  });
+  it.each([1, 3, 4])("rejects revision %i even when footer and state agree", revision => {
+    const { path } = closureFixture(); rejected(path, closure({ expected_state_revision: revision }), "stale_revision");
+    const s = state(path); s.stateRevision = revision; save(path, s);
+    rejected(path, closure(), "stale_revision");
+    rejected(path, closure({ expected_state_revision: revision }), "stale_revision");
+  });
+  it.each([
+    { task_id: "ORCH-B3-STATE-MAINTENANCE-CLOSURE-002" }, { attempt: 2 }, { evidence: "CLAIMED" }, { evidence: "UNKNOWN" },
+    { blockers: [{ description: "Unresolved", blocking: false, requiresHuman: false }] },
+    { human_approval_required: true, human_approval_reason: "Review" },
+  ] satisfies Partial<AgentReportFooter>[])("rejects footer eligibility %j", change => {
+    const { path } = closureFixture(); const f = closure(change); expect(validateAgentReportFooter(f).ok).toBe(true);
+    const before = fs.readFileSync(path);
+    expect(ingest(path, f)).toMatchObject({ ok: false, reason: "invalid_transition", step: "closure_sync_eligibility" });
+    expect(fs.readFileSync(path)).toEqual(before);
+  });
+  it.each([
+    { baseline_sha: sha }, { result_sha: sha }, { scope: ["tools/claude-supervisor/src/project-state-updater.ts"] },
+    { evidence: "MACHINE_VERIFIED" }, { human_approval_required: true }, { human_approval_reason: "Review" },
+    { task_type: "IMPLEMENTATION" }, { schema_version: 2 }, { verdict: "PASS" },
+  ])("keeps structural rejection ahead of revision and eligibility: %j", change => {
+    const { path } = closureFixture(); rejected(path, { ...closure({ expected_state_revision: 99 }), ...change }, "footer_invalid");
+  });
+  it.each(["CLAUDE", "CODEX", "CI", "RAILWAY", "ORCHESTRATOR"] as const)("never ingests %s closure", actor => {
+    const { path } = closureFixture(); rejected(path, closure({ actor, evidence: "CLAIMED" }), "footer_invalid");
+  });
+  it.each([null, "CLAUDE", "CODEX", "HUMAN", "CI", "RAILWAY", "ORCHESTRATOR"] as const)("ignores advisory actor %s", next_actor_suggested => {
+    const { path } = closureFixture(); expect(ingest(path, closure({ next_actor_suggested })).ok).toBe(true);
+    expect(state(path).next.actor).toBe("HUMAN"); expect(nextTask(state(path)).kind).toBe("CLOSED");
+  });
+  it("does not pin prose, repository, CI, production or evidence and preserves them exactly", () => {
+    const { path } = closureFixture(); const s = state(path);
+    s.next.task = "Different historical prose"; s.repository.originSha = sha; s.repository.approvedSha = sha; s.repository.evidence = "CLAIMED";
+    s.ci = { status: "UNKNOWN", runId: 1, evidence: "UNKNOWN" };
+    s.production.sha = sha; s.production.migrations = { applied: 1, pending: 2 }; s.production.evidence = "UNKNOWN";
+    s.product.evidence = "UNKNOWN"; save(path, s);
+    expect(ingest(path, closure()).ok).toBe(true); const after = state(path);
+    for (const key of ["project", "schemaVersion", "repository", "product", "ci", "production", "blockers", "deferred"] as const) expect(after[key]).toEqual(s[key]);
+  });
+  it("deduplicates without a state write and rejects conflicting/repeated closure before routing", () => {
+    const { path } = closureFixture(); const f = closure(); expect(ingest(path, f).ok).toBe(true);
+    const bytes = fs.readFileSync(path); const renameSync = vi.fn(fs.renameSync);
+    const openSync = vi.fn(fs.openSync);
+    expect(ingest(path, f, { fs: { ...fs, renameSync, openSync } })).toMatchObject({ kind: "DUPLICATE_NOOP", revision: 3 });
+    expect(renameSync).not.toHaveBeenCalled(); expect(openSync.mock.calls.map(call => String(call[0]))).toEqual([`${path}.lock`]);
+    expect(fs.readFileSync(path)).toEqual(bytes);
+    rejected(path, closure({ next_actor_suggested: "CODEX" }), "duplicate_conflict");
+    rejected(path, closure({ expected_state_revision: 3 }), "duplicate_conflict");
+    rejected(path, closure({ evidence: "MACHINE_VERIFIED" }), "footer_invalid");
+    rejected(path, closure({ attempt: 2 }), "stale_revision");
+    rejected(path, closure({ attempt: 2, expected_state_revision: 3 }), "stale_revision");
+    rejected(path, closure({ task_id: "ORCH-B3-OTHER-001", expected_state_revision: 3 }), "stale_revision");
+    expect(fs.readFileSync(path)).toEqual(bytes);
+  });
+  it("reuses lock, atomic write and post-write recovery for closure", () => {
+    const { path } = closureFixture(); const f = closure(); lock(path);
+    const before = fs.readFileSync(path);
+    expect(ingest(path, f)).toMatchObject({ ok: false, reason: "lock_busy" }); expect(fs.readFileSync(path)).toEqual(before);
+    fs.unlinkSync(`${path}.lock`);
+    rejected(path, f, "write_failed", { fs: { ...fs, renameSync: () => { throw fault("EIO"); } } });
+    let renamed = false;
+    const renameSync = (a: fs.PathLike, b: fs.PathLike) => { fs.renameSync(a, b); renamed = true; };
+    const readFileSync = ((...args: Parameters<typeof fs.readFileSync>) => { if (renamed && args[0] === path) throw fault("EIO"); return fs.readFileSync(...args); }) as typeof fs.readFileSync;
+    expect(ingest(path, f, { fs: { ...fs, renameSync, readFileSync } })).toMatchObject({ ok: false, reason: "post_write_validation_failed" });
+    expect(state(path).stateRevision).toBe(3); const bytes = fs.readFileSync(path);
+    expect(ingest(path, f)).toMatchObject({ kind: "DUPLICATE_NOOP", revision: 3 }); expect(fs.readFileSync(path)).toEqual(bytes);
+  });
 });
 
 describe("canonical JSON and validated digest", () => {

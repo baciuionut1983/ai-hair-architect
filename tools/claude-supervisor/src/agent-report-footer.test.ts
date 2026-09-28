@@ -16,6 +16,19 @@ function report(overrides: Partial<AgentReportFooter> = {}): AgentReportFooter {
 function frame(value: unknown) { return `Prose may claim anything.\nBEGIN_PROJECT_REPORT\n${JSON.stringify(value)}\nEND_PROJECT_REPORT\n`; }
 
 describe("pure structured report footer", () => {
+  it("accepts the fixed HUMAN closure sync under unchanged schema v1 and task grammar", () => {
+    const value = report({ task_id: "ORCH-B3-STATE-MAINTENANCE-CLOSURE-001", actor: "HUMAN",
+      task_type: "STATE_MAINTENANCE", verdict: "MVP_CLOSURE_SYNC", baseline_sha: null, result_sha: null,
+      scope: [], evidence: "HUMAN_VERIFIED", next_actor_suggested: "HUMAN", expected_state_revision: 2 });
+    expect(parseAgentReportFooter(frame(value))).toEqual({ ok: true, footer: value });
+  });
+  it.each(["CLAUDE", "CODEX", "CI", "RAILWAY", "ORCHESTRATOR"] as const)("rejects closure sync actor %s", (actor) => {
+    expect(validateAgentReportFooter(report({ actor, task_type: "STATE_MAINTENANCE", verdict: "MVP_CLOSURE_SYNC",
+      baseline_sha: null, result_sha: null, scope: [] }))).toEqual({ ok: false, reason: "human_only_closure_sync" });
+  });
+  it.each(["ARCHITECTURE_AUDIT", "IMPLEMENTATION", "INDEPENDENT_REVIEW", "CONTROLLED_PUSH", "CI_VERIFICATION", "PRODUCTION_VERIFICATION"] as const)("rejects closure sync task type %s", (task_type) => {
+    expect(validateAgentReportFooter(report({ actor: "HUMAN", task_type, verdict: "MVP_CLOSURE_SYNC" }))).toEqual({ ok: false, reason: "invalid_task_verdict" });
+  });
   it("accepts the fixed HUMAN bootstrap under footer schema v1", () => {
     const value = report({ task_id: "ORCH-B2-STATE-MAINTENANCE-BOOTSTRAP-001", actor: "HUMAN",
       task_type: "STATE_MAINTENANCE", verdict: "BOOTSTRAP_SYNC", baseline_sha: null, result_sha: null,
