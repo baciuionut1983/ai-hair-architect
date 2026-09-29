@@ -21,7 +21,13 @@ const orchestratorMock = vi.hoisted(() => {
       this.name = "ProfessionalBrainStateError";
     }
   }
-  return { ProfessionalBrainAccessError, ProfessionalBrainStateError, loadProfessionalBrainState: vi.fn(), selectMultiDomainCandidateSkills: vi.fn() };
+  return {
+    ProfessionalBrainAccessError,
+    ProfessionalBrainStateError,
+    loadProfessionalBrainState: vi.fn(),
+    selectCandidateSkillsForDomains: vi.fn(),
+    resolveEvaluationDomainIntent: vi.fn(() => ({ domains: ["cut", "color"] })),
+  };
 });
 
 vi.mock("@/lib/session-request-auth", () => authMock);
@@ -52,33 +58,35 @@ describe("GET /clients/[id]/professional-brain/evaluation", () => {
     expect(orchestratorMock.loadProfessionalBrainState).not.toHaveBeenCalled();
   });
 
-  it("evaluation is null when there is no CURRENT/TARGET snapshot yet -- selectMultiDomainCandidateSkills is never called", async () => {
+  it("evaluation is null when there is no CURRENT/TARGET snapshot yet -- selectCandidateSkillsForDomains is never called", async () => {
     orchestratorMock.loadProfessionalBrainState.mockResolvedValue({ currentSnapshot: null, targetSnapshot: null });
     const res = await GET(new Request("http://x"), params);
     expect(res.status).toBe(200);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
     const json = await res.json();
-    expect(json).toEqual({ currentSnapshot: null, targetSnapshot: null, evaluation: null });
-    expect(orchestratorMock.selectMultiDomainCandidateSkills).not.toHaveBeenCalled();
+    expect(json).toEqual({ currentSnapshot: null, targetSnapshot: null, evaluation: null, stylingGap: null });
+    expect(orchestratorMock.selectCandidateSkillsForDomains).not.toHaveBeenCalled();
   });
 
   it("evaluation stays null while only one side is CONFIRMED (the other still DRAFT)", async () => {
     orchestratorMock.loadProfessionalBrainState.mockResolvedValue({
-      currentSnapshot: { id: "c1", status: "CONFIRMED" },
+      currentSnapshot: { id: "c1", status: "CONFIRMED", payload: {} },
       targetSnapshot: { id: "t1", status: "DRAFT" },
     });
     const res = await GET(new Request("http://x"), params);
     const json = await res.json();
     expect(json.evaluation).toBeNull();
-    expect(orchestratorMock.selectMultiDomainCandidateSkills).not.toHaveBeenCalled();
+    expect(json.stylingGap).toBeNull();
+    expect(orchestratorMock.selectCandidateSkillsForDomains).not.toHaveBeenCalled();
   });
 
-  it("computes and returns the merged CUT+COLOR evaluation once BOTH snapshots are CONFIRMED", async () => {
+  it("computes and returns the domain-scoped evaluation once BOTH snapshots are CONFIRMED", async () => {
     orchestratorMock.loadProfessionalBrainState.mockResolvedValue({
-      currentSnapshot: { id: "c1", status: "CONFIRMED" },
+      currentSnapshot: { id: "c1", status: "CONFIRMED", payload: {} },
       targetSnapshot: { id: "t1", status: "CONFIRMED" },
     });
-    orchestratorMock.selectMultiDomainCandidateSkills.mockResolvedValue({
+    orchestratorMock.resolveEvaluationDomainIntent.mockReturnValue({ domains: ["cut", "color"] });
+    orchestratorMock.selectCandidateSkillsForDomains.mockResolvedValue({
       delta: { entries: [{ scope: "global", field: "colorLevel", transformation: "INCREASED" }] },
       candidateMatches: [{ skillKey: "skill-color-global-single-process-evaluation-gate", matchedCapability: "EVALUATE_COLOR_SERVICE" }],
       rejectedMatches: [],
@@ -88,7 +96,24 @@ describe("GET /clients/[id]/professional-brain/evaluation", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.evaluation.candidateMatches).toHaveLength(1);
-    expect(orchestratorMock.selectMultiDomainCandidateSkills).toHaveBeenCalledWith("user-1", "client-1");
+    expect(json.stylingGap).toBeNull();
+    expect(orchestratorMock.selectCandidateSkillsForDomains).toHaveBeenCalledWith("user-1", "client-1");
+  });
+
+  it("STYLING in the domain intent: returns the real gap report, never calls selectCandidateSkillsForDomains, never fabricates an evaluation", async () => {
+    orchestratorMock.loadProfessionalBrainState.mockResolvedValue({
+      currentSnapshot: { id: "c1", status: "CONFIRMED", payload: { evaluationDomainIntent: { domains: ["cut", "styling"] } } },
+      targetSnapshot: { id: "t1", status: "CONFIRMED" },
+    });
+    orchestratorMock.resolveEvaluationDomainIntent.mockReturnValue({ domains: ["cut", "styling"] });
+    const res = await GET(new Request("http://x"), params);
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.evaluation).toBeNull();
+    expect(json.stylingGap).toBeTruthy();
+    expect(json.stylingGap.domain).toBe("styling");
+    expect(json.stylingGap.missingContracts.length).toBeGreaterThan(0);
+    expect(orchestratorMock.selectCandidateSkillsForDomains).not.toHaveBeenCalled();
   });
 
   it("STATIC PROOF -- the route source never references reasoning/execution-plan/scene-plan/reasoning-provider functions; this route stops at delta+candidates", async () => {

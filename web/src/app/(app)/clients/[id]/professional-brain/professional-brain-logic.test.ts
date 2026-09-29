@@ -20,6 +20,7 @@ import {
   isIntentDerivedField,
   mapProfessionalBrainApiError,
   pbTranslate,
+  resolveClientDomainIntent,
 } from "./professional-brain-logic";
 
 describe("getSnapshotStatusBadgeVariant / getSnapshotStatusLabel", () => {
@@ -70,7 +71,7 @@ describe("mapProfessionalBrainApiError", () => {
 
 describe("buildCurrentStatePayload / buildTargetStatePayload (pure)", () => {
   it("with everything unspecified, produces a structurally valid payload where every fact is honestly not_yet_assessed", () => {
-    const payload = buildCurrentStatePayload(UNSPECIFIED_GLOBAL_CUT_FACTS, UNSPECIFIED_COLOR_FACTS);
+    const payload = buildCurrentStatePayload(UNSPECIFIED_GLOBAL_CUT_FACTS, UNSPECIFIED_COLOR_FACTS, ["cut", "color"]);
     expect(isHairStateSnapshotPayload(payload)).toBe(true);
     expect(payload.globalState.relativeLength).toEqual({ value: "unspecified", source: "not_yet_assessed" });
     expect(payload.colorState).toEqual({ level: { value: "unspecified", source: "not_yet_assessed" }, tone: { value: "unspecified", source: "not_yet_assessed" } });
@@ -78,9 +79,17 @@ describe("buildCurrentStatePayload / buildTargetStatePayload (pure)", () => {
   });
 
   it("a real global CUT fact and a real color fact are tagged professional_input, never fabricated as observed", () => {
-    const payload = buildCurrentStatePayload({ ...UNSPECIFIED_GLOBAL_CUT_FACTS, density: "high" }, { level: "level_6", tone: "neutral" });
+    const payload = buildCurrentStatePayload({ ...UNSPECIFIED_GLOBAL_CUT_FACTS, density: "high" }, { level: "level_6", tone: "neutral" }, ["cut", "color"]);
     expect(payload.globalState.density).toEqual({ value: "high", source: "professional_input" });
     expect(payload.colorState).toEqual({ level: { value: "level_6", source: "professional_input" }, tone: { value: "neutral", source: "professional_input" } });
+  });
+
+  it("embeds the chosen domains as evaluationDomainIntent, validly, for any real combination", () => {
+    expect(buildCurrentStatePayload(UNSPECIFIED_GLOBAL_CUT_FACTS, UNSPECIFIED_COLOR_FACTS, ["cut"]).evaluationDomainIntent).toEqual({ domains: ["cut"] });
+    expect(buildCurrentStatePayload(UNSPECIFIED_GLOBAL_CUT_FACTS, UNSPECIFIED_COLOR_FACTS, ["color"]).evaluationDomainIntent).toEqual({ domains: ["color"] });
+    const withStyling = buildCurrentStatePayload(UNSPECIFIED_GLOBAL_CUT_FACTS, UNSPECIFIED_COLOR_FACTS, ["cut", "color", "styling"]);
+    expect(withStyling.evaluationDomainIntent).toEqual({ domains: ["cut", "color", "styling"] });
+    expect(isHairStateSnapshotPayload(withStyling)).toBe(true);
   });
 
   it("buildTargetStatePayload sets lengthIntent/weightIntent/perimeterRelationship ONLY on the chosen zone -- every other zone stays honestly unassessed", () => {
@@ -222,5 +231,37 @@ describe("pbTranslate", () => {
 
   it("a non-Romanian language falls back to English", () => {
     expect(pbTranslate("fr", "pageTitle")).toBe(pbTranslate("en", "pageTitle"));
+  });
+
+  // "CORECȚIE B2.2 ÎNAINTE DE RELEASE", requirement 3 -- the audit proved
+  // perimeterRelationship="at_perimeter" never independently contributes
+  // to any match, and "shorten + preserve weight" remains unresolved
+  // regardless. The corrected copy must never call the perimeter+preserve
+  // combination an "identified" haircut, must never promise a CUT skill
+  // for the perimeter aspect, and must say it is currently unmatched --
+  // in both languages.
+  it("oneLengthHint never overclaims what Perimeter relationship contributes -- no 'identified' haircut, no promised match, honestly describes the current gap", () => {
+    for (const lang of ["en", "ro"] as const) {
+      const hint = pbTranslate(lang, "oneLengthHint");
+      expect(hint.toLowerCase()).not.toMatch(/identified/);
+      expect(hint.toLowerCase()).not.toMatch(/identificat/);
+      expect(hint).toMatch(/does not yet match|nu se potrivește încă/);
+    }
+  });
+});
+
+describe("resolveClientDomainIntent", () => {
+  it("no CURRENT snapshot yet -> defaults to cut+color", () => {
+    expect(resolveClientDomainIntent(null)).toEqual(["cut", "color"]);
+  });
+
+  it("a snapshot with no evaluationDomainIntent (legacy) -> defaults to cut+color", () => {
+    const snapshot = { payload: { globalState: {}, zones: [] } } as unknown as Parameters<typeof resolveClientDomainIntent>[0];
+    expect(resolveClientDomainIntent(snapshot)).toEqual(["cut", "color"]);
+  });
+
+  it("a snapshot with a real evaluationDomainIntent -> returns exactly what was recorded", () => {
+    const snapshot = { payload: { globalState: {}, zones: [], evaluationDomainIntent: { domains: ["color"] } } } as unknown as Parameters<typeof resolveClientDomainIntent>[0];
+    expect(resolveClientDomainIntent(snapshot)).toEqual(["color"]);
   });
 });

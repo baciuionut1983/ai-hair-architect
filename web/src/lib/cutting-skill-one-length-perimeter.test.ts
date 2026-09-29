@@ -65,6 +65,18 @@ describe("A. REAL: Construct One-Length Perimeter -- Skill Definition", () => {
     expect(kinds).not.toContain("BUILD_WEIGHT");
   });
 
+  it("[zone-matching correction] CROSS_CHECK_VALIDATE is zone-scoped to the same real HeadZone values as its sibling capabilities (nape/occipital/sides) -- value-safe, since it is not conditioned on any specific perimeterRelationship value", () => {
+    const connectZones = ONE_LENGTH_PERIMETER_SKILL.capabilities?.find((c) => c.kind === "CONNECT_ZONES");
+    const crossCheck = ONE_LENGTH_PERIMETER_SKILL.capabilities?.find((c) => c.kind === "CROSS_CHECK_VALIDATE");
+    expect(crossCheck?.zones).toEqual(connectZones?.zones);
+    expect(crossCheck?.zones).toEqual(["nape", "occipital", "sides"]);
+  });
+
+  it("[zone-matching correction] PRESERVE_PERIMETER is DELIBERATELY left without own zones -- still structurally unreachable, never forced -- because the selector requires it for ANY perimeterRelationship value preserved unchanged alike, and this Skill's own PRESERVE_PERIMETER is defined narrowly as staying AT the perimeter, never shorter_than/longer_than", () => {
+    const preservePerimeter = ONE_LENGTH_PERIMETER_SKILL.capabilities?.find((c) => c.kind === "PRESERVE_PERIMETER");
+    expect(preservePerimeter?.zones).toBeUndefined();
+  });
+
   it("12. [Stage 8.5S1B.R1] controlMethod is a real, open, case-dependent parameter -- comb and fingers both allowed, no anatomical-threshold-only framing in its own description", () => {
     const controlMethod = ONE_LENGTH_PERIMETER_SKILL.parameters.find((p) => p.name === "controlMethod");
     expect(controlMethod?.allowedValues).toEqual(["comb", "fingers"]);

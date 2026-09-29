@@ -11,6 +11,8 @@ import type { HairStateSnapshotRecord } from "@/lib/hair-state-snapshot-reposito
 import type { HairStateColorEntry, HairStateFact, HairStatePerimeterRelationship } from "@/lib/hair-state-snapshot-validators";
 import type { HairStateDeltaEntry } from "@/lib/hair-state-delta";
 import { useUiLanguage } from "@/lib/ui-language-context";
+import { PROFESSIONAL_BRAIN_DOMAINS, type ProfessionalBrainDomain } from "@/lib/professional-brain-domain-intent-contracts";
+import type { ProfessionalBrainStylingGapReport } from "@/lib/professional-brain-styling-gap";
 
 import { useClientProfile } from "../use-client-profile";
 import { useProfessionalBrainEvaluation, type ProfessionalBrainActionOutcome } from "./use-professional-brain-evaluation";
@@ -40,6 +42,7 @@ import {
   groupCandidateMatchesBySkill,
   hasColorCandidate,
   pbTranslate,
+  resolveClientDomainIntent,
   type ColorFactsInput,
   type GlobalCutFactsInput,
   type GroupedSkillCandidate,
@@ -165,6 +168,84 @@ function ColorFactsFields({
   );
 }
 
+// "CORECȚIE B2.2 ÎNAINTE DE RELEASE", requirement 1 -- domain selection,
+// BEFORE the CURRENT/TARGET forms. Any non-empty, combinable subset of
+// CUT/COLOR/STYLING. Editable only while no CURRENT snapshot exists yet
+// for this round (`editable=false` once one does) -- the choice is
+// embedded into the CURRENT draft's own payload on creation and frozen
+// exactly like every other fact there once confirmed (see
+// buildCurrentStatePayload/resolveClientDomainIntent's own headers).
+function DomainSelectionFields({
+  value,
+  onChange,
+  editable,
+  t,
+}: {
+  value: readonly ProfessionalBrainDomain[];
+  onChange: (v: readonly ProfessionalBrainDomain[]) => void;
+  editable: boolean;
+  t: (key: PbStringKey) => string;
+}) {
+  const domainLabel: Record<ProfessionalBrainDomain, PbStringKey> = { cut: "cutBadge", color: "colorBadge", styling: "stylingBadge" };
+  function toggle(domain: ProfessionalBrainDomain) {
+    if (!editable) return;
+    onChange(value.includes(domain) ? value.filter((d) => d !== domain) : [...value, domain]);
+  }
+  return (
+    <Card className="flex flex-col gap-3">
+      <h2 className="text-lg font-semibold text-foreground">{t("domainSelectionHeading")}</h2>
+      <p className="text-sm text-muted">{t("domainSelectionHelp")}</p>
+      <div className="flex flex-wrap gap-4">
+        {PROFESSIONAL_BRAIN_DOMAINS.map((domain) => (
+          <label key={domain} className="flex items-center gap-2 text-sm text-foreground">
+            <input type="checkbox" checked={value.includes(domain)} disabled={!editable} onChange={() => toggle(domain)} className="h-4 w-4 rounded border-border" />
+            {t(domainLabel[domain])}
+          </label>
+        ))}
+      </div>
+      {!editable ? (
+        <p className="flex flex-wrap items-center gap-2 text-xs text-muted">
+          <span>{t("domainActiveLabel")}</span>
+          {value.map((d) => (
+            <Badge key={d} variant="neutral">
+              {t(domainLabel[d])}
+            </Badge>
+          ))}
+          <span>-- {t("domainSelectionFrozenNote")}</span>
+        </p>
+      ) : value.length === 0 ? (
+        <p className="text-xs text-error">{t("domainSelectionEmptyError")}</p>
+      ) : null}
+    </Card>
+  );
+}
+
+function StylingGapNotice({ gap, t }: { gap: ProfessionalBrainStylingGapReport; t: (key: PbStringKey) => string }) {
+  return (
+    <Alert variant="warning" title={t("stylingGapTitle")}>
+      <p className="text-sm">{t("stylingGapIntro")}</p>
+      <p className="mt-2 text-xs font-semibold uppercase text-muted">{t("stylingGapMissingContractsHeading")}</p>
+      <ul className="mt-1 flex flex-col gap-1 text-sm">
+        {gap.missingContracts.map((line, i) => (
+          <li key={i} className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>{line}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-xs font-semibold uppercase text-muted">{t("stylingGapMissingFactsHeading")}</p>
+      <ul className="mt-1 flex flex-col gap-1 text-sm">
+        {gap.missingFacts.map((line, i) => (
+          <li key={i} className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>{line}</span>
+          </li>
+        ))}
+      </ul>
+    </Alert>
+  );
+}
+
 function FactLine({ label, fact }: { label: string; fact: HairStateFact<string> | { value: string; source: string } }) {
   return (
     <div>
@@ -182,10 +263,12 @@ const UNASSESSED: HairStateFact<string> = { value: "unspecified", source: "not_y
 // only ever edits one), plus color -- never color alone. All with
 // provenance, matching "arată toate valorile CUT și COLOR și proveniența
 // lor, nu doar culoarea" exactly.
-function SnapshotSummary({ snapshot, t }: { snapshot: HairStateSnapshotRecord; t: (key: PbStringKey) => string }) {
+function SnapshotSummary({ snapshot, activeDomains, t }: { snapshot: HairStateSnapshotRecord; activeDomains: readonly ProfessionalBrainDomain[]; t: (key: PbStringKey) => string }) {
   const { globalState, zones } = snapshot.payload;
   const color: HairStateColorEntry | undefined = snapshot.payload.colorState;
   const editedZone = zones.find((z) => z.lengthIntent.source === "professional_input" || z.weightIntent.source === "professional_input" || z.perimeterRelationship.source === "professional_input");
+  const showCut = activeDomains.includes("cut");
+  const showColor = activeDomains.includes("color");
 
   return (
     <div className="flex flex-col gap-3 text-sm">
@@ -194,15 +277,23 @@ function SnapshotSummary({ snapshot, t }: { snapshot: HairStateSnapshotRecord; t
         <span className="text-xs font-semibold uppercase text-muted">{t("confirmedValuesHeading")}</span>
       </div>
       <div className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
-        <FactLine label={t("relativeLengthLabel")} fact={globalState.relativeLength} />
-        <FactLine label={t("fiberThicknessLabel")} fact={globalState.fiberThickness} />
-        <FactLine label={t("densityLabel")} fact={globalState.density} />
-        <FactLine label={t("textureLabel")} fact={globalState.texture} />
-        <FactLine label={t("conditionLabel")} fact={globalState.condition} />
-        <FactLine label={t("colorLevelLabel")} fact={color?.level ?? UNASSESSED} />
-        <FactLine label={t("colorToneLabel")} fact={color?.tone ?? UNASSESSED} />
+        {showCut ? (
+          <>
+            <FactLine label={t("relativeLengthLabel")} fact={globalState.relativeLength} />
+            <FactLine label={t("fiberThicknessLabel")} fact={globalState.fiberThickness} />
+            <FactLine label={t("densityLabel")} fact={globalState.density} />
+            <FactLine label={t("textureLabel")} fact={globalState.texture} />
+            <FactLine label={t("conditionLabel")} fact={globalState.condition} />
+          </>
+        ) : null}
+        {showColor ? (
+          <>
+            <FactLine label={t("colorLevelLabel")} fact={color?.level ?? UNASSESSED} />
+            <FactLine label={t("colorToneLabel")} fact={color?.tone ?? UNASSESSED} />
+          </>
+        ) : null}
       </div>
-      {editedZone ? (
+      {showCut && editedZone ? (
         <div>
           <p className="text-xs font-semibold uppercase text-muted">
             {t("zoneLabel")}: {editedZone.zone}
@@ -351,6 +442,7 @@ export default function ProfessionalBrainPage() {
   const clientState = useClientProfile(clientId);
   const { state, createCurrentState, createTargetState, confirmSnapshot } = useProfessionalBrainEvaluation(clientId);
 
+  const [domains, setDomains] = useState<readonly ProfessionalBrainDomain[]>(["cut", "color"]);
   const [currentGlobal, setCurrentGlobal] = useState(UNSPECIFIED_GLOBAL_CUT_FACTS);
   const [currentColor, setCurrentColor] = useState(UNSPECIFIED_COLOR_FACTS);
   const [targetGlobal, setTargetGlobal] = useState(UNSPECIFIED_GLOBAL_CUT_FACTS);
@@ -386,6 +478,7 @@ export default function ProfessionalBrainPage() {
     setNewRoundActive(true);
     setNewCurrentDraft(null);
     setNewTargetDraft(null);
+    setDomains(["cut", "color"]);
     setCurrentGlobal(UNSPECIFIED_GLOBAL_CUT_FACTS);
     setCurrentColor(UNSPECIFIED_COLOR_FACTS);
     resetTargetForm();
@@ -402,8 +495,9 @@ export default function ProfessionalBrainPage() {
   }
 
   async function handleCreateCurrent() {
+    if (domains.length === 0) return;
     setCreateCurrentState_({ busy: true, error: null });
-    const outcome = await createCurrentState(buildCurrentStatePayload(currentGlobal, currentColor));
+    const outcome = await createCurrentState(buildCurrentStatePayload(currentGlobal, currentColor, domains));
     handleOutcome(outcome, setCreateCurrentState_);
     if (outcome.ok && roundInProgress) setNewCurrentDraft(outcome.snapshot);
   }
@@ -465,10 +559,18 @@ export default function ProfessionalBrainPage() {
     return <ErrorState title="Couldn't load this evaluation" description="Please try refreshing the page." />;
   }
 
-  const { currentSnapshot, targetSnapshot, evaluation } = state;
+  const { currentSnapshot, targetSnapshot, evaluation, stylingGap } = state;
   const effectiveCurrent = roundInProgress ? newCurrentDraft : currentSnapshot;
   const effectiveTarget = roundInProgress ? newTargetDraft : targetSnapshot;
   const groupedCandidates = evaluation ? groupCandidateMatchesBySkill(evaluation.candidateMatches) : [];
+  // Once a CURRENT snapshot exists (DRAFT or CONFIRMED) for this round, its
+  // OWN recorded intent is authoritative -- coherent across a page refresh
+  // and never retroactively reinterpreted by whatever the checkboxes above
+  // happen to show. Only before that (still choosing) does the local
+  // `domains` selection drive anything.
+  const activeDomains = effectiveCurrent ? resolveClientDomainIntent(effectiveCurrent) : domains;
+  const showCutFields = activeDomains.includes("cut");
+  const showColorFields = activeDomains.includes("color");
 
   return (
     <div className="flex flex-col gap-6">
@@ -494,15 +596,18 @@ export default function ProfessionalBrainPage() {
         </Alert>
       ) : null}
 
+      <DomainSelectionFields value={activeDomains} onChange={setDomains} editable={!effectiveCurrent} t={t} />
+
       <Card className="flex flex-col gap-4">
         <h2 className="text-lg font-semibold text-foreground">{t("currentStateHeading")}</h2>
         {!effectiveCurrent ? (
           <>
-            <GlobalCutFactsFields value={currentGlobal} onChange={setCurrentGlobal} disabled={createCurrentState_.busy} t={t} />
-            <ColorFactsFields value={currentColor} onChange={setCurrentColor} disabled={createCurrentState_.busy} t={t} />
+            {showCutFields ? <GlobalCutFactsFields value={currentGlobal} onChange={setCurrentGlobal} disabled={createCurrentState_.busy} t={t} /> : null}
+            {showColorFields ? <ColorFactsFields value={currentColor} onChange={setCurrentColor} disabled={createCurrentState_.busy} t={t} /> : null}
+            {!showCutFields && !showColorFields ? <p className="text-sm text-muted">{t("noFieldsForSelectedDomains")}</p> : null}
             <p className="text-xs text-muted">{t("zoneFactsHelpNote")}</p>
             <div>
-              <Button type="button" onClick={handleCreateCurrent} loading={createCurrentState_.busy}>
+              <Button type="button" onClick={handleCreateCurrent} loading={createCurrentState_.busy} disabled={domains.length === 0}>
                 {t("createCurrentButton")}
               </Button>
             </div>
@@ -514,7 +619,7 @@ export default function ProfessionalBrainPage() {
           </>
         ) : (
           <>
-            <SnapshotSummary snapshot={effectiveCurrent} t={t} />
+            <SnapshotSummary snapshot={effectiveCurrent} activeDomains={activeDomains} t={t} />
             {effectiveCurrent.status === "DRAFT" ? (
               <div>
                 <Button
@@ -540,44 +645,49 @@ export default function ProfessionalBrainPage() {
           <h2 className="text-lg font-semibold text-foreground">{t("targetStateHeading")}</h2>
           {!effectiveTarget ? (
             <>
-              <GlobalCutFactsFields value={targetGlobal} onChange={setTargetGlobal} disabled={createTargetState_.busy} t={t} />
-              <ColorFactsFields value={targetColor} onChange={setTargetColor} disabled={createTargetState_.busy} t={t} />
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <Select label={t("zoneLabel")} disabled={createTargetState_.busy} value={targetZone} onChange={(e) => setTargetZone(e.target.value as HeadZone)}>
-                  {ZONE_OPTIONS.map((z) => (
-                    <option key={z} value={z}>
-                      {z}
-                    </option>
-                  ))}
-                </Select>
-                <Select label={t("lengthIntentLabel")} disabled={createTargetState_.busy} value={targetLengthIntent} onChange={(e) => setTargetLengthIntent(e.target.value as ZoneLengthIntent)}>
-                  {ZONE_LENGTH_INTENT_OPTIONS.map((o) => (
-                    <option key={o} value={o}>
-                      {o}
-                    </option>
-                  ))}
-                </Select>
-                <Select label={t("weightIntentLabel")} disabled={createTargetState_.busy} value={targetWeightIntent} onChange={(e) => setTargetWeightIntent(e.target.value as ZoneWeightIntent)}>
-                  {ZONE_WEIGHT_INTENT_OPTIONS.map((o) => (
-                    <option key={o} value={o}>
-                      {o}
-                    </option>
-                  ))}
-                </Select>
-                <Select
-                  label={t("perimeterRelationshipLabel")}
-                  disabled={createTargetState_.busy}
-                  value={targetPerimeterRelationship}
-                  onChange={(e) => setTargetPerimeterRelationship(e.target.value as HairStatePerimeterRelationship)}
-                >
-                  {PERIMETER_RELATIONSHIP_OPTIONS.map((o) => (
-                    <option key={o} value={o}>
-                      {o}
-                    </option>
-                  ))}
-                </Select>
-              </div>
-              <p className="text-xs text-muted">{t("oneLengthHint")}</p>
+              {showCutFields ? <GlobalCutFactsFields value={targetGlobal} onChange={setTargetGlobal} disabled={createTargetState_.busy} t={t} /> : null}
+              {showColorFields ? <ColorFactsFields value={targetColor} onChange={setTargetColor} disabled={createTargetState_.busy} t={t} /> : null}
+              {showCutFields ? (
+                <>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    <Select label={t("zoneLabel")} disabled={createTargetState_.busy} value={targetZone} onChange={(e) => setTargetZone(e.target.value as HeadZone)}>
+                      {ZONE_OPTIONS.map((z) => (
+                        <option key={z} value={z}>
+                          {z}
+                        </option>
+                      ))}
+                    </Select>
+                    <Select label={t("lengthIntentLabel")} disabled={createTargetState_.busy} value={targetLengthIntent} onChange={(e) => setTargetLengthIntent(e.target.value as ZoneLengthIntent)}>
+                      {ZONE_LENGTH_INTENT_OPTIONS.map((o) => (
+                        <option key={o} value={o}>
+                          {o}
+                        </option>
+                      ))}
+                    </Select>
+                    <Select label={t("weightIntentLabel")} disabled={createTargetState_.busy} value={targetWeightIntent} onChange={(e) => setTargetWeightIntent(e.target.value as ZoneWeightIntent)}>
+                      {ZONE_WEIGHT_INTENT_OPTIONS.map((o) => (
+                        <option key={o} value={o}>
+                          {o}
+                        </option>
+                      ))}
+                    </Select>
+                    <Select
+                      label={t("perimeterRelationshipLabel")}
+                      disabled={createTargetState_.busy}
+                      value={targetPerimeterRelationship}
+                      onChange={(e) => setTargetPerimeterRelationship(e.target.value as HairStatePerimeterRelationship)}
+                    >
+                      {PERIMETER_RELATIONSHIP_OPTIONS.map((o) => (
+                        <option key={o} value={o}>
+                          {o}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                  <p className="text-xs text-muted">{t("oneLengthHint")}</p>
+                </>
+              ) : null}
+              {!showCutFields && !showColorFields ? <p className="text-sm text-muted">{t("noFieldsForSelectedDomains")}</p> : null}
               <p className="text-xs text-muted">{t("zoneFactsHelpNote")}</p>
               <div>
                 <Button type="button" onClick={handleCreateTarget} loading={createTargetState_.busy}>
@@ -592,7 +702,7 @@ export default function ProfessionalBrainPage() {
             </>
           ) : (
             <>
-              <SnapshotSummary snapshot={effectiveTarget} t={t} />
+              <SnapshotSummary snapshot={effectiveTarget} activeDomains={activeDomains} t={t} />
               {effectiveTarget.status === "DRAFT" ? (
                 <div>
                   <Button
@@ -614,14 +724,20 @@ export default function ProfessionalBrainPage() {
         </Card>
       ) : null}
 
-      {evaluation && !roundInProgress ? (
+      {(evaluation || stylingGap) && !roundInProgress ? (
         <Card className="flex flex-col gap-4">
           <h2 className="text-lg font-semibold text-foreground">{t("deltaHeading")}</h2>
-          <DeltaTable entries={evaluation.delta.entries} />
-          <CandidateSkillList groups={groupedCandidates} t={t} />
-          <VocabularyNote t={t} />
-          {hasColorCandidate(evaluation.candidateMatches) ? <ColorEvaluationDisclosure t={t} /> : null}
-          <UnresolvedDeltaList entries={evaluation.unresolvedDeltas} language={language} t={t} />
+          {stylingGap ? (
+            <StylingGapNotice gap={stylingGap} t={t} />
+          ) : evaluation ? (
+            <>
+              <DeltaTable entries={evaluation.delta.entries} />
+              <CandidateSkillList groups={groupedCandidates} t={t} />
+              <VocabularyNote t={t} />
+              {hasColorCandidate(evaluation.candidateMatches) ? <ColorEvaluationDisclosure t={t} /> : null}
+              <UnresolvedDeltaList entries={evaluation.unresolvedDeltas} language={language} t={t} />
+            </>
+          ) : null}
           <div>
             <Button type="button" variant="secondary" onClick={startNewEvaluation}>
               {t("startNewEvaluationButton")}

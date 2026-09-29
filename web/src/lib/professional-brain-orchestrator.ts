@@ -48,6 +48,13 @@ import {
   type ProfessionalBrainPipelineStatusView,
 } from "@/lib/professional-brain-pipeline-status";
 import { findClientForOwner } from "@/lib/client-repository";
+import {
+  DEFAULT_PROFESSIONAL_BRAIN_DOMAIN_INTENT,
+  hasDomain,
+  includesUnimplementedDomain,
+  type ProfessionalBrainDomainIntent,
+} from "@/lib/professional-brain-domain-intent-contracts";
+import { PROFESSIONAL_BRAIN_STYLING_GAP, type ProfessionalBrainStylingGapReport } from "@/lib/professional-brain-styling-gap";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5A -- PROFESSIONAL
 // BRAIN ORCHESTRATOR. The single canonical application/service layer that
@@ -524,4 +531,76 @@ export async function prepareMultiDomainReasoningRequestPackage(
     ownerUserId,
     eligibility,
   );
+}
+
+// ---------------------------------------------------------------------------
+// "CORECȚIE B2.2 ÎNAINTE DE RELEASE", requirement 1 -- DOMAIN-SCOPED
+// composition. The multi-domain functions above ALWAYS compose CUT+COLOR
+// unconditionally; these compose only the domain(s) the professional
+// actually selected (recorded on the CONFIRMED CURRENT snapshot's own
+// payload -- see hair-state-snapshot-validators.ts's own
+// `evaluationDomainIntent` field header for why that, and not a new
+// persistence mechanism, is where this lives). Real backend-level
+// scoping: when COLOR is not selected, selectColorCandidateSkillsForDelta
+// is never even called, so no color fact -- changed or unchanged -- can
+// ever appear in the delta, a candidate match, or an unresolved entry;
+// symmetrically for CUT. Selecting BOTH reuses the exact same two calls
+// in the exact same order as selectMultiDomainCandidateSkills above, so
+// CUT+COLOR behavior is byte-identical to today's, unchanged. This file's
+// own "invoke the exact Stage module, never invent a second brain" rule
+// still applies -- no new professional/haircut logic is authored here,
+// only conditional composition of the same two already-existing modules.
+// ---------------------------------------------------------------------------
+
+export class ProfessionalBrainStylingNotImplementedError extends Error {
+  readonly code = "PROFESSIONAL_BRAIN_STYLING_NOT_IMPLEMENTED";
+  readonly httpStatus = 409;
+  constructor(readonly gap: ProfessionalBrainStylingGapReport = PROFESSIONAL_BRAIN_STYLING_GAP) {
+    super("STYLING has no engine yet -- this evaluation cannot be completed for a domain intent that includes it.");
+    this.name = "ProfessionalBrainStylingNotImplementedError";
+  }
+}
+
+// Resolves the ACTIVE domain intent for a round from its own CURRENT
+// snapshot -- defaults to CUT+COLOR for a snapshot created before this
+// requirement existed, reproducing this app's own pre-existing composed
+// behavior exactly (see DEFAULT_PROFESSIONAL_BRAIN_DOMAIN_INTENT's own
+// header). Reads ONLY the CURRENT snapshot's payload -- never the TARGET
+// -- because the domain choice is made and frozen BEFORE either draft is
+// created, at the start of the round; CURRENT is always the first
+// artifact of a round (see this page's own create-current-state flow).
+export function resolveEvaluationDomainIntent(current: HairStateSnapshotRecord): ProfessionalBrainDomainIntent {
+  return current.payload.evaluationDomainIntent ?? DEFAULT_PROFESSIONAL_BRAIN_DOMAIN_INTENT;
+}
+
+export async function selectCandidateSkillsForDomains(ownerUserId: string, clientId: string): Promise<HairStateDeltaSkillSelectionResult> {
+  await assertOwnedClient(ownerUserId, clientId);
+  const { current, target } = await requireConfirmedStates(ownerUserId, clientId);
+  const intent = resolveEvaluationDomainIntent(current);
+  // Defensive, fail-closed re-check -- the real call site (the evaluation
+  // route) checks includesUnimplementedDomain BEFORE ever calling this
+  // function and returns an honest gap report instead (never a computed
+  // result); this throw only guards against a future caller that skips
+  // that check, never silently computing a partial CUT/COLOR-only result
+  // for a domain intent that explicitly also asked for STYLING.
+  if (includesUnimplementedDomain(intent)) throw new ProfessionalBrainStylingNotImplementedError();
+
+  const cutInput = { id: current.id, snapshotVersion: current.snapshotVersion, payload: current.payload };
+  const targetInput = { id: target.id, snapshotVersion: target.snapshotVersion, payload: target.payload };
+
+  // Envelope fields (sourceCurrentSnapshotId/Version, sourceTargetSnapshotId/
+  // Version, computedAt) are identical regardless of which domain(s) are
+  // selected -- computed once, unconditionally, purely for that envelope;
+  // `entries` below is fully replaced by only the selected domain(s)' own
+  // real entries, never these unconditional ones.
+  const envelope = computeHairStateDelta(cutInput, targetInput);
+  const cutResult = hasDomain(intent, "cut") ? selectCandidateSkillsForDelta(cutInput, targetInput, buildCanonicalCandidateSkillRegistry()) : null;
+  const colorResult = hasDomain(intent, "color") ? selectColorCandidateSkillsForDelta(cutInput, targetInput, buildCanonicalColorCandidateSkillRegistry()) : null;
+
+  return {
+    delta: { ...envelope, entries: [...(cutResult?.delta.entries ?? []), ...(colorResult?.delta.entries ?? [])] },
+    candidateMatches: [...(cutResult?.candidateMatches ?? []), ...(colorResult?.candidateMatches ?? [])],
+    rejectedMatches: [...(cutResult?.rejectedMatches ?? []), ...(colorResult?.rejectedMatches ?? [])],
+    unresolvedDeltas: [...(cutResult?.unresolvedDeltas ?? []), ...(colorResult?.unresolvedDeltas ?? [])],
+  };
 }

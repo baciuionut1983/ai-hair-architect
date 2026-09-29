@@ -64,6 +64,15 @@ describe("hair-state-snapshot-validators (pure contract)", () => {
     expect(isHairStateSnapshotPayload(realPayload())).toBe(true);
   });
 
+  it("evaluationDomainIntent is additive/optional -- a payload with none still validates (pre-existing snapshots), a valid one validates, an invalid one fails closed", () => {
+    expect(isHairStateSnapshotPayload(realPayload())).toBe(true);
+    expect(isHairStateSnapshotPayload({ ...realPayload(), evaluationDomainIntent: { domains: ["cut"] } })).toBe(true);
+    expect(isHairStateSnapshotPayload({ ...realPayload(), evaluationDomainIntent: { domains: ["cut", "color", "styling"] } })).toBe(true);
+    expect(isHairStateSnapshotPayload({ ...realPayload(), evaluationDomainIntent: { domains: [] } })).toBe(false);
+    expect(isHairStateSnapshotPayload({ ...realPayload(), evaluationDomainIntent: { domains: ["nails"] } })).toBe(false);
+    expect(isHairStateSnapshotPayload({ ...realPayload(), evaluationDomainIntent: "cut" })).toBe(false);
+  });
+
   it("an unassessed global entry and unassessed zone entry both validate -- 'unspecified' is a first-class, honest value", () => {
     expect(isHairStateGlobalEntry(buildUnassessedGlobalEntry())).toBe(true);
     expect(isHairZoneStateEntry(buildUnassessedZoneEntry("crown"))).toBe(true);

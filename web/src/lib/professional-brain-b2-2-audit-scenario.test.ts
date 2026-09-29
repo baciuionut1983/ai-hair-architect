@@ -10,20 +10,32 @@ import { selectMultiDomainCandidateSkills, createDraftCurrentState, createDraftT
 // AI Hair Architect, B2.2 -- AUDIT REPRODUCTION of a real production
 // report: professional requested a straight-line haircut + color base 7;
 // confirmed CURRENT level 5/warm_gold/medium length; TARGET level
-// 7/warm_gold, nape lengthIntent=shorten/weightIntent=preserve. Reported
-// result: two matches for the same color skill, ZERO cut skills, 4
-// Unresolved. Real Postgres, zero AI / provider calls. Skips (never
+// 7/warm_gold, nape lengthIntent=shorten/weightIntent=preserve. Originally
+// reported result: two matches for the same color skill, ZERO cut skills,
+// 4 Unresolved. Real Postgres, zero AI / provider calls. Skips (never
 // fails) when no database is configured.
 //
 // ROOT CAUSE, verified directly against the real registry (see the B2.2
 // audit report): "shorten" requires REDUCE_LENGTH, which only
-// skill-cutting-graduated declares -- but that capability has no `zones`
-// of its own and falls back to the SKILL's own applicableZones
+// skill-cutting-graduated declares -- but that capability originally had
+// no `zones` of its own and fell back to the SKILL's own applicableZones
 // ("perimeter_contour_reference"/"graduated_execution_zone"/
-// "cross_check_area"), a DIFFERENT vocabulary than HeadZone, so it can
+// "cross_check_area"), a DIFFERENT vocabulary than HeadZone, so it could
 // NEVER match a real zone-scoped delta like "nape". "preserve" (weight)
 // requires PRESERVE_WEIGHT, which ZERO registered skills declare at all.
-// Both are honest, structural registry gaps -- never selector bugs.
+// Both were honest, structural registry gaps -- never selector bugs.
+//
+// CORRECTION APPLIED (Stage 8.5S1B.R2, cutting-skill-graduated.ts): the
+// "CORECȚIE B2.2 ÎNAINTE DE RELEASE" requirement-4 investigation found the
+// REDUCE_LENGTH / MODIFY_PERIMETER_RELATIONSHIP zone gap to be a genuine
+// authoring omission (the file's own header already claimed both are
+// "truthfully universal across every elevation choice", matching
+// PRESERVE_LENGTH's own already-declared nape/occipital/crown/top zones)
+// and fixed it with real `zones`. "shorten" at nape is therefore now a
+// REAL cut candidate below -- this file's expectations were updated to
+// match the corrected, honest behavior. PRESERVE_WEIGHT remains an
+// intentional, still-open gap (zero skills declare it) -- weightIntent=
+// preserve stays unresolved, deliberately NOT forced to a match.
 const suite = process.env.DATABASE_URL ? describe : describe.skip;
 const owners = new Set<string>();
 
@@ -52,7 +64,7 @@ suite("B2.2 -- audit reproduction of the real straight-line + color-7 report (re
     owners.clear();
   });
 
-  it("reproduces exactly the reported symptoms: 0 CUT matches, 2 COLOR matches for the SAME skill, and 4 Unresolved when global relativeLength+density are also set unchanged on both sides", async () => {
+  it("post-fix: nape lengthIntent=shorten is now a real CUT match (skill-cutting-graduated / REDUCE_LENGTH), 2 COLOR matches for the SAME skill, and 3 Unresolved (weightIntent=preserve + the two global facts) when global relativeLength+density are also set unchanged on both sides", async () => {
     const { ownerUserId, clientId } = await seedOwnerAndClient();
 
     const current: HairStateSnapshotPayload = {
@@ -79,8 +91,13 @@ suite("B2.2 -- audit reproduction of the real straight-line + color-7 report (re
     const cutMatches = selection.candidateMatches.filter((m) => m.matchedCapability !== "EVALUATE_COLOR_SERVICE");
     const colorMatches = selection.candidateMatches.filter((m) => m.matchedCapability === "EVALUATE_COLOR_SERVICE");
 
-    // Reported: zero CUT skills.
-    expect(cutMatches).toHaveLength(0);
+    // Post-fix: exactly one real CUT match, tracing to the corrected
+    // REDUCE_LENGTH zone declaration on skill-cutting-graduated.
+    expect(cutMatches).toHaveLength(1);
+    expect(cutMatches[0]!.skillKey).toBe("skill-cutting-graduated");
+    expect(cutMatches[0]!.matchedCapability).toBe("REDUCE_LENGTH");
+    expect(cutMatches[0]!.deltaEntry.field).toBe("lengthIntent");
+    expect(cutMatches[0]!.deltaEntry.scope).toBe("nape");
     // Reported: two matches for the same color skill.
     expect(colorMatches).toHaveLength(2);
     expect(new Set(colorMatches.map((m) => m.skillDefinitionId)).size).toBe(1);
@@ -88,13 +105,15 @@ suite("B2.2 -- audit reproduction of the real straight-line + color-7 report (re
     expect(colorMatches.find((m) => m.deltaEntry.field === "colorLevel")?.deltaEntry.transformation).toBe("INCREASED");
     expect(colorMatches.find((m) => m.deltaEntry.field === "colorTone")?.deltaEntry.transformation).toBe("PRESERVED");
 
-    // Reported: 4 Unresolved.
-    expect(selection.unresolvedDeltas).toHaveLength(4);
+    // Post-fix: 3 Unresolved -- nape/lengthIntent is now resolved; the two
+    // global facts and nape/weightIntent (PRESERVE_WEIGHT, still an
+    // intentionally open registry gap) remain honestly unresolved.
+    expect(selection.unresolvedDeltas).toHaveLength(3);
     const unresolvedKeys = selection.unresolvedDeltas.map((e) => `${e.scope}/${e.field}`).sort();
-    expect(unresolvedKeys).toEqual(["global/density", "global/relativeLength", "nape/lengthIntent", "nape/weightIntent"]);
+    expect(unresolvedKeys).toEqual(["global/density", "global/relativeLength", "nape/weightIntent"]);
   });
 
-  it("STRUCTURAL PROOF, isolated: nape lengthIntent=shorten and weightIntent=preserve are unresolved on their own, with no global facts involved at all", async () => {
+  it("STRUCTURAL PROOF, isolated: nape lengthIntent=shorten now resolves to a real CUT candidate (post-fix); weightIntent=preserve stays unresolved (PRESERVE_WEIGHT, an intentionally open gap) on its own, with no global facts involved at all", async () => {
     const { ownerUserId, clientId } = await seedOwnerAndClient();
     const current: HairStateSnapshotPayload = { ...basePayload(), colorState: { level: { value: "level_5", source: "observed" }, tone: { value: "warm_gold", source: "observed" } } };
     const target: HairStateSnapshotPayload = {
@@ -109,13 +128,15 @@ suite("B2.2 -- audit reproduction of the real straight-line + color-7 report (re
 
     const selection = await selectMultiDomainCandidateSkills(ownerUserId, clientId);
     const cutMatches = selection.candidateMatches.filter((m) => m.matchedCapability !== "EVALUATE_COLOR_SERVICE");
-    expect(cutMatches).toHaveLength(0);
-    expect(selection.unresolvedDeltas.map((e) => `${e.scope}/${e.field}`).sort()).toEqual(["nape/lengthIntent", "nape/weightIntent"]);
+    expect(cutMatches).toHaveLength(1);
+    expect(cutMatches[0]!.skillKey).toBe("skill-cutting-graduated");
+    expect(cutMatches[0]!.matchedCapability).toBe("REDUCE_LENGTH");
+    expect(selection.unresolvedDeltas.map((e) => `${e.scope}/${e.field}`).sort()).toEqual(["nape/weightIntent"]);
     // Color is unchanged (both sides level_5/warm_gold) -> both entries PRESERVED, still real candidates (2 matches, 1 skill).
     expect(selection.candidateMatches.filter((m) => m.matchedCapability === "EVALUATE_COLOR_SERVICE")).toHaveLength(2);
   });
 
-  it("THE FIX: perimeterRelationship='at_perimeter' + lengthIntent='preserve' at nape -- the correct vocabulary for a straight, one-length result -- DOES produce a real CUT match, proving the gap is genuinely closable with the existing registry for the 'preserve/establish' case (not 'shorten')", async () => {
+  it("perimeterRelationship='at_perimeter' + lengthIntent='preserve' at nape -- the correct vocabulary for a straight, one-length result -- produces a real CUT match via the establish-guide skill (independent of the Stage 8.5S1B.R2 graduated-skill zone fix above, which separately closes the 'shorten' case)", async () => {
     const { ownerUserId, clientId } = await seedOwnerAndClient();
     const current = basePayload();
     const target: HairStateSnapshotPayload = withZone(basePayload(), "nape", {

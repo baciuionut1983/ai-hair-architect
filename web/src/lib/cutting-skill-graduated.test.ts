@@ -68,6 +68,18 @@ describe("A. REAL: Graduated Cutting -- Skill Definition", () => {
     expect(kinds).toContain("MODIFY_PERIMETER_RELATIONSHIP");
   });
 
+  it("[Stage 8.5S1B.R2] REDUCE_LENGTH is zone-scoped to the same real HeadZone values as PRESERVE_LENGTH, matching this file's own 'truthfully universal / regardless of elevation' claim -- 'shorten' at nape/occipital/crown/top is now a real, reachable candidate", () => {
+    const preserveLength = GRADUATED_CUTTING_SKILL.capabilities?.find((c) => c.kind === "PRESERVE_LENGTH");
+    const reduceLength = GRADUATED_CUTTING_SKILL.capabilities?.find((c) => c.kind === "REDUCE_LENGTH");
+    expect(reduceLength?.zones).toEqual(preserveLength?.zones);
+    expect(reduceLength?.zones).toEqual(["nape", "occipital", "crown", "top"]);
+  });
+
+  it("[Stage 8.5S1B.R2] MODIFY_PERIMETER_RELATIONSHIP is DELIBERATELY left without own zones -- still structurally unreachable, never forced -- because the selector requires it for ANY new perimeterRelationship value alike (at_perimeter/shorter_than_perimeter/longer_than_perimeter), and this Skill only ever truthfully produces shorter_than_perimeter, never at_perimeter (One-Length-Perimeter's own defining trait)", () => {
+    const modifyPerimeter = GRADUATED_CUTTING_SKILL.capabilities?.find((c) => c.kind === "MODIFY_PERIMETER_RELATIONSHIP");
+    expect(modifyPerimeter?.zones).toBeUndefined();
+  });
+
   it("9. no invented capability kind -- every declared capability is a real, closed SKILL_CAPABILITY_KINDS member", () => {
     for (const c of GRADUATED_CUTTING_SKILL.capabilities ?? []) {
       expect(SKILL_CAPABILITY_KINDS as readonly string[]).toContain(c.kind);

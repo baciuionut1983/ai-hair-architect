@@ -179,11 +179,19 @@ describe("c.2c pure elevation values and governed status exceptions", () => {
     }
     expect(pack.concepts.every(c => !c.relationships?.length)).toBe(true);
   });
+  // "CORECȚIE B2.2 ÎNAINTE DE RELEASE" (this revision): both literals below
+  // changed because the requirement-4 zone-matching investigation added
+  // real `zones` to cutting-skill-graduated.ts's REDUCE_LENGTH and
+  // cutting-skill-one-length-perimeter.ts's CROSS_CHECK_VALIDATE
+  // capabilities (evidence + tests in each file's own test suite) --
+  // approved content changes to protected professional-authority files,
+  // not accidental drift. New values captured by directly recomputing
+  // this exact hash against the real, post-fix files (never guessed).
   it("leaves protected Skill, TD, review/persistence, vocabulary and eligibility source unchanged", () => {
     const hashes = {
       "cutting-skill-45-degree-interior": "6876f3309311ffaaa3500bc6389ad90b3a4c68edebd596dbc11b97fab68104e9",
-      "cutting-skill-graduated": "ba800f9d50ba0b1dde3edb209bf594c54ff595c7efc281925fa0428f951b4108",
-      "cutting-skill-one-length-perimeter": "4e7b6b061b49b4234288490324251f26e9a15364ba60c45f5a49848278419220",
+      "cutting-skill-graduated": "feb31bff67077ff993e51077e9b9cc81cb76bfbe411ad0e9ae332d23cc2be614",
+      "cutting-skill-one-length-perimeter": "e7c5808168e9c1a26e09df99db4461ded8db5853c35a87611342df421e5bbff2",
       "owner-knowledge-eligibility": "41ec66b7696d11dafefc5dc4921c843c18bca2e715a80bd01e676684b5aa9655",
       "technical-demonstration-cutting-contracts": "14110ef0636f4da37b6dc743c30244abb2a3151a0c8a598dd6ec96d5c681951a",
       "professional-field-claim-decision-service": "7cae8cd45dc39df968422f3a8c5fb0b74fbc6285e724fe15313babfd5a544dfc",

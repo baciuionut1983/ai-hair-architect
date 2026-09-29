@@ -25,6 +25,7 @@ import type { HairStateSnapshotRecord } from "@/lib/hair-state-snapshot-reposito
 import type { HairStateDeltaEntry } from "@/lib/hair-state-delta";
 import type { SkillCandidateMatch } from "@/lib/hair-state-delta-skill-candidate-selector";
 import type { LanguageCode } from "@/lib/language-registry";
+import { DEFAULT_PROFESSIONAL_BRAIN_DOMAIN_INTENT, type ProfessionalBrainDomain } from "@/lib/professional-brain-domain-intent-contracts";
 
 // AI Hair Architect, B2 -- PROFESSIONAL BRAIN CUT+COLOR FLOW, pure UI
 // logic. No fetch, no React, no rendering -- testable without a render
@@ -218,12 +219,32 @@ function applyColorFacts(color: ColorFactsInput) {
   };
 }
 
-export function buildCurrentStatePayload(global: GlobalCutFactsInput, color: ColorFactsInput): HairStateSnapshotPayload {
+// "CORECȚIE B2.2 ÎNAINTE DE RELEASE", requirement 1 -- `domains` is
+// embedded into the CURRENT payload's own `evaluationDomainIntent` (see
+// hair-state-snapshot-validators.ts's own field header for why this, not
+// a new persistence mechanism, is where a round's domain choice lives).
+// Only ever meaningful on CURRENT -- the FIRST snapshot of a round --
+// since that is the one this app's own domain-intent resolution reads
+// (professional-brain-orchestrator.ts's resolveEvaluationDomainIntent).
+export function buildCurrentStatePayload(global: GlobalCutFactsInput, color: ColorFactsInput, domains: readonly ProfessionalBrainDomain[]): HairStateSnapshotPayload {
   return {
     globalState: applyGlobalCutFacts(global),
     zones: HEAD_ZONES.map((zone) => buildUnassessedZoneEntry(zone)),
     colorState: applyColorFacts(color),
+    evaluationDomainIntent: { domains },
   };
+}
+
+// Reads back the ACTIVE domain intent for a round from its own CURRENT
+// snapshot (mirrors professional-brain-orchestrator.ts's own
+// resolveEvaluationDomainIntent exactly, client-side, pure -- the page
+// already has the full snapshot object from its own fetch, so no second
+// server round-trip is needed). Defaults to CUT+COLOR for a snapshot
+// created before this requirement existed, or when no CURRENT snapshot
+// exists yet at all (the domain-selection step's own fresh starting
+// point).
+export function resolveClientDomainIntent(currentSnapshot: HairStateSnapshotRecord | null): readonly ProfessionalBrainDomain[] {
+  return currentSnapshot?.payload.evaluationDomainIntent?.domains ?? DEFAULT_PROFESSIONAL_BRAIN_DOMAIN_INTENT.domains;
 }
 
 export function buildTargetStatePayload(global: GlobalCutFactsInput, color: ColorFactsInput, zoneIntent: TargetZoneIntentInput | null): HairStateSnapshotPayload {
@@ -408,10 +429,21 @@ export type PbStringKey =
   | "vocabularyExecution"
   | "cutBadge"
   | "colorBadge"
+  | "stylingBadge"
   | "evaluationGateNote"
   | "confirmedValuesHeading"
   | "noCandidatesYet"
-  | "backToPrefix";
+  | "backToPrefix"
+  | "domainSelectionHeading"
+  | "domainSelectionHelp"
+  | "domainSelectionFrozenNote"
+  | "domainSelectionEmptyError"
+  | "domainActiveLabel"
+  | "stylingGapTitle"
+  | "stylingGapIntro"
+  | "stylingGapMissingContractsHeading"
+  | "stylingGapMissingFactsHeading"
+  | "noFieldsForSelectedDomains";
 
 const PB_EN: Record<PbStringKey, string> = {
   pageTitle: "CUT + COLOR evaluation",
@@ -440,7 +472,7 @@ const PB_EN: Record<PbStringKey, string> = {
   cancelAndGoBack: "Cancel and go back",
   zoneFactsHelpNote: "Only the chosen zone's values are set; every other zone stays honestly unassessed.",
   oneLengthHint:
-    "For a straight, one-length result at this zone: set Perimeter relationship to \"at perimeter\" and Length intent to \"preserve\" or \"maintain\". \"Shorten\" means a length reduction, a different, currently unmatched request -- see Unresolved below if you choose it.",
+    "Perimeter relationship records a real, stated intent (for example \"at perimeter\" for a straight, one-length result), but on its own it does not yet match any registered skill -- a known registry gap, not a problem with what you're recording; see Unresolved below. Length intent is evaluated separately: \"preserve\"/\"maintain\" matches a guide-establishing skill, and \"shorten\" matches a length-reduction skill in some zones -- neither depends on the Perimeter relationship value.",
   newRoundTitle: "New evaluation round",
   newRoundBody: "You're recording a new current/target state. The previous confirmed evaluation stays exactly as it was approved -- it will only be marked superseded, automatically, once this new round is itself confirmed.",
   unresolvedTitle: "Unresolved",
@@ -457,10 +489,22 @@ const PB_EN: Record<PbStringKey, string> = {
   vocabularyExecution: "Execution: the real haircut or color service performed by the professional, or a generated video demonstration -- neither ever happens from this page.",
   cutBadge: "Cut",
   colorBadge: "Color",
+  stylingBadge: "Styling",
   evaluationGateNote: "Evaluation gate, not an execution -- see below.",
   confirmedValuesHeading: "Confirmed values",
   noCandidatesYet: "No candidate skills matched yet.",
   backToPrefix: "Back to",
+  domainSelectionHeading: "0. Which service(s) is this evaluation for?",
+  domainSelectionHelp:
+    "Choose any combination of Cut, Color, and Styling. This choice scopes both the form below and the actual computed result -- not just what's displayed. It stays fixed for the rest of this evaluation round.",
+  domainSelectionFrozenNote: "Fixed for this confirmed evaluation -- start a new evaluation to choose differently.",
+  domainSelectionEmptyError: "Choose at least one service.",
+  domainActiveLabel: "This evaluation covers:",
+  stylingGapTitle: "Styling has no engine yet",
+  stylingGapIntro: "This evaluation includes Styling, which cannot be computed honestly yet. Nothing is fabricated -- here is exactly what's missing:",
+  stylingGapMissingContractsHeading: "Missing contracts/modules",
+  stylingGapMissingFactsHeading: "Missing professional facts",
+  noFieldsForSelectedDomains: "No fields to record yet for the selected service(s).",
 };
 
 const PB_RO: Record<PbStringKey, string> = {
@@ -490,7 +534,7 @@ const PB_RO: Record<PbStringKey, string> = {
   cancelAndGoBack: "Anulează și revino",
   zoneFactsHelpNote: "Sunt setate doar valorile pentru zona aleasă; fiecare altă zonă rămâne onest neevaluată.",
   oneLengthHint:
-    "Pentru un rezultat drept, pe o singură lungime (one length), în această zonă: setează Relație cu perimetrul pe \"la perimetru\" și Intenție lungime pe \"păstrează\" sau \"menține\". \"Scurtează\" înseamnă o reducere de lungime, o cerere diferită, care nu are încă potrivire -- vezi secțiunea Nerezolvate mai jos dacă o alegi.",
+    "Relația cu perimetrul înregistrează o intenție reală, declarată (de exemplu \"la perimetru\" pentru un rezultat drept, pe o singură lungime), dar, de una singură, nu se potrivește încă cu niciun skill înregistrat -- un gol cunoscut în registru, nu o problemă cu ce înregistrezi; vezi secțiunea Nerezolvate mai jos. Intenția de lungime este evaluată separat: \"păstrează\"/\"menține\" se potrivește cu un skill care stabilește ghidul, iar \"scurtează\" se potrivește cu un skill de reducere a lungimii în anumite zone -- niciuna nu depinde de valoarea Relației cu perimetrul.",
   newRoundTitle: "Rundă nouă de evaluare",
   newRoundBody: "Înregistrezi o stare curentă/țintă nouă. Evaluarea confirmată anterior rămâne exact așa cum a fost aprobată -- va fi marcată drept înlocuită (superseded) automat, doar când această rundă nouă va fi ea însăși confirmată.",
   unresolvedTitle: "Nerezolvate",
@@ -507,10 +551,22 @@ const PB_RO: Record<PbStringKey, string> = {
   vocabularyExecution: "Execuție: tunsoarea sau serviciul de culoare real, efectuat de profesionist, sau o demonstrație video generată -- niciuna nu se întâmplă vreodată din această pagină.",
   cutBadge: "Tuns",
   colorBadge: "Culoare",
+  stylingBadge: "Coafare",
   evaluationGateNote: "Poartă de evaluare, nu o execuție -- vezi mai jos.",
   confirmedValuesHeading: "Valori confirmate",
   noCandidatesYet: "Niciun skill candidat potrivit încă.",
   backToPrefix: "Înapoi la",
+  domainSelectionHeading: "0. Pentru ce serviciu (servicii) este această evaluare?",
+  domainSelectionHelp:
+    "Alege orice combinație dintre Tuns, Culoare și Coafare. Această alegere delimitează atât formularul de mai jos, cât și rezultatul calculat efectiv -- nu doar ce se afișează. Rămâne fixă pentru restul acestei runde de evaluare.",
+  domainSelectionFrozenNote: "Fixă pentru această evaluare confirmată -- începe o evaluare nouă ca să alegi altfel.",
+  domainSelectionEmptyError: "Alege cel puțin un serviciu.",
+  domainActiveLabel: "Această evaluare acoperă:",
+  stylingGapTitle: "Coafarea nu are încă un motor",
+  stylingGapIntro: "Această evaluare include Coafare, care nu poate fi calculată onest încă. Nu se inventează nimic -- iată exact ce lipsește:",
+  stylingGapMissingContractsHeading: "Contracte/module lipsă",
+  stylingGapMissingFactsHeading: "Fapte profesionale lipsă",
+  noFieldsForSelectedDomains: "Niciun câmp de înregistrat încă pentru serviciul (serviciile) alese.",
 };
 
 export function pbTranslate(language: LanguageCode, key: PbStringKey): string {

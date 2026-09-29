@@ -62,6 +62,15 @@ describe("T1.6.2.a architecture boundary", () => {
   // intentional, and re-pinned to their new baseline below; every OTHER
   // file in this table (including professional-reasoning-contracts.ts and
   // professional-knowledge-registry.ts) is untouched by B1.
+  //
+  // "CORECȚIE B2.2 ÎNAINTE DE RELEASE" (this revision): professional-brain-
+  // orchestrator.ts gained a second, additive round of multi-domain
+  // exports -- resolveEvaluationDomainIntent/selectCandidateSkillsForDomains/
+  // ProfessionalBrainStylingNotImplementedError (requirement 1's real
+  // backend-level CUT/COLOR/STYLING scoping, composing the SAME two Stage 4
+  // modules the file's own multi-domain functions already use) -- reviewed,
+  // intentional, re-pinned below; every other file in this table is
+  // untouched by this revision.
   it.each(Object.entries({
     "professional-learning-procedural-review-validators.ts": "12b3488504aa15a8e949fdc7d98d937b62ca8435ecfdc500bb05733760218c3b",
     "professional-learning-draft-repository.ts": "1e75d8a8492c2b5a0f845e7bf919e02a4ef2f3094debe2ef062a374f64ded98c",
@@ -69,7 +78,7 @@ describe("T1.6.2.a architecture boundary", () => {
     "owner-knowledge-eligibility.ts": "41ec66b7696d11dafefc5dc4921c843c18bca2e715a80bd01e676684b5aa9655",
     "owner-knowledge-eligibility-listing.ts": "dcb8611a0efd3ca3f4ec2c6fe332ab7e7484a7e6d9abb233c6cb1fed047c4bea",
     "owner-knowledge-eligibility-section.ts": "567d12ac254743714e7a2c48ff77dae43b7246d53fcb92b4918ded26401c07a4",
-    "professional-brain-orchestrator.ts": "9a7e45efeeffe9ee31ddec96dd547ad61f6f86956614c6ab19a25e46f52da107",
+    "professional-brain-orchestrator.ts": "9f5189ed7ea35b0a85e4554fea7c4cce273a3c29fec2fb53958656494b59382e",
     "professional-reasoning-contracts.ts": "9e6e8fd55fe0caaad35ba0e7558b76ee5b65199317467aa7ecfd0eac09dd049f",
     "professional-reasoning-provider-gemini.ts": "053dd528bac21720e24f83e22c8f7058359922b51bb052fed86fed21deafb9d5",
     "professional-execution-plan-compiler.ts": "de4e364966b706e6a89c7237528327e6d0f1f507bec8ba420b2e8b69b0ba3227",

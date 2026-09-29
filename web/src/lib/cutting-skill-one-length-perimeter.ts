@@ -258,12 +258,42 @@ export const ONE_LENGTH_PERIMETER_SKILL: SkillDefinition<OneLengthPerimeterFact>
   // Execution Unit is an explicit symmetry/continuity confirmation step.
   // Zones use the canonical HeadZone vocabulary, deliberately distinct
   // from this Skill's own vertical-specific applicableZones above.
+  //
+  // ZONE-MATCHING CORRECTION (this revision): CROSS_CHECK_VALIDATE
+  // previously declared no own `zones`, so it silently fell back to this
+  // Skill's own `applicableZones` (the DIFFERENT, execution-unit-scoped
+  // vocabulary listed above -- never real HeadZone values). Corrected to
+  // carry the SAME real `zones` already declared on this Skill's own
+  // sibling capabilities (PRESERVE_LENGTH/CONNECT_ZONES: nape/occipital/
+  // sides) -- this Skill's own final verification step, by construction
+  // covering the identical real zones as every other capability of this
+  // one Skill, and value-safe: CROSS_CHECK_VALIDATE is not currently
+  // required by any hair-state-delta-skill-candidate-selector.ts case, so
+  // this fix has zero behavioral effect today and carries no risk of a
+  // misleading match.
+  //
+  // PRESERVE_PERIMETER was investigated for the identical fix and
+  // DELIBERATELY LEFT UNCHANGED (still no `zones`, still structurally
+  // unreachable): the selector requires this capability for ANY
+  // `perimeterRelationship` value preserved unchanged alike (`at_
+  // perimeter`, `shorter_than_perimeter`, OR `longer_than_perimeter` --
+  // see hair-state-delta-skill-candidate-selector.ts's own
+  // `perimeterRelationship` case), with no per-value distinction. This
+  // Skill's own comment above defines PRESERVE_PERIMETER narrowly -- "the
+  // perimeter relationship stays AT THE PERIMETER throughout" -- so
+  // zone-scoping it would surface One-Length-Perimeter as a candidate even
+  // when a client's hair is already `shorter_than_perimeter` (graduated)
+  // and staying that way, which this Skill structurally cannot produce.
+  // Same root cause and same resolution as cutting-skill-graduated.ts's
+  // own MODIFY_PERIMETER_RELATIONSHIP finding: needs a value-aware
+  // capability model for perimeterRelationship, out of scope here, left
+  // fail-closed rather than forced.
   capabilities: [
     { kind: "ESTABLISH_GUIDE", zones: ["nape"] },
     { kind: "PRESERVE_LENGTH", zones: ["nape", "occipital", "sides"] },
     { kind: "PRESERVE_PERIMETER" },
     { kind: "CONNECT_ZONES", zones: ["nape", "occipital", "sides"] },
-    { kind: "CROSS_CHECK_VALIDATE" },
+    { kind: "CROSS_CHECK_VALIDATE", zones: ["nape", "occipital", "sides"] },
   ],
   // Ionuț's own explicit rule: no Slice-and-Slide when preserving this
   // pure one-length structure -- declarative only, consulted by a future

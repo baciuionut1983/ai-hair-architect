@@ -111,6 +111,43 @@ import type { ExecutionUnit, ExecutionUnitParameterRule } from "@/lib/profession
 // parameterization) rather than silently picking one -- documented gap,
 // not resolved here, not faked.
 //
+// ZONE-MATCHING CORRECTION (Stage 8.5S1B.R2, this revision): REDUCE_LENGTH
+// previously declared no own `zones`, so it silently fell back to this
+// Skill's own `applicableZones` (a DIFFERENT, execution-unit-scoped
+// vocabulary -- "perimeter_contour_reference"/"graduated_execution_zone"/
+// "cross_check_area" -- never real HeadZone values), which made it
+// structurally unmatchable against any real client-anatomy delta.
+// Corrected here to carry the SAME real `zones` already declared on
+// PRESERVE_LENGTH below (nape/occipital/crown/top) -- directly supported
+// by this exact paragraph's own, already-existing claim that REDUCE_LENGTH
+// is "truthfully universal across every elevation choice" / "regardless
+// of elevation" across this Skill's whole graduated execution range, and
+// value-safe: `requiredCapabilityKinds` only ever requires REDUCE_LENGTH
+// for an unambiguous "shorten" target, so this fix cannot surface
+// Graduated Cutting for any other, professionally different intent.
+//
+// MODIFY_PERIMETER_RELATIONSHIP was investigated for the same fix and
+// DELIBERATELY LEFT UNCHANGED (still no `zones`, still structurally
+// unreachable): the selector's own `requiredCapabilityKinds` requires this
+// ONE capability kind for ANY new `perimeterRelationship` target value
+// alike (`at_perimeter`, `shorter_than_perimeter`, OR
+// `longer_than_perimeter` -- see hair-state-delta-skill-candidate-
+// selector.ts's own `perimeterRelationship` case), with no per-value
+// distinction. Since this Skill's own documented truth is that graduation
+// produces `shorter_than_perimeter` specifically -- never `at_perimeter`,
+// the DEFINING trait of the competing One-Length-Perimeter skill --
+// zone-scoping this capability would surface Graduated Cutting as a
+// candidate even for an `at_perimeter` (one-length/blunt) target, the
+// opposite of what this Skill does. That would be a NEW forced/misleading
+// match, exactly what this correction must not introduce. Fixing it
+// properly needs a value-aware capability model for perimeterRelationship
+// (e.g. splitting MODIFY_PERIMETER_RELATIONSHIP by target value) -- a
+// deeper selector-contract change, out of scope here, left fail-closed.
+// BUILD_WEIGHT and REDUCE_WEIGHT are ALSO deliberately NOT touched -- the
+// MG1 gap above is an intentional, still-open professional-authoring gap
+// (Ionuț has not stated which elevation/zone subset each weight effect
+// corresponds to), never silently resolved just to clear "Unresolved".
+//
 // CONNECT_ZONES is justified structurally: this Skill's own Execution
 // Unit chain (EU2/EU3 prerequisite on EU1, when EU1 applies) continues
 // execution FROM the established perimeter/contour guide INTO the
@@ -333,7 +370,7 @@ export const GRADUATED_CUTTING_SKILL: SkillDefinition<GraduatedCuttingFact> = {
   // SkillCapability's own documented semantics.
   capabilities: [
     { kind: "MODIFY_PERIMETER_RELATIONSHIP" },
-    { kind: "REDUCE_LENGTH" },
+    { kind: "REDUCE_LENGTH", zones: ["nape", "occipital", "crown", "top"] },
     { kind: "CONNECT_ZONES" },
     { kind: "PRESERVE_LENGTH", zones: ["nape", "occipital", "crown", "top"] },
     { kind: "BUILD_WEIGHT" },

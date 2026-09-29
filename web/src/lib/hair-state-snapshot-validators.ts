@@ -1,6 +1,7 @@
 import type { ColorToneDirection, HairCondition, HairDensity, HairLength, HairTexture, HairType } from "@/lib/contracts";
 import { DENSITY_OPTIONS, HAIR_CONDITION_OPTIONS, HAIR_LENGTH_OPTIONS, HAIR_TEXTURE_OPTIONS, HAIR_TYPE_OPTIONS } from "@/lib/analysis-field-options";
 import { HEAD_ZONES, isHeadZone, isZoneLengthIntent, isZoneWeightIntent, type HeadZone, type ZoneLengthIntent, type ZoneWeightIntent } from "@/lib/technical-visual-map-validators";
+import { isValidProfessionalBrainDomainIntent, type ProfessionalBrainDomainIntent } from "@/lib/professional-brain-domain-intent-contracts";
 
 // AI Hair Architect, Professional Skill Engine Stage 2 -- HAIR STATE
 // SNAPSHOT, contract/foundation layer. Types + pure validators + a pure
@@ -340,12 +341,29 @@ export interface HairStateSnapshotPayload {
   // below); this is never retroactively required or reinterpreted on old
   // snapshot rows. Global only -- see HairStateColorEntry's own header.
   colorState?: HairStateColorEntry;
+  // "CORECȚIE B2.2 ÎNAINTE DE RELEASE" ADDITIVE, optional -- WHICH
+  // domain(s) (cut/color/styling) this evaluation round covers, chosen by
+  // the professional BEFORE the CURRENT form and recorded here, on the
+  // FIRST snapshot of a round (the CURRENT draft) only, deliberately
+  // reusing this payload's own existing DRAFT->CONFIRMED immutability
+  // instead of a new persistence mechanism: once CURRENT is CONFIRMED,
+  // this field is frozen exactly like every other fact here, so an
+  // already-confirmed evaluation's domain scope can never be retroactively
+  // reinterpreted -- a fresh choice only ever happens by starting a new
+  // round (a new CURRENT draft), matching this page's own established
+  // "start a new evaluation" mechanics. A pre-existing snapshot with no
+  // such field remains fully valid (see isHairStateSnapshotPayload below)
+  // and defaults to DEFAULT_PROFESSIONAL_BRAIN_DOMAIN_INTENT (cut+color)
+  // at the call sites that read it -- see professional-brain-domain-
+  // intent-contracts.ts's own header.
+  evaluationDomainIntent?: ProfessionalBrainDomainIntent;
 }
 
 export function isHairStateSnapshotPayload(value: unknown): value is HairStateSnapshotPayload {
   if (!isRecord(value)) return false;
   if (!isHairStateGlobalEntry(value.globalState) || !isHairZoneStateArray(value.zones)) return false;
   if (value.colorState !== undefined && !isHairStateColorEntry(value.colorState)) return false;
+  if (value.evaluationDomainIntent !== undefined && !isValidProfessionalBrainDomainIntent(value.evaluationDomainIntent)) return false;
   return true;
 }
 

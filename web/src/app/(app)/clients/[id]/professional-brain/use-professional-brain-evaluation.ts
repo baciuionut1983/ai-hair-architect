@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { HairStateSnapshotRecord } from "@/lib/hair-state-snapshot-repository";
 import type { HairStateDeltaSkillSelectionResult } from "@/lib/hair-state-delta-skill-candidate-selector";
 import type { HairStateSnapshotPayload } from "@/lib/hair-state-snapshot-validators";
+import type { ProfessionalBrainStylingGapReport } from "@/lib/professional-brain-styling-gap";
 
 import { mapProfessionalBrainApiError } from "./professional-brain-logic";
 
@@ -18,6 +19,12 @@ export interface ProfessionalBrainEvaluationData {
   currentSnapshot: HairStateSnapshotRecord | null;
   targetSnapshot: HairStateSnapshotRecord | null;
   evaluation: HairStateDeltaSkillSelectionResult | null;
+  // "CORECȚIE B2.2 ÎNAINTE DE RELEASE" -- non-null exactly when both
+  // states are confirmed AND the active domain intent includes STYLING
+  // (which has no engine); `evaluation` stays null in that case, this
+  // carries the real, itemized gap report instead. See the evaluation
+  // route's own header.
+  stylingGap: ProfessionalBrainStylingGapReport | null;
 }
 
 export type ProfessionalBrainState = { status: "loading" } | { status: "error" } | ({ status: "ready" } & ProfessionalBrainEvaluationData);
