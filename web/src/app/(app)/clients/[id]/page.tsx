@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Camera, CalendarDays, ClipboardList, FlaskConical, Sparkles, Users, Wand2 } from "lucide-react";
+import { ArrowLeft, Camera, CalendarDays, ClipboardList, FlaskConical, Palette, Sparkles, Users, Wand2 } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -201,6 +201,25 @@ function AiAnalysisTab({ clientId, consultations }: { clientId: string; consulta
         </div>
         <Link href={`/clients/${clientId}/analysis/new`}>
           <Button type="button">Start a new analysis</Button>
+        </Link>
+      </Card>
+
+      {/* B2: Professional Brain CUT+COLOR evaluation, additive entry
+          point -- a separate flow from the Analysis wizard above, never
+          replacing it. */}
+      <Card className="flex flex-col items-start gap-3">
+        <Palette className="h-6 w-6 text-accent" aria-hidden="true" />
+        <div>
+          <p className="font-medium text-foreground">Professional Brain: cut + color evaluation</p>
+          <p className="mt-1 text-sm text-muted">
+            Record a current and target hair state (cut and color) and see the matching candidate skills and
+            delta. This is a professional evaluation only -- it never generates a formula or a video.
+          </p>
+        </div>
+        <Link href={`/clients/${clientId}/professional-brain`}>
+          <Button type="button" variant="secondary">
+            Open evaluation
+          </Button>
         </Link>
       </Card>
 
