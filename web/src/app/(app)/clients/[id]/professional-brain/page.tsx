@@ -8,8 +8,9 @@ import { useState } from "react";
 import { Alert, Badge, Button, Card, ErrorState, LoadingState, Select } from "@/components/ui";
 import type { HeadZone, ZoneLengthIntent, ZoneWeightIntent } from "@/lib/technical-visual-map-validators";
 import type { HairStateSnapshotRecord } from "@/lib/hair-state-snapshot-repository";
+import type { HairStateColorEntry, HairStateFact, HairStatePerimeterRelationship } from "@/lib/hair-state-snapshot-validators";
 import type { HairStateDeltaEntry } from "@/lib/hair-state-delta";
-import type { SkillCandidateMatch } from "@/lib/hair-state-delta-skill-candidate-selector";
+import { useUiLanguage } from "@/lib/ui-language-context";
 
 import { useClientProfile } from "../use-client-profile";
 import { useProfessionalBrainEvaluation, type ProfessionalBrainActionOutcome } from "./use-professional-brain-evaluation";
@@ -22,6 +23,7 @@ import {
   GLOBAL_FIBER_THICKNESS_OPTIONS,
   GLOBAL_LENGTH_OPTIONS,
   GLOBAL_TEXTURE_OPTIONS,
+  PERIMETER_RELATIONSHIP_OPTIONS,
   UNSPECIFIED_COLOR_FACTS,
   UNSPECIFIED_GLOBAL_CUT_FACTS,
   ZONE_LENGTH_INTENT_OPTIONS,
@@ -29,82 +31,99 @@ import {
   ZONE_WEIGHT_INTENT_OPTIONS,
   buildCurrentStatePayload,
   buildTargetStatePayload,
-  getCandidateDomain,
+  describeUnresolvedDelta,
   getExpectedConfirmedSnapshotId,
   getSnapshotStatusBadgeVariant,
   getSnapshotStatusLabel,
   getTransformationBadgeVariant,
   getTransformationLabel,
+  groupCandidateMatchesBySkill,
   hasColorCandidate,
+  pbTranslate,
   type ColorFactsInput,
   type GlobalCutFactsInput,
+  type GroupedSkillCandidate,
+  type PbStringKey,
+  type TargetZoneIntentInput,
 } from "./professional-brain-logic";
 
-// AI Hair Architect, B2 -- PROFESSIONAL BRAIN CUT+COLOR FLOW, page. The
-// smallest complete, honest UI over B1's real engine: create + confirm a
-// CURRENT state, create + confirm a TARGET state, then view the merged
-// CUT+COLOR delta and candidate skills. This page NEVER calls Stage 5
-// reasoning and NEVER starts video generation -- see the "where this flow
-// stops" banner below, always rendered once an evaluation exists.
+// AI Hair Architect, Professional Brain CUT+COLOR FLOW, page.
 //
-// COLOR is presented EXCLUSIVELY as a professional evaluation gate
-// (chemical history / strand test / stylist's own determination) -- this
-// page never renders a formula, developer volume, processing time, or any
-// guaranteed-result claim, matching color-skill-global-single-process-
-// evaluation-gate.ts's own real, authored scope.
+// B2 -- the smallest complete, honest UI over B1's real engine: create +
+// confirm a CURRENT state, create + confirm a TARGET state, then view the
+// merged CUT+COLOR delta and candidate skills. Never calls Stage 5
+// reasoning, never starts video generation.
 //
-// B2.1 -- SAFE EVALUATION USE. Three real gaps fixed from B2:
-//  (1) A matched color candidate was previously shown with no explicit
-//      statement that chemical history/strand test are UNKNOWN for this
-//      real client -- the canonical skill's own fixed parameter bindings
-//      (chemicalHistoryStatus/strandTestStatus) are never read or
-//      displayed anywhere in this page/API surface (confirmed absent by
-//      grep), but their absence alone isn't a clear enough signal that
-//      nothing about THIS client was ever actually checked. See
-//      ColorEvaluationDisclosure below -- now always rendered, explicit,
-//      never inferred from silence.
-//  (2) There was no way to start a second evaluation round after both
-//      snapshots were confirmed -- see the "start a new evaluation"
-//      section, which creates fresh DRAFT rows (never mutating the
-//      confirmed ones) and confirms them against the REAL previously-
-//      confirmed id (getExpectedConfirmedSnapshotId), fixing a real bug:
-//      every confirm call previously hardcoded `null`, which is only
-//      correct for a client's very first confirmation.
-//  (3) The missing-data disclosure is now unconditional wherever a color
-//      candidate appears, not folded into one list item's aside.
+// B2.1 -- explicit "what's missing for color" disclosure (chemical
+// history/strand test are UNKNOWN for the real client, never implied
+// known); safe "start a new evaluation" round using the real previously-
+// confirmed id, never a hardcoded null.
+//
+// B2.2 -- a real production test (straight-line cut + color base 7)
+// surfaced three further gaps, all fixed here:
+//  (1) There was no way to express "straight line / one length / straight
+//      perimeter" at all -- only lengthIntent/weightIntent were editable.
+//      Added perimeterRelationship (the field that actually models this)
+//      plus an explicit hint distinguishing it from "shorten" (a
+//      different axis -- how much length changes -- which, verified
+//      directly against the registered skill set, currently matches NO
+//      skill: only skill-cutting-graduated declares REDUCE_LENGTH, and
+//      its own applicableZones use a different zone vocabulary than
+//      HeadZone, so it can never actually match a real per-zone delta;
+//      see the B2.2 audit report for the full trace).
+//  (2) Repeated matches for the same skill (e.g. one color skill matching
+//      both a real change and an unchanged-but-still-required dimension)
+//      read as two unrelated findings. Now grouped per skill.
+//  (3) The pre-confirm summary showed only color. Now shows every CUT
+//      global fact, the edited zone's intent/perimeter, and color --
+//      all with provenance.
+// Also: intent-derived "Preserved" (a stated wish from an unknown
+// baseline) is now labeled distinctly from a confirmed, both-sides-known
+// "Preserved" -- see professional-brain-logic.ts's own
+// isIntentDerivedField/getTransformationLabel header.
 
-function GlobalCutFactsFields({ value, onChange, disabled }: { value: GlobalCutFactsInput; onChange: (v: GlobalCutFactsInput) => void; disabled: boolean }) {
+function GlobalCutFactsFields({
+  value,
+  onChange,
+  disabled,
+  t,
+}: {
+  value: GlobalCutFactsInput;
+  onChange: (v: GlobalCutFactsInput) => void;
+  disabled: boolean;
+  t: (key: PbStringKey) => string;
+}) {
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-      <Select label="Relative length" disabled={disabled} value={value.relativeLength} onChange={(e) => onChange({ ...value, relativeLength: e.target.value as GlobalCutFactsInput["relativeLength"] })}>
+      <Select label={t("relativeLengthLabel")} disabled={disabled} value={value.relativeLength} onChange={(e) => onChange({ ...value, relativeLength: e.target.value as GlobalCutFactsInput["relativeLength"] })}>
         {GLOBAL_LENGTH_OPTIONS.map((o) => (
           <option key={o} value={o}>
             {o}
           </option>
         ))}
       </Select>
-      <Select label="Fiber thickness" disabled={disabled} value={value.fiberThickness} onChange={(e) => onChange({ ...value, fiberThickness: e.target.value as GlobalCutFactsInput["fiberThickness"] })}>
+      <Select label={t("fiberThicknessLabel")} disabled={disabled} value={value.fiberThickness} onChange={(e) => onChange({ ...value, fiberThickness: e.target.value as GlobalCutFactsInput["fiberThickness"] })}>
         {GLOBAL_FIBER_THICKNESS_OPTIONS.map((o) => (
           <option key={o} value={o}>
             {o}
           </option>
         ))}
       </Select>
-      <Select label="Density" disabled={disabled} value={value.density} onChange={(e) => onChange({ ...value, density: e.target.value as GlobalCutFactsInput["density"] })}>
+      <Select label={t("densityLabel")} disabled={disabled} value={value.density} onChange={(e) => onChange({ ...value, density: e.target.value as GlobalCutFactsInput["density"] })}>
         {GLOBAL_DENSITY_OPTIONS.map((o) => (
           <option key={o} value={o}>
             {o}
           </option>
         ))}
       </Select>
-      <Select label="Texture" disabled={disabled} value={value.texture} onChange={(e) => onChange({ ...value, texture: e.target.value as GlobalCutFactsInput["texture"] })}>
+      <Select label={t("textureLabel")} disabled={disabled} value={value.texture} onChange={(e) => onChange({ ...value, texture: e.target.value as GlobalCutFactsInput["texture"] })}>
         {GLOBAL_TEXTURE_OPTIONS.map((o) => (
           <option key={o} value={o}>
             {o}
           </option>
         ))}
       </Select>
-      <Select label="Condition" disabled={disabled} value={value.condition} onChange={(e) => onChange({ ...value, condition: e.target.value as GlobalCutFactsInput["condition"] })}>
+      <Select label={t("conditionLabel")} disabled={disabled} value={value.condition} onChange={(e) => onChange({ ...value, condition: e.target.value as GlobalCutFactsInput["condition"] })}>
         {GLOBAL_CONDITION_OPTIONS.map((o) => (
           <option key={o} value={o}>
             {o}
@@ -115,17 +134,27 @@ function GlobalCutFactsFields({ value, onChange, disabled }: { value: GlobalCutF
   );
 }
 
-function ColorFactsFields({ value, onChange, disabled }: { value: ColorFactsInput; onChange: (v: ColorFactsInput) => void; disabled: boolean }) {
+function ColorFactsFields({
+  value,
+  onChange,
+  disabled,
+  t,
+}: {
+  value: ColorFactsInput;
+  onChange: (v: ColorFactsInput) => void;
+  disabled: boolean;
+  t: (key: PbStringKey) => string;
+}) {
   return (
     <div className="grid grid-cols-2 gap-3">
-      <Select label="Color level" disabled={disabled} value={value.level} onChange={(e) => onChange({ ...value, level: e.target.value as ColorFactsInput["level"] })}>
+      <Select label={t("colorLevelLabel")} disabled={disabled} value={value.level} onChange={(e) => onChange({ ...value, level: e.target.value as ColorFactsInput["level"] })}>
         {COLOR_LEVEL_OPTIONS.map((o) => (
           <option key={o} value={o}>
             {o}
           </option>
         ))}
       </Select>
-      <Select label="Color tone" disabled={disabled} value={value.tone} onChange={(e) => onChange({ ...value, tone: e.target.value as ColorFactsInput["tone"] })}>
+      <Select label={t("colorToneLabel")} disabled={disabled} value={value.tone} onChange={(e) => onChange({ ...value, tone: e.target.value as ColorFactsInput["tone"] })}>
         {COLOR_TONE_OPTIONS.map((o) => (
           <option key={o} value={o}>
             {o}
@@ -136,19 +165,55 @@ function ColorFactsFields({ value, onChange, disabled }: { value: ColorFactsInpu
   );
 }
 
-function SnapshotSummary({ snapshot }: { snapshot: HairStateSnapshotRecord }) {
-  const color = snapshot.payload.colorState;
+function FactLine({ label, fact }: { label: string; fact: HairStateFact<string> | { value: string; source: string } }) {
   return (
-    <div className="flex flex-wrap items-center gap-4 text-sm">
-      <Badge variant={getSnapshotStatusBadgeVariant(snapshot.status)}>{getSnapshotStatusLabel(snapshot.status)}</Badge>
-      <span className="text-muted">
-        Color level: <span className="text-foreground">{color?.level.value ?? "unspecified"}</span>{" "}
-        <span className="text-xs text-muted">({color?.level.source ?? "not_yet_assessed"})</span>
-      </span>
-      <span className="text-muted">
-        Color tone: <span className="text-foreground">{color?.tone.value ?? "unspecified"}</span>{" "}
-        <span className="text-xs text-muted">({color?.tone.source ?? "not_yet_assessed"})</span>
-      </span>
+    <div>
+      <span className="text-muted">{label}: </span>
+      <span className="text-foreground">{fact.value}</span> <span className="text-xs text-muted">({fact.source})</span>
+    </div>
+  );
+}
+
+const UNASSESSED: HairStateFact<string> = { value: "unspecified", source: "not_yet_assessed" };
+
+// B2.2 -- the pre-confirm/post-confirm summary now shows EVERY CUT global
+// fact plus the edited zone's own intent/perimeter (found by scanning for
+// the one zone with a professional_input-sourced fact, since this page
+// only ever edits one), plus color -- never color alone. All with
+// provenance, matching "arată toate valorile CUT și COLOR și proveniența
+// lor, nu doar culoarea" exactly.
+function SnapshotSummary({ snapshot, t }: { snapshot: HairStateSnapshotRecord; t: (key: PbStringKey) => string }) {
+  const { globalState, zones } = snapshot.payload;
+  const color: HairStateColorEntry | undefined = snapshot.payload.colorState;
+  const editedZone = zones.find((z) => z.lengthIntent.source === "professional_input" || z.weightIntent.source === "professional_input" || z.perimeterRelationship.source === "professional_input");
+
+  return (
+    <div className="flex flex-col gap-3 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant={getSnapshotStatusBadgeVariant(snapshot.status)}>{getSnapshotStatusLabel(snapshot.status)}</Badge>
+        <span className="text-xs font-semibold uppercase text-muted">{t("confirmedValuesHeading")}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
+        <FactLine label={t("relativeLengthLabel")} fact={globalState.relativeLength} />
+        <FactLine label={t("fiberThicknessLabel")} fact={globalState.fiberThickness} />
+        <FactLine label={t("densityLabel")} fact={globalState.density} />
+        <FactLine label={t("textureLabel")} fact={globalState.texture} />
+        <FactLine label={t("conditionLabel")} fact={globalState.condition} />
+        <FactLine label={t("colorLevelLabel")} fact={color?.level ?? UNASSESSED} />
+        <FactLine label={t("colorToneLabel")} fact={color?.tone ?? UNASSESSED} />
+      </div>
+      {editedZone ? (
+        <div>
+          <p className="text-xs font-semibold uppercase text-muted">
+            {t("zoneLabel")}: {editedZone.zone}
+          </p>
+          <div className="mt-1 grid grid-cols-2 gap-x-4 gap-y-1 sm:grid-cols-3">
+            <FactLine label={t("lengthIntentLabel")} fact={editedZone.lengthIntent} />
+            <FactLine label={t("weightIntentLabel")} fact={editedZone.weightIntent} />
+            <FactLine label={t("perimeterRelationshipLabel")} fact={editedZone.perimeterRelationship} />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -178,7 +243,7 @@ function DeltaTable({ entries }: { entries: readonly HairStateDeltaEntry[] }) {
                 {entry.target.value} <span className="text-xs">({entry.target.source})</span>
               </td>
               <td className="py-1 pr-3">
-                <Badge variant={getTransformationBadgeVariant(entry.transformation)}>{getTransformationLabel(entry.transformation)}</Badge>
+                <Badge variant={getTransformationBadgeVariant(entry.transformation)}>{getTransformationLabel(entry.transformation, entry.field)}</Badge>
               </td>
             </tr>
           ))}
@@ -188,24 +253,34 @@ function DeltaTable({ entries }: { entries: readonly HairStateDeltaEntry[] }) {
   );
 }
 
-function CandidateSkillList({ matches }: { matches: readonly SkillCandidateMatch[] }) {
-  if (matches.length === 0) {
-    return <p className="text-sm text-muted">No candidate skills matched yet.</p>;
+// B2.2 -- grouped by skill (see groupCandidateMatchesBySkill's own
+// header): a live-caught finding was that two rows for the SAME skill
+// (one real change, one unchanged-but-still-required dimension) read as
+// two unrelated findings. Every real match is still shown, just under
+// one card per skill.
+function CandidateSkillList({ groups, t }: { groups: readonly GroupedSkillCandidate[]; t: (key: PbStringKey) => string }) {
+  if (groups.length === 0) {
+    return <p className="text-sm text-muted">{t("noCandidatesYet")}</p>;
   }
   return (
     <ul className="flex flex-col gap-3">
-      {matches.map((match, i) => {
-        const domain = getCandidateDomain(match.matchedCapability);
-        const isColorGate = match.skillKey === COLOR_EVALUATION_GATE_SKILL_KEY;
+      {groups.map((group) => {
+        const isColorGate = group.skillKey === COLOR_EVALUATION_GATE_SKILL_KEY;
         return (
-          <li key={`${match.skillDefinitionId}-${match.deltaEntry.field}-${i}`} className="rounded-xl border border-border p-3">
+          <li key={group.skillDefinitionId} className="rounded-xl border border-border p-3">
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={domain === "color" ? "warning" : "neutral"}>{domain === "color" ? "Color" : "Cut"}</Badge>
-              <span className="text-sm font-medium text-foreground">{match.skillKey}</span>
-              <span className="text-xs text-muted">v{match.skillVersion} - {match.matchedCapability}</span>
+              <Badge variant={group.domain === "color" ? "warning" : "neutral"}>{group.domain === "color" ? t("colorBadge") : t("cutBadge")}</Badge>
+              <span className="text-sm font-medium text-foreground">{group.skillKey}</span>
+              <span className="text-xs text-muted">v{group.skillVersion}</span>
             </div>
-            <p className="mt-1 text-xs text-muted">{match.deterministicReason}</p>
-            {isColorGate ? <p className="mt-1 text-xs font-medium text-warning">Evaluation gate, not an execution -- see below.</p> : null}
+            <ul className="mt-1 flex flex-col gap-1">
+              {group.entries.map((entry, i) => (
+                <li key={i} className="text-xs text-muted">
+                  {entry.matchedCapability} ({getTransformationLabel(entry.deltaEntry.transformation, entry.deltaEntry.field)}) -- {entry.deterministicReason}
+                </li>
+              ))}
+            </ul>
+            {isColorGate ? <p className="mt-1 text-xs font-medium text-warning">{t("evaluationGateNote")}</p> : null}
           </li>
         );
       })}
@@ -213,30 +288,50 @@ function CandidateSkillList({ matches }: { matches: readonly SkillCandidateMatch
   );
 }
 
-// B2.1 -- always rendered, unconditionally, whenever a color candidate is
-// present -- never inferred from what's absent. Every statement below
-// describes what THIS real client's own record does NOT yet establish;
-// this page has no mechanism to record any of the three, by design (see
-// color-skill-global-single-process-evaluation-gate.ts's own header on
-// why the canonical skill instance is fixed, not per-client).
-function ColorEvaluationDisclosure() {
+// B2.2 -- lists every unresolved delta explicitly (scope/field/target/
+// transformation), never just a count. Never invents a missing
+// capability name -- see describeUnresolvedDelta's own header.
+function UnresolvedDeltaList({ entries, language, t }: { entries: readonly HairStateDeltaEntry[]; language: Parameters<typeof describeUnresolvedDelta>[1]; t: (key: PbStringKey) => string }) {
+  if (entries.length === 0) return null;
   return (
-    <Alert variant="warning" title="What's missing for color, and what this evaluation does not authorize">
+    <Alert variant="warning" title={t("unresolvedTitle")}>
+      <p className="text-sm">{t("unresolvedIntro")}</p>
       <ul className="mt-1 flex flex-col gap-1 text-sm">
-        <li>
-          Chemical history for this client: <span className="font-semibold">Unknown</span> -- not recorded anywhere in this flow.
-        </li>
-        <li>
-          Strand test for this client: <span className="font-semibold">Unknown</span> -- not recorded anywhere in this flow.
-        </li>
-        <li>
-          Stylist&apos;s own determination: <span className="font-semibold">Not yet recorded</span>.
-        </li>
+        {entries.map((entry, i) => (
+          <li key={i} className="flex items-start gap-2">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>{describeUnresolvedDelta(entry, language)}</span>
+          </li>
+        ))}
       </ul>
-      <p className="mt-2 text-sm">
-        This evaluation does <span className="font-semibold">not</span> authorize a color formula, developer volume, processing time, or any
-        chemical execution. A professional must independently confirm all three above, in person, before any color service.
-      </p>
+    </Alert>
+  );
+}
+
+function ColorEvaluationDisclosure({ t }: { t: (key: PbStringKey) => string }) {
+  return (
+    <Alert variant="warning" title={t("colorMissingTitle")}>
+      <ul className="mt-1 flex flex-col gap-1 text-sm">
+        <li>{t("colorMissingChemicalHistory")}</li>
+        <li>{t("colorMissingStrandTest")}</li>
+        <li>{t("colorMissingDetermination")}</li>
+      </ul>
+      <p className="mt-2 text-sm">{t("colorMissingAuthorization")}</p>
+    </Alert>
+  );
+}
+
+// Requested explicitly: the difference between a candidate skill, an
+// approved professional plan, and an execution must be reportable, not
+// just internally understood. Rendered once, near the candidate list.
+function VocabularyNote({ t }: { t: (key: PbStringKey) => string }) {
+  return (
+    <Alert variant="info" title={t("vocabularyTitle")}>
+      <ul className="mt-1 flex flex-col gap-1 text-sm">
+        <li>{t("vocabularyCandidateSkill")}</li>
+        <li>{t("vocabularyApprovedPlan")}</li>
+        <li>{t("vocabularyExecution")}</li>
+      </ul>
     </Alert>
   );
 }
@@ -250,6 +345,8 @@ const IDLE: ActionState = { busy: false, error: null };
 export default function ProfessionalBrainPage() {
   const params = useParams<{ id: string }>();
   const clientId = params.id;
+  const { language } = useUiLanguage();
+  const t = (key: PbStringKey) => pbTranslate(language, key);
 
   const clientState = useClientProfile(clientId);
   const { state, createCurrentState, createTargetState, confirmSnapshot } = useProfessionalBrainEvaluation(clientId);
@@ -261,24 +358,13 @@ export default function ProfessionalBrainPage() {
   const [targetZone, setTargetZone] = useState<HeadZone>("nape");
   const [targetLengthIntent, setTargetLengthIntent] = useState<ZoneLengthIntent>("unspecified");
   const [targetWeightIntent, setTargetWeightIntent] = useState<ZoneWeightIntent>("unspecified");
+  const [targetPerimeterRelationship, setTargetPerimeterRelationship] = useState<HairStatePerimeterRelationship>("unspecified");
 
   const [createCurrentState_, setCreateCurrentState_] = useState<ActionState>(IDLE);
   const [createTargetState_, setCreateTargetState_] = useState<ActionState>(IDLE);
   const [confirmCurrentState_, setConfirmCurrentState_] = useState<ActionState>(IDLE);
   const [confirmTargetState_, setConfirmTargetState_] = useState<ActionState>(IDLE);
 
-  // B2.1 -- "start a new evaluation" round. Creating these NEVER mutates
-  // an already-CONFIRMED snapshot (createCurrentState/createTargetState
-  // always insert a new, separately-versioned row -- see
-  // hair-state-snapshot-repository.ts's own createSnapshotRow); the old
-  // CONFIRMED pair is only ever marked SUPERSEDED, atomically, the moment
-  // the NEW pair is itself confirmed (confirmDraftSnapshot's own real
-  // transaction). Tracked locally because pickSnapshot (server-side)
-  // always prefers whatever is CONFIRMED over a newer DRAFT, so
-  // `state.currentSnapshot`/`targetSnapshot` keep showing the OLD
-  // confirmed pair until the NEW one is itself confirmed -- these two
-  // local variables are what let the page show the in-progress new draft
-  // in the meantime.
   const [newRoundActive, setNewRoundActive] = useState(false);
   const [newCurrentDraft, setNewCurrentDraft] = useState<HairStateSnapshotRecord | null>(null);
   const [newTargetDraft, setNewTargetDraft] = useState<HairStateSnapshotRecord | null>(null);
@@ -288,16 +374,21 @@ export default function ProfessionalBrainPage() {
     setter(outcome.ok ? IDLE : { busy: false, error: outcome.message });
   }
 
+  function resetTargetForm() {
+    setTargetGlobal(UNSPECIFIED_GLOBAL_CUT_FACTS);
+    setTargetColor(UNSPECIFIED_COLOR_FACTS);
+    setTargetLengthIntent("unspecified");
+    setTargetWeightIntent("unspecified");
+    setTargetPerimeterRelationship("unspecified");
+  }
+
   function startNewEvaluation() {
     setNewRoundActive(true);
     setNewCurrentDraft(null);
     setNewTargetDraft(null);
     setCurrentGlobal(UNSPECIFIED_GLOBAL_CUT_FACTS);
     setCurrentColor(UNSPECIFIED_COLOR_FACTS);
-    setTargetGlobal(UNSPECIFIED_GLOBAL_CUT_FACTS);
-    setTargetColor(UNSPECIFIED_COLOR_FACTS);
-    setTargetLengthIntent("unspecified");
-    setTargetWeightIntent("unspecified");
+    resetTargetForm();
     setCreateCurrentState_(IDLE);
     setCreateTargetState_(IDLE);
     setConfirmCurrentState_(IDLE);
@@ -305,10 +396,6 @@ export default function ProfessionalBrainPage() {
   }
 
   function cancelNewEvaluation() {
-    // The DB rows this may have already created (if any) are harmless,
-    // unconfirmed DRAFT snapshots -- never mutated, never treated as
-    // authoritative, exactly like an abandoned round-1 draft. Nothing to
-    // undo.
     setNewRoundActive(false);
     setNewCurrentDraft(null);
     setNewTargetDraft(null);
@@ -322,7 +409,10 @@ export default function ProfessionalBrainPage() {
   }
   async function handleCreateTarget() {
     setCreateTargetState_({ busy: true, error: null });
-    const zoneIntent = targetLengthIntent === "unspecified" && targetWeightIntent === "unspecified" ? null : { zone: targetZone, lengthIntent: targetLengthIntent, weightIntent: targetWeightIntent };
+    const nothingSet = targetLengthIntent === "unspecified" && targetWeightIntent === "unspecified" && targetPerimeterRelationship === "unspecified";
+    const zoneIntent: TargetZoneIntentInput | null = nothingSet
+      ? null
+      : { zone: targetZone, lengthIntent: targetLengthIntent, weightIntent: targetWeightIntent, perimeterRelationship: targetPerimeterRelationship };
     const outcome = await createTargetState(buildTargetStatePayload(targetGlobal, targetColor, zoneIntent));
     handleOutcome(outcome, setCreateTargetState_);
     if (outcome.ok && roundInProgress) setNewTargetDraft(outcome.snapshot);
@@ -376,55 +466,44 @@ export default function ProfessionalBrainPage() {
   }
 
   const { currentSnapshot, targetSnapshot, evaluation } = state;
-  // What the CURRENT/TARGET sections display: the in-progress round-2
-  // draft while one is active, otherwise whatever the server itself
-  // reports (its own newest CONFIRMED row, or the still-unconfirmed
-  // first draft). The `expected*ConfirmedSnapshotId` values used when
-  // confirming are always derived from `currentSnapshot`/`targetSnapshot`
-  // (the real, server-reported confirmed baseline), never from the local
-  // draft tracking -- see professional-brain-logic.ts's own header on
-  // getExpectedConfirmedSnapshotId for why.
   const effectiveCurrent = roundInProgress ? newCurrentDraft : currentSnapshot;
   const effectiveTarget = roundInProgress ? newTargetDraft : targetSnapshot;
+  const groupedCandidates = evaluation ? groupCandidateMatchesBySkill(evaluation.candidateMatches) : [];
 
   return (
     <div className="flex flex-col gap-6">
       <div>
         <Link href={`/clients/${clientId}`} className="inline-flex items-center gap-1 text-sm text-muted hover:text-foreground">
           <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-          Back to {client.fullName}
+          {t("backToPrefix")} {client.fullName}
         </Link>
-        <h1 className="mt-2 text-2xl font-semibold text-foreground">CUT + COLOR evaluation</h1>
+        <h1 className="mt-2 text-2xl font-semibold text-foreground">{t("pageTitle")}</h1>
       </div>
 
-      <Alert variant="info" title="Where this flow stops">
-        This evaluation computes a delta and candidate skills for cut and color, deterministically, from the states
-        you confirm below. It never calls the paid AI reasoning step and never starts video generation. Turning an
-        approved evaluation into a professional plan or a demonstration is a separate, explicitly authorized next
-        step -- not part of this page.
+      <Alert variant="info" title={t("flowStopsTitle")}>
+        {t("flowStopsBody")}
       </Alert>
 
       {roundInProgress ? (
-        <Alert variant="info" title="New evaluation round">
-          You&apos;re recording a new current/target state. The previous confirmed evaluation stays exactly as it was
-          approved -- it will only be marked superseded, automatically, once this new round is itself confirmed.{" "}
+        <Alert variant="info" title={t("newRoundTitle")}>
+          {t("newRoundBody")}{" "}
           <button type="button" className="underline" onClick={cancelNewEvaluation}>
-            Cancel and go back
+            {t("cancelAndGoBack")}
           </button>
           .
         </Alert>
       ) : null}
 
       <Card className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold text-foreground">1. Current state</h2>
+        <h2 className="text-lg font-semibold text-foreground">{t("currentStateHeading")}</h2>
         {!effectiveCurrent ? (
           <>
-            <GlobalCutFactsFields value={currentGlobal} onChange={setCurrentGlobal} disabled={createCurrentState_.busy} />
-            <ColorFactsFields value={currentColor} onChange={setCurrentColor} disabled={createCurrentState_.busy} />
-            <p className="text-xs text-muted">Zone-level cut facts are not set in this first evaluation slice; they stay honestly unassessed.</p>
+            <GlobalCutFactsFields value={currentGlobal} onChange={setCurrentGlobal} disabled={createCurrentState_.busy} t={t} />
+            <ColorFactsFields value={currentColor} onChange={setCurrentColor} disabled={createCurrentState_.busy} t={t} />
+            <p className="text-xs text-muted">{t("zoneFactsHelpNote")}</p>
             <div>
               <Button type="button" onClick={handleCreateCurrent} loading={createCurrentState_.busy}>
-                Create current state
+                {t("createCurrentButton")}
               </Button>
             </div>
             {createCurrentState_.error ? (
@@ -435,7 +514,7 @@ export default function ProfessionalBrainPage() {
           </>
         ) : (
           <>
-            <SnapshotSummary snapshot={effectiveCurrent} />
+            <SnapshotSummary snapshot={effectiveCurrent} t={t} />
             {effectiveCurrent.status === "DRAFT" ? (
               <div>
                 <Button
@@ -443,7 +522,7 @@ export default function ProfessionalBrainPage() {
                   onClick={() => handleConfirmCurrent(effectiveCurrent.id, getExpectedConfirmedSnapshotId(currentSnapshot))}
                   loading={confirmCurrentState_.busy}
                 >
-                  Confirm current state
+                  {t("confirmCurrentButton")}
                 </Button>
               </div>
             ) : null}
@@ -458,38 +537,51 @@ export default function ProfessionalBrainPage() {
 
       {effectiveCurrent?.status === "CONFIRMED" ? (
         <Card className="flex flex-col gap-4">
-          <h2 className="text-lg font-semibold text-foreground">2. Target state</h2>
+          <h2 className="text-lg font-semibold text-foreground">{t("targetStateHeading")}</h2>
           {!effectiveTarget ? (
             <>
-              <GlobalCutFactsFields value={targetGlobal} onChange={setTargetGlobal} disabled={createTargetState_.busy} />
-              <ColorFactsFields value={targetColor} onChange={setTargetColor} disabled={createTargetState_.busy} />
-              <div className="grid grid-cols-3 gap-3">
-                <Select label="Zone" disabled={createTargetState_.busy} value={targetZone} onChange={(e) => setTargetZone(e.target.value as HeadZone)}>
+              <GlobalCutFactsFields value={targetGlobal} onChange={setTargetGlobal} disabled={createTargetState_.busy} t={t} />
+              <ColorFactsFields value={targetColor} onChange={setTargetColor} disabled={createTargetState_.busy} t={t} />
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <Select label={t("zoneLabel")} disabled={createTargetState_.busy} value={targetZone} onChange={(e) => setTargetZone(e.target.value as HeadZone)}>
                   {ZONE_OPTIONS.map((z) => (
                     <option key={z} value={z}>
                       {z}
                     </option>
                   ))}
                 </Select>
-                <Select label="Length intent" disabled={createTargetState_.busy} value={targetLengthIntent} onChange={(e) => setTargetLengthIntent(e.target.value as ZoneLengthIntent)}>
+                <Select label={t("lengthIntentLabel")} disabled={createTargetState_.busy} value={targetLengthIntent} onChange={(e) => setTargetLengthIntent(e.target.value as ZoneLengthIntent)}>
                   {ZONE_LENGTH_INTENT_OPTIONS.map((o) => (
                     <option key={o} value={o}>
                       {o}
                     </option>
                   ))}
                 </Select>
-                <Select label="Weight intent" disabled={createTargetState_.busy} value={targetWeightIntent} onChange={(e) => setTargetWeightIntent(e.target.value as ZoneWeightIntent)}>
+                <Select label={t("weightIntentLabel")} disabled={createTargetState_.busy} value={targetWeightIntent} onChange={(e) => setTargetWeightIntent(e.target.value as ZoneWeightIntent)}>
                   {ZONE_WEIGHT_INTENT_OPTIONS.map((o) => (
                     <option key={o} value={o}>
                       {o}
                     </option>
                   ))}
                 </Select>
+                <Select
+                  label={t("perimeterRelationshipLabel")}
+                  disabled={createTargetState_.busy}
+                  value={targetPerimeterRelationship}
+                  onChange={(e) => setTargetPerimeterRelationship(e.target.value as HairStatePerimeterRelationship)}
+                >
+                  {PERIMETER_RELATIONSHIP_OPTIONS.map((o) => (
+                    <option key={o} value={o}>
+                      {o}
+                    </option>
+                  ))}
+                </Select>
               </div>
-              <p className="text-xs text-muted">Only the chosen zone&apos;s intent is set; every other zone stays honestly unassessed.</p>
+              <p className="text-xs text-muted">{t("oneLengthHint")}</p>
+              <p className="text-xs text-muted">{t("zoneFactsHelpNote")}</p>
               <div>
                 <Button type="button" onClick={handleCreateTarget} loading={createTargetState_.busy}>
-                  Create target state
+                  {t("createTargetButton")}
                 </Button>
               </div>
               {createTargetState_.error ? (
@@ -500,7 +592,7 @@ export default function ProfessionalBrainPage() {
             </>
           ) : (
             <>
-              <SnapshotSummary snapshot={effectiveTarget} />
+              <SnapshotSummary snapshot={effectiveTarget} t={t} />
               {effectiveTarget.status === "DRAFT" ? (
                 <div>
                   <Button
@@ -508,7 +600,7 @@ export default function ProfessionalBrainPage() {
                     onClick={() => handleConfirmTarget(effectiveTarget.id, getExpectedConfirmedSnapshotId(targetSnapshot))}
                     loading={confirmTargetState_.busy}
                   >
-                    Confirm target state
+                    {t("confirmTargetButton")}
                   </Button>
                 </div>
               ) : null}
@@ -524,21 +616,15 @@ export default function ProfessionalBrainPage() {
 
       {evaluation && !roundInProgress ? (
         <Card className="flex flex-col gap-4">
-          <h2 className="text-lg font-semibold text-foreground">3. Delta and candidate skills</h2>
+          <h2 className="text-lg font-semibold text-foreground">{t("deltaHeading")}</h2>
           <DeltaTable entries={evaluation.delta.entries} />
-          <CandidateSkillList matches={evaluation.candidateMatches} />
-          {hasColorCandidate(evaluation.candidateMatches) ? <ColorEvaluationDisclosure /> : null}
-          {evaluation.unresolvedDeltas.length > 0 ? (
-            <Alert variant="warning" title="Unresolved">
-              <div className="flex items-start gap-2">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                <span>{evaluation.unresolvedDeltas.length} change(s) have no matching registered skill yet. This is reported honestly, never guessed.</span>
-              </div>
-            </Alert>
-          ) : null}
+          <CandidateSkillList groups={groupedCandidates} t={t} />
+          <VocabularyNote t={t} />
+          {hasColorCandidate(evaluation.candidateMatches) ? <ColorEvaluationDisclosure t={t} /> : null}
+          <UnresolvedDeltaList entries={evaluation.unresolvedDeltas} language={language} t={t} />
           <div>
             <Button type="button" variant="secondary" onClick={startNewEvaluation}>
-              Start a new evaluation
+              {t("startNewEvaluationButton")}
             </Button>
           </div>
         </Card>

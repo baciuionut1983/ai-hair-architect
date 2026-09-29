@@ -6,6 +6,7 @@ import {
   HAIR_STATE_DENSITY_VALUES,
   HAIR_STATE_FIBER_THICKNESS_VALUES,
   HAIR_STATE_LENGTH_VALUES,
+  HAIR_STATE_PERIMETER_RELATIONSHIPS,
   HAIR_STATE_TEXTURE_VALUES,
   buildUnassessedGlobalEntry,
   buildUnassessedZoneEntry,
@@ -15,12 +16,15 @@ import {
   type HairStateDensityValue,
   type HairStateFiberThicknessValue,
   type HairStateLengthValue,
+  type HairStatePerimeterRelationship,
   type HairStateSnapshotPayload,
   type HairStateTextureValue,
 } from "@/lib/hair-state-snapshot-validators";
 import type { BadgeVariant } from "@/components/ui";
 import type { HairStateSnapshotRecord } from "@/lib/hair-state-snapshot-repository";
+import type { HairStateDeltaEntry } from "@/lib/hair-state-delta";
 import type { SkillCandidateMatch } from "@/lib/hair-state-delta-skill-candidate-selector";
+import type { LanguageCode } from "@/lib/language-registry";
 
 // AI Hair Architect, B2 -- PROFESSIONAL BRAIN CUT+COLOR FLOW, pure UI
 // logic. No fetch, no React, no rendering -- testable without a render
@@ -80,10 +84,29 @@ export function getTransformationBadgeVariant(transformation: string): BadgeVari
   }
 }
 
-export function getTransformationLabel(transformation: string): string {
+// B2.2 -- lengthIntent/weightIntent are the ONE pair of fields whose
+// PRESERVED transformation is read directly from the TARGET's own stated
+// value, never compared against a real CURRENT baseline (see
+// hair-state-delta.ts's own header on classifyLengthIntent/
+// classifyWeightIntent -- CURRENT structurally never carries a real
+// intent value). A live-caught finding: labeling that identically to a
+// genuinely CONFIRMED, both-sides-known continuity (e.g. an unchanged
+// color tone) reads as false certainty -- "Preserved" alone can imply
+// "we confirmed this stays the same" when it may really mean "the
+// professional's stated intent is to keep it this way, from an unknown
+// baseline." Kept as a plain field-name check (no capability lookup, no
+// export from a protected file) -- deliberately the smallest fix.
+const INTENT_FIELDS = new Set(["lengthIntent", "weightIntent"]);
+
+export function isIntentDerivedField(field: string): boolean {
+  return INTENT_FIELDS.has(field);
+}
+
+export function getTransformationLabel(transformation: string, field?: string): string {
+  const isIntent = field !== undefined && isIntentDerivedField(field);
   switch (transformation) {
     case "PRESERVED":
-      return "Preserved";
+      return isIntent ? "Preserved (stated intent)" : "Preserved (confirmed)";
     case "CHANGED":
       return "Changed";
     case "REDUCED":
@@ -162,10 +185,19 @@ export interface ColorFactsInput {
 
 export const UNSPECIFIED_COLOR_FACTS: ColorFactsInput = { level: "unspecified", tone: "unspecified" };
 
+// B2.2 -- perimeterRelationship added. This is the real, already-modeled
+// field ("at_perimeter"/"shorter_than_perimeter"/"longer_than_perimeter")
+// that directly expresses "straight line / one length / straight
+// perimeter" -- it was never exposed in the B2 form at all, which is the
+// root cause a real professional had no honest way to state that request
+// (lengthIntent alone does not carry perimeter-shape meaning; "shorten"
+// is a DIFFERENT axis -- how much length changes -- not whether the
+// result sits in one straight line).
 export interface TargetZoneIntentInput {
   zone: HeadZone;
   lengthIntent: ZoneLengthIntent;
   weightIntent: ZoneWeightIntent;
+  perimeterRelationship: HairStatePerimeterRelationship;
 }
 
 function applyGlobalCutFacts(global: GlobalCutFactsInput) {
@@ -202,6 +234,8 @@ export function buildTargetStatePayload(global: GlobalCutFactsInput, color: Colo
       ...entry,
       lengthIntent: zoneIntent.lengthIntent === "unspecified" ? entry.lengthIntent : { value: zoneIntent.lengthIntent, source: "professional_input" as const },
       weightIntent: zoneIntent.weightIntent === "unspecified" ? entry.weightIntent : { value: zoneIntent.weightIntent, source: "professional_input" as const },
+      perimeterRelationship:
+        zoneIntent.perimeterRelationship === "unspecified" ? entry.perimeterRelationship : { value: zoneIntent.perimeterRelationship, source: "professional_input" as const },
     };
   });
   return { globalState: applyGlobalCutFacts(global), zones, colorState: applyColorFacts(color) };
@@ -221,6 +255,7 @@ export const COLOR_TONE_OPTIONS = HAIR_STATE_COLOR_TONE_VALUES;
 export const ZONE_OPTIONS = HEAD_ZONES;
 export const ZONE_LENGTH_INTENT_OPTIONS = ZONE_LENGTH_INTENTS;
 export const ZONE_WEIGHT_INTENT_OPTIONS = ZONE_WEIGHT_INTENTS;
+export const PERIMETER_RELATIONSHIP_OPTIONS = HAIR_STATE_PERIMETER_RELATIONSHIPS;
 
 // ---------------------------------------------------------------------------
 // B2.1 -- SAFE NEW-EVALUATION-ROUND helper. This is the one rule that
@@ -252,4 +287,232 @@ export const COLOR_EVALUATION_GATE_SKILL_KEY = "skill-color-global-single-proces
 
 export function hasColorCandidate(matches: readonly SkillCandidateMatch[]): boolean {
   return matches.some((m) => m.skillKey === COLOR_EVALUATION_GATE_SKILL_KEY);
+}
+
+// ---------------------------------------------------------------------------
+// B2.2 -- GROUPED candidate display. A live-caught finding: two rows for
+// the SAME skill (e.g. one color skill matching both a colorLevel change
+// and an unchanged-but-still-required colorTone) rendered as two flat,
+// unrelated-looking list items, easy to misread as "two separate
+// findings." This groups by skillDefinitionId (unique per skill+version,
+// see professional-brain-skill-templates.ts's own toRecord id scheme) so
+// the UI can show ONE card per skill with every capability/delta it
+// addresses listed underneath -- never merging or hiding a real match,
+// only presenting the SAME facts legibly.
+// ---------------------------------------------------------------------------
+
+export interface GroupedCandidateEntry {
+  deltaEntry: SkillCandidateMatch["deltaEntry"];
+  matchedCapability: SkillCandidateMatch["matchedCapability"];
+  deterministicReason: string;
+}
+export interface GroupedSkillCandidate {
+  skillDefinitionId: string;
+  skillKey: string;
+  skillVersion: number;
+  domain: CandidateDomain;
+  entries: readonly GroupedCandidateEntry[];
+}
+
+export function groupCandidateMatchesBySkill(matches: readonly SkillCandidateMatch[]): readonly GroupedSkillCandidate[] {
+  const bySkill = new Map<string, { group: GroupedSkillCandidate; entries: GroupedCandidateEntry[] }>();
+  for (const m of matches) {
+    let bucket = bySkill.get(m.skillDefinitionId);
+    if (!bucket) {
+      const entries: GroupedCandidateEntry[] = [];
+      bucket = { group: { skillDefinitionId: m.skillDefinitionId, skillKey: m.skillKey, skillVersion: m.skillVersion, domain: getCandidateDomain(m.matchedCapability), entries }, entries };
+      bySkill.set(m.skillDefinitionId, bucket);
+    }
+    bucket.entries.push({ deltaEntry: m.deltaEntry, matchedCapability: m.matchedCapability, deterministicReason: m.deterministicReason });
+  }
+  return [...bySkill.values()].map((b) => b.group);
+}
+
+// ---------------------------------------------------------------------------
+// B2.2 -- unresolved-delta clarity. A live-caught finding: the page only
+// showed a COUNT ("N change(s) have no matching registered skill yet"),
+// never which ones or why -- exactly the opposite of "afișarea...
+// schimbărilor nerezolvate trebuie să fie clară." This never invents a
+// missing capability name (that would require exporting a private
+// mapping from a protected file, see hair-state-delta-skill-candidate-
+// selector.ts's own file header) -- it only restates the already-real
+// scope/field/target/transformation, honestly, plus the one fact that IS
+// always true: no registered skill currently addresses it.
+// ---------------------------------------------------------------------------
+
+export function describeUnresolvedDelta(entry: Pick<HairStateDeltaEntry, "scope" | "field" | "target" | "transformation">, language: LanguageCode): string {
+  const label = getTransformationLabel(entry.transformation, entry.field);
+  if (language === "ro") {
+    return `${entry.scope} / ${entry.field}: țintă "${entry.target.value}" (${label}) -- niciun skill înregistrat nu acoperă încă această schimbare.`;
+  }
+  return `${entry.scope} / ${entry.field}: target "${entry.target.value}" (${label}) -- no registered skill currently addresses this.`;
+}
+
+// ---------------------------------------------------------------------------
+// B2.2 -- page-local EN/RO strings. Deliberately NOT wired into the
+// shared web/src/lib/translations.ts dictionary: that system's own test
+// (translations.test.ts, "is true for all eighteen UI-supported
+// languages") requires EVERY key to be genuinely translated into all 18
+// registered UI languages, not just the two this task asked for -- adding
+// keys there without real, correct translations for the other sixteen
+// would either break that test or ship low-confidence machine-guessed
+// text for safety-adjacent copy (chemical history disclosures) in
+// languages this session cannot responsibly verify. This page instead
+// reuses the REAL, already-live locale signal (useUiLanguage()'s
+// `language`, sourced from the session's own resolved UI language -- see
+// ui-language-context.tsx) to choose between two genuinely-authored
+// dictionaries, English and Romanian, scoped to exactly what this page
+// needs -- the smallest honest way to satisfy "use the interface in
+// Romanian when locale is Romanian" without overclaiming eighteen-language
+// coverage nobody asked for.
+// ---------------------------------------------------------------------------
+
+export type PbStringKey =
+  | "pageTitle"
+  | "flowStopsTitle"
+  | "flowStopsBody"
+  | "currentStateHeading"
+  | "targetStateHeading"
+  | "deltaHeading"
+  | "relativeLengthLabel"
+  | "fiberThicknessLabel"
+  | "densityLabel"
+  | "textureLabel"
+  | "conditionLabel"
+  | "colorLevelLabel"
+  | "colorToneLabel"
+  | "zoneLabel"
+  | "lengthIntentLabel"
+  | "weightIntentLabel"
+  | "perimeterRelationshipLabel"
+  | "createCurrentButton"
+  | "createTargetButton"
+  | "confirmCurrentButton"
+  | "confirmTargetButton"
+  | "startNewEvaluationButton"
+  | "cancelAndGoBack"
+  | "zoneFactsHelpNote"
+  | "oneLengthHint"
+  | "newRoundTitle"
+  | "newRoundBody"
+  | "unresolvedTitle"
+  | "unresolvedIntro"
+  | "colorMissingTitle"
+  | "colorMissingChemicalHistory"
+  | "colorMissingStrandTest"
+  | "colorMissingDetermination"
+  | "colorMissingAuthorization"
+  | "vocabularyTitle"
+  | "vocabularyCandidateSkill"
+  | "vocabularyApprovedPlan"
+  | "vocabularyExecution"
+  | "cutBadge"
+  | "colorBadge"
+  | "evaluationGateNote"
+  | "confirmedValuesHeading"
+  | "noCandidatesYet"
+  | "backToPrefix";
+
+const PB_EN: Record<PbStringKey, string> = {
+  pageTitle: "CUT + COLOR evaluation",
+  flowStopsTitle: "Where this flow stops",
+  flowStopsBody:
+    "This evaluation computes a delta and candidate skills for cut and color, deterministically, from the states you confirm below. It never calls the paid AI reasoning step and never starts video generation. Turning an approved evaluation into a professional plan or a demonstration is a separate, explicitly authorized next step -- not part of this page.",
+  currentStateHeading: "1. Current state",
+  targetStateHeading: "2. Target state",
+  deltaHeading: "3. Delta and candidate skills",
+  relativeLengthLabel: "Relative length",
+  fiberThicknessLabel: "Fiber thickness",
+  densityLabel: "Density",
+  textureLabel: "Texture",
+  conditionLabel: "Condition",
+  colorLevelLabel: "Color level",
+  colorToneLabel: "Color tone",
+  zoneLabel: "Zone",
+  lengthIntentLabel: "Length intent",
+  weightIntentLabel: "Weight intent",
+  perimeterRelationshipLabel: "Perimeter relationship",
+  createCurrentButton: "Create current state",
+  createTargetButton: "Create target state",
+  confirmCurrentButton: "Confirm current state",
+  confirmTargetButton: "Confirm target state",
+  startNewEvaluationButton: "Start a new evaluation",
+  cancelAndGoBack: "Cancel and go back",
+  zoneFactsHelpNote: "Only the chosen zone's values are set; every other zone stays honestly unassessed.",
+  oneLengthHint:
+    "For a straight, one-length result at this zone: set Perimeter relationship to \"at perimeter\" and Length intent to \"preserve\" or \"maintain\". \"Shorten\" means a length reduction, a different, currently unmatched request -- see Unresolved below if you choose it.",
+  newRoundTitle: "New evaluation round",
+  newRoundBody: "You're recording a new current/target state. The previous confirmed evaluation stays exactly as it was approved -- it will only be marked superseded, automatically, once this new round is itself confirmed.",
+  unresolvedTitle: "Unresolved",
+  unresolvedIntro: "These changes have no matching registered skill yet. Reported honestly, never guessed or invented:",
+  colorMissingTitle: "What's missing for color, and what this evaluation does not authorize",
+  colorMissingChemicalHistory: "Chemical history for this client: Unknown -- not recorded anywhere in this flow.",
+  colorMissingStrandTest: "Strand test for this client: Unknown -- not recorded anywhere in this flow.",
+  colorMissingDetermination: "Stylist's own determination: Not yet recorded.",
+  colorMissingAuthorization:
+    "This evaluation does not authorize a color formula, developer volume, processing time, or any chemical execution. A professional must independently confirm all three above, in person, before any color service.",
+  vocabularyTitle: "Candidate skill, approved plan, and execution are three different things",
+  vocabularyCandidateSkill: "Candidate skill: a registered skill whose declared capability structurally matches this delta. It is a possibility the system found, never a decision.",
+  vocabularyApprovedPlan: "Approved professional plan: exists only after a professional reviews AI-assisted reasoning (a separate, paid step this page never calls) and explicitly confirms it.",
+  vocabularyExecution: "Execution: the real haircut or color service performed by the professional, or a generated video demonstration -- neither ever happens from this page.",
+  cutBadge: "Cut",
+  colorBadge: "Color",
+  evaluationGateNote: "Evaluation gate, not an execution -- see below.",
+  confirmedValuesHeading: "Confirmed values",
+  noCandidatesYet: "No candidate skills matched yet.",
+  backToPrefix: "Back to",
+};
+
+const PB_RO: Record<PbStringKey, string> = {
+  pageTitle: "Evaluare TUNS + CULOARE",
+  flowStopsTitle: "Unde se oprește acest flux",
+  flowStopsBody:
+    "Această evaluare calculează un delta și skill-uri candidate pentru tuns și culoare, determinist, din stările confirmate mai jos. Nu apelează niciodată pasul de raționament AI plătit și nu pornește generarea de video. Transformarea unei evaluări aprobate într-un plan profesional sau o demonstrație este un pas următor separat, autorizat explicit -- nu face parte din această pagină.",
+  currentStateHeading: "1. Starea curentă",
+  targetStateHeading: "2. Starea țintă",
+  deltaHeading: "3. Delta și skill-uri candidate",
+  relativeLengthLabel: "Lungime relativă",
+  fiberThicknessLabel: "Grosimea firului",
+  densityLabel: "Densitate",
+  textureLabel: "Textură",
+  conditionLabel: "Stare",
+  colorLevelLabel: "Nivel de culoare",
+  colorToneLabel: "Ton de culoare",
+  zoneLabel: "Zonă",
+  lengthIntentLabel: "Intenție lungime",
+  weightIntentLabel: "Intenție greutate",
+  perimeterRelationshipLabel: "Relație cu perimetrul",
+  createCurrentButton: "Creează starea curentă",
+  createTargetButton: "Creează starea țintă",
+  confirmCurrentButton: "Confirmă starea curentă",
+  confirmTargetButton: "Confirmă starea țintă",
+  startNewEvaluationButton: "Începe o evaluare nouă",
+  cancelAndGoBack: "Anulează și revino",
+  zoneFactsHelpNote: "Sunt setate doar valorile pentru zona aleasă; fiecare altă zonă rămâne onest neevaluată.",
+  oneLengthHint:
+    "Pentru un rezultat drept, pe o singură lungime (one length), în această zonă: setează Relație cu perimetrul pe \"la perimetru\" și Intenție lungime pe \"păstrează\" sau \"menține\". \"Scurtează\" înseamnă o reducere de lungime, o cerere diferită, care nu are încă potrivire -- vezi secțiunea Nerezolvate mai jos dacă o alegi.",
+  newRoundTitle: "Rundă nouă de evaluare",
+  newRoundBody: "Înregistrezi o stare curentă/țintă nouă. Evaluarea confirmată anterior rămâne exact așa cum a fost aprobată -- va fi marcată drept înlocuită (superseded) automat, doar când această rundă nouă va fi ea însăși confirmată.",
+  unresolvedTitle: "Nerezolvate",
+  unresolvedIntro: "Aceste schimbări nu au încă niciun skill înregistrat care să le acopere. Raportat onest, niciodată ghicit sau inventat:",
+  colorMissingTitle: "Ce lipsește pentru culoare și ce nu autorizează această evaluare",
+  colorMissingChemicalHistory: "Istoricul chimic al acestui client: Necunoscut -- nu este înregistrat nicăieri în acest flux.",
+  colorMissingStrandTest: "Testul de șuviță pentru acest client: Necunoscut -- nu este înregistrat nicăieri în acest flux.",
+  colorMissingDetermination: "Decizia proprie a stilistului: Nu este încă înregistrată.",
+  colorMissingAuthorization:
+    "Această evaluare nu autorizează o formulă de culoare, un volum de oxidant, un timp de procesare sau orice execuție chimică. Un profesionist trebuie să confirme independent, în persoană, toate cele trei de mai sus, înainte de orice serviciu de culoare.",
+  vocabularyTitle: "Skill candidat, plan aprobat și execuție sunt trei lucruri diferite",
+  vocabularyCandidateSkill: "Skill candidat: un skill înregistrat a cărui capabilitate declarată se potrivește structural cu acest delta. E o posibilitate găsită de sistem, niciodată o decizie.",
+  vocabularyApprovedPlan: "Plan profesional aprobat: există doar după ce un profesionist revizuiește un raționament asistat de AI (un pas separat, plătit, pe care această pagină nu îl apelează niciodată) și îl confirmă explicit.",
+  vocabularyExecution: "Execuție: tunsoarea sau serviciul de culoare real, efectuat de profesionist, sau o demonstrație video generată -- niciuna nu se întâmplă vreodată din această pagină.",
+  cutBadge: "Tuns",
+  colorBadge: "Culoare",
+  evaluationGateNote: "Poartă de evaluare, nu o execuție -- vezi mai jos.",
+  confirmedValuesHeading: "Valori confirmate",
+  noCandidatesYet: "Niciun skill candidat potrivit încă.",
+  backToPrefix: "Înapoi la",
+};
+
+export function pbTranslate(language: LanguageCode, key: PbStringKey): string {
+  return language === "ro" ? PB_RO[key] : PB_EN[key];
 }

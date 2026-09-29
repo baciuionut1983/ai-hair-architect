@@ -8,14 +8,18 @@ import {
   UNSPECIFIED_GLOBAL_CUT_FACTS,
   buildCurrentStatePayload,
   buildTargetStatePayload,
+  describeUnresolvedDelta,
   getCandidateDomain,
   getExpectedConfirmedSnapshotId,
   getSnapshotStatusBadgeVariant,
   getSnapshotStatusLabel,
   getTransformationBadgeVariant,
   getTransformationLabel,
+  groupCandidateMatchesBySkill,
   hasColorCandidate,
+  isIntentDerivedField,
   mapProfessionalBrainApiError,
+  pbTranslate,
 } from "./professional-brain-logic";
 
 describe("getSnapshotStatusBadgeVariant / getSnapshotStatusLabel", () => {
@@ -79,14 +83,20 @@ describe("buildCurrentStatePayload / buildTargetStatePayload (pure)", () => {
     expect(payload.colorState).toEqual({ level: { value: "level_6", source: "professional_input" }, tone: { value: "neutral", source: "professional_input" } });
   });
 
-  it("buildTargetStatePayload sets lengthIntent/weightIntent ONLY on the chosen zone -- every other zone stays honestly unassessed", () => {
-    const payload = buildTargetStatePayload(UNSPECIFIED_GLOBAL_CUT_FACTS, UNSPECIFIED_COLOR_FACTS, { zone: "nape", lengthIntent: "preserve", weightIntent: "unspecified" });
+  it("buildTargetStatePayload sets lengthIntent/weightIntent/perimeterRelationship ONLY on the chosen zone -- every other zone stays honestly unassessed", () => {
+    const payload = buildTargetStatePayload(UNSPECIFIED_GLOBAL_CUT_FACTS, UNSPECIFIED_COLOR_FACTS, {
+      zone: "nape",
+      lengthIntent: "preserve",
+      weightIntent: "unspecified",
+      perimeterRelationship: "at_perimeter",
+    });
     expect(isHairStateSnapshotPayload(payload)).toBe(true);
     const nape = payload.zones.find((z) => z.zone === "nape")!;
     expect(nape.lengthIntent).toEqual({ value: "preserve", source: "professional_input" });
     expect(nape.weightIntent).toEqual({ value: "unspecified", source: "not_yet_assessed" });
+    expect(nape.perimeterRelationship).toEqual({ value: "at_perimeter", source: "professional_input" });
     const others = payload.zones.filter((z) => z.zone !== "nape");
-    expect(others.every((z) => z.lengthIntent.source === "not_yet_assessed" && z.weightIntent.source === "not_yet_assessed")).toBe(true);
+    expect(others.every((z) => z.lengthIntent.source === "not_yet_assessed" && z.weightIntent.source === "not_yet_assessed" && z.perimeterRelationship.source === "not_yet_assessed")).toBe(true);
   });
 
   it("buildTargetStatePayload with zoneIntent null leaves ALL zones unassessed", () => {
@@ -127,5 +137,90 @@ describe("hasColorCandidate", () => {
     expect(hasColorCandidate([{ skillKey: COLOR_EVALUATION_GATE_SKILL_KEY } as never])).toBe(true);
     expect(hasColorCandidate([{ skillKey: "skill-cutting-establish-central-nape-guide" } as never])).toBe(false);
     expect(hasColorCandidate([])).toBe(false);
+  });
+});
+
+// B2.2 -- live production finding: "Preserved" was labeled identically
+// whether it came from a stated intent (unknown baseline) or a genuinely
+// confirmed, both-sides-known continuity. This distinguishes them.
+describe("isIntentDerivedField / getTransformationLabel with field", () => {
+  it("lengthIntent/weightIntent are intent-derived; descriptive fields (including color) are not", () => {
+    expect(isIntentDerivedField("lengthIntent")).toBe(true);
+    expect(isIntentDerivedField("weightIntent")).toBe(true);
+    expect(isIntentDerivedField("colorTone")).toBe(false);
+    expect(isIntentDerivedField("relativeLength")).toBe(false);
+  });
+
+  it("PRESERVED reads differently for an intent field vs a descriptive field -- the live-caught semantic gap", () => {
+    expect(getTransformationLabel("PRESERVED", "weightIntent")).toBe("Preserved (stated intent)");
+    expect(getTransformationLabel("PRESERVED", "colorTone")).toBe("Preserved (confirmed)");
+    expect(getTransformationLabel("PRESERVED")).toBe("Preserved (confirmed)");
+  });
+});
+
+// B2.2 -- live production finding: two rows for the same skill (a real
+// color-level change and an unchanged-but-still-required color tone)
+// read as two separate findings. Grouping must never drop or merge real
+// matches, only present them under one card per skill.
+describe("groupCandidateMatchesBySkill", () => {
+  it("groups two matches for the SAME skill into one entry with two listed reasons -- reproduces the live 'two rows, one skill' report exactly", () => {
+    const colorMatch = (field: string, transformation: string) =>
+      ({
+        deltaEntry: { scope: "global", field, transformation, current: { value: "x", source: "observed" }, target: { value: "y", source: "professional_input" } },
+        skillDefinitionId: "registry-skill-color-global-single-process-evaluation-gate-v1",
+        skillKey: COLOR_EVALUATION_GATE_SKILL_KEY,
+        skillVersion: 1,
+        matchedCapability: "EVALUATE_COLOR_SERVICE",
+        applicabilityResult: "APPLICABLE",
+        deterministicReason: `reason for ${field}`,
+      }) as never;
+
+    const grouped = groupCandidateMatchesBySkill([colorMatch("colorLevel", "INCREASED"), colorMatch("colorTone", "PRESERVED")]);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].skillKey).toBe(COLOR_EVALUATION_GATE_SKILL_KEY);
+    expect(grouped[0].domain).toBe("color");
+    expect(grouped[0].entries).toHaveLength(2);
+    expect(grouped[0].entries.map((e) => e.deltaEntry.field)).toEqual(["colorLevel", "colorTone"]);
+  });
+
+  it("different skills produce different groups", () => {
+    const grouped = groupCandidateMatchesBySkill([
+      { skillDefinitionId: "a", skillKey: "skill-cutting-a", skillVersion: 1, matchedCapability: "PRESERVE_LENGTH", deltaEntry: {}, applicabilityResult: "APPLICABLE", deterministicReason: "r" } as never,
+      { skillDefinitionId: "b", skillKey: "skill-cutting-b", skillVersion: 1, matchedCapability: "ESTABLISH_GUIDE", deltaEntry: {}, applicabilityResult: "APPLICABLE", deterministicReason: "r" } as never,
+    ]);
+    expect(grouped).toHaveLength(2);
+  });
+});
+
+describe("describeUnresolvedDelta", () => {
+  it("names the scope/field/target/transformation honestly, in both languages, without inventing a capability name", () => {
+    const entry = { scope: "nape", field: "lengthIntent", transformation: "REDUCED", target: { value: "shorten", source: "professional_input" } } as const;
+    const en = describeUnresolvedDelta(entry, "en");
+    const ro = describeUnresolvedDelta(entry, "ro");
+    expect(en).toContain("nape");
+    expect(en).toContain("lengthIntent");
+    expect(en).toContain("shorten");
+    expect(en).not.toMatch(/REDUCE_LENGTH|PRESERVE_WEIGHT|capability/i);
+    expect(ro).toContain("nape");
+    expect(ro).toContain("lengthIntent");
+    expect(ro).toContain("shorten");
+    expect(en).not.toBe(ro);
+  });
+});
+
+describe("pbTranslate", () => {
+  it("Romanian output is genuinely different real text, not an English fallback, for representative keys", () => {
+    const keys = ["pageTitle", "flowStopsTitle", "colorMissingChemicalHistory", "vocabularyExecution", "confirmCurrentButton"] as const;
+    for (const key of keys) {
+      const en = pbTranslate("en", key);
+      const ro = pbTranslate("ro", key);
+      expect(en.length).toBeGreaterThan(0);
+      expect(ro.length).toBeGreaterThan(0);
+      expect(ro).not.toBe(en);
+    }
+  });
+
+  it("a non-Romanian language falls back to English", () => {
+    expect(pbTranslate("fr", "pageTitle")).toBe(pbTranslate("en", "pageTitle"));
   });
 });
