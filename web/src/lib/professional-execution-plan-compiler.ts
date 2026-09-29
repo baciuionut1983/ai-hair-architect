@@ -3,6 +3,7 @@ import type { SkillInstance } from "@/lib/professional-skill-instance-contracts"
 import type { ExecutionUnit } from "@/lib/professional-skill-execution-unit-contracts";
 import type { AtomicAction, AtomicActionObservationCriterion } from "@/lib/professional-skill-atomic-action-contracts";
 import { compileExecutionUnitToAtomicActions } from "@/lib/cutting-skill-atomic-action-compiler";
+import { compileColorExecutionUnitToAtomicActions } from "@/lib/color-skill-atomic-action-compiler";
 import type { ProfessionalReasoningProposal, ProposedSkillStep } from "@/lib/professional-reasoning-contracts";
 import {
   PROFESSIONAL_EXECUTION_PLAN_SCHEMA_VERSION,
@@ -26,6 +27,20 @@ import type { SkillConditionFacts } from "@/lib/skill-condition-evaluator";
 // appending a VERIFY-kind AtomicAction (Part I), and carrying each unit's
 // own declaredCapabilityUsed/addressesDelta/resolvedParameters forward
 // (Part C/E).
+//
+// B1 (Professional Brain CUT+COLOR slice) ADDITION -- ATOMIC ACTION
+// COMPILER DISPATCH. cutting-skill-atomic-action-compiler.ts's own header
+// already documents it as "CUTTING-SPECIFIC, not universal... A Color/
+// Treatment compiler would need its own, differently-keyed template
+// table -- never forced through this one." resolveAtomicActionCompiler
+// below is the ONE small, additive dispatch point this requires: for
+// executionUnit.vertical === "color" it calls the new, separate
+// color-skill-atomic-action-compiler.ts; for every other vertical
+// (including "cutting") it calls the EXACT SAME cutting compiler as
+// before, with byte-identical inputs -- CUT behavior/output is completely
+// unchanged. This is the one genuine exception to this file's own
+// otherwise vertical-agnostic compilation loop, and is called out here
+// rather than left implicit.
 //
 // TEMPLATE REGISTRY (Part N): the caller supplies a small, closed list of
 // ExecutionPlanSkillTemplate entries -- one per real, allowed Skill
@@ -169,13 +184,31 @@ function resolveDeclaredParametersAsSkillDefault<TFact extends string>(
   return resolved;
 }
 
+// See this file's own header, "ATOMIC ACTION COMPILER DISPATCH" -- the
+// ONE vertical-aware decision in this otherwise vertical-agnostic
+// compiler. Return shapes of both underlying compilers are structurally
+// identical ({status:"COMPILED",actions} | {status:"UNRESOLVED",reason,
+// missingParameterNames?}), so no adapter is needed beyond this dispatch.
+function compileAtomicActionsForExecutionUnit<TFact extends string>(
+  skillDefinition: SkillDefinition<TFact>,
+  skillInstance: SkillInstance<TFact>,
+  executionUnit: ExecutionUnit<TFact>,
+  isValidFact: (candidate: unknown) => candidate is TFact,
+  compiledAt: string,
+) {
+  if (executionUnit.vertical === "color") {
+    return compileColorExecutionUnitToAtomicActions(skillDefinition, skillInstance, executionUnit, isValidFact, compiledAt);
+  }
+  return compileExecutionUnitToAtomicActions(skillDefinition, skillInstance, executionUnit, isValidFact, compiledAt);
+}
+
 function compilePlannedExecutionUnit<TFact extends string>(
   template: ExecutionPlanSkillTemplate<TFact>,
   executionUnit: ExecutionUnit<TFact>,
   step: ProposedSkillStep,
   compiledAt: string,
 ): { status: "COMPILED"; unit: PlannedExecutionUnit<TFact> } | { status: "UNRESOLVED"; failureReason: ExecutionPlanFailureReason; reason: string } {
-  const compiled = compileExecutionUnitToAtomicActions(template.skillDefinition, template.skillInstance, executionUnit, template.isValidFact, compiledAt);
+  const compiled = compileAtomicActionsForExecutionUnit(template.skillDefinition, template.skillInstance, executionUnit, template.isValidFact, compiledAt);
   if (compiled.status === "UNRESOLVED") {
     return { status: "UNRESOLVED", failureReason: "MISSING_REQUIRED_PARAMETER", reason: `Execution Unit "${executionUnit.executionUnitId}": ${compiled.reason}.` };
   }

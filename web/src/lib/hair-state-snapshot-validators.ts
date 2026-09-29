@@ -1,4 +1,4 @@
-import type { HairCondition, HairDensity, HairLength, HairTexture, HairType } from "@/lib/contracts";
+import type { ColorToneDirection, HairCondition, HairDensity, HairLength, HairTexture, HairType } from "@/lib/contracts";
 import { DENSITY_OPTIONS, HAIR_CONDITION_OPTIONS, HAIR_LENGTH_OPTIONS, HAIR_TEXTURE_OPTIONS, HAIR_TYPE_OPTIONS } from "@/lib/analysis-field-options";
 import { HEAD_ZONES, isHeadZone, isZoneLengthIntent, isZoneWeightIntent, type HeadZone, type ZoneLengthIntent, type ZoneWeightIntent } from "@/lib/technical-visual-map-validators";
 
@@ -146,6 +146,58 @@ export function isHairStateConditionValue(value: unknown): value is HairStateCon
   return typeof value === "string" && (HAIR_STATE_CONDITION_VALUES as readonly string[]).includes(value);
 }
 
+// B1 (Professional Brain CUT+COLOR slice) ADDITIVE vocabulary -- a global,
+// closed, ordinal color LEVEL scale (industry-standard 1-10 depth
+// classification, a discrete professional categorization exactly like
+// relativeLength/density above, never a numeric measurement of anything
+// physical) and a TONE vocabulary. TONE reuses ColorToneDirection
+// (@/lib/contracts, already real, already shipped by the M27 Color
+// Recommendation Engine -- color-plan-engine.ts) verbatim rather than
+// hand-retyping a duplicate list, so this file's own color tone facts can
+// never silently drift from the vocabulary color-plan-engine.ts already
+// uses. NEWLY AUTHORED VOCABULARY (no existing enum to reuse, confirmed
+// absent from this codebase before this stage): the level scale itself --
+// color-plan-engine.ts's own ColorPlan only carries a scalar `liftLevels`
+// (a relative lift amount), never an absolute base/target level
+// classification, so there is nothing to reuse here without inventing a
+// false equivalence between the two.
+export const HAIR_STATE_COLOR_LEVEL_VALUES = [
+  "unspecified",
+  "level_1",
+  "level_2",
+  "level_3",
+  "level_4",
+  "level_5",
+  "level_6",
+  "level_7",
+  "level_8",
+  "level_9",
+  "level_10",
+] as const;
+export type HairStateColorLevelValue = (typeof HAIR_STATE_COLOR_LEVEL_VALUES)[number];
+export function isHairStateColorLevelValue(value: unknown): value is HairStateColorLevelValue {
+  return typeof value === "string" && (HAIR_STATE_COLOR_LEVEL_VALUES as readonly string[]).includes(value);
+}
+
+// Mirrors ColorToneDirection (@/lib/contracts) exactly, widened with
+// "unspecified" -- same discipline as every HAIR_STATE_*_VALUES array
+// above. No exported array of ColorToneDirection values exists elsewhere
+// to derive this from (color-plan-engine.ts assigns the type directly,
+// never through an options array), so this list is hand-authored and
+// compiler-checked against the real type immediately below, rather than
+// mapped from a reused options array.
+export const HAIR_STATE_COLOR_TONE_VALUES = ["unspecified", "cool_ash", "warm_gold", "neutral", "cool_violet", "warm_copper"] as const;
+export type HairStateColorToneValue = "unspecified" | ColorToneDirection;
+export function isHairStateColorToneValue(value: unknown): value is HairStateColorToneValue {
+  return typeof value === "string" && (HAIR_STATE_COLOR_TONE_VALUES as readonly string[]).includes(value);
+}
+
+// Compile-time-checked proof that every non-"unspecified" tone literal
+// above is genuinely a member of the real, existing ColorToneDirection
+// type -- mirrors cutting-skill-establish-central-nape-guide.ts's own
+// exact `satisfies` reuse-proof pattern.
+void (HAIR_STATE_COLOR_TONE_VALUES.filter((v): v is ColorToneDirection => v !== "unspecified") satisfies readonly ColorToneDirection[]);
+
 // Internal-vs-external/perimeter relationship -- NOT a numeric measurement;
 // a small, closed relational fact, needed for exactly the "preserve
 // perimeter length while shortening interior zones" reasoning this stage's
@@ -251,17 +303,50 @@ export function isHairZoneStateArray(value: unknown): value is HairZoneStateEntr
 }
 
 // ---------------------------------------------------------------------------
+// B1 (Professional Brain CUT+COLOR slice) -- global color state. Global
+// only (not per-zone) for this minimal slice: base/target level and tone
+// are the two facts the task's own worked example (haircut + color
+// request) actually needs to reason about; a future per-section color
+// model (e.g. balayage placement) is explicitly deferred, not implemented
+// here. Mirrors HairStateGlobalEntry's own exact fact-pair shape.
+// ---------------------------------------------------------------------------
+
+export interface HairStateColorEntry {
+  level: HairStateFact<HairStateColorLevelValue>;
+  tone: HairStateFact<HairStateColorToneValue>;
+}
+
+export function isHairStateColorEntry(value: unknown): value is HairStateColorEntry {
+  if (!isRecord(value)) return false;
+  return isValidFact(value.level, isHairStateColorLevelValue) && isValidFact(value.tone, isHairStateColorToneValue);
+}
+
+export function buildUnassessedColorEntry(): HairStateColorEntry {
+  return {
+    level: unassessedFact("unspecified"),
+    tone: unassessedFact("unspecified"),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // The full payload
 // ---------------------------------------------------------------------------
 
 export interface HairStateSnapshotPayload {
   globalState: HairStateGlobalEntry;
   zones: HairZoneStateEntry[];
+  // B1 ADDITIVE, optional -- a pre-B1 CUT-only payload has no colorState
+  // field at all and remains fully valid (see isHairStateSnapshotPayload
+  // below); this is never retroactively required or reinterpreted on old
+  // snapshot rows. Global only -- see HairStateColorEntry's own header.
+  colorState?: HairStateColorEntry;
 }
 
 export function isHairStateSnapshotPayload(value: unknown): value is HairStateSnapshotPayload {
   if (!isRecord(value)) return false;
-  return isHairStateGlobalEntry(value.globalState) && isHairZoneStateArray(value.zones);
+  if (!isHairStateGlobalEntry(value.globalState) || !isHairZoneStateArray(value.zones)) return false;
+  if (value.colorState !== undefined && !isHairStateColorEntry(value.colorState)) return false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------

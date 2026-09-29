@@ -10,6 +10,9 @@ import { listResolvedEvidenceForSnapshot, type ResolvedHairStateSnapshotEvidence
 import { isHairStateSnapshotPayload } from "@/lib/hair-state-snapshot-validators";
 import { computeHairStateDelta, type HairStateDelta } from "@/lib/hair-state-delta";
 import { selectCandidateSkillsForDelta, type HairStateDeltaSkillSelectionResult } from "@/lib/hair-state-delta-skill-candidate-selector";
+import { computeColorStateDelta } from "@/lib/hair-state-color-delta";
+import { selectColorCandidateSkillsForDelta } from "@/lib/hair-state-color-delta-skill-candidate-selector";
+import { buildCanonicalColorCandidateSkillRegistry } from "@/lib/professional-brain-skill-templates";
 import { buildProfessionalReasoningContext, type ProfessionalReasoningContext } from "@/lib/professional-reasoning-contracts";
 import { listOwnerKnowledgeEligibility } from "@/lib/owner-knowledge-eligibility-listing";
 import { sealOwnerKnowledgeEligibility, type OwnerKnowledgeEligibilityPackageExtension } from "@/lib/owner-knowledge-eligibility-section";
@@ -443,4 +446,82 @@ export async function getVisualInstructionReadiness(ownerUserId: string, clientI
     status: s.result.status,
     reasons: s.result.findings.map((f) => f.reason),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// B1 -- PROFESSIONAL BRAIN CUT+COLOR SLICE, multi-domain composition. NEW,
+// purely ADDITIVE exports -- computeDelta/selectCandidateSkills/
+// prepareReasoningRequestPackage above are byte-unchanged (still CUT-only,
+// still the exact functions every existing caller/test already uses).
+// These three functions compose the SAME two Stage 4 modules
+// (hair-state-delta.ts's computeHairStateDelta + its new color sibling
+// hair-state-color-delta.ts's computeColorStateDelta; hair-state-delta-
+// skill-candidate-selector.ts's selectCandidateSkillsForDelta + its new
+// color sibling hair-state-color-delta-skill-candidate-selector.ts's
+// selectColorCandidateSkillsForDelta) into ONE merged view -- exactly the
+// "invoke the exact Stage module, never invent a second brain" rule this
+// file's own header states, applied to a second vertical. No new
+// professional/haircut/chemical logic is authored in this file; merging
+// two already-computed arrays is composition, not domain reasoning.
+// ---------------------------------------------------------------------------
+
+export async function computeMultiDomainDelta(ownerUserId: string, clientId: string): Promise<HairStateDelta> {
+  await assertOwnedClient(ownerUserId, clientId);
+  const { current, target } = await requireConfirmedStates(ownerUserId, clientId);
+  const cutInput = { id: current.id, snapshotVersion: current.snapshotVersion, payload: current.payload };
+  const targetInput = { id: target.id, snapshotVersion: target.snapshotVersion, payload: target.payload };
+  const cutDelta = computeHairStateDelta(cutInput, targetInput);
+  const colorEntries = computeColorStateDelta(cutInput, targetInput);
+  return { ...cutDelta, entries: [...cutDelta.entries, ...colorEntries] };
+}
+
+export async function selectMultiDomainCandidateSkills(ownerUserId: string, clientId: string): Promise<HairStateDeltaSkillSelectionResult> {
+  await assertOwnedClient(ownerUserId, clientId);
+  const { current, target } = await requireConfirmedStates(ownerUserId, clientId);
+  const cutInput = { id: current.id, snapshotVersion: current.snapshotVersion, payload: current.payload };
+  const targetInput = { id: target.id, snapshotVersion: target.snapshotVersion, payload: target.payload };
+  const cutResult = selectCandidateSkillsForDelta(cutInput, targetInput, buildCanonicalCandidateSkillRegistry());
+  const colorResult = selectColorCandidateSkillsForDelta(cutInput, targetInput, buildCanonicalColorCandidateSkillRegistry());
+  return {
+    delta: { ...cutResult.delta, entries: [...cutResult.delta.entries, ...colorResult.delta.entries] },
+    candidateMatches: [...cutResult.candidateMatches, ...colorResult.candidateMatches],
+    rejectedMatches: [...cutResult.rejectedMatches, ...colorResult.rejectedMatches],
+    unresolvedDeltas: [...cutResult.unresolvedDeltas, ...colorResult.unresolvedDeltas],
+  };
+}
+
+export async function prepareMultiDomainReasoningRequestPackage(
+  ownerUserId: string,
+  clientId: string,
+  options: { professionalRequestText?: string } = {},
+): Promise<ReasoningRequestPackage> {
+  await assertOwnedClient(ownerUserId, clientId);
+  const { current, target } = await requireConfirmedStates(ownerUserId, clientId);
+  const cutInput = { id: current.id, snapshotVersion: current.snapshotVersion, payload: current.payload };
+  const targetInput = { id: target.id, snapshotVersion: target.snapshotVersion, payload: target.payload };
+  const cutResult = selectCandidateSkillsForDelta(cutInput, targetInput, buildCanonicalCandidateSkillRegistry());
+  const colorResult = selectColorCandidateSkillsForDelta(cutInput, targetInput, buildCanonicalColorCandidateSkillRegistry());
+  const selection: HairStateDeltaSkillSelectionResult = {
+    delta: { ...cutResult.delta, entries: [...cutResult.delta.entries, ...colorResult.delta.entries] },
+    candidateMatches: [...cutResult.candidateMatches, ...colorResult.candidateMatches],
+    rejectedMatches: [...cutResult.rejectedMatches, ...colorResult.rejectedMatches],
+    unresolvedDeltas: [...cutResult.unresolvedDeltas, ...colorResult.unresolvedDeltas],
+  };
+  const context = buildProfessionalReasoningContext({ selection, professionalRequestText: options.professionalRequestText });
+  const eligibility = await listOwnerKnowledgeEligibility({ ownerUserId, hasGlobalConstraintConflict: selection.rejectedMatches.some((match) => Boolean(match.preserveConstraintConflict)) });
+  return sealOwnerKnowledgeEligibility(
+    {
+      clientId,
+      currentSnapshotId: current.id,
+      currentSnapshotVersion: current.snapshotVersion,
+      targetSnapshotId: target.id,
+      targetSnapshotVersion: target.snapshotVersion,
+      context,
+      candidateSkillCount: context.candidateSkills.length,
+      unresolvedDeltaCount: context.unresolvedDeltas.length,
+      requiresPaidReasoningCall: true as const,
+    },
+    ownerUserId,
+    eligibility,
+  );
 }

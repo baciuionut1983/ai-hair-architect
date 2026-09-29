@@ -43,6 +43,12 @@ import {
   INTERIOR_45_EXECUTION_UNITS,
   isInteriorFortyFiveFact,
 } from "@/lib/cutting-skill-45-degree-interior";
+import {
+  COLOR_GLOBAL_EVALUATION_GATE_SKILL,
+  COLOR_GLOBAL_EVALUATION_GATE_SKILL_INSTANCE,
+  COLOR_GLOBAL_EVALUATION_GATE_EXECUTION_UNITS,
+  isColorSkillConditionFact,
+} from "@/lib/color-skill-global-single-process-evaluation-gate";
 
 // AI Hair Architect, Professional Skill Engine Stage 8.5A -- CANONICAL
 // PROFESSIONAL SKILL TEMPLATE REGISTRY. Pure, deterministic, no I/O, no
@@ -160,4 +166,31 @@ export function buildCanonicalCandidateSkillRegistry(): readonly ProfessionalSki
     toRecord(SLICE_AND_SLIDE_REFINEMENT_SKILL),
     toRecord(INTERIOR_45_SKILL),
   ];
+}
+
+// ---------------------------------------------------------------------------
+// B1 (Professional Brain CUT+COLOR slice) -- COLOR template registry.
+// Deliberately a SEPARATE array/function, never merged into
+// PROFESSIONAL_BRAIN_SKILL_TEMPLATES/buildCanonicalCandidateSkillRegistry
+// above: that array's own header locks it at "intentionally exactly these
+// seven skills" and professional-brain-skill-templates.test.ts asserts
+// both its own length and buildCanonicalCandidateSkillRegistry().length
+// equal 7 -- this addition leaves both byte-unchanged. A caller wanting
+// BOTH verticals (professional-brain-orchestrator.ts's own multi-domain
+// functions) composes the two registries itself; this file never merges
+// them, mirroring hair-state-color-delta.ts's own "compose, never modify
+// the CUT sibling" discipline.
+// ---------------------------------------------------------------------------
+
+export const PROFESSIONAL_BRAIN_COLOR_SKILL_TEMPLATES: readonly ExecutionPlanSkillTemplate<string>[] = [
+  {
+    skillDefinition: COLOR_GLOBAL_EVALUATION_GATE_SKILL,
+    skillInstance: COLOR_GLOBAL_EVALUATION_GATE_SKILL_INSTANCE,
+    executionUnits: COLOR_GLOBAL_EVALUATION_GATE_EXECUTION_UNITS,
+    isValidFact: isColorSkillConditionFact,
+  },
+];
+
+export function buildCanonicalColorCandidateSkillRegistry(): readonly ProfessionalSkillDefinitionRecord[] {
+  return [toRecord(COLOR_GLOBAL_EVALUATION_GATE_SKILL)];
 }

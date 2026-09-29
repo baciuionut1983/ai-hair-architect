@@ -267,6 +267,18 @@ export function isSkillAuthorityType(value: unknown): value is SkillAuthorityTyp
 // stage's own task requires.
 // ---------------------------------------------------------------------------
 
+// B1 (Professional Brain CUT+COLOR slice) addition -- EVALUATE_COLOR_SERVICE
+// is deliberately the ONLY color-vertical capability kind added here, and
+// deliberately NOT an outcome kind (it is never added to any
+// STATE_CHANGING_CAPABILITIES set): this stage's own explicit safety rule
+// forbids asserting that a base can be opened or that a formula is safe
+// from level/tone alone. A skill declaring this capability may only
+// GATE/EVALUATE a color delta (confirm chemical history, confirm a strand
+// test, record a professional's own determination) -- it never represents
+// an actual chemical execution. A future, separately-authorized stage that
+// models real color EXECUTION (lightening/depositing) would need its own,
+// separately-reviewed outcome capability kinds, never silently folded into
+// this evaluation-only one.
 export const SKILL_CAPABILITY_KINDS = [
   "REDUCE_LENGTH",
   "PRESERVE_LENGTH",
@@ -280,6 +292,7 @@ export const SKILL_CAPABILITY_KINDS = [
   "CONNECT_ZONES",
   "CROSS_CHECK_VALIDATE",
   "REFINE_ENDS",
+  "EVALUATE_COLOR_SERVICE",
 ] as const;
 export type SkillCapabilityKind = (typeof SKILL_CAPABILITY_KINDS)[number];
 
