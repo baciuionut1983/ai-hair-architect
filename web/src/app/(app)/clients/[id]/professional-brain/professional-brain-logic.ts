@@ -19,6 +19,8 @@ import {
   type HairStateTextureValue,
 } from "@/lib/hair-state-snapshot-validators";
 import type { BadgeVariant } from "@/components/ui";
+import type { HairStateSnapshotRecord } from "@/lib/hair-state-snapshot-repository";
+import type { SkillCandidateMatch } from "@/lib/hair-state-delta-skill-candidate-selector";
 
 // AI Hair Architect, B2 -- PROFESSIONAL BRAIN CUT+COLOR FLOW, pure UI
 // logic. No fetch, no React, no rendering -- testable without a render
@@ -219,3 +221,35 @@ export const COLOR_TONE_OPTIONS = HAIR_STATE_COLOR_TONE_VALUES;
 export const ZONE_OPTIONS = HEAD_ZONES;
 export const ZONE_LENGTH_INTENT_OPTIONS = ZONE_LENGTH_INTENTS;
 export const ZONE_WEIGHT_INTENT_OPTIONS = ZONE_WEIGHT_INTENTS;
+
+// ---------------------------------------------------------------------------
+// B2.1 -- SAFE NEW-EVALUATION-ROUND helper. This is the one rule that
+// makes "confirm a fresh snapshot after an earlier one is already
+// CONFIRMED" work correctly instead of a hardcoded `null`: since
+// pickSnapshot (professional-brain-orchestrator.ts) always prefers a
+// CONFIRMED row over any newer DRAFT, `currentSnapshot` from the
+// evaluation GET is EITHER the still-unconfirmed draft being worked on
+// (expected id: null, nothing confirmed yet) OR the previously CONFIRMED
+// row a new draft is about to supersede (expected id: that row's own
+// id) -- there is no third case. Passing the wrong value here either
+// fails a legitimate first confirmation (false 409) or -- far worse --
+// would let a stale client silently confirm over a newer approval it
+// never saw. Always compute this fresh from the live snapshot, never
+// cache it across a render.
+// ---------------------------------------------------------------------------
+
+export function getExpectedConfirmedSnapshotId(snapshot: HairStateSnapshotRecord | null): string | null {
+  return snapshot && snapshot.status === "CONFIRMED" ? snapshot.id : null;
+}
+
+// ---------------------------------------------------------------------------
+// B2.1 -- color-candidate detection + the real skill identity it keys
+// off. Used to decide when the "what's missing for color" disclosure
+// must render -- see page.tsx's ColorReadinessNotice.
+// ---------------------------------------------------------------------------
+
+export const COLOR_EVALUATION_GATE_SKILL_KEY = "skill-color-global-single-process-evaluation-gate";
+
+export function hasColorCandidate(matches: readonly SkillCandidateMatch[]): boolean {
+  return matches.some((m) => m.skillKey === COLOR_EVALUATION_GATE_SKILL_KEY);
+}

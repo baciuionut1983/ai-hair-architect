@@ -3,15 +3,18 @@ import { describe, expect, it } from "vitest";
 import { isHairStateSnapshotPayload } from "@/lib/hair-state-snapshot-validators";
 
 import {
+  COLOR_EVALUATION_GATE_SKILL_KEY,
   UNSPECIFIED_COLOR_FACTS,
   UNSPECIFIED_GLOBAL_CUT_FACTS,
   buildCurrentStatePayload,
   buildTargetStatePayload,
   getCandidateDomain,
+  getExpectedConfirmedSnapshotId,
   getSnapshotStatusBadgeVariant,
   getSnapshotStatusLabel,
   getTransformationBadgeVariant,
   getTransformationLabel,
+  hasColorCandidate,
   mapProfessionalBrainApiError,
 } from "./professional-brain-logic";
 
@@ -89,5 +92,40 @@ describe("buildCurrentStatePayload / buildTargetStatePayload (pure)", () => {
   it("buildTargetStatePayload with zoneIntent null leaves ALL zones unassessed", () => {
     const payload = buildTargetStatePayload(UNSPECIFIED_GLOBAL_CUT_FACTS, UNSPECIFIED_COLOR_FACTS, null);
     expect(payload.zones.every((z) => z.lengthIntent.source === "not_yet_assessed" && z.weightIntent.source === "not_yet_assessed")).toBe(true);
+  });
+});
+
+// B2.1 -- the real bug this stage fixes: the page previously hardcoded
+// `expectedCurrentConfirmedSnapshotId: null` on every confirm call,
+// which is only correct for a client's very first confirmation of a
+// role. Once a snapshot is already CONFIRMED, pickSnapshot always
+// returns THAT row (never a newer draft) -- so the expected id for
+// confirming a round-2 draft must be the already-confirmed row's own
+// id, never null (a stale null would either wrongly 409 a legitimate
+// second round, or -- the real risk -- let a confirm silently target
+// the wrong baseline).
+describe("getExpectedConfirmedSnapshotId", () => {
+  it("null snapshot (nothing exists yet) -> null", () => {
+    expect(getExpectedConfirmedSnapshotId(null)).toBeNull();
+  });
+
+  it("a DRAFT snapshot (first-ever draft, nothing confirmed yet) -> null", () => {
+    expect(getExpectedConfirmedSnapshotId({ id: "s1", status: "DRAFT" } as never)).toBeNull();
+  });
+
+  it("a CONFIRMED snapshot (round 2 must supersede exactly this one) -> its own id", () => {
+    expect(getExpectedConfirmedSnapshotId({ id: "s1", status: "CONFIRMED" } as never)).toBe("s1");
+  });
+
+  it("a SUPERSEDED snapshot -> null (it is no longer the live confirmed baseline)", () => {
+    expect(getExpectedConfirmedSnapshotId({ id: "s1", status: "SUPERSEDED" } as never)).toBeNull();
+  });
+});
+
+describe("hasColorCandidate", () => {
+  it("true only when the real color evaluation-gate skill key is present", () => {
+    expect(hasColorCandidate([{ skillKey: COLOR_EVALUATION_GATE_SKILL_KEY } as never])).toBe(true);
+    expect(hasColorCandidate([{ skillKey: "skill-cutting-establish-central-nape-guide" } as never])).toBe(false);
+    expect(hasColorCandidate([])).toBe(false);
   });
 });

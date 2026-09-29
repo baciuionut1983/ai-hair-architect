@@ -24,6 +24,14 @@ export type ProfessionalBrainState = { status: "loading" } | { status: "error" }
 
 export interface ProfessionalBrainActionSuccess {
   ok: true;
+  // B2.1 -- carries the created/confirmed row straight back to the
+  // caller, independent of what the next `evaluation` GET's own
+  // pickSnapshot (CONFIRMED-always-wins) would return. This is what lets
+  // the page track a brand-new DRAFT round-2 snapshot locally while an
+  // older CONFIRMED pair is still what `state.currentSnapshot`/
+  // `targetSnapshot` report -- see page.tsx's own "start a new
+  // evaluation" flow.
+  snapshot: HairStateSnapshotRecord;
 }
 export interface ProfessionalBrainActionFailure {
   ok: false;
@@ -42,7 +50,10 @@ export interface UseProfessionalBrainEvaluationResult {
 }
 
 async function toActionOutcome(response: Response): Promise<ProfessionalBrainActionOutcome> {
-  if (response.ok) return { ok: true };
+  if (response.ok) {
+    const body = (await response.json()) as { snapshot: HairStateSnapshotRecord };
+    return { ok: true, snapshot: body.snapshot };
+  }
   let code: string | undefined;
   try {
     const body = (await response.json()) as { error?: string };
