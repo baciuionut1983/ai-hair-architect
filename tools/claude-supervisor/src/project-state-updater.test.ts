@@ -4,10 +4,12 @@ import { join } from "node:path";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { canonicalJson, type JsonValue } from "./canonical-json.js";
-import { footerDigest, ingestAgentReport, serializeProjectState, type UpdateDependencies } from "./project-state-updater.js";
+import { footerDigest, ingestAgentReport, serializeProjectState, MILESTONE_B_ORIGIN_SHA, MILESTONE_B_LOCAL_ONLY_COMMITS, type UpdateDependencies } from "./project-state-updater.js";
 import { loadProjectState, parseProjectState, PROJECT_STATE_PATH, type ProjectState } from "./project-state.js";
 import { validateAgentReportFooter, type AgentReportFooter } from "./agent-report-footer.js";
 import { nextTask } from "./project-task.js";
+import { observeGit, type GitObservation, type LocalOnlyCommit } from "./project-evidence.js";
+import type { execSafe, ExecResult } from "./safe-exec.js";
 
 const realBefore = fs.readFileSync(PROJECT_STATE_PATH);
 const realHash = createHash("sha256").update(realBefore).digest("hex");
@@ -20,9 +22,19 @@ function fixture() {
   const path = join(dir, "PROJECT_STATE.json");
   // Writes only to the freshly created temporary fixture, never the real path.
   const initial = JSON.parse(realBefore.toString()) as ProjectState;
-  // Explicit historical B.2 fixture; the real snapshot has advanced to B.3.
+  // Explicit historical B.2 fixture; the real snapshot has advanced past
+  // this point (now CLOSED, milestone B reconciled). `status` must be
+  // reset explicitly alongside `phase` -- relying on the real file's OWN
+  // current status here was a real, latent staleness bug (pre-existing,
+  // unrelated to this fixture's own intent): it silently inherited
+  // whatever `operational.status` the real file happened to be at
+  // (CLOSED, once the real MVP closure was applied), which made every
+  // "first happy path" test using this fixture spuriously fail
+  // (compatible["CLOSED"] admits no task type at all) -- caught and fixed
+  // here as part of the milestone-B state-reconciliation task, not a
+  // product-work change.
   initial.stateRevision = 1; initial.lastTask = null; initial.activeTask = null;
-  initial.operational.phase = "PHASE_B_2B";
+  initial.operational.phase = "PHASE_B_2B"; initial.operational.status = "AWAITING_IMPLEMENTATION";
   initial.next = { actor: "CODEX", taskId: "ORCH-B2-IMPL-001", taskType: "IMPLEMENTATION",
     task: "Implement Project Operations Orchestrator Phase B.2b-2 controlled project-state updater.",
     humanApprovalRequired: false, humanApprovalReason: null };
@@ -75,8 +87,30 @@ describe("one-shot HUMAN MVP closure sync", () => {
     task_id: "ORCH-B3-STATE-MAINTENANCE-CLOSURE-001", actor: "HUMAN", task_type: "STATE_MAINTENANCE",
     verdict: "MVP_CLOSURE_SYNC", baseline_sha: null, result_sha: null, scope: [], evidence: "HUMAN_VERIFIED",
     next_actor_suggested: "HUMAN", expected_state_revision: 2, ...changes });
+  // Reconstructs the exact real "right after bootstrap, about to receive
+  // closure" state closureEligible itself requires -- NOT a copy of
+  // realBefore, which is a pre-existing staleness trap: the real file has
+  // since moved PAST closure (now CLOSED, later reconciled to milestone
+  // B too), so copying it verbatim silently fails closureEligible's own
+  // revision/phase/status/lastTask checks the moment the real file
+  // advances again. Every field closureEligible actually checks is set
+  // here explicitly, using the SAME hardcoded historical constants
+  // (bootstrapTaskId, the real footer digest/timestamp) the source module
+  // itself pins -- everything else (project/repository/product/ci/
+  // production/deferred) is taken from the real file only because these
+  // tests compare relatively (`{...before, ...changes}`), never because
+  // its exact content matters here.
   function closureFixture() {
-    const result = fixture(); save(result.path, JSON.parse(realBefore.toString()) as ProjectState); return result;
+    const result = fixture();
+    const initial = JSON.parse(realBefore.toString()) as ProjectState;
+    initial.stateRevision = 2; initial.activeTask = null; initial.blockers = [];
+    initial.operational = { milestone: "PROJECT_OPERATIONS_ORCHESTRATOR", phase: "PHASE_B_3", status: "AWAITING_IMPLEMENTATION" };
+    initial.lastTask = { task_id: "ORCH-B2-STATE-MAINTENANCE-BOOTSTRAP-001", attempt: 1, task_type: "STATE_MAINTENANCE", actor: "HUMAN",
+      verdict: "BOOTSTRAP_SYNC", footerDigest: "deaa10e76d1194031df3a00fc8a9002ae634d285f9ce2ba42ee60b7c7b6b778b", at: "2026-09-28T19:45:03.794Z" };
+    initial.next = { actor: "CODEX", taskType: "IMPLEMENTATION", taskId: "ORCH-B3-IMPL-001",
+      task: "Implement Project Operations Orchestrator Phase B.3 task generation and evidence verification.",
+      humanApprovalRequired: false, humanApprovalReason: null };
+    save(result.path, initial); return result;
   }
   it("closes only the operational milestone, records the actual event and leaves no executable task", () => {
     const { path } = closureFixture(); const before = state(path); const f = closure();
@@ -196,6 +230,180 @@ describe("one-shot HUMAN MVP closure sync", () => {
     expect(ingest(path, f, { fs: { ...fs, renameSync, readFileSync } })).toMatchObject({ ok: false, reason: "post_write_validation_failed" });
     expect(state(path).stateRevision).toBe(3); const bytes = fs.readFileSync(path);
     expect(ingest(path, f)).toMatchObject({ kind: "DUPLICATE_NOOP", revision: 3 }); expect(fs.readFileSync(path)).toEqual(bytes);
+  });
+});
+
+describe("one-shot HUMAN milestone B reconciliation sync", () => {
+  const milestoneBTaskId = "ORCH-B4-STATE-MAINTENANCE-RECONCILE-001";
+  const reconcile = (changes: Partial<AgentReportFooter> = {}) => report({
+    task_id: milestoneBTaskId, actor: "HUMAN", task_type: "STATE_MAINTENANCE",
+    verdict: "MILESTONE_B_RECONCILE_SYNC", baseline_sha: null, result_sha: null, scope: [], evidence: "HUMAN_VERIFIED",
+    next_actor_suggested: "CLAUDE", expected_state_revision: 3, ...changes });
+  // Reconstructs the exact real "CLOSED, right after MVP closure" state
+  // milestoneBReconcileEligible itself requires -- same discipline as
+  // closureFixture's own header: never a copy of realBefore (which has
+  // since moved past this point too), every field the eligibility check
+  // actually reads is set explicitly using the SAME hardcoded historical
+  // constants the source module pins.
+  function milestoneBFixture() {
+    const result = fixture();
+    const initial = JSON.parse(realBefore.toString()) as ProjectState;
+    initial.stateRevision = 3; initial.activeTask = null; initial.blockers = [];
+    initial.operational = { milestone: "PROJECT_OPERATIONS_ORCHESTRATOR", phase: "ORCHESTRATOR_MVP_CLOSED", status: "CLOSED" };
+    initial.lastTask = { task_id: "ORCH-B3-STATE-MAINTENANCE-CLOSURE-001", attempt: 1, task_type: "STATE_MAINTENANCE", actor: "HUMAN",
+      verdict: "MVP_CLOSURE_SYNC", footerDigest: "bb90415e0b5eafd4d94473f0b8488a20164a43e478f08e236448772de0d893df", at: "2026-09-28T22:17:06.047Z" };
+    initial.next = { actor: "HUMAN", taskType: "STATE_MAINTENANCE", taskId: "ORCH-B3-STATE-MAINTENANCE-CLOSURE-001",
+      task: "Orchestrator MVP CLOSED. No next executable task; the architecture/scope decision for product work B is a separate, later human-initiated action.",
+      humanApprovalRequired: false, humanApprovalReason: null };
+    save(result.path, initial); return result;
+  }
+
+  // A real, trusted GitObservation (the private trust marker can only be
+  // set by observeGit itself) built from a fake, fixed-argv executor --
+  // mirrors project-evidence.test.ts's own gitExecutor/observed pattern,
+  // never a real git process or network call.
+  const localHeadSha = "f".repeat(40);
+  const okExec = (stdout = ""): ExecResult => ({ exitCode: 0, stdout, stderr: "", timedOut: false });
+  function milestoneGitExecutor(origin: string, head: string, ancestor = true): typeof execSafe {
+    return async (_, args) => {
+      if (args[0] === "status") return okExec("");
+      if (args[0] === "rev-parse") return okExec(args.length === 3 ? `${head}\n${origin}` : args[1] === "HEAD" ? head : origin);
+      if (args[0] === "show") return okExec("2026-09-29T22:00:00+00:00");
+      if (args[0] === "remote") return okExec("https://github.com/baciuionut1983/ai-hair-architect.git");
+      if (args[0] === "merge-base") return { ...okExec(), exitCode: ancestor ? 0 : 1 };
+      return okExec();
+    };
+  }
+  function trustedGit(origin = MILESTONE_B_ORIGIN_SHA, head = localHeadSha, ancestor = true): Promise<GitObservation> {
+    return observeGit("fixture", true, milestoneGitExecutor(origin, head, ancestor));
+  }
+  async function realEvidence(overrides: { origin?: string; head?: string; ancestor?: boolean; localOnlyCommits?: readonly LocalOnlyCommit[] } = {}) {
+    return {
+      git: await trustedGit(overrides.origin, overrides.head, overrides.ancestor),
+      localOnlyCommits: overrides.localOnlyCommits ?? MILESTONE_B_LOCAL_ONLY_COMMITS,
+    };
+  }
+
+  it("VALID PATH: reconciles CLOSED -> AWAITING_REVIEW, separates published evidence from local-only commits, and generates a real next CLAUDE review task", async () => {
+    const { path } = milestoneBFixture(); const before = state(path); const f = reconcile();
+    const milestoneBGitEvidence = await realEvidence();
+    expect(ingest(path, f, { milestoneBGitEvidence })).toMatchObject({ ok: true, kind: "UPDATED", revision: 4, operationalStatus: "AWAITING_REVIEW", nextActor: "CLAUDE" });
+    const after = state(path);
+    expect(after.schemaVersion).toBe(3);
+    expect(after.operational).toEqual({ milestone: "PRODUCT_MILESTONE_B", phase: "MILESTONE_B_CONTINUATION", status: "AWAITING_REVIEW" });
+    expect(after.repository).toEqual({ ...before.repository, originSha: MILESTONE_B_ORIGIN_SHA, approvedSha: MILESTONE_B_ORIGIN_SHA, evidence: "MACHINE_VERIFIED" });
+    expect(after.productMilestoneB).toEqual({ localOnlyCommits: MILESTONE_B_LOCAL_ONLY_COMMITS });
+    expect(after.next).toEqual({ actor: "CLAUDE", taskType: "INDEPENDENT_REVIEW", taskId: "ORCH-B4-INDEPENDENT-REVIEW-004",
+      task: "Independently review the 2 implemented-and-tested, unpushed commit(s) (085547b, fbb1ebc) before recommending push authorization to continue milestone B.",
+      humanApprovalRequired: false, humanApprovalReason: null });
+    expect(after.activeTask).toBeNull();
+    // Preserves history: the Orchestrator MVP closure record is untouched, byte-identical.
+    expect(after.product).toEqual(before.product);
+    for (const key of ["project", "ci", "production", "blockers", "deferred"] as const) expect(after[key]).toEqual(before[key]);
+    expect(nextTask(after).kind).not.toBe("CLOSED");
+  });
+
+  it("REVISION GREȘIT: rejects any expected_state_revision other than 3, even when footer and state otherwise agree", async () => {
+    const milestoneBGitEvidence = await realEvidence();
+    for (const revision of [1, 2, 4]) {
+      const { path } = milestoneBFixture();
+      rejected(path, reconcile({ expected_state_revision: revision }), "stale_revision", { milestoneBGitEvidence });
+    }
+  });
+
+  it("DUBLĂ APLICARE: exact resubmission is a no-op; a bumped attempt/revision after success is rejected, never a second real transition", async () => {
+    const { path } = milestoneBFixture(); const f = reconcile();
+    const milestoneBGitEvidence = await realEvidence();
+    expect(ingest(path, f, { milestoneBGitEvidence }).ok).toBe(true);
+    const bytes = fs.readFileSync(path);
+    expect(ingest(path, f, { milestoneBGitEvidence })).toMatchObject({ kind: "DUPLICATE_NOOP", revision: 4 });
+    expect(fs.readFileSync(path)).toEqual(bytes);
+    rejected(path, reconcile({ next_actor_suggested: "HUMAN" }), "duplicate_conflict", { milestoneBGitEvidence });
+    rejected(path, reconcile({ expected_state_revision: 4 }), "duplicate_conflict", { milestoneBGitEvidence });
+    rejected(path, reconcile({ attempt: 2 }), "stale_revision", { milestoneBGitEvidence });
+    // expected_state_revision is hardcoded to exactly 3 for this one-shot
+    // verdict (mirroring bootstrap's own !==1 / closure's own !==2), so
+    // revision 4 -- the real post-transition value -- is stale_revision,
+    // never invalid_transition.
+    rejected(path, reconcile({ attempt: 2, expected_state_revision: 4 }), "stale_revision", { milestoneBGitEvidence });
+    expect(fs.readFileSync(path)).toEqual(bytes);
+  });
+
+  it("COMMIT LOCAL CONFUNDAT CU ORIGIN: refuses when the observed origin is actually the local-only tip, never silently treats a local commit as published", async () => {
+    const { path } = milestoneBFixture();
+    // origin "moved" to the local-only tip itself -- exactly the confusion this transition must refuse.
+    const confusedEvidence = await realEvidence({ origin: MILESTONE_B_LOCAL_ONLY_COMMITS.at(-1)!.sha, head: localHeadSha });
+    expect(ingest(path, reconcile(), { milestoneBGitEvidence: confusedEvidence })).toMatchObject({ ok: false, reason: "invalid_transition", step: "milestone_b_git_verification" });
+    expect(state(path).stateRevision).toBe(3);
+  });
+
+  it("COMMIT LOCAL CONFUNDAT CU ORIGIN: refuses a mismatched local-only commit set even with the correct published origin", async () => {
+    const { path: pathA } = milestoneBFixture();
+    const emptyLocalCommits = await realEvidence({ localOnlyCommits: [] });
+    expect(ingest(pathA, reconcile(), { milestoneBGitEvidence: emptyLocalCommits })).toMatchObject({ ok: false, reason: "invalid_transition", step: "milestone_b_git_verification" });
+    const { path: pathB } = milestoneBFixture();
+    const wrongLocalCommits = await realEvidence({ localOnlyCommits: [{ sha: "9".repeat(40), subject: "An unreviewed, unexpected commit" }] });
+    expect(ingest(pathB, reconcile(), { milestoneBGitEvidence: wrongLocalCommits })).toMatchObject({ ok: false, reason: "invalid_transition", step: "milestone_b_git_verification" });
+  });
+
+  it("refuses without any Git evidence supplied at all -- never defaults to trusting the footer", () => {
+    const { path } = milestoneBFixture();
+    rejected(path, reconcile(), "invalid_transition");
+  });
+
+  it("refuses an untrusted or non-machine-verified observation, and a non-ancestor origin", async () => {
+    const { path: pathA } = milestoneBFixture();
+    const untrusted = { git: JSON.parse(JSON.stringify(await trustedGit())) as GitObservation, localOnlyCommits: MILESTONE_B_LOCAL_ONLY_COMMITS };
+    expect(ingest(pathA, reconcile(), { milestoneBGitEvidence: untrusted })).toMatchObject({ ok: false, reason: "invalid_transition", step: "milestone_b_git_verification" });
+    const { path: pathB } = milestoneBFixture();
+    const nonAncestor = await realEvidence({ ancestor: false });
+    expect(ingest(pathB, reconcile(), { milestoneBGitEvidence: nonAncestor })).toMatchObject({ ok: false, reason: "invalid_transition", step: "milestone_b_git_verification" });
+  });
+
+  it("PĂSTRAREA CLOSURE-ULUI ISTORIC: eligibility itself depends on the exact prior closure fact -- an altered lastTask/product/status never silently reconciles", async () => {
+    const milestoneBGitEvidence = await realEvidence();
+    const cases: [string, (s: ProjectState) => void][] = [
+      ["status", (s) => { s.operational.status = "READY_FOR_HUMAN_CLOSURE"; }],
+      ["phase", (s) => { s.operational.phase = "PHASE_B_3"; }],
+      ["lastTask verdict", (s) => { s.lastTask!.verdict = "BOOTSTRAP_SYNC"; }],
+      ["lastTask digest", (s) => { s.lastTask!.footerDigest = "a".repeat(64); }],
+      ["blockers", (s) => { s.blockers = ["Unresolved"]; }],
+    ];
+    for (const [, change] of cases) {
+      const { path } = milestoneBFixture(); const s = state(path); change(s); save(path, s);
+      const before = fs.readFileSync(path);
+      expect(ingest(path, reconcile(), { milestoneBGitEvidence })).toMatchObject({ ok: false, reason: "invalid_transition", step: "milestone_b_reconcile_eligibility" });
+      expect(fs.readFileSync(path)).toEqual(before);
+    }
+  });
+
+  it.each([
+    ["lastClosed", "T1.6.2.d"], ["status", "OPEN"], ["nextAfterOrchestratorMvp", "T1.6.2.d"],
+  ])("an invalid product %s -- structurally impossible to represent as a valid state -- fails full state validation before eligibility is ever reached", async (key, value) => {
+    const { path } = milestoneBFixture(); const s = JSON.parse(fs.readFileSync(path, "utf8"));
+    s.product[key] = value; const raw = JSON.stringify(s); fs.writeFileSync(path, raw);
+    const milestoneBGitEvidence = await realEvidence();
+    expect(ingest(path, reconcile(), { milestoneBGitEvidence })).toMatchObject({ ok: false, reason: "state_invalid" });
+    expect(fs.readFileSync(path, "utf8")).toBe(raw);
+  });
+
+  it("never ingests a non-HUMAN actor or a non-HUMAN_VERIFIED evidence footer", async () => {
+    const milestoneBGitEvidence = await realEvidence();
+    for (const actor of ["CLAUDE", "CODEX", "CI", "RAILWAY", "ORCHESTRATOR"] as const) {
+      const { path } = milestoneBFixture();
+      rejected(path, reconcile({ actor, evidence: "CLAIMED" }), "footer_invalid", { milestoneBGitEvidence });
+    }
+    const { path } = milestoneBFixture();
+    rejected(path, reconcile({ evidence: "CLAIMED" }), "invalid_transition", { milestoneBGitEvidence });
+  });
+
+  it("does not pin prose, ci or production and preserves them exactly", async () => {
+    const { path } = milestoneBFixture(); const s = state(path);
+    s.ci = { status: "UNKNOWN", runId: 1, evidence: "UNKNOWN" }; s.production.evidence = "UNKNOWN"; save(path, s);
+    const milestoneBGitEvidence = await realEvidence();
+    expect(ingest(path, reconcile(), { milestoneBGitEvidence }).ok).toBe(true);
+    const after = state(path);
+    expect(after.ci).toEqual(s.ci); expect(after.production).toEqual(s.production);
   });
 });
 

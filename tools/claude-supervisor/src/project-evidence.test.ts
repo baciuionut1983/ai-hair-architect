@@ -1,16 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
-import { observeGit, observeCi, assessPush, type GitObservation } from "./project-evidence.js";
+import { observeGit, observeCi, assessPush, listLocalOnlyCommits, type GitObservation } from "./project-evidence.js";
 import { loadProjectState } from "./project-state.js";
 import type { execSafe, ExecResult } from "./safe-exec.js";
 
 export const baseline = "c97639797ecd93b04d04d0fff553cf3945dd0b65";
 const ok = (stdout = ""): ExecResult => ({ exitCode: 0, stdout, stderr: "", timedOut: false });
-export function gitExecutor(head = baseline, origin = head, status = ""): typeof execSafe {
+export function gitExecutor(head = baseline, origin = head, status = "", logOutput = ""): typeof execSafe {
   return async (_, args) => {
     if (args[0] === "status") return ok(status);
     if (args[0] === "rev-parse") return ok(args.length === 3 ? `${head}\n${origin}` : args[1] === "HEAD" ? head : origin);
     if (args[0] === "show") return ok("2026-09-28T19:50:00+00:00");
     if (args[0] === "remote") return ok("https://github.com/baciuionut1983/ai-hair-architect.git");
+    if (args[0] === "log") return ok(logOutput);
     return ok();
   };
 }
@@ -87,5 +88,55 @@ describe("read-only evidence adapters", () => {
     expect(assessPush(s, git).verdict).toBe("YES");
     expect(assessPush(s, await observed(baseline, "b".repeat(40), " M file", true)).verdict).toBe("NO");
     s.blockers = ["Stop"]; expect(assessPush(s, git).verdict).toBe("NO");
+  });
+});
+
+describe("listLocalOnlyCommits", () => {
+  it("returns an empty list when head equals origin -- nothing local-only", async () => {
+    const git = await observed(baseline, baseline);
+    expect(await listLocalOnlyCommits("fixture", git, gitExecutor(baseline, baseline))).toEqual([]);
+  });
+  it("returns null for an untrusted or non-machine-verified observation, without ever calling execute", async () => {
+    const untrusted = JSON.parse(JSON.stringify(await observed())) as GitObservation;
+    const execute = vi.fn(gitExecutor());
+    expect(await listLocalOnlyCommits("fixture", untrusted, execute)).toBeNull();
+    expect(execute).not.toHaveBeenCalled();
+  });
+  it("returns null when origin ancestry is false -- never guesses a range from an untrusted relationship", async () => {
+    const head = "b".repeat(40);
+    const git = await observeGit("fixture", false, async (p, a, o) => (a[0] === "merge-base" ? { ...ok(), exitCode: 1 } : gitExecutor(head, baseline)(p, a, o)));
+    expect(await listLocalOnlyCommits("fixture", git, gitExecutor(head, baseline))).toBeNull();
+  });
+  it("parses real git log range output, oldest-first, splitting on the unit separator", async () => {
+    const head = "b".repeat(40);
+    const shaOld = "1".repeat(40);
+    const shaNew = "2".repeat(40);
+    // git log lists newest first; the function reverses to chronological order.
+    const logOutput = `${shaNew}\x1fSecond commit subject\n${shaOld}\x1fFirst commit subject\n`;
+    const git = await observed(head, baseline, "", true);
+    const result = await listLocalOnlyCommits("fixture", git, gitExecutor(head, baseline, "", logOutput));
+    expect(result).toEqual([{ sha: shaOld, subject: "First commit subject" }, { sha: shaNew, subject: "Second commit subject" }]);
+  });
+  it("ignores blank lines", async () => {
+    const head = "b".repeat(40);
+    const shaOnly = "4".repeat(40);
+    const git = await observed(head, baseline);
+    const result = await listLocalOnlyCommits("fixture", git, gitExecutor(head, baseline, "", `\n${shaOnly}\x1fOnly commit\n\n`));
+    expect(result).toEqual([{ sha: shaOnly, subject: "Only commit" }]);
+  });
+  it("returns null on a nonzero exit code or a timeout", async () => {
+    const head = "b".repeat(40);
+    const git = await observed(head, baseline);
+    const failing: typeof execSafe = async (p, a, o) => (a[0] === "log" ? { ...ok(), exitCode: 1 } : gitExecutor(head, baseline)(p, a, o));
+    expect(await listLocalOnlyCommits("fixture", git, failing)).toBeNull();
+    const timedOut: typeof execSafe = async (p, a, o) => (a[0] === "log" ? { ...ok(), timedOut: true } : gitExecutor(head, baseline)(p, a, o));
+    expect(await listLocalOnlyCommits("fixture", git, timedOut)).toBeNull();
+  });
+  it("returns null on malformed output -- missing separator, invalid sha, or empty subject", async () => {
+    const head = "b".repeat(40);
+    const git = await observed(head, baseline);
+    expect(await listLocalOnlyCommits("fixture", git, gitExecutor(head, baseline, "", "no-separator-line\n"))).toBeNull();
+    expect(await listLocalOnlyCommits("fixture", git, gitExecutor(head, baseline, "", "not-a-sha\x1fSubject\n"))).toBeNull();
+    expect(await listLocalOnlyCommits("fixture", git, gitExecutor(head, baseline, "", `${"3".repeat(40)}\x1f \n`))).toBeNull();
   });
 });

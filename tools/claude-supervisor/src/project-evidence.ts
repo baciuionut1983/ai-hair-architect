@@ -1,7 +1,7 @@
 // Ephemeral observations only. No state writer, report parsing, or dispatch.
 import { captureGitSnapshot } from "./git-inspect.js";
 import { deriveOwnerRepoFromGit, fetchCheckRuns } from "./ci-watch.js";
-import { execSafe } from "./safe-exec.js";
+import { execSafe, gitLogRangeArgs } from "./safe-exec.js";
 import type { ProjectState } from "./project-state.js";
 
 const trusted = Symbol("local Git observation");
@@ -93,6 +93,39 @@ export async function observeCi(cwd: string, git: GitObservation, execute: typeo
           runtimeHealth: "UNKNOWN", migrations: "UNKNOWN", instanceRunning: "UNKNOWN" } };
     } finally { clearTimeout(timeout); }
   } catch { return unknown("GITHUB_UNAVAILABLE"); }
+}
+
+// "CORECȚIE B2.2 ÎNAINTE DE RELEASE" is unrelated; this is the milestone-B
+// state-reconciliation task. Represents PUBLISHED evidence (git.origin,
+// already captured by a real, trusted GitObservation) separately from
+// LOCAL-ONLY commits -- exactly the commits sitting on top of origin/master
+// that no human has yet reviewed or approved for push. Reuses the SAME
+// trusted GitObservation's own head/origin/originAncestorOfHead facts
+// (never re-derives or re-trusts a second, possibly-stale pair) so this
+// can never disagree with what the rest of the system already verified.
+export interface LocalOnlyCommit {
+  readonly sha: string;
+  readonly subject: string;
+}
+export async function listLocalOnlyCommits(cwd: string, git: GitObservation, execute: typeof execSafe = execSafe): Promise<readonly LocalOnlyCommit[] | null> {
+  if (!isTrustedGit(git) || git.evidence !== "MACHINE_VERIFIED" || !git.head || !git.origin || git.originAncestorOfHead !== true) return null;
+  if (git.head === git.origin) return [];
+  const result = await execute("git", gitLogRangeArgs(git.origin, git.head), { cwd, timeoutMs: 15_000 });
+  if (result.exitCode !== 0 || result.timedOut) return null;
+  const lines = result.stdout.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+  const sha = /^[a-f0-9]{40}$/;
+  const commits: LocalOnlyCommit[] = [];
+  for (const line of lines) {
+    const separator = line.indexOf("\x1f");
+    if (separator === -1) return null;
+    const candidateSha = line.slice(0, separator);
+    const subject = line.slice(separator + 1).trim();
+    if (!sha.test(candidateSha) || subject.length === 0) return null;
+    commits.push({ sha: candidateSha, subject });
+  }
+  // `git log <origin>..<head>` lists newest first; oldest-first reads as
+  // the real chronological application order.
+  return commits.reverse();
 }
 
 export function assessPush(s: ProjectState, git?: GitObservation): { verdict: "YES" | "NO" | "UNKNOWN"; reason: string } {

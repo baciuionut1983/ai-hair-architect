@@ -7,7 +7,7 @@ import { runProjectCommand } from "./project-cli.js";
 import { nextTask, renderTask, redact } from "./project-task.js";
 import { observeGit, type GitObservation } from "./project-evidence.js";
 import { loadProjectState, PROJECT_STATE_PATH, type ProjectState } from "./project-state.js";
-import { serializeProjectState } from "./project-state-updater.js";
+import { serializeProjectState, MILESTONE_B_ORIGIN_SHA, MILESTONE_B_LOCAL_ONLY_COMMITS } from "./project-state-updater.js";
 import { validateTaskContract } from "./task-contract.js";
 import { isCommitAllowed, isPushAllowed } from "./commit-policy.js";
 import { execSafe } from "./safe-exec.js";
@@ -16,7 +16,47 @@ const baseline = "c97639797ecd93b04d04d0fff553cf3945dd0b65";
 const before = readFileSync(PROJECT_STATE_PATH);
 const hash = createHash("sha256").update(before).digest("hex");
 const dirs: string[] = [];
-function current(): ProjectState { const loaded = loadProjectState(); if (!loaded.ok) throw new Error(loaded.reason); return loaded.state; }
+// Reconstructs the exact real "right after bootstrap, PHASE_B_3, about to
+// implement B.3" state this whole file's own tests assume -- NOT a live
+// read of the real file, which has since moved past this point (closed,
+// then reconciled to milestone B) and would otherwise make every test
+// here spuriously fail once the real file advances again (a real,
+// pre-existing staleness bug, caught and fixed here as part of the
+// milestone-B state-reconciliation task, not a product-work change). See
+// project-state-updater.test.ts's own closureFixture/milestoneBFixture
+// for the identical, established pattern. Only the structurally-
+// irrelevant parts (repository/product/ci/production/project/deferred)
+// come from the real file, since these tests only need them to be
+// validly-shaped, never their exact historical values.
+function current(): ProjectState {
+  const loaded = loadProjectState(); if (!loaded.ok) throw new Error(loaded.reason);
+  const state: ProjectState = JSON.parse(JSON.stringify(loaded.state));
+  state.stateRevision = 2; state.activeTask = null; state.blockers = [];
+  state.operational = { milestone: "PROJECT_OPERATIONS_ORCHESTRATOR", phase: "PHASE_B_3", status: "AWAITING_IMPLEMENTATION" };
+  state.lastTask = { task_id: "ORCH-B2-STATE-MAINTENANCE-BOOTSTRAP-001", attempt: 1, task_type: "STATE_MAINTENANCE", actor: "HUMAN",
+    verdict: "BOOTSTRAP_SYNC", footerDigest: "deaa10e76d1194031df3a00fc8a9002ae634d285f9ce2ba42ee60b7c7b6b778b", at: "2026-09-28T19:45:03.794Z" };
+  state.next = { actor: "CODEX", taskType: "IMPLEMENTATION", taskId: "ORCH-B3-IMPL-001",
+    task: "Implement Project Operations Orchestrator Phase B.3 task generation and evidence verification.",
+    humanApprovalRequired: false, humanApprovalReason: null };
+  return state;
+}
+// The exact shape a successful MILESTONE_B_RECONCILE_SYNC produces --
+// mirrors project-state-updater.test.ts's own milestoneBReconcileState
+// assertions, reused here to prove next-task generates a real,
+// restricted, read-only CLAUDE review task afterward (requirement 5).
+function afterMilestoneBReconciliation(): ProjectState {
+  const state = current();
+  state.schemaVersion = 3; state.stateRevision = 4;
+  state.operational = { milestone: "PRODUCT_MILESTONE_B", phase: "MILESTONE_B_CONTINUATION", status: "AWAITING_REVIEW" };
+  state.repository = { ...state.repository, originSha: MILESTONE_B_ORIGIN_SHA, approvedSha: MILESTONE_B_ORIGIN_SHA, evidence: "MACHINE_VERIFIED" };
+  state.productMilestoneB = { localOnlyCommits: [...MILESTONE_B_LOCAL_ONLY_COMMITS] };
+  state.lastTask = { task_id: "ORCH-B4-STATE-MAINTENANCE-RECONCILE-001", attempt: 1, task_type: "STATE_MAINTENANCE", actor: "HUMAN",
+    verdict: "MILESTONE_B_RECONCILE_SYNC", footerDigest: "a".repeat(64), at: "2026-09-29T22:30:00.000Z" };
+  state.next = { actor: "CLAUDE", taskType: "INDEPENDENT_REVIEW", taskId: "ORCH-B4-INDEPENDENT-REVIEW-004",
+    task: "Independently review the 2 implemented-and-tested, unpushed commit(s) (085547b, fbb1ebc) before recommending push authorization to continue milestone B.",
+    humanApprovalRequired: false, humanApprovalReason: null };
+  return state;
+}
 function fixture(s = current()) { const dir = mkdtempSync(join(tmpdir(), "orch-b3-")); dirs.push(dir); const path = join(dir, "state.json"); writeFileSync(path, serializeProjectState(s)); return path; }
 async function git(head = baseline, origin = head, status = ""): Promise<GitObservation> {
   return observeGit("fixture", false, async (_, args) => ({ exitCode: 0, timedOut: false, stderr: "",
@@ -70,6 +110,25 @@ describe("deterministic generation from state + Git + code-owned policy", () => 
     expect(isCommitAllowed(view.contract)).toBe(false); expect(isPushAllowed(view.contract)).toBe(false);
     expect(view.contract.forbiddenOperations).toContain("edits"); expect(view.contract.protectedAreas).toEqual(["**/*"]);
   });
+  it("dogfoods the milestone-B continuation snapshot: generates a real, restricted, read-only INDEPENDENT_REVIEW task for CLAUDE, never regenerating B1/B2", async () => {
+    const s = afterMilestoneBReconciliation();
+    const observation = await git(MILESTONE_B_LOCAL_ONLY_COMMITS.at(-1)!.sha, MILESTONE_B_ORIGIN_SHA);
+    const view = nextTask(s, observation);
+    expect(view.kind).toBe("CLAUDE_TASK"); if (!("contract" in view)) throw new Error("Expected generated task");
+    expect(view.contract).toMatchObject({ taskId: "ORCH-B4-INDEPENDENT-REVIEW-004", scope: ["web/** (READ ONLY)"],
+      generation: { actor: "CLAUDE", taskType: "INDEPENDENT_REVIEW", baselineSha: MILESTONE_B_LOCAL_ONLY_COMMITS.at(-1)!.sha, expected_state_revision: 4 } });
+    expect(isCommitAllowed(view.contract)).toBe(false); expect(isPushAllowed(view.contract)).toBe(false);
+    for (const forbiddenAction of ["push", "deploy", "PROJECT_STATE mutation", "video generation", "paid AI/provider calls", "commit", "edits"]) {
+      expect(view.contract.forbiddenOperations).toContain(forbiddenAction);
+    }
+    expect(view.contract.protectedAreas).toEqual(["**/*"]);
+    for (const text of ["ORCH-B4-INDEPENDENT-REVIEW-004", "NO PUSH", "STRICT STOP", "BEGIN_PROJECT_REPORT", "END_PROJECT_REPORT", "expected_state_revision", "<ACTUAL_VERDICT>"])
+      expect(view.prompt).toContain(text);
+    // Never re-proposes B1/B2's own already-closed work.
+    expect(view.prompt).not.toMatch(/ORCH-B[23]-IMPL/);
+    expect(validateTaskContract(view.contract).ok).toBe(true);
+  });
+
   it("uses an established attempt only if the active task matches", async () => {
     const s = current(); s.activeTask = { task_id: s.next.taskId, actor: "CODEX", task_type: "IMPLEMENTATION", attempt: 3, startedAt: "2026-09-28T19:00:00.000Z" };
     const view = nextTask(s, await git()); if (!("contract" in view)) throw new Error("Expected task"); expect(view.contract.generation.attempt).toBe(3);
@@ -151,6 +210,80 @@ describe("project CLI commands", () => {
     expect(redact("Bearer token-value")).not.toContain("token-value");
     expect((await runProjectCommand(["ingest-report", "--state", fixture(), "--stdin"], { readInput: () => { throw new Error(secret); } })).output).not.toContain(secret);
   });
+  // Milestone-B state-reconciliation task. Same exact-value-pinning
+  // reconstruction as project-state-updater.test.ts's own
+  // milestoneBFixture -- deliberately NOT a live read of the real file.
+  function closedForMilestoneB(): ProjectState {
+    const state = current(); // reuses current()'s own real project/repository/product/ci/production/deferred passthrough.
+    state.stateRevision = 3;
+    state.operational = { milestone: "PROJECT_OPERATIONS_ORCHESTRATOR", phase: "ORCHESTRATOR_MVP_CLOSED", status: "CLOSED" };
+    state.lastTask = { task_id: "ORCH-B3-STATE-MAINTENANCE-CLOSURE-001", attempt: 1, task_type: "STATE_MAINTENANCE", actor: "HUMAN",
+      verdict: "MVP_CLOSURE_SYNC", footerDigest: "bb90415e0b5eafd4d94473f0b8488a20164a43e478f08e236448772de0d893df", at: "2026-09-28T22:17:06.047Z" };
+    state.next = { actor: "HUMAN", taskType: "STATE_MAINTENANCE", taskId: "ORCH-B3-STATE-MAINTENANCE-CLOSURE-001",
+      task: "Orchestrator MVP CLOSED. No next executable task; the architecture/scope decision for product work B is a separate, later human-initiated action.",
+      humanApprovalRequired: false, humanApprovalReason: null };
+    return state;
+  }
+  const milestoneBHeadSha = "f".repeat(40);
+  function milestoneGitObserver(origin = MILESTONE_B_ORIGIN_SHA, head = milestoneBHeadSha) {
+    return vi.fn(async (cwd: string, refresh: boolean) =>
+      observeGit(cwd, refresh, async (_p, args) => ({ exitCode: 0, timedOut: false, stderr: "",
+        stdout: args[0] === "remote" ? "https://github.com/baciuionut1983/ai-hair-architect.git"
+          : args[0] === "status" ? "" : args[0] === "show" ? "2026-09-29T22:00:00Z"
+          : args[0] === "rev-parse" ? (args.length === 3 ? `${head}\n${origin}` : args[1] === "HEAD" ? head : origin) : "" })));
+  }
+  const milestoneReport = () => ({ schema_version: 1, task_id: "ORCH-B4-STATE-MAINTENANCE-RECONCILE-001", attempt: 1, actor: "HUMAN",
+    task_type: "STATE_MAINTENANCE", baseline_sha: null, result_sha: null, scope: [], verdict: "MILESTONE_B_RECONCILE_SYNC", evidence: "HUMAN_VERIFIED",
+    blockers: [], next_actor_suggested: "CLAUDE", human_approval_required: false, human_approval_reason: null, expected_state_revision: 3 });
+
+  it("ingest-report never fetches Git for an ordinary report -- only MILESTONE_B_RECONCILE_SYNC triggers fresh evidence", async () => {
+    const path = fixture(); const observer = vi.fn();
+    const input = vi.fn(() => frame(report()));
+    const result = await runProjectCommand(["ingest-report", "--state", path, "--stdin"], { readInput: input, git: observer as never });
+    expect(result.exitCode).toBe(0); expect(observer).not.toHaveBeenCalled();
+  });
+
+  it("ingest-report fetches fresh, refreshed Git evidence, derives local-only commits, and completes the real milestone-B reconciliation end to end", async () => {
+    const path = fixture(closedForMilestoneB());
+    const gitObserver = milestoneGitObserver();
+    const localOnlyCommits = vi.fn(async () => MILESTONE_B_LOCAL_ONLY_COMMITS);
+    const input = vi.fn(() => frame(milestoneReport()));
+    const result = await runProjectCommand(["ingest-report", "--state", path, "--stdin", "--json"],
+      { readInput: input, git: gitObserver as never, localOnlyCommits: localOnlyCommits as never });
+    expect(gitObserver).toHaveBeenCalledTimes(1); expect(gitObserver).toHaveBeenCalledWith(expect.any(String), true);
+    expect(localOnlyCommits).toHaveBeenCalledTimes(1);
+    expect(result.exitCode).toBe(0);
+    const parsed = JSON.parse(result.output);
+    expect(parsed.result).toMatchObject({ ok: true, kind: "UPDATED", revision: 4, operationalStatus: "AWAITING_REVIEW", nextActor: "CLAUDE" });
+    expect(parsed.status.storedState.productMilestoneB).toEqual({ localOnlyCommits: MILESTONE_B_LOCAL_ONLY_COMMITS });
+    expect(parsed.status.storedState.repository.originSha).toBe(MILESTONE_B_ORIGIN_SHA);
+  });
+
+  it("ingest-report refuses milestone-B reconciliation when fresh Git evidence cannot be derived -- never silently skips verification", async () => {
+    const path = fixture(closedForMilestoneB());
+    // origin mismatched from the expected published SHA -- Git evidence
+    // resolves, but is not the exact expected fact, so the transition
+    // itself (not the CLI wiring) must refuse.
+    const gitObserver = milestoneGitObserver("b".repeat(40), milestoneBHeadSha);
+    const localOnlyCommits = vi.fn(async () => MILESTONE_B_LOCAL_ONLY_COMMITS);
+    const input = vi.fn(() => frame(milestoneReport()));
+    const result = await runProjectCommand(["ingest-report", "--state", path, "--stdin"],
+      { readInput: input, git: gitObserver as never, localOnlyCommits: localOnlyCommits as never });
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({ ok: false, reason: "invalid_transition", step: "milestone_b_git_verification" });
+  });
+
+  it("ingest-report refuses milestone-B reconciliation when local-only commits cannot be derived -- never falls back to an empty/assumed list", async () => {
+    const path = fixture(closedForMilestoneB());
+    const gitObserver = milestoneGitObserver();
+    const localOnlyCommits = vi.fn(async () => null);
+    const input = vi.fn(() => frame(milestoneReport()));
+    const result = await runProjectCommand(["ingest-report", "--state", path, "--stdin"],
+      { readInput: input, git: gitObserver as never, localOnlyCommits: localOnlyCommits as never });
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.output)).toMatchObject({ ok: false, reason: "invalid_transition", step: "milestone_b_git_verification" });
+  });
+
   it("existing CLI entry point routes project status without entering the executor", async () => {
     const result = await execSafe(process.execPath, ["--import", "tsx", "src/cli.ts", "project", "status", "--state", fixture(), "--json"], { cwd: process.cwd(), timeoutMs: 15_000 });
     expect(result.exitCode).toBe(0); expect(JSON.parse(result.stdout).storedState.stateRevision).toBe(2);

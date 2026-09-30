@@ -8,6 +8,7 @@ import { hostname } from "node:os";
 import { canonicalJson } from "./canonical-json.js";
 import { parseAgentReportFooter, validateAgentReportFooter, type AgentReportFooter } from "./agent-report-footer.js";
 import { parseProjectState, validateProjectState, type ProjectState } from "./project-state.js";
+import { isTrustedGit, type GitObservation, type LocalOnlyCommit } from "./project-evidence.js";
 
 type Status = ProjectState["operational"]["status"];
 type Actor = AgentReportFooter["actor"];
@@ -16,6 +17,15 @@ type Reason = "state_read_failed" | "state_invalid" | "footer_missing" | "footer
   | "duplicate_conflict" | "stale_revision" | "unexpected_task" | "unexpected_actor"
   | "invalid_transition" | "human_approval_required" | "lock_busy" | "write_failed"
   | "post_write_validation_failed";
+// A caller-supplied, ALREADY-RESOLVED observation -- never a function this
+// module would call itself. The true async I/O (git fetch, git log) stays
+// at the real boundary (project-cli.ts), exactly like this file's own
+// existing fs/now/sleep dependencies; ingestAgentReport itself stays
+// synchronous, unchanged for every existing caller and test.
+export interface MilestoneBGitEvidence {
+  git: GitObservation;
+  localOnlyCommits: readonly LocalOnlyCommit[];
+}
 export type UpdateResult = (
   | { ok: true; kind: "UPDATED"; revision: number; operationalStatus: Status; nextActor: Actor }
   | { ok: true; kind: "DUPLICATE_NOOP"; revision: number }
@@ -26,6 +36,9 @@ export interface UpdateDependencies {
   fs?: FileSystem;
   now?: () => Date;
   sleep?: (ms: number) => void;
+  // Consulted ONLY for the MILESTONE_B_RECONCILE_SYNC verdict; every other
+  // verdict ignores this field entirely. Absent/untrusted -> fail closed.
+  milestoneBGitEvidence?: MilestoneBGitEvidence;
 }
 
 // Public digest helper also validates: even direct callers cannot hash raw JSON.
@@ -51,6 +64,7 @@ export function serializeProjectState(input: ProjectState): string {
     repository: { canonical: s.repository.canonical, branch: s.repository.branch, originSha: s.repository.originSha, approvedSha: s.repository.approvedSha, evidence: s.repository.evidence },
     operational: { milestone: s.operational.milestone, phase: s.operational.phase, status: s.operational.status },
     product: { lastClosed: s.product.lastClosed, status: s.product.status, nextAfterOrchestratorMvp: s.product.nextAfterOrchestratorMvp, laterRoadmap: s.product.laterRoadmap, evidence: s.product.evidence },
+    ...(s.productMilestoneB ? { productMilestoneB: { localOnlyCommits: s.productMilestoneB.localOnlyCommits.map((c) => ({ sha: c.sha, subject: c.subject })) } } : {}),
     ci: { status: s.ci.status, runId: s.ci.runId, evidence: s.ci.evidence },
     production: { sha: s.production.sha, project: s.production.project, environment: s.production.environment, service: s.production.service, deploymentId: s.production.deploymentId,
       evidence: s.production.evidence, releaseGate: s.production.releaseGate, releaseGateEvidence: s.production.releaseGateEvidence,
@@ -164,10 +178,98 @@ function closureState(current: ProjectState, f: AgentReportFooter, digest: strin
   return next;
 }
 
+// ---------------------------------------------------------------------------
+// Milestone-B state-reconciliation task. One-shot HUMAN transition, revision
+// 3 only, mirroring bootstrapEligible/closureEligible's own exact-value-
+// pinning style: it recognizes ONLY the real, already-verified CLOSED state
+// this file was in at task start (see this repo's own real
+// docs/PROJECT_STATE.json at the time this was written), never a generic
+// "any CLOSED state" pattern -- a state that merely LOOKS similar is
+// rejected, never silently adapted to.
+//
+// approvedSha SEMANTICS, established here before this transition ever
+// touches the field (never inferred, never "exists on origin" == "approved"):
+// `repository.approvedSha` means "the SHA a human has explicitly vouched
+// for, via a structured report, as this Orchestrator's own trusted
+// baseline" -- historically set only through a CONTROLLED_PUSH PASS
+// (patchedState, above), and NOW also settable through this reconciliation
+// when a human's own report explicitly confirms a SHA already independently,
+// freshly verified via real Git (never trusted from the footer itself,
+// which cannot legally carry MACHINE_VERIFIED evidence -- see agent-report-
+// footer.ts's own "machine_evidence_requires_independent_verification").
+// It is bound to `git.origin` (what is actually PUBLISHED), deliberately
+// NEVER to `git.head` (the current local checkout, which may carry real,
+// implemented, tested commits no human has reviewed for push yet) -- those
+// stay structurally separate, in `productMilestoneB.localOnlyCommits`,
+// and this transition refuses outright if the two are confused (see the
+// exact-match checks in ingestAgentReport's own MILESTONE_B_RECONCILE_SYNC
+// branch below).
+const milestoneBReconcileTaskId = "ORCH-B4-STATE-MAINTENANCE-RECONCILE-001";
+export const MILESTONE_B_ORIGIN_SHA = "6e1a0acc04e0c321e1fbe88ffb9e7b153d254bb8";
+export const MILESTONE_B_LOCAL_ONLY_COMMITS: readonly LocalOnlyCommit[] = [
+  { sha: "085547b774090f15afe9dbd900d480b2e6f68692", subject: "fix(professional-brain): B2.2 -- real audit fix (straight-line + color-7 report)" },
+  { sha: "fbb1ebca5510552c6d0fdd10f80ae834e03e5495", subject: "fix(professional-brain): B2.2 pre-release correction -- domain scoping, honest STYLING gap, oneLengthHint fix, zone-matching correction" },
+];
+function sameCommitList(a: readonly LocalOnlyCommit[], b: readonly LocalOnlyCommit[]): boolean {
+  return a.length === b.length && a.every((entry, i) => entry.sha.toLowerCase() === b[i].sha.toLowerCase() && entry.subject === b[i].subject);
+}
+function milestoneBReconcileEligible(s: ProjectState, f: AgentReportFooter): boolean {
+  return s.schemaVersion === 2 && s.stateRevision === 3 && s.activeTask === null
+    && s.operational.milestone === "PROJECT_OPERATIONS_ORCHESTRATOR"
+    && s.operational.phase === "ORCHESTRATOR_MVP_CLOSED" && s.operational.status === "CLOSED"
+    && s.lastTask !== null && s.lastTask.task_id === closureTaskId && s.lastTask.attempt === 1
+    && s.lastTask.task_type === "STATE_MAINTENANCE" && s.lastTask.actor === "HUMAN" && s.lastTask.verdict === "MVP_CLOSURE_SYNC"
+    && s.lastTask.footerDigest === "bb90415e0b5eafd4d94473f0b8488a20164a43e478f08e236448772de0d893df"
+    && s.lastTask.at === "2026-09-28T22:17:06.047Z"
+    && s.next.actor === "HUMAN" && s.next.taskId === closureTaskId && s.next.taskType === "STATE_MAINTENANCE"
+    && !s.next.humanApprovalRequired && s.next.humanApprovalReason === null && s.blockers.length === 0
+    && s.product.lastClosed === "T1.6.2.c.2c" && s.product.status === "CLOSED" && s.product.nextAfterOrchestratorMvp === "B"
+    && s.product.laterRoadmap.length === 1 && s.product.laterRoadmap[0] === "T1.6.2.d"
+    && f.actor === "HUMAN" && f.task_type === "STATE_MAINTENANCE" && f.verdict === "MILESTONE_B_RECONCILE_SYNC"
+    && f.task_id === milestoneBReconcileTaskId && f.attempt === 1 && f.expected_state_revision === 3
+    && f.baseline_sha === null && f.result_sha === null && f.scope.length === 0 && f.evidence === "HUMAN_VERIFIED"
+    && f.blockers.length === 0 && !f.human_approval_required && f.human_approval_reason === null;
+}
+// Never trusts the footer for the real facts -- only a real, fresh,
+// independently-verified GitObservation (see MilestoneBGitEvidence's own
+// header) may supply them, and even then ONLY if it matches the exact
+// expected published SHA and exact expected local-only commit set. A
+// caller that fabricates or confuses a local commit for origin (e.g. an
+// observation whose `origin` already equals the local-only tip, or whose
+// commit list doesn't match) is rejected here, never silently accepted.
+function milestoneBGitVerified(current: ProjectState, evidence: MilestoneBGitEvidence | undefined): boolean {
+  if (!evidence) return false;
+  const { git, localOnlyCommits } = evidence;
+  return isTrustedGit(git) && git.evidence === "MACHINE_VERIFIED" && git.repository === current.repository.canonical
+    && git.originAncestorOfHead === true && git.origin !== null && git.origin.toLowerCase() === MILESTONE_B_ORIGIN_SHA
+    && sameCommitList(localOnlyCommits, MILESTONE_B_LOCAL_ONLY_COMMITS);
+}
+function milestoneBReconcileState(current: ProjectState, f: AgentReportFooter, digest: string, at: string, evidence: MilestoneBGitEvidence): ProjectState {
+  const next = structuredClone(current) as ProjectState;
+  next.schemaVersion = 3;
+  next.stateRevision++;
+  next.operational.milestone = "PRODUCT_MILESTONE_B";
+  next.operational.phase = "MILESTONE_B_CONTINUATION";
+  next.operational.status = "AWAITING_REVIEW";
+  next.activeTask = null;
+  next.lastTask = { task_id: f.task_id, attempt: f.attempt, task_type: f.task_type, actor: f.actor, verdict: f.verdict, footerDigest: digest, at };
+  next.repository = { ...current.repository, originSha: evidence.git.origin!.toLowerCase(), approvedSha: evidence.git.origin!.toLowerCase(), evidence: "MACHINE_VERIFIED" };
+  next.productMilestoneB = { localOnlyCommits: evidence.localOnlyCommits.map((c) => ({ sha: c.sha.toLowerCase(), subject: c.subject })) };
+  const taskId = `ORCH-B4-INDEPENDENT-REVIEW-${String(next.stateRevision).padStart(3, "0")}`;
+  const shortShas = evidence.localOnlyCommits.map((c) => c.sha.slice(0, 7)).join(", ");
+  next.next = {
+    actor: "CLAUDE", taskType: "INDEPENDENT_REVIEW", taskId,
+    task: `Independently review the ${evidence.localOnlyCommits.length} implemented-and-tested, unpushed commit(s) (${shortShas}) before recommending push authorization to continue milestone B.`,
+    humanApprovalRequired: false, humanApprovalReason: null,
+  };
+  return next;
+}
+
 function taskPrefix(phase: string): string | null {
   switch (phase) {
     case "PHASE_B_2B": return "ORCH-B2";
     case "PHASE_B_3": return "ORCH-B3";
+    case "MILESTONE_B_CONTINUATION": return "ORCH-B4";
     default: return null;
   }
 }
@@ -295,6 +397,11 @@ export function ingestAgentReport(reportText: string, stateFilePath: string, dep
       if (f.expected_state_revision !== 2) return fail("stale_revision", "revision_check");
       if (!closureEligible(current, f)) return fail("invalid_transition", "closure_sync_eligibility");
       candidate = closureState(current, f, digest, now().toISOString());
+    } else if (f.verdict === "MILESTONE_B_RECONCILE_SYNC") {
+      if (f.expected_state_revision !== 3) return fail("stale_revision", "revision_check");
+      if (!milestoneBReconcileEligible(current, f)) return fail("invalid_transition", "milestone_b_reconcile_eligibility");
+      if (!milestoneBGitVerified(current, dependencies.milestoneBGitEvidence)) return fail("invalid_transition", "milestone_b_git_verification");
+      candidate = milestoneBReconcileState(current, f, digest, now().toISOString(), dependencies.milestoneBGitEvidence!);
     } else {
       if (f.task_id !== current.next.taskId) return fail("unexpected_task", "task_check");
       if (f.actor !== current.next.actor) return fail("unexpected_actor", "actor_check");

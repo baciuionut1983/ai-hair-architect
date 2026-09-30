@@ -38,5 +38,27 @@ export function taskPolicy(s: ProjectState): TaskPolicy | null {
       acceptance: ["Review scope, correctness, authority boundaries and available test/static evidence.", "Report missing verification as a limitation; do not fabricate results."],
       verdicts: taskType === "ARCHITECTURE_AUDIT" ? ["READY_FOR_IMPLEMENTATION", "HOLD"] : ["GO", "HOLD"] };
   }
+  // Milestone-B continuation, requirement 5: an independent review of the
+  // real, already-implemented-and-tested, local-only commits recorded by
+  // the milestone-B reconciliation sync -- deliberately scoped to the
+  // real product tree (web/**), never tools/claude-supervisor/** (that
+  // scope is reserved for the Orchestrator's OWN implementation work
+  // above, which explicitly forbids "product B" -- see this function's
+  // own shared `forbidden` list). Read-only: this task decides whether
+  // the already-implemented work is ready for push authorization, it
+  // never edits, commits or pushes anything itself.
+  if (actor === "CLAUDE" && taskType === "INDEPENDENT_REVIEW"
+    && s.operational.milestone === "PRODUCT_MILESTONE_B" && s.operational.phase === "MILESTONE_B_CONTINUATION"
+    && /^ORCH-B4-INDEPENDENT-REVIEW-\d{3,}$/.test(taskId)) {
+    return { scope: ["web/** (READ ONLY)"], protectedAreas: ["**/*"],
+      allowed: ["read web/ source and existing test/lint/typecheck/build evidence", "read-only Git inspection of the recorded local-only commits", "read docs/PROJECT_STATE.json (read only)"],
+      forbidden: ["edits", "commit", "push", "deploy", "running write-producing tests/builds", "video generation", "paid AI/provider calls", "PROJECT_STATE mutation", "Railway", "database", "dependency changes"],
+      checks: [],
+      acceptance: [
+        "Independently review the recorded local-only, already-implemented-and-tested commits (see productMilestoneB.localOnlyCommits in the current state) for correctness, safety and scope discipline before push authorization.",
+        "Report missing verification as a limitation; do not fabricate results.",
+      ],
+      verdicts: ["GO", "HOLD"] };
+  }
   return null;
 }

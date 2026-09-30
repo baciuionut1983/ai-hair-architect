@@ -1,16 +1,37 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadProjectState, parseProjectState, PROJECT_STATE_PATH, summarizeProjectState, validateProjectState } from "./project-state.js";
+import { loadProjectState, parseProjectState, PROJECT_STATE_PATH, summarizeProjectState, validateProjectState, type ProjectState } from "./project-state.js";
 
+// Reconstructs the exact real "right after bootstrap, PHASE_B_3, about to
+// implement B.3" state this whole file's own tests assume -- NOT a live
+// read of the real file (docs/PROJECT_STATE.json), which has since moved
+// past this point (closed, then reconciled to milestone B) and would
+// otherwise make this file's own first test spuriously fail every time
+// the real file advances again (a real, pre-existing staleness bug,
+// caught and fixed here as part of the milestone-B state-reconciliation
+// task, not a product-work change -- see project-state-updater.test.ts's
+// own closureFixture/milestoneBFixture and project-cli.test.ts's own
+// current() for the identical, established pattern). Every OTHER test in
+// this file only needs a validly-shaped state to mutate/probe, so the
+// structurally-irrelevant parts (repository/product/ci/production/
+// project/deferred) are still taken from the real file's live content.
 function bootstrap() {
   const result = loadProjectState();
   if (!result.ok) throw new Error(result.reason);
-  return result.state;
+  const state: ProjectState = JSON.parse(JSON.stringify(result.state));
+  state.stateRevision = 2; state.activeTask = null; state.blockers = [];
+  state.operational = { milestone: "PROJECT_OPERATIONS_ORCHESTRATOR", phase: "PHASE_B_3", status: "AWAITING_IMPLEMENTATION" };
+  state.lastTask = { task_id: "ORCH-B2-STATE-MAINTENANCE-BOOTSTRAP-001", attempt: 1, task_type: "STATE_MAINTENANCE", actor: "HUMAN",
+    verdict: "BOOTSTRAP_SYNC", footerDigest: "deaa10e76d1194031df3a00fc8a9002ae634d285f9ce2ba42ee60b7c7b6b778b", at: "2026-09-28T19:45:03.794Z" };
+  state.next = { actor: "CODEX", taskType: "IMPLEMENTATION", taskId: "ORCH-B3-IMPL-001",
+    task: "Implement Project Operations Orchestrator Phase B.3 task generation and evidence verification.",
+    humanApprovalRequired: false, humanApprovalReason: null };
+  return state;
 }
 
 describe("read-only outer project state", () => {
-  it("loads the explicit v2 migration without inventing repository provenance or task history", () => {
+  it("reconstructs the explicit v2 migration state without inventing repository provenance or task history", () => {
     const state = bootstrap();
     expect(state.schemaVersion).toBe(2);
     expect(state.stateRevision).toBe(2);
@@ -23,8 +44,33 @@ describe("read-only outer project state", () => {
       humanApprovalRequired: false, humanApprovalReason: null });
   });
 
-  it.each([1, 0, 3, "2", null])("rejects unsupported schema version %j", (schemaVersion) => {
+  it("loads whatever the real docs/PROJECT_STATE.json currently says, without inventing anything -- a live, unmodified read", () => {
+    const result = loadProjectState();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.state.schemaVersion === 2 || result.state.schemaVersion === 3).toBe(true);
+    expect(Number.isInteger(result.state.stateRevision)).toBe(true);
+  });
+
+  it.each([1, 0, "2", null])("rejects unsupported schema version %j", (schemaVersion) => {
     expect(validateProjectState({ ...bootstrap(), schemaVersion }).ok).toBe(false);
+  });
+  it("schemaVersion 3 requires productMilestoneB; schemaVersion 2 forbids it -- neither may exist without the other", () => {
+    const v2 = bootstrap();
+    expect(validateProjectState({ ...v2, schemaVersion: 3 }).ok).toBe(false);
+    expect(validateProjectState({ ...v2, schemaVersion: 3, productMilestoneB: { localOnlyCommits: [] } }).ok).toBe(true);
+    expect(validateProjectState({ ...v2, productMilestoneB: { localOnlyCommits: [] } }).ok).toBe(false);
+    const v3 = { ...v2, schemaVersion: 3 as const, operational: { ...v2.operational, milestone: "PRODUCT_MILESTONE_B" as const },
+      productMilestoneB: { localOnlyCommits: [{ sha: "0".repeat(40), subject: "A real local-only commit" }] } };
+    expect(validateProjectState(v3)).toMatchObject({ ok: true });
+    expect(validateProjectState({ ...v3, productMilestoneB: { localOnlyCommits: [{ sha: "bad", subject: "x" }] } }).ok).toBe(false);
+    expect(validateProjectState({ ...v3, productMilestoneB: { localOnlyCommits: [{ sha: "0".repeat(40), subject: "" }] } }).ok).toBe(false);
+    expect(validateProjectState({ ...v3, productMilestoneB: { localOnlyCommits: [], extra: 1 } }).ok).toBe(false);
+  });
+  it("operational.milestone accepts PRODUCT_MILESTONE_B alongside the original Orchestrator MVP value", () => {
+    const v2 = bootstrap();
+    expect(validateProjectState({ ...v2, operational: { ...v2.operational, milestone: "PRODUCT_MILESTONE_B" } }).ok).toBe(true);
+    expect(validateProjectState({ ...v2, operational: { ...v2.operational, milestone: "OTHER" } }).ok).toBe(false);
   });
   it.each(["AWAITING_ARCHITECTURE", "AWAITING_IMPLEMENTATION", "IMPLEMENTATION_IN_PROGRESS", "AWAITING_REVIEW", "REVIEW_HOLD", "AWAITING_PUSH_AUTHORIZATION", "AWAITING_CI", "CI_FAILED", "AWAITING_PRODUCTION_VERIFICATION", "READY_FOR_HUMAN_CLOSURE", "CLOSED"])("accepts operational status %s structurally", (status) => {
     const state = bootstrap();

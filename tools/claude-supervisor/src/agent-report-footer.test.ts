@@ -42,6 +42,19 @@ describe("pure structured report footer", () => {
   it.each(["ARCHITECTURE_AUDIT", "IMPLEMENTATION", "INDEPENDENT_REVIEW", "CONTROLLED_PUSH", "CI_VERIFICATION", "PRODUCTION_VERIFICATION"] as const)("rejects bootstrap task type %s", (task_type) => {
     expect(validateAgentReportFooter(report({ actor: "HUMAN", task_type, verdict: "BOOTSTRAP_SYNC" }))).toEqual({ ok: false, reason: "invalid_task_verdict" });
   });
+  it("accepts the fixed HUMAN milestone B reconciliation sync under footer schema v1", () => {
+    const value = report({ task_id: "ORCH-B4-STATE-MAINTENANCE-RECONCILE-001", actor: "HUMAN",
+      task_type: "STATE_MAINTENANCE", verdict: "MILESTONE_B_RECONCILE_SYNC", baseline_sha: null, result_sha: null,
+      scope: [], evidence: "HUMAN_VERIFIED", next_actor_suggested: "CLAUDE", expected_state_revision: 3 });
+    expect(parseAgentReportFooter(frame(value))).toEqual({ ok: true, footer: value });
+  });
+  it.each(["CLAUDE", "CODEX", "CI", "RAILWAY", "ORCHESTRATOR"] as const)("rejects milestone B reconciliation actor %s", (actor) => {
+    expect(validateAgentReportFooter(report({ actor, task_type: "STATE_MAINTENANCE", verdict: "MILESTONE_B_RECONCILE_SYNC",
+      baseline_sha: null, result_sha: null, scope: [] }))).toEqual({ ok: false, reason: "human_only_milestone_b_reconcile_sync" });
+  });
+  it.each(["ARCHITECTURE_AUDIT", "IMPLEMENTATION", "INDEPENDENT_REVIEW", "CONTROLLED_PUSH", "CI_VERIFICATION", "PRODUCTION_VERIFICATION"] as const)("rejects milestone B reconciliation task type %s", (task_type) => {
+    expect(validateAgentReportFooter(report({ actor: "HUMAN", task_type, verdict: "MILESTONE_B_RECONCILE_SYNC" }))).toEqual({ ok: false, reason: "invalid_task_verdict" });
+  });
   it.each([
     ["CLAUDE", "ARCHITECTURE_AUDIT", "READY_FOR_IMPLEMENTATION"],
     ["CLAUDE", "ARCHITECTURE_AUDIT", "HOLD"],

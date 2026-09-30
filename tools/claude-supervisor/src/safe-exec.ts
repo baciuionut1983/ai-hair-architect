@@ -96,3 +96,11 @@ export const GIT_LOG_ONE_ARGS = ["log", "-1", "--format=%H"] as const;
 export function gitRevParseArgs(ref: string): string[] {
   return ["rev-parse", ref];
 }
+// A fixed literal argv shape; `from`/`to` are real SHAs supplied by the
+// caller (never free text from a report/executor), so this stays exactly
+// as safe as the other fixed-argv helpers above -- git never re-parses
+// this argv through a shell. The unit-separator (%x1f) delimiter cannot
+// appear in a real commit subject, so splitting on it is unambiguous.
+export function gitLogRangeArgs(from: string, to: string): string[] {
+  return ["log", `${from}..${to}`, "--format=%H%x1f%s"];
+}

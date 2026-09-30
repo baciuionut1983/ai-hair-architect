@@ -3,14 +3,19 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadProjectState } from "./project-state.js";
-import { ingestAgentReport } from "./project-state-updater.js";
-import { observeGit, observeCi, assessPush } from "./project-evidence.js";
+import { ingestAgentReport, type UpdateDependencies } from "./project-state-updater.js";
+import { observeGit, observeCi, assessPush, listLocalOnlyCommits } from "./project-evidence.js";
+import { parseAgentReportFooter } from "./agent-report-footer.js";
 import { nextTask, projectStatus, publicData, renderStatus } from "./project-task.js";
 
 export interface ProjectCommandDependencies {
   git?: typeof observeGit;
   ci?: typeof observeCi;
   readInput?: (path: string | null) => string;
+  // Consulted only for MILESTONE_B_RECONCILE_SYNC -- same injectable-real-
+  // default shape as git/ci above, so a test can fake the underlying git
+  // process without also faking observeGit's own internal calls.
+  localOnlyCommits?: typeof listLocalOnlyCommits;
 }
 export async function runProjectCommand(argv: readonly string[], dependencies: ProjectCommandDependencies = {}): Promise<{ exitCode: number; output: string }> {
   const json = argv.includes("--json");
@@ -38,7 +43,21 @@ export async function runProjectCommand(argv: readonly string[], dependencies: P
       if (!values.has("--state") || Number(values.has("--report")) + Number(flags.has("--stdin")) !== 1) return fail("EXPLICIT_STATE_AND_ONE_REPORT_SOURCE_REQUIRED");
       const read = dependencies.readInput ?? ((path: string | null) => readFileSync(path ?? 0, "utf8"));
       const report = read(values.get("--report") ?? null);
-      const result = ingestAgentReport(report, statePath);
+      // MILESTONE_B_RECONCILE_SYNC is the one verdict that needs real,
+      // fresh Git evidence -- fetched HERE, at the true async I/O
+      // boundary, never inside ingestAgentReport itself (which stays
+      // synchronous, unchanged for every other verdict/caller). A cheap,
+      // read-only peek at the footer decides whether to fetch at all; an
+      // unparseable/irrelevant report just proceeds without it and lets
+      // ingestAgentReport report the real structural failure.
+      const peek = parseAgentReportFooter(report);
+      const extra: Pick<UpdateDependencies, "milestoneBGitEvidence"> = {};
+      if (peek.ok && peek.footer.verdict === "MILESTONE_B_RECONCILE_SYNC") {
+        const git = await gitObserver(cwd, true);
+        const localOnlyCommits = await (dependencies.localOnlyCommits ?? listLocalOnlyCommits)(cwd, git);
+        if (localOnlyCommits) extra.milestoneBGitEvidence = { git, localOnlyCommits };
+      }
+      const result = ingestAgentReport(report, statePath, extra);
       if (!result.ok) return emit(result, 1);
       const refreshed = loadProjectState(statePath);
       if (!refreshed.ok) return fail("POST_INGEST_STATE_UNAVAILABLE");
